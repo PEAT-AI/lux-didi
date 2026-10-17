@@ -186,11 +186,12 @@ function installTurnApi(turns: Record<string, { conversation: Record<string, unk
       }
       throw new Error(`Unexpected request ${path}`);
     },
-    stream: async (_path: string, _signal: unknown, handler: (value: unknown) => void) => { onEvent = handler; },
+    // A live stream stays open, as a real one does: the view keeps accepting step events while it runs.
+    stream: (_path: string, _signal: unknown, handler: (value: unknown) => void) => { onEvent = handler; return new Promise(() => {}); },
   };
   return {
     panel,
-    emit(event: unknown) { onEvent?.(event); },
+    emit(event: unknown) { assert.ok(onEvent, 'the view opened a run stream before its steps arrived'); onEvent(event); },
     restore() {
       if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else delete (globalThis as { document?: unknown }).document;
       if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage); else delete (globalThis as { localStorage?: unknown }).localStorage;

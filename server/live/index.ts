@@ -11,11 +11,14 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
+import { WarmContextCache, chooseStartContext } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { capJournalText, journalRecord } from '../host/journal.js';
+
 import { hostLogEvent } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
@@ -393,6 +396,8 @@ export class LiveSessionOwner {
   readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   readonly #research: ResearchSelector | undefined;
+  /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
+  #warm: WarmContextCache;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -410,6 +415,7 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
+    this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
     this.#research = config.research;
@@ -503,23 +509,41 @@ export class LiveSessionOwner {
       const pickupJob = input.pickupJobId ? this.#jobs.pending(tx).find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
       const pickup = pickupJob ? { jobId: pickupJob.id, identity: identity({ state: pickupJob.state, result: pickupJob.result ?? null }) } : undefined;
-      let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
-      try { records = this.#memorySource?.(tx) ?? []; }
-      catch { throw new LiveError('memory_unavailable'); }
+      type MemoryRecords = ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
+      type Earlier = ReturnType<typeof buildEarlierConversationsSection>;
+      let records: MemoryRecords = [];
+      let earlier: Earlier = { section: '', selectedIds: [], omitted: [] };
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) });
+      // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
+      try { records = this.#memorySource?.(tx) ?? []; }
+      catch { throw new LiveError('memory_unavailable'); }
+      // P1-R1: one source of the earlier-conversation section. A warm assembly younger than ten
+      // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
+      // stale or absent one is assembled here, exactly as before, and adopted for the next start.
+      const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
+        let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
+        const start = chooseStartContext(this.#warm.take(), () => {
+          // The summaries fill what the other sections leave under the target, so measure it once.
+          basis = composeSession(undefined);
+          earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
+            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+          return { persona: configuredPrompt.system, memory: [] as readonly string[],
+            summary: earlier.section.length ? earlier.section : undefined,
+            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: undefined };
+        });
+        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
+        else this.#warm.adopt(start.sections);
+        // With no summary section the measured basis is the result, so a start composes once.
+        if (!earlier.section) return basis ?? composeSession(undefined);
+        return composeSession(earlier.section);
+      };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
-      let earlier: ReturnType<typeof buildEarlierConversationsSection>;
-      try {
-        // The summaries fill what the other sections leave under the target, so measure it first.
-        const basis = composeSession(undefined);
-        earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
-        composed = earlier.section ? composeSession(earlier.section) : basis;
-      }
+      try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
       // The debug journal's session start: the composed instructions once, then the identity and sizes

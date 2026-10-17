@@ -516,7 +516,9 @@ html.mini .mini-stage .activity-thinking .activity-indicator{background:var(--mi
 html.mini .mini-stage .activity-failed{color:var(--mini-failed)}
 html.mini .mini-stage .activity-failed .activity-indicator{background:var(--mini-failed-mark)}
 html.mini .mini-stage canvas[data-state=IDLE],html.mini .mini-stage canvas[data-state=DISCONNECTED],html.mini .mini-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.9) opacity(.9)}
+
 html.mini .mini-pill{position:relative;display:flex;align-items:center;gap:5px;box-sizing:border-box;width:64px;height:26px;min-height:26px;max-width:none;margin:0;padding:0 5px;border:1px solid var(--mini-border);border-radius:13px;background:var(--mini-pill-bg);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);overflow:hidden}
+
 /* The presence glow is one soft wash behind the orb, never a second drawing. */
 html.mini .mini-pill .presence-glow{position:absolute;left:9px;top:50%;width:26px;height:26px;margin:0;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,var(--mini-glow),transparent 70%);opacity:0;transition:opacity .4s ease}
 html.mini .mini-pill[data-mini-state=listening] .presence-glow,

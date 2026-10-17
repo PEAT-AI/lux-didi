@@ -12,13 +12,23 @@ final class MiniOrbToggle {
     private let presentPanel: @MainActor () -> Void
     private let dismissPanel: @MainActor () -> Void
     private let expandToWindow: @MainActor () -> Void
+    private let present: @MainActor (PresencePosture) -> Void
     private(set) var isVisible = false
 
     init(startLive: @escaping @MainActor () -> Void, stopLive: @escaping @MainActor () -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool, presentPanel: @escaping @MainActor () -> Void,
-         dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void) {
+         dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void,
+         present: @escaping @MainActor (PresencePosture) -> Void = { _ in }) {
         self.startLive = startLive; self.stopLive = stopLive; self.liveIsRunning = liveIsRunning
         self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.expandToWindow = expandToWindow
+        self.present = present
+    }
+
+    /// Presence is the owner of the orb window (council 2026-10-17, option C): the
+    /// orb is there at app start and in every state, grey while Naya is silent, and
+    /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
+    func applyPresence(_ posture: PresencePosture) {
+        present(posture)
     }
 
     func toggle() { isVisible ? hide() : show() }
@@ -68,6 +78,35 @@ final class MiniOrbToggle {
 /// never lands under the menu bar, and on a notched display, where the menu bar
 /// covers the notch and its `safeAreaInsets.top`, never inside the camera
 /// housing either.
+/// What the presence surface looks like in one state, as plain values so the
+/// mapping is proven without AppKit. M3 owns the visuals themselves; these are the
+/// two facts the native window owns: whether it is there, and how transparent.
+struct PresenceSurfaceState: Equatable {
+    /// About 35 percent over grey and very slow in COLD, the owner's "almost transparent".
+    static let coldOpacity: CGFloat = 0.35
+    /// Present but not inviting while the session is only hot-muted.
+    static let hotMutedOpacity: CGFloat = 0.55
+    static let liveOpacity: CGFloat = 1
+
+    let visible: Bool
+    let opacity: CGFloat
+    /// The notch pill is the privacy indicator: live capture only.
+    let pill: Bool
+    /// A failed session left the orb in error until the next tap. M3 owns how it looks.
+    let error: Bool
+
+    static func shown(_ posture: PresencePosture) -> PresenceSurfaceState {
+        let opacity: CGFloat
+        switch posture.state {
+        case .cold, .connecting: opacity = coldOpacity
+        case .live: opacity = liveOpacity
+        case .hotMuted: opacity = hotMutedOpacity
+        }
+        return PresenceSurfaceState(visible: posture.alwaysShow, opacity: opacity,
+            pill: posture.state == .live, error: posture.failed)
+    }
+}
+
 enum MiniOrbFrameRestore {
     /// MINI2: the pill is 64x26 pt and its corner radius is half its height.
     static let size = CGSize(width: 64, height: 26)

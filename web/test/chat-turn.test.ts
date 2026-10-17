@@ -256,7 +256,11 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.match(api.panel.innerHTML, /class="chat-sources"/);
     const order = ['what changed?', 'chat-steps-done', 'entry assistant', 'chat-evidence', 'chat-sources'].map(marker => api.panel.innerHTML.indexOf(marker));
     assert.deepEqual(order, [...order].sort((left, right) => left - right), `turn order ${order.join(',')}`);
-    assert.ok(!api.panel.innerHTML.includes(shapedBody));
+    // The shaped tool text survives only as a folded evidence snippet, never as any answer body.
+    const answerBody = /<article class="entry assistant"><div class="markdown">([\s\S]*?)<\/div><\/article>/.exec(api.panel.innerHTML)?.[1] ?? '';
+    assert.ok(answerBody.includes('The release is on friday.'));
+    assert.ok(!answerBody.includes(shapedBody), 'the answer body is the model text alone');
+    assert.ok(api.panel.innerHTML.indexOf(shapedBody) > api.panel.innerHTML.indexOf('chat-evidence'), 'the shaped text lives inside the folded evidence');
     api.release();
     // A read-only run that ran out of time: plain copy and the next action, no send warning.
     await view.select('s4');
@@ -264,6 +268,10 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.match(api.panel.innerHTML, /ran out of time/i);
     assert.match(api.panel.innerHTML, /id="connected-retry"/);
     assert.doesNotMatch(api.panel.innerHTML, /may have been sent/i);
-    assert.ok(!api.panel.innerHTML.includes(shapedBody));
+    // The shaped tool text survives only as a folded evidence snippet, never as any answer body.
+    const answerBody = /<article class="entry assistant"><div class="markdown">([\s\S]*?)<\/div><\/article>/.exec(api.panel.innerHTML)?.[1] ?? '';
+    assert.ok(answerBody.includes('The release is on friday.'));
+    assert.ok(!answerBody.includes(shapedBody), 'the answer body is the model text alone');
+    assert.ok(api.panel.innerHTML.indexOf(shapedBody) > api.panel.innerHTML.indexOf('chat-evidence'), 'the shaped text lives inside the folded evidence');
   } finally { api.release(); api.restore(); }
 });

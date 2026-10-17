@@ -14,7 +14,7 @@ export const RESEARCH_TOOL_NAME = 'research';
 
 export type ResearchAction = 'start' | 'continue' | 'stop';
 export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
-export type SourceKind = 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose';
+export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
   | 'chat_search' | 'chat_thread' | 'brief' | 'stop_answer' | 'stop_insufficient';
@@ -78,10 +78,58 @@ export const RESEARCH = Object.freeze({
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
   mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
+  /** K6: how many memory lines one routed memory lookup may show. */
+  memoryLines: 12,
   mailSnippetChars: 200, chatTextChars: 300, knowledgeBodyChars: 1_200, openedBodyChars: 1_500,
 });
 
 export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+
+/**
+ * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
+ * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
+ */
+export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies';
+export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
+/** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
+export const MAX_LOOKUPS = 4;
+
+export interface ResearchLookup { source: LookupSource; query: string }
+/** Per-source outcome of a routed call: read something, read nothing, unreachable, or the read failed. */
+export type LookupOutcome = 'ok' | 'empty' | 'unavailable' | 'failed';
+
+export interface ResearchRoutedLog {
+  event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number;
+  ms: number[]; outcomes: LookupOutcome[];
+}
+
+/** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
+export function normalizeLookups(value: unknown): ResearchLookup[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const lookups: ResearchLookup[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const raw = typeof entry['source'] === 'string' ? entry['source'].trim().toLowerCase() : '';
+    const text = optionalString(entry['query']);
+    if (text === undefined || !(LOOKUP_SOURCES as readonly string[]).includes(raw)) continue;
+    const query = text.trim().slice(0, RESEARCH.queryLimitChars);
+    const key = `${raw}:${query.toLowerCase()}`;
+    if (!query || seen.has(key)) continue;
+    seen.add(key);
+    lookups.push({ source: raw as LookupSource, query });
+    if (lookups.length === MAX_LOOKUPS) break;
+  }
+  return lookups;
+}
+
+/** Calendar lookups may carry a day or a named window; anything else reads today. */
+export function calendarWindowOf(query: string): string {
+  const value = query.trim().toLowerCase();
+  if (value === 'today' || value === 'tomorrow' || value === 'week') return value;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : /(\d{4}-\d{2}-\d{2})/.exec(value)?.[1];
+  return date ?? 'today';
+}
 
 /**
  * The closed code for a sub-call that never dispatched. The dispatch record's reason is already a
@@ -431,7 +479,9 @@ export function extractInsightIds(text: string, max = 3): number[] {
 // ---------------------------------------------------------------------------------------------
 // Ledger
 
-export interface LedgerEntry { kind: CandidateKind; source: SourceKind | null; summary: string; lines?: string[]; total?: number }
+export type LedgerKind = CandidateKind | 'memory_search';
+
+export interface LedgerEntry { kind: LedgerKind; source: SourceKind | null; summary: string; lines?: string[]; total?: number }
 export interface RunState {
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
@@ -550,23 +600,40 @@ export interface ResearchDeps {
   logJoined?: ((researchId: string) => void) | undefined;
   /** Metadata-only per-sub-call log; defaults to the host log sink. Never the query or result text. */
   logSubcall?: ((event: ResearchSubcallLog) => void) | undefined;
+  /**
+   * K6: her own memory, read locally by the composition that holds it, never over the network.
+   * Absent means a memory lookup reports itself unavailable instead of inventing an answer.
+   */
+  memory?: ((query: string) => { text: string; lines: string[]; total: number } | Promise<{ text: string; lines: string[]; total: number }>) | undefined;
+  /** K6: one metadata-only receipt per routed call; defaults to the host log sink. */
+  logRouted?: ((event: ResearchRoutedLog) => void) | undefined;
   ledger: ResearchLedger;
   replyLimit?: number;
 }
 
-export interface ResearchCall { action: ResearchAction; question?: string; researchId?: string; sources?: string; direction?: string }
+export interface ResearchCall { action: ResearchAction; question?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
 export function validateResearch(args: unknown): boolean {
   if (!isRecord(args)) return false;
-  const keys = new Set(['action', 'question', 'researchId', 'sources', 'direction']);
+  const keys = new Set(['action', 'question', 'researchId', 'sources', 'direction', 'lookups']);
   if (!Object.keys(args).every(key => keys.has(key))) return false;
   const action = args['action'];
   if (action !== 'start' && action !== 'continue' && action !== 'stop') return false;
+  if (args['lookups'] !== undefined && (action !== 'start' || !validLookups(args['lookups']))) return false;
   if (action === 'start') return optionalString(args['question']) !== undefined;
   return optionalString(args['researchId']) !== undefined;
+}
+
+/** K6: every named lookup is a known layer with a short query of its own. */
+function validLookups(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.every(entry => isRecord(entry)
+    && Object.keys(entry).every(key => key === 'source' || key === 'query')
+    && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source'])
+    && optionalString(entry['query']) !== undefined);
 }
 
 /** The display order and human name of every research source the host loop can read today (R2-R2). */
@@ -575,6 +642,7 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
   ['mail', 'mail'],
   ['chat', 'team chat'],
   ['knowledge', 'knowledge base'],
+  ['memory', 'memory'],
 ];
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
@@ -627,6 +695,17 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
         sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
+        lookups: {
+          type: 'array', maxItems: MAX_LOOKUPS,
+          description: 'Optional: the layers to read, one lookup each, at most four. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: her own memory of their conversations, what he told her and what he asked her to remember. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: the company knowledge base of who reports to whom, teams, roles, customers, partners and products. calendar: his calendar; the query may carry a day or a range. mail: his mail. chat: his team chat. replies: what is waiting on him in the team chat.',
+          items: {
+            type: 'object', additionalProperties: false, required: ['source', 'query'],
+            properties: {
+              source: { type: 'string', enum: [...LOOKUP_SOURCES], description: 'The layer this lookup reads.' },
+              query: { type: 'string', minLength: 1, maxLength: RESEARCH.queryLimitChars, description: 'A short search string written for that source.' },
+            },
+          },
+        },
       },
     },
     validate: validateResearch,
@@ -678,9 +757,9 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
-const SOURCE_LABEL: Record<SourceKind, string> = { knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'mongoose' };
-/** Findings order: the owner's knowledge base leads, company sources follow. */
-const SOURCE_ORDER: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'mongoose' };
+/** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
+const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   mail_search: RESEARCH.mailLines, mail_open: 2,
   chat_search: RESEARCH.chatLines, chat_thread: 12,
@@ -877,7 +956,7 @@ interface ReplyFinding { source: string; text: string; chars: number }
  * Q1-R0 packing: a count line plus telegraphic lines per source, at least one line per source with
  * hits, then fill by recency; whatever is dropped sets canContinue, and a continue re-reads.
  */
-function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number): JsonObject {
+function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject): JsonObject {
   const groups: { source: SourceKind; label: string; lines: string[]; total: number }[] = [];
   for (const entry of run.ledger.values()) {
     if (!entry.lines || entry.lines.length === 0 || entry.source === null) continue;
@@ -904,7 +983,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
       .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${group.total} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
-    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0, ...(note !== undefined ? { note } : {}) } };
+    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0, ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;
@@ -916,6 +995,90 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   }
   const { findings, reply } = render();
   return { ...reply, findings };
+}
+
+/**
+ * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
+ * source already owns, under its own per-source deadline. Nothing here consults the selector.
+ */
+function routedRead(lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; run: RunState; now: () => number }): { source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
+  const query = lookup.query;
+  if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [] };
+  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
+  // The attention digest answers "what is waiting on him"; it takes no query of its own.
+  if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
+  const subsConfig = { question: context.question, configured: context.configured, evidence: context.run.evidence, query };
+  if (lookup.source === 'calendar') return { source: 'calendar', kind: 'calendar_window', subs: candidateSubs('calendar_window', { ...subsConfig, window: calendarWindowOf(query), nowMs: context.now() }) };
+  if (lookup.source === 'knowledge') return { source: 'knowledge', kind: 'knowledge_search', subs: candidateSubs('knowledge_search', subsConfig) };
+  if (lookup.source === 'mail') return { source: 'mail', kind: 'mail_search', subs: candidateSubs('mail_search', subsConfig) };
+  return { source: 'chat', kind: 'chat_search', subs: candidateSubs('chat_search', subsConfig) };
+}
+
+interface RoutedOutcome {
+  lookup: ResearchLookup; kind: LedgerKind; source: SourceKind | 'memory';
+  outcome: LookupOutcome; ms: number; lines: string[]; total: number;
+}
+
+/** One lookup, always resolving: a failed or unreachable source never takes its neighbours down. */
+async function routedOne(deps: ResearchDeps, run: RunState, lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome> {
+  const readContext = { question: context.question, configured: context.configured, run, now: context.now };
+  const at = context.now();
+  const read = routedRead(lookup, readContext);
+  const settle = (outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome => ({ lookup, kind: read.kind, source: read.source, outcome, ms: context.now() - at, lines, total });
+  if (lookup.source === 'memory') {
+    if (deps.memory === undefined) return settle('unavailable');
+    try {
+      const found = await deps.memory(lookup.query);
+      const lines = found.lines.slice(0, RESEARCH.memoryLines);
+      return settle(lines.length > 0 ? 'ok' : 'empty', lines, found.total);
+    } catch { return settle('failed'); }
+  }
+  if (!context.configured.includes(read.source)) return settle('unavailable');
+  const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
+  if (remainingMs <= 0) return settle('unavailable');
+  run.ops += Math.max(1, read.subs.length);
+  const bound = read.source === 'calendar' ? RESEARCH.calendarDeadlineMs : RESEARCH.sourceDeadlineMs;
+  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(Math.min(bound, remainingMs))]);
+  let results: IntentSubResult[];
+  try { results = await deps.execute(read.subs, signal); } catch { return settle('failed'); }
+  const block = shapeBlock(read.kind === 'memory_search' ? 'knowledge_search' : read.kind, results);
+  return settle(block.lines.length > 0 ? 'ok' : 'empty', block.lines, block.total);
+}
+
+/**
+ * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
+ * named are read at once; the reply is shaped as today's, plus a per-source outcome.
+ */
+async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
+  const started = run.startedAt;
+  const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
+  deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
+  const pending = lookups.map(lookup => routedOne(deps, run, lookup, { question, configured, signal, now }));
+  const outcomes = await Promise.all(pending);
+  for (const outcome of outcomes) {
+    const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
+    run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
+    if (outcome.source === 'memory') {
+      if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
+      else if (outcome.outcome !== 'empty') run.sourcesFailed.add('memory');
+      continue;
+    }
+    if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); }
+    else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, ` for "${outcome.lookup.query.slice(0, 60)}"`); }
+    else run.sourcesFailed.add(outcome.source);
+  }
+  run.ended = true;
+  const sources: JsonObject = {};
+  for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
+  const answered = outcomes.some(outcome => outcome.lines.length > 0);
+  const status = signal.aborted || run.stopped ? 'stopped' : (answered ? 'answered' : 'partial');
+  deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
+  const reply = buildReply(run, status, configured, false, limit, sources);
+  logRouted({
+    event: 'research_routed', researchId: run.researchId, sources: outcomes.map(outcome => outcome.lookup.source),
+    lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
+  });
+  return reply;
 }
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */
@@ -943,6 +1106,10 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     run = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() }) ?? deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
   }
   run.direction = call.direction ?? run.direction;
+
+  // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
+  const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
+  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, signal, now, limit);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];
@@ -1035,7 +1202,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       const selStart = now();
       let output: SelectorOutput | null = null;
       try {
-        output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].map(entry => ({ kind: entry.kind, summary: entry.summary })), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
+        output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
       } catch { output = null; }
       selectorMs += now() - selStart;
       if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }

@@ -17,37 +17,48 @@ test('a saved answer with a bullet list and a numbered list renders ul and ol in
   assert.equal(/<p>/.test(html), false, 'a saved answer body is a div, never a p');
 });
 
-test('chat evidence cards render names, bounded safe markdown and permitted sources', () => {
-  const html = render([{ name: 'gmail_list', markdown: '**ACCEPTED** [unsafe](javascript:alert) <script>REJECTED-HTML</script>', sources: [{ title: 'Inbox evidence', url: 'https://example.org/mail' }, { title: 'Local citation' }, { title: 'Unsafe source', url: 'javascript:alert(1)' }] }]);
-  assert.match(html, /tool-evidence/);
+test('chat evidence lists the items the answer used and the sources row carries the links', () => {
+  const evidence = [{ name: 'gmail_list', markdown: '**ACCEPTED** [unsafe](javascript:alert) <script>REJECTED-HTML</script>', sources: [{ title: 'Inbox evidence', url: 'https://example.org/mail' }, { title: 'Local citation' }, { title: 'Unsafe source', url: 'javascript:alert(1)' }] }];
+  const html = render(evidence);
+  assert.match(html, /chat-evidence/);
   assert.match(html, /Gmail/);
   assert.doesNotMatch(html, /gmail_list|Gated tool result/);
-  assert.match(html, /<strong>ACCEPTED<\/strong>/);
+  assert.match(html, /ACCEPTED/);
   assert.match(html, /unsafe/);
   assert.doesNotMatch(html, /href="javascript:/i);
   assert.doesNotMatch(html, /<script>/i);
   assert.match(html, /&lt;script&gt;/);
-  assert.match(html, /href="https:\/\/example.org\/mail"/);
-  assert.match(html, /Local citation/);
-  assert.match(html, /rel="noopener noreferrer"/);
+  const chips = sources(evidence);
+  assert.match(chips, /href="https:\/\/example.org\/mail"/);
+  assert.match(chips, /Local citation/);
+  assert.match(chips, /rel="noopener noreferrer"/);
+  assert.doesNotMatch(chips, /href="javascript:/i);
 });
 
-test('chat cards enforce display bounds and empty evidence has no invented card', () => {
+test('chat evidence and sources are bounded, deduped, and empty evidence has no invented card', () => {
   assert.equal(render([]), '');
-  const html = render(Array.from({ length: 20 }, () => ({ name: 'read', markdown: 'a'.repeat(5000) + 'TAIL-SENTINEL', sources: Array.from({ length: 12 }, (_, i) => ({ title: `source ${i}` })) })));
-  assert.equal((html.match(/class="tool-evidence"/g) ?? []).length, 16);
-  assert.doesNotMatch(html, /TAIL-SENTINEL|source 8/);
+  assert.equal(sources([]), '');
+  const evidence = Array.from({ length: 20 }, () => ({ name: 'read', markdown: 'a'.repeat(5000) + 'TAIL-SENTINEL', sources: Array.from({ length: 12 }, (_, i) => ({ title: `source ${i}` })) }));
+  const html = render(evidence);
+  assert.equal((html.match(/class="chat-evidence-source"/g) ?? []).length, 1, 'one section per source label');
+  assert.equal((html.match(/class="chat-evidence-item"/g) ?? []).length, 6, 'six items at most per source');
+  assert.doesNotMatch(html, /TAIL-SENTINEL/);
+  const chips = sources(evidence);
+  assert.equal(chips.match(/source \d+/g)?.length, 3, 'three chips');
+  assert.match(chips, /\+9/, 'the rest is a count');
+  assert.doesNotMatch(chips, /source 8/);
 });
 
 test('the owner-facing evidence card never carries the model-only omission note (C1-R1)', () => {
   const note = '[omitted: 4 more messages; final, this tool has no paging argument]';
-  const html = render([{ name: 'mattermost_get_channel_history',
+  const evidence = [{ name: 'mattermost_get_channel_history',
     markdown: `- chan | alice | 2026-01-01T00:00:00Z | hello\n- chan | bob | 2026-01-01T00:01:00Z | hi\n\n${note}`,
-    sources: [{ title: 'Channel', url: 'https://example.org/c' }] }]);
+    sources: [{ title: 'Channel', url: 'https://example.org/c' }] }];
+  const html = render(evidence);
   assert.doesNotMatch(html, /\[omitted:/);
   assert.match(html, /hello/);
   assert.match(html, /Mattermost/);
-  assert.match(html, /href="https:\/\/example\.org\/c"/);
+  assert.match(sources(evidence), /href="https:\/\/example\.org\/c"/);
 });
 
 test('the owner-facing evidence card strips the calendar and handle bracket notes (C1-R1 F1)', () => {

@@ -1,5 +1,7 @@
 import { ApiError, authorityVersion, assertAuthority, request, stream } from './api.ts';
-import { answerMarkup, chatEntryMarkup, renderToolEvidence, runFailureWords } from './markdown.ts';
+import { answerMarkup, chatEntryMarkup, evidenceMarkup, NO_ANSWER_WORDS, partialWords, sourcesMarkup, stepsMarkup, runFailureWords } from './markdown.ts';
+import type { ChatStep } from './tool-phrases.ts';
+import { toolConnector, wroteExternally } from './tool-phrases.ts';
 import { composerIntent, draftHeightPx } from './composer.ts';
 import { attachPin } from './autoscroll.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
@@ -34,6 +36,8 @@ export class ConnectedView {
   #owner = ''; #status: RouteStatus = { status: 'unconfigured' }; #conversation: Conversation | undefined;
   #conversations: { title: string; conversation: Conversation }[] = []; #entries: Entry[] = [];
   #run: Run | undefined; #draft = ''; #pin: { repin(): void; stop(): void } | undefined; #chatPinned = true; #chatScroll: number | undefined; #refocusDraft = false; #pending: { key: string; text: string; sessionId: string; selectedMemoryEntryIds: string[] } | undefined;
+  /** The live chat_step events of the current run only, so a new turn starts with a clean step list. */
+  #steps: { runId: string; steps: ChatStep[] } | undefined;
   #memoryQuery = ''; #memoryHits: RecalledNote[] = []; #memorySelected: RecalledNote[] = []; #memoryError = ''; #memoryBusy = false; #memoryOpen = false;
   #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false; #remember = true;
   #conversationController: AbortController | undefined; #selectionToken = 0;
@@ -176,7 +180,7 @@ export class ConnectedView {
     panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
       ${grant || this.#consent ? '' : `<p class="connected-disclosure">Chat messages go to <strong>${escape(provider ?? 'the connected provider')}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`}
       <div class="chat-list" id="chat-list">
-      <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}${chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))}`).join('') + (r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : '') + typing : '<p class="connected-empty muted">What can I find for you?</p>'}</div>
+      <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => entry.id === r?.finalEntryId ? `${stepsMarkup(this.#runSteps(r), true)}${chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))}${evidenceMarkup(r.toolEvidence ?? [])}${sourcesMarkup(r.toolEvidence ?? [])}` : chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))).join('') + (r && !r.finalEntryId ? stepsMarkup(this.#runSteps(r), false) : '') + (r ? this.#noAnswer(r) : '') + typing : '<p class="connected-empty muted">What can I find for you?</p>'}</div>
       <button type="button" class="jump-pill" id="chat-jump" hidden>Jump to latest</button>
       </div>
       ${r ? this.#runSection(r) : ''}
@@ -225,14 +229,50 @@ export class ConnectedView {
     panel.querySelector('#connected-notes-clear')?.addEventListener('click', () => { this.#memorySelected = []; this.attach(); });
     panel.querySelector<HTMLDetailsElement>('#connected-notes')?.addEventListener('toggle', event => { this.#memoryOpen = (event.target as HTMLDetailsElement).open; });
     panel.querySelector('#connected-cancel')?.addEventListener('click', () => { if (r && c) void this.#action(async lifetime => { await request(`/chat/${r.runId}/cancel`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime); return this.select(c.sessionId, lifetime); }); });
+    // The partial turn's own next action: ask the same question again, from the same draft the owner typed.
+    panel.querySelector('#connected-retry')?.addEventListener('click', () => {
+      const mine = [...this.#entries].reverse().find(entry => entry.role === 'user');
+      if (!mine) return;
+      this.#draft = mine.text; void this.#send();
+    });
   }
   #runSection(r: Run): string {
     const failed = r.state === 'terminal' && r.outcome !== 'complete';
-    const message = failed ? escape(runFailureWords(r.outcome, r.mayHaveBeenSent)) : '';
-    const provisional = r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : '';
+    // A partial turn says in plain words where it stopped, and offers the next action.
+    const partial = failed && !!r.partialText;
+    // The detached "Content may have been sent" copy belongs to a write action only, and no current
+    // read-only tool writes (target turn, item 6).
+    const message = failed && !partial ? escape(runFailureWords(r.outcome, r.mayHaveBeenSent && wroteExternally(this.#toolNames(r)))) : '';
+    const progress = partial ? `<p class="partial">${escape(partialWords(this.#unanswered(r)))}</p>${answerMarkup(r.partialText)}<button type="button" id="connected-retry" class="quiet">Try again</button>` : '';
     const cancel = r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : '';
-    const hidden = !message && !provisional && !cancel;
-    return `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}"${hidden ? ' hidden' : ''}>${message}${provisional}${cancel}${hidden ? '' : this.#usage(r)}</div>`;
+    const hidden = !message && !progress && !cancel;
+    return `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}"${hidden ? ' hidden' : ''}>${message}${progress}${cancel}${hidden ? '' : this.#usage(r)}</div>`;
+  }
+
+  /** The live chat_step events of this run only: a stale list never bleeds into the next turn. */
+  #runSteps(r: Run | undefined): ChatStep[] { return r && this.#steps?.runId === r.runId ? this.#steps.steps : []; }
+  /** Every tool this run touched, for the write question the failure footer asks. */
+  #toolNames(r: Run): string[] { return [...this.#runSteps(r).map(step => step.tool), ...(r.toolEvidence ?? []).map(tool => tool.name)]; }
+  /** The connectors a partial turn never reached: a step that started and never ended. */
+  #unanswered(r: Run): string[] {
+    const steps = this.#runSteps(r);
+    const open = steps.filter(step => step.phase === 'start' && !steps.some(other => other.stepId === step.stepId && other.phase === 'end'));
+    return [...new Set(open.map(step => toolConnector(step.tool)))];
+  }
+  /** A finished run with no answer says so in one line: evidence is never the answer body (item 3). */
+  #noAnswer(r: Run): string {
+    if (r.state !== 'terminal' || r.outcome !== 'complete' || r.finalEntryId || r.partialText) return '';
+    return `<p class="no-answer muted">${escape(NO_ANSWER_WORDS)}</p>`;
+  }
+  /** One `chat_step` event, keyed by stepId so a repeated start never doubles its line. */
+  #step(event: { runId?: unknown; stepId?: unknown; tool?: unknown; phase?: unknown; resultCount?: unknown }) {
+    const run = this.#run;
+    if (!run || event.runId !== run.runId || typeof event.stepId !== 'string' || typeof event.tool !== 'string') return;
+    if (this.#steps?.runId !== run.runId) this.#steps = { runId: run.runId, steps: [] };
+    const steps = this.#steps.steps, existing = steps.findIndex(item => item.stepId === event.stepId);
+    const step: ChatStep = { type: 'chat_step', runId: run.runId, stepId: event.stepId, tool: event.tool, phase: event.phase === 'end' ? 'end' : 'start', resultCount: typeof event.resultCount === 'number' ? event.resultCount : undefined };
+    if (existing >= 0) steps[existing] = { ...steps[existing]!, ...step, resultCount: step.resultCount ?? steps[existing]!.resultCount };
+    else if (steps.length < 32) steps.push(step);
   }
 
   async #action(action: (lifetime: ViewLifetime) => Promise<ViewLifetime | void>) {
@@ -349,8 +389,10 @@ export class ConnectedView {
     try {
       await stream(`/chat/${runId}/events`, controller.signal, value => {
         if (!value || typeof value !== 'object' || !current()) return;
-        const event = value as { type?: string; run?: Run; text?: string; sequence?: number };
+        const event = value as { type?: string; run?: Run; text?: string; sequence?: number; runId?: string; stepId?: string; tool?: string; phase?: string; resultCount?: number };
         if (event.type === 'snapshot' && event.run) this.#run = event.run;
+        // The server's own step events drive the quiet lines: nothing is inferred from tool output (item 2).
+        else if (event.type === 'chat_step') this.#step(event);
         else if (event.type === 'text' && typeof event.text === 'string' && this.#run && Number(event.sequence) > this.#run.sequence) { this.#run.partialText += event.text; this.#run.sequence = Number(event.sequence); }
         else if (event.type === 'resync_required') this.#error = 'Stream detached. Recover the saved run; no message was resent.';
         this.attach();

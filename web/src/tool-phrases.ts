@@ -67,3 +67,60 @@ export function toolPhrases(names: string[]): string {
     .map((group, index) => `${index === 0 ? group.verb : group.verb.charAt(0).toLowerCase() + group.verb.slice(1)} ${joinAnd(group.objects)}`)
     .join(' and ');
 }
+
+/** One step of a run, exactly the shape of the server's `chat_step` event (docs/chat-steps.md on K3):
+ * `{type:"chat_step", runId, stepId, tool, phase, label, resultCount?, ok?, ms?}`. The server's `label`
+ * is a hint and never rendered, so no raw tool id or provider word reaches the owner. */
+export interface ChatStep {
+  type?: 'chat_step';
+  runId: string;
+  stepId: string;
+  tool: string;
+  phase: 'start' | 'end';
+  label?: string;
+  resultCount?: number;
+  ok?: boolean;
+  ms?: number;
+}
+
+/** A verb's finished form, so a running line reads "Searching Mattermost..." and its end "Searched Mattermost". */
+const PAST_VERBS: Record<string, string> = {
+  Searching: 'Searched', Reading: 'Read', Checking: 'Checked', Listing: 'Listed',
+  'Looking in': 'Looked in', Saving: 'Saved', Using: 'Used',
+};
+function pastVerb(verb: string): string { return PAST_VERBS[verb] ?? `${verb}ed`; }
+
+/** The quiet line while a tool runs: "Searching Mattermost...". */
+export function stepRunning(step: ChatStep): string {
+  const phrase = phraseFor(step.tool);
+  return `${phrase.verb} ${phrase.object}...`;
+}
+
+/** The line once the tool answered: "Searched Mattermost, 13 results". */
+export function stepFinished(step: ChatStep): string {
+  const phrase = phraseFor(step.tool);
+  const head = `${pastVerb(phrase.verb)} ${phrase.object}`;
+  const count = typeof step.resultCount === 'number' && step.resultCount > 0 ? Math.floor(step.resultCount) : 0;
+  return count ? `${head}, ${count} ${count === 1 ? 'result' : 'results'}` : head;
+}
+
+/** The folded one-line summary of a finished batch: "Checked Mattermost, Mongoose and Calendar".
+ * A shared verb is kept; a mixed batch reads as the neutral "Checked". */
+export function stepsSummary(steps: readonly ChatStep[]): string {
+  const done = steps.filter(step => step.phase === 'end');
+  const names: string[] = [];
+  for (const step of done) { const name = toolConnector(step.tool); if (!names.includes(name)) names.push(name); }
+  if (!names.length) return '';
+  const verbs = [...new Set(done.map(step => pastVerb(phraseFor(step.tool).verb)))];
+  const verb = verbs.length === 1 ? verbs[0]! : 'Checked';
+  return names.length === 1 ? `${verb} ${names[0]}` : `${verb} ${joinAnd(names)}`;
+}
+
+/** A connector word fit for mid-sentence prose, so the partial-turn copy reads "before checking calendar". */
+const PROSE: Record<string, string> = { Calendar: 'calendar', Gmail: 'mail', 'lux-knowledge': 'the knowledge base' };
+export function connectorProse(name: string): string { return PROSE[name] ?? name; }
+
+/** Tools that change something outside Didi. None of today's read-only tools match, so a failed run
+ * never claims "Content may have been sent" (target turn, item 6). */
+const WRITE_TOOL = /_(?:post|send|reply|create|update|delete|invite|schedule)$/;
+export function wroteExternally(names: readonly string[]): boolean { return names.some(name => WRITE_TOOL.test(name)); }

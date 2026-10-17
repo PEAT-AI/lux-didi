@@ -1062,6 +1062,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), roundCut.signal]);
       const latencies = new Map<CandidateKind, number>();
       const readStarted = new Set<CandidateKind>();
+      const cutKinds = new Set<CandidateKind>();
       // RD: the round hands the model an answer as soon as one source has something to say, and cuts
       // the sources still reading instead of holding the turn open for the slowest connector.
       let answered = false;
@@ -1075,7 +1076,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
         const cut = new AbortController();
         const readSignal = AbortSignal.any([roundSignal, cut.signal]);
-        const cutTimer = schedule(() => { if (!latencies.has(kind)) cut.abort(); }, Math.max(0, Math.min(RESEARCH.sourceDeadlineMs, deadlineAt - now())));
+        const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(RESEARCH.sourceDeadlineMs, deadlineAt - now())));
         // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
         // sent twice, so the connector is asked one question once.
         const issued = subs.filter(call => !run.calls.has(callSignature(call)));
@@ -1166,15 +1167,14 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       // RD: the round ends when the first sufficient source answers, and the readers still working are cut.
       const all = Promise.all(reads);
       await Promise.race([all, firstSufficient]);
-      if (answered) roundCut.abort();
+      if (answered) { for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind); roundCut.abort(); }
       await all;
       if (answered) stopReason = 'answered';
 
-      const cutKinds = batch.filter(kind => readStarted.has(kind) && !latencies.has(kind));
-      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: latencies.has(kind) ? 'completed' : cutKinds.includes(kind) ? 'cut' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
+      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) ? 'cut' : latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named
       // unchecked, and the model can ask to continue instead of another round silently spending time.
-      if (cutKinds.length > 0 && !answered) { stopReason = 'deadline'; break; }
+      if (cutKinds.size > 0 && !answered) { stopReason = 'deadline'; break; }
       if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
       if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
     }

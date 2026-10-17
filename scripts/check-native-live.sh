@@ -80,6 +80,12 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveJournal.swift \
   Tests/DidiLiveTests/OrbEnvelopeTests.swift "$work/audio-callback-bridge.o" -o "$work/orb-envelope"
 "$work/orb-envelope"
+# Presence state machine replay (council-presence-1017): an injected clock and injected
+# effects only. No socket, no engine, no panel and no wait.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -target "$target" \
+  Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/NativePresenceTests.swift -o "$work/native-presence"
+"$work/native-presence"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \

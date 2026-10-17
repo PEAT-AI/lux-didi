@@ -40,6 +40,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
+  if (value.event === 'native_action') {
+    // Closed receipt: the action, its ack code and a scheme or extension, never the target.
+    const allowed = ['action', 'code', 'detail', 'event'];
+    if (Object.keys(value).sort().join(',') !== allowed.join(',')) return;
+    if (typeof value.action !== 'string' || !['open_url', 'open_file', 'open_app'].includes(value.action)) return;
+    if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed'].includes(value.code)) return;
+    if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
+    return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
+  }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.

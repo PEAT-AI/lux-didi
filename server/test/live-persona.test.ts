@@ -161,6 +161,8 @@ test('the target budget yields memory first and never drops the base, overlay or
 test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
   assert.match(NAYA_TOOLS, /^# Tools and how to use them\n\n/);
   assert.match(NAYA_TOOLS, /You have two tools: research and remember_note\./);
+  // OC1 (#228): the open tools are declared to the model with one exact sentence.
+  assert.match(NAYA_TOOLS, /You can open a web page, a file in the owner's home folder, or an app when the owner asks\. Find the exact item first with research or knowledge, say what you are opening, then open it\./);
   // #263: a name after a colon reads as a tool name to the model. The retired routing targets must never
   // reappear, because the Live session declares only research and remember_note.
   for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {

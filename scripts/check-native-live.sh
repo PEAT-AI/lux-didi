@@ -37,17 +37,17 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   Tests/DidiLiveTests/CanonicalFrames.swift -o "$work/canonical-frames"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live"
 xcrun clang -fobjc-arc -target "$target" -c Tests/DidiLiveTests/AudioCallbackBridge.m -o "$work/audio-callback-bridge.o"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
@@ -56,7 +56,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Deterministic playback-scheduling schedule replay: no engine, no tap, no permission request.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
@@ -65,7 +65,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Contract C1 wait-cue scheduler replay: pure events in, cue times out. No clock, engine or audio.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
@@ -74,7 +74,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # #283 orb band analyzer and playback-aligned output timeline: synthetic PCM only, no engine or audio.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
@@ -82,7 +82,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 "$work/orb-envelope"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
@@ -91,7 +91,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Physical-device proof uses the production graph with no tap, output or permission request.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Tests/DidiLiveTests/NativeLiveEngineProbe.swift -o "$work/native-engine-probe"
@@ -110,6 +110,11 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   -target "$target" \
   Sources/LuxDidi/NativeBridge.swift Tests/DidiLiveTests/NativeBridgeTests.swift -o "$work/native-bridge-tests"
 "$work/native-bridge-tests"
+# Native open allowlist, symlink escape, app resolution and the rate limit run with an injected opener.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -target "$target" \
+  Sources/LuxDidi/NativeActions.swift Tests/DidiLiveTests/NativeActionsTests.swift -o "$work/native-actions"
+"$work/native-actions"
 # Launch visibility, single-instance guard and drag-band geometry run without a window.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
@@ -128,7 +133,7 @@ pathlib.Path(sys.argv[1]).write_text(source.replace(needle, '["origin", "sec-web
 PY
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  "$work/MutatedTransport.swift" Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeActions.swift "$work/MutatedTransport.swift" Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live-mutated"
 # Accepted dependency tests exercise real one-attach races, durable 1013, isolated revoke, journal exclusion and supervised cleanup.

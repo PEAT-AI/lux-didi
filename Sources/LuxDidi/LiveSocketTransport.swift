@@ -112,7 +112,11 @@ public protocol LiveSocketConnecting: Sendable {
 /// An authenticated request is injected by the accepted native authority owner, never reconstructed here.
 public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
     private let requests: any LiveAuthenticatedRequestFactory
-    public init(requests: any LiveAuthenticatedRequestFactory) { self.requests = requests }
+    private let nativeActions: any NativeActionExecuting
+    public init(requests: any LiveAuthenticatedRequestFactory, nativeActions: any NativeActionExecuting = NativeActions()) {
+        self.requests = requests
+        self.nativeActions = nativeActions
+    }
     public func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket {
         try Self.validate(binding)
         let request: URLRequest
@@ -120,7 +124,7 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
         catch { throw LiveClientError.unavailable }
         try Self.validate(request, binding: binding)
         try Task.checkCancellation()
-        return FoundationLiveSocket(request: request)
+        return FoundationLiveSocket(request: request, nativeActions: nativeActions)
     }
     public static func validate(_ binding: LiveSocketBinding) throws {
         guard let parts = URLComponents(url: binding.origin, resolvingAgainstBaseURL: false),
@@ -246,10 +250,12 @@ private final class BoundSessionDelegate: NSObject, URLSessionTaskDelegate, Send
 private actor FoundationLiveSocket: LiveSocket {
     private let session: URLSession
     private let task: URLSessionWebSocketTask
+    private let nativeActions: any NativeActionExecuting
     private var closed = false
     private var receiving = false
     private var sending = false
-    init(request: URLRequest) {
+    init(request: URLRequest, nativeActions: any NativeActionExecuting) {
+        self.nativeActions = nativeActions
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
         configuration.urlCache = nil; configuration.urlCredentialStorage = nil
@@ -265,9 +271,19 @@ private actor FoundationLiveSocket: LiveSocket {
         receiving = true
         defer { receiving = false }
         do {
-            let frame = try await LiveSocketTransport.decode(task.receive())
-            guard !closed else { throw LiveClientError.staleOperation }
-            return frame
+            while true {
+                let message = try await task.receive()
+                // A native action is a control frame, never a frame of the conversation.
+                if case .string(let text) = message, let action = NativeActionFrame.control(text) {
+                    let result = await nativeActions.perform(action.action, target: action.target)
+                    guard !closed else { throw LiveClientError.staleOperation }
+                    try await send(.string(NativeActionReply(id: action.id, result: result).json))
+                    continue
+                }
+                let frame = try LiveSocketTransport.decode(message)
+                guard !closed else { throw LiveClientError.staleOperation }
+                return frame
+            }
         } catch let error as LiveClientError { throw error }
         catch {
             if task.closeCode != .invalid {

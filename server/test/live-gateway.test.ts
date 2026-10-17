@@ -993,3 +993,46 @@ test('AC2: a locale with no two-letter language still sends an explicit en setup
     .find(entry => entry.event === 'live_instruction_sizes');
   assert.equal(logged?.languageCode, 'en', 'the setup log carries the effective default languageCode');
 });
+
+test('OC1: an open action is a native_action control frame and its ack is the tool result', async t => {
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const h = await harness(t, { config: configJson(true), toolsFactory: store => {
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
+    t.after(() => port.close());
+    const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
+    return { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } };
+  } });
+  const created = await createBody(h, 'open-action');
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  t.after(() => ws.terminate());
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1);
+  const declared = (h.f.frames[0] as { setup: { tools?: { functionDeclarations: { name: string; description: string }[] }[] } }).setup.tools
+    ?.flatMap(entry => entry.functionDeclarations) ?? [];
+  const openUrl = declared.find(entry => entry.name === 'open_url');
+  assert.ok(openUrl, 'the model is offered open_url');
+  assert.match(openUrl.description, /only open things/);
+  h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
+
+  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_url', args: { url: 'https://example.test/notes/plan' } }] } });
+  await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
+  const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
+  const action = parsed.find(frame => frame?.type === 'native_action')!;
+  assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
+  assert.equal(action.action, 'open_url');
+  assert.equal(action.target, 'https://example.test/notes/plan');
+
+  ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
+  const toolResponses = () => (h.f.frames as Record<string, unknown>[]).filter(frame => 'toolResponse' in frame);
+  await waitFor(() => toolResponses().length > 0);
+  const response = JSON.stringify(toolResponses().at(-1));
+  assert.match(response, /"opened"/, 'the ack code reaches the model as the tool result');
+
+  // A duplicate ack settles nothing and never closes the conversation socket.
+  ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
+  assert.equal(ws.readyState, WebSocket.OPEN, 'a duplicate ack is ignored, not fatal');
+});

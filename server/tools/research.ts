@@ -615,6 +615,11 @@ export interface ResearchDeps {
   configured: readonly SourceKind[];
   /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
   configuredNow?: (() => readonly SourceKind[]) | undefined;
+  /**
+   * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
+   * once instead of spending its deadline on sub-calls that cannot reach a stopped connector.
+   */
+  unavailableNow?: (() => readonly SourceKind[]) | undefined;
   selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
@@ -1099,7 +1104,7 @@ export function lookupBound(source: SourceKind, lookups: number, remainingMs: nu
  * the number of lookups in the batch. Each lookup still settles on its own outcome from its own
  * sub-results, so a cut or failed read never takes the others down.
  */
-async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
+async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
     ({ lookup: plan.lookup, kind: plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
@@ -1118,6 +1123,8 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const source = reads[0]!.read.source as SourceKind;
   const all = (outcome: LookupOutcome): RoutedOutcome[] => reads.map(plan => settle(plan, outcome));
   if (!context.configured.includes(source)) return [...done, ...all('unavailable')];
+  // #351: a connector that cannot serve a read right now settles at once, never spending the batch deadline.
+  if (context.unavailable.includes(source)) return [...done, ...all('unavailable')];
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
   if (remainingMs <= 0) return [...done, ...all('unavailable')];
   const subs: IntentSubCall[] = [];
@@ -1155,7 +1162,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
-async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
+async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   const logLookup = deps.logLookup ?? ((event: ResearchLookupLog): void => { hostLogEvent(event); });
@@ -1170,7 +1177,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     bucket.push(plan);
     groups.set(plan.read.source, bucket);
   }
-  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, signal, now })))).flat();
+  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, signal, now })))).flat();
   for (const outcome of outcomes) {
     logLookup({ event: 'research_lookup', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms });
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
@@ -1205,6 +1212,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
   const now = () => deps.now();
   const configured = (deps.configuredNow ?? (() => deps.configured))();
+  const unavailable = (deps.unavailableNow ?? (() => []))();
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const publishStep = deps.step ?? liveToolStep;
   const stepCallId = call.callId ?? '';
@@ -1230,7 +1238,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
-  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, signal, now, limit);
+  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, signal, now, limit);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];

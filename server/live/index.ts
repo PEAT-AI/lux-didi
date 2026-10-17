@@ -1571,6 +1571,15 @@ export class LiveSessionOwner {
     }
   }
 
+  #unreachableSources(): ResearchSourceKind[] {
+    const sources: ResearchSourceKind[] = [];
+    for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
+      if (endpoint.state === 'connected') continue;
+      for (const source of researchSourcesForConnector(endpoint.connector)) if (!sources.includes(source)) sources.push(source);
+    }
+    return sources;
+  }
+
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {
     const names = new Set(handle.registry.map(tool => tool.name));
     const sources: ResearchSourceKind[] = [];
@@ -1624,7 +1633,10 @@ export class LiveSessionOwner {
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle), selector: this.#research, execute,
+      now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle),
+      // #351: a configured connector that is down settles `unavailable` at once instead of spending the
+      // source deadline on reads that cannot reach it.
+      unavailableNow: () => this.#unreachableSources(), selector: this.#research, execute,
       // K6: her own memory is local, so the routed `memory` layer reads it in process and never goes out.
       memory: query => this.#store.transaction(tx => memoryLookup(tx, query)),
       emit: progress => {

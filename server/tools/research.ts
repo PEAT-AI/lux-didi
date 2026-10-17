@@ -54,15 +54,11 @@ export const RESEARCH = Object.freeze({
   progressEveryMs: 3_000,
   /**
    * The calendar source's own budget. A merged calendar window read is one remote call per visible
-   * calendar (22 on the smoke account), and the calendar connector backend serializes those calls, so
-   * the source costs a serialized fan-out (measured 1.7-3.8 s per calendar) rather than the single-read
-   * p50 above. Sized for the calendars read first plus shaping; the connector reports the calendars it
-   * did not reach as unread, so a shorter budget never turns into a silent empty.
-   */
-  calendarDeadlineMs: 26_000,
-  /**
-   * The calendar source's own budget, set above GOOGLE_CALENDAR_READ_MS: a read cut by the caller's abort
-   * is discarded by the result gate, so the partial read the connector returns must still be accepted.
+   * calendar (22 on the smoke account), and the calendar connector backend serializes those calls
+   * (measured 1.7-6 s each), so the source costs a serialized fan-out rather than the single-read p50
+   * above. It sits above the connector's own GOOGLE_CALENDAR_READ_MS so the partial read the connector
+   * returns is still accepted: a read cut by the caller's abort is discarded by the result gate, which is
+   * how the calendar answer arrived empty.
    */
   calendarDeadlineMs: 46_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */

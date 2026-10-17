@@ -142,10 +142,7 @@ export class ChatService implements ChatPort {
       const ownerRow = tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [context.assistantId, run.runId])!;
       const ownerSnapshot = JSON.parse(String(ownerRow.snapshot_json)) as OwnerRunSnapshot;
       const policyIdentity = hash(canonicalJSON(ownerSnapshot.connections.map(c => ({ connectionId: c.connectionId, sha256: c.sha256 }))));
-      const ownerTools = definitionsInTransaction(tools.owner, run.runId, tx).filter(t => t.effect === 'read' && t.name !== 'remember_note');
-      // The same coarse intent tools the Live session declares. Their calls are answered before
-      // journaling (see the loop intercept), so no compose call needs a single-connection scope.
-      const registry = ownerTools;
+      const registry = definitionsInTransaction(tools.owner, run.runId, tx).filter(t => t.effect === 'read' && t.name !== 'remember_note');
       if (!frozen && registry.length) tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)',
         [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()),
           policyIdentity, canonicalJSON(registry.map(t => ({ name: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId }))), canonicalJSON(connectionIds)]);

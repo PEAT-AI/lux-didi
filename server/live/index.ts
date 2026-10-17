@@ -904,7 +904,7 @@ export class LiveSessionOwner {
     }
     handle.watchdogRecoveredAt = this.#now();
     hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
-    await this.#recoverFromDrop(handle, { status: 'failed', code: 'model_mute', recoverable: true }, true);
+    await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
@@ -1003,7 +1003,7 @@ export class LiveSessionOwner {
    * fresh seeded setup; a failed resume falls through to one fresh seeded attempt. Each socket open counts
    * against the per-episode bound, backoff is 0/2/5 s, and the current session deadline does not move.
    */
-  async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false): Promise<boolean> {
+  async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
     const now = this.#now();
     if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) handle.recoveries = 0;
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
@@ -1020,7 +1020,7 @@ export class LiveSessionOwner {
     const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
     const reuse = !forceFresh && this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
     const closeCode = outcome?.upstream?.closeCode ?? null;
-    const reason = outcome?.code ?? null;
+    const reason = reasonOverride ?? outcome?.code ?? null;
     const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
     let opened = this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
     if (!opened && path === 'resume') {
@@ -1041,7 +1041,7 @@ export class LiveSessionOwner {
     // A synchronous refusal (rare) retries after the next backoff rather than ending the call.
     await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);
     if (this.#settled(handle)) return false;
-    return this.#recoverFromDrop(handle, outcome);
+    return this.#recoverFromDrop(handle, outcome, forceFresh, reasonOverride);
   }
 
   /**

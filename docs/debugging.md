@@ -11,6 +11,11 @@ Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA
 | `<dataDir>/debug/<YYYY-MM-DD>/live-<sessionId>.jsonl` | the full local record of a voice session | owner content, never publish |
 | `<dataDir>/debug/<YYYY-MM-DD>/chat-<sessionId>.jsonl` | the full local record of a chat run | owner content, never publish |
 
+The journal root is the parent of the host's config directory, which is `<dataDir>/debug` for the
+default layout (the host reads `live.json` from `<dataDir>/provider-config`). A host started with a
+different config directory writes its journal beside that directory instead, so `--data-dir` is the
+switch that moves both.
+
 The debug journal is the content twin of `host.log`, not a replacement: `host.log` keeps its
 content-free contract, and every debug journal line is one JSON object per line so it can be
 grepped and read by a program.
@@ -34,7 +39,10 @@ Events, with the fields each one carries:
 - `transcript`: `speaker` is `owner` or `model`, `text` is what was actually said, `final` marks a
   finished transcription. Chat writes the owner's message and the model's answer here.
 - `turn_start`, `turn_end`, `interrupt`: the turn boundaries and each barge-in.
-- `model_round`: `requestMs`, `responseMs`, token usage when the provider reports it, `stopReason`.
+- `model_round`: a chat model round, with `requestMs` (time to the first token), `responseMs`, token
+  usage when the provider reports it, and `stopReason`. Live has no such event: a live turn is one
+  provider stream, so its timings are the `provider_setup` request and response ms, the turn
+  boundaries, `context_usage` and the per-tool lines. That is a deliberate gap, not a missing log.
 - `tool`: name, full arguments, `ms`, `outcome`, `resultChars` and the result text itself, already
   passed through the secret redactor and capped at 16 KB per call.
 - `provider_setup`, `provider_close`, `provider_error`, `context_usage`: the provider handshake, the
@@ -75,7 +83,10 @@ node scripts/naya-logs.mjs native <id>                    # the app's own OS log
 ```
 
 `timeline` merges the journal with every `host.log` record that names the session, and with the
-session-less records that fall inside its window. `native` reads the app subsystem
+session-less records that fall inside its window.
+
+`--json` prints the records as stored, owner content included, because it is for machine use; the
+plain-text output is the one that hides content behind `--content`. `native` reads the app subsystem
 (`ai.lux.didi`) from `/usr/bin/log show` for the session window; `NAYA_LOG_BIN` overrides the
 binary, `NAYA_LOG_SUBSYSTEM` the subsystem.
 

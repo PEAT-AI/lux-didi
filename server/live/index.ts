@@ -1068,7 +1068,11 @@ export class LiveSessionOwner {
             msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
-        // and playback drains (F2).
+        // and playback drains (F2). #303: while the turn stays open that way, log the fact once, with the
+        // silence since the last model audio, so a greeting that streamed audio and never completed is
+        // distinguishable next time from one the adapter failed to map.
+        if (event.type === 'generationComplete' && handle.speaking && !handle.turnCompleteSeen) hostLogEvent({ event: 'live_turn_open',
+          msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
         if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {

@@ -2552,6 +2552,22 @@ test('a turn logs dead air from the owner turn end to the first model audio', as
   assert.equal(typeof dead!.deadAirMs, 'number');
   assert.ok(dead!.deadAirMs! >= 0);
 });
+test('a model turn that stops generating without turnComplete is logged open (#303)', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'turn-open');
+  const events: { event?: string; msSinceLastModelAudio?: number | null }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; msSinceLastModelAudio?: number | null }); } });
+  try {
+    h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+    for (let i = 0; i < 2000 && !events.some(entry => entry.event === 'live_turn_open'); i++) {
+      h.f.send({ serverContent: { generationComplete: true } });
+      await tick();
+    }
+  } finally { detach(); }
+  const open = events.find(entry => entry.event === 'live_turn_open');
+  assert.ok(open, 'the open turn is logged');
+  assert.equal(typeof open!.msSinceLastModelAudio, 'number');
+});
 test('the calendar intent reads events from every calendar the owner keeps', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'calendar-all');

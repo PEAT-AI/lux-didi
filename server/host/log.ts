@@ -229,6 +229,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
+  if (value.event === 'live_turn_open') {
+    // #303: the provider ended generation while the turn was still open, so no turnComplete had arrived.
+    // One duration, never any turn content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'msSinceLastModelAudio'].sort().join(',')) return;
+    if (!(value.msSinceLastModelAudio === null || isSafeCount(value.msSinceLastModelAudio))) return;
+    return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
+  }
   if (value.event === 'live_state') {
     // F7: one closed-shape transition record per projected state change, so the orb timeline is
     // reconstructable from host.log. Enums and an epoch millisecond only, never any turn content.

@@ -134,3 +134,9 @@ test('live_context_usage and live_dead_air_nudge carry numbers only', () => {
   assert.deepEqual(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: 8000 }), { event: 'live_dead_air_nudge', elapsedMs: 8000 });
   assert.equal(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: -1 }), undefined, 'a negative elapsed is refused');
 });
+test('live_turn_open carries the silence duration only (#303)', () => {
+  assert.deepEqual(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42 }), { event: 'live_turn_open', msSinceLastModelAudio: 42 });
+  assert.deepEqual(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: null }), { event: 'live_turn_open', msSinceLastModelAudio: null });
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42, text: 'x' }), undefined, 'an extra key fails closed');
+});

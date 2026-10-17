@@ -50,6 +50,8 @@ export const RESEARCH = Object.freeze({
   maxConcurrent: 4,
   /** Q1-R3(b): the real Gemini selector needs ~3 s; the old 2 s deadline denied every selector call. */
   selectorDeadlineMs: 6_000,
+  /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
+  progressEveryMs: 3_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -512,8 +514,18 @@ export interface ResearchSubcallLog {
   unread?: number;
 }
 
+/** A one-shot timer seam, so a test drives progress beats with a fake clock instead of wall time. */
+export type ResearchTimer = (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
+
+const scheduleTimer: ResearchTimer = (callback, delayMs) => {
+  const timer = setTimeout(callback, delayMs);
+  return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
+};
+
 export interface ResearchDeps {
   now(): number;
+  /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
+  schedule?: ResearchTimer | undefined;
   configured: readonly SourceKind[];
   /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
   configuredNow?: (() => readonly SourceKind[]) | undefined;
@@ -932,6 +944,15 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
 
+  // Dead air: the model is told the run is alive every few seconds. A selector that burns its whole
+  // deadline or a slow source read used to leave the model and the owner in silence until the end.
+  const schedule = deps.schedule ?? scheduleTimer;
+  const beat = (): void => {
+    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
+    heartbeat = schedule(beat, RESEARCH.progressEveryMs);
+  };
+  let heartbeat = schedule(beat, RESEARCH.progressEveryMs);
+
   const hint = hintedSources(call.sources, configured);
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
@@ -1137,6 +1158,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const elapsedMs = now() - started;
   const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs ? 'partial' : 'answered') : 'partial');
   const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+  heartbeat.cancel();
   deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
   const reply = buildReply(run, status, configured, canContinue, limit);
   driver ??= 'single-source-hint';

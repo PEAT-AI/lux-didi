@@ -851,10 +851,11 @@ test('the voice view lists each source being read, with its subject, then its re
     { callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze, last 7 days', phase: 'end', resultCount: 13, ok: true },
   ]));
   assert.match(html, /data-seg="steps"/);
-  assert.match(html, /Searching Mail: release freeze/);
+  assert.match(html, /Searching your mail: release freeze/);
   assert.match(html, /Mattermost: 13 messages/, 'the answered source reports its own count');
   assert.match(html, /step-done/, 'a done source carries a quiet done mark');
-  assert.equal(html.includes('Searching Mattermost: release freeze'), false, 'the end step replaces its start line in place');
+  assert.equal(html.includes('Searching Mattermost: release freeze, last 7 days'), false, 'the end step replaces its start line in place');
+  assert.equal((html.match(/Mattermost/g) ?? []).length, 1, 'one line per source, never a start line beside its own end');
 });
 
 test('a source that failed or timed out says so plainly', () => {

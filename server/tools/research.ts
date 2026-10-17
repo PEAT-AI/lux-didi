@@ -968,6 +968,11 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   };
   let heartbeat = schedule(beat, RESEARCH.progressEveryMs);
 
+  // RD: a start call answers, or reports its honest partial, inside answerWithinMs. The bound is one cut
+  // for the whole run, so the prime-source read that starts before the selector is bounded too.
+  const answerCut = new AbortController();
+  const answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), RESEARCH.answerWithinMs) : { unref: () => {}, cancel: () => {} };
+
   const hint = hintedSources(call.sources, configured);
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
@@ -989,7 +994,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       const remainingMs = deadlineAt - now();
       if (remainingMs > 0) {
         knowledgeStartedAt = now();
-        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs)])).catch(() => [] as IntentSubResult[]);
+        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch(() => [] as IntentSubResult[]);
       }
     }
 
@@ -1062,11 +1067,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       // RD: a start call answers inside answerWithinMs, so the owner hears a reply instead of waiting on
       // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
-      const answerBy = call.action === 'start' && round === 1 && started + RESEARCH.answerWithinMs - now() < remainingMs
-        ? Math.max(1_000, started + RESEARCH.answerWithinMs - now()) : remainingMs;
-      const answerCut = new AbortController();
-      const answerTimer = schedule(() => answerCut.abort(), answerBy);
-      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(answerBy), answerCut.signal]);
+      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal]);
       const latencies = new Map<CandidateKind, number>();
       const readStarted = new Set<CandidateKind>();
       const cutKinds = new Set<CandidateKind>();
@@ -1184,7 +1185,6 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         stopReason = 'answered';
       }
       await all;
-      answerTimer.cancel();
       // The answer bound is a cut like any other: the read it stopped is named, and the turn ends partial.
       if (answerCut.signal.aborted && !answered) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
 
@@ -1215,6 +1215,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sourceLog.some(entry => entry.disposition === 'cut') ? 'partial' : 'answered') : 'partial');
   const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
   heartbeat.cancel();
+  answerTimer.cancel();
   notify({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
   const reply = buildReply(run, status, configured, canContinue, limit);
   driver ??= 'single-source-hint';

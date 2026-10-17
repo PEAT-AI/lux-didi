@@ -185,9 +185,12 @@ describe('openai gpt-live adapter', () => {
     assert.equal(interruptions(opened.captured), 0, 'the first half of one word is one word');
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' on' });
     await until(() => interruptions(opened.captured) === 1);
+    // Frames of the answer the owner just cut arrive inside the bounded post-flush window and are dropped; audio
+    // flows again once the window has passed, and the drop never latches.
+    clock.advance(2_500);
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 2);
-    assert.equal(audioBytes(opened.captured), (7_200 + 7_200) * 2, 'no frame dropping after the flush');
+    assert.equal(audioBytes(opened.captured), (7_200 + 7_200) * 2, 'audio flows again after the drop window');
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' please' });
     await quiet();
     assert.equal(interruptions(opened.captured), 1, 'one flush per input episode');
@@ -336,6 +339,7 @@ describe('openai gpt-live adapter', () => {
     await until(() => interruptions(opened.captured) === 1);
     await quiet();
     assert.deepEqual(audioOf(opened.captured), [], 'the cut head start is never played');
+    clock.advance(2_500);
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 1);
     assert.deepEqual(audioOf(opened.captured), [14_400], 'the next stretch starts a fresh head start');
@@ -556,7 +560,7 @@ describe('openai gpt-live turn states', () => {
     await until(() => waiting(opened.captured) === 2);
     assert.equal(waiting(opened.captured), 2, 'the new audio earns its own silence receipt');
     assert.equal(completions(opened.captured), 0);
-    assert.deepEqual(project(opened.captured.events), ['listening', 'speaking', 'listening', 'speaking']);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'speaking', 'listening', 'speaking', 'listening']);
   });
 
   test('a five second silent think shows thinking and never completes', async t => {

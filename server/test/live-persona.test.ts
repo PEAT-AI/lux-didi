@@ -436,7 +436,7 @@ test('earlier-conversations fills the space left under the budget, newest first,
   assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
   assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
   assert.ok(tight.section.length <= 400, `section stayed at the budget (${tight.section.length})`);
-  assert.deepEqual(tight.omitted.map(o => o.id), candidates.slice(tight.selectedIds.length).map(candidate => candidate.id));
+  assert.deepEqual(tight.omitted.map(o => o.id), candidates.map(candidate => candidate.id).filter(id => !tight.selectedIds.includes(id)));
   assert.ok(tight.omitted.every(o => o.reason === 'budget'));
   for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: summary number \d+$/, 'no summary is cut mid-sentence');
 });

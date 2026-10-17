@@ -268,6 +268,32 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.bufferedBytes)) return;
     return { event: 'live_upstream_queue', bufferedBytes: value.bufferedBytes };
   }
+  if (value.event === 'uplink_shed') {
+    // Closed shape (3o): mic frame bytes shed from the front of the uplink queue, and the peak backlog of the
+    // window. One record per UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
+    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak'])) return;
+    if (!isSafeCount(value.bytes) || !isSafeCount(value.bufferedPeak)) return;
+    return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak };
+  }
+  if (value.event === 'live_stall') {
+    // Closed shape (3o): the inbound silence that ended the transport. Size never appears here: an upload
+    // backlog is shed, not a teardown.
+    if (!closedKeys(value, ['event', 'silentMs'])) return;
+    if (!isSafeCount(value.silentMs)) return;
+    return { event: 'live_stall', silentMs: value.silentMs };
+  }
+  if (value.event === 'playback_rearm') {
+    // Closed shape (3o): head starts re-armed after a drain, counted per turn.
+    if (!closedKeys(value, ['event', 'count'])) return;
+    if (!isSafeCount(value.count)) return;
+    return { event: 'playback_rearm', count: value.count };
+  }
+  if (value.event === 'consumer_gone_end') {
+    // Closed shape (3o): how long the consumer had been away when the session ended itself.
+    if (!closedKeys(value, ['event', 'detachedMs'])) return;
+    if (!isSafeCount(value.detachedMs)) return;
+    return { event: 'consumer_gone_end', detachedMs: value.detachedMs };
+  }
   if (value.event === 'live_context_usage') {
     // Closed shape: provider-neutral token counts only; no behaviour reads them yet (release 3g-c).
     const keys = Object.keys(value).sort().join(',');

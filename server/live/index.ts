@@ -53,7 +53,10 @@ type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
 const SEED_CHAR_LIMIT = 8_000;
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
-const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+// 3o: a client that detached is gone, not paused. This much detached and the session ends cleanly (the journal
+// stays); the countdown is cancelled by a re-attach. Measured: the app let go at 19:23:49Z and the model kept
+// speaking to nobody for 62 s.
+const CONSUMER_GONE_MS = 5_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
 // 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
 // that ended, or a model turn left open, owes a reply, and only a deadline on that debt recovers it. One nudge
 // at RESPONSE_WATCHDOG_NUDGE_MS, then the fresh-seeded recovery at RESPONSE_WATCHDOG_RECOVERY_MS after it.
@@ -1334,6 +1337,14 @@ export class LiveSessionOwner {
       console.error(JSON.stringify({ event: 'live_detach_write_failed', liveSessionId: handle.liveSessionId,
         class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
     }
+    // A session whose consumer stayed away is ended cleanly: the journal is kept, only the spend of talking to
+    // nobody stops. A re-attach inside the window flips consumerState back and cancels this by its guard.
+    const detachedAt = this.#now();
+    this.#schedule(() => {
+      if (this.#settled(handle) || handle.consumerState === 'attached') return;
+      hostLogEvent({ event: 'consumer_gone_end', detachedMs: Math.max(0, this.#now() - detachedAt) });
+      this.#settle(handle, { state: 'cancelled', code: 'consumer_gone' }, true, 'ended', null);
+    }, CONSUMER_GONE_MS);
   }
 
   async #consume(handle: ActiveSession): Promise<void> {

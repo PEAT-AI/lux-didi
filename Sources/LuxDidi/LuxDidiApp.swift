@@ -858,8 +858,11 @@ struct RootView: View {
     /// only while the microphone is live and not muted; cold and hot-muted are the orb's
     /// states, so the pill leaves the screen for them and comes back with the microphone.
     private func refreshMiniPill() {
-        let shows = MiniOrbVisibility.pillBelongsToLive(capturing: model.live?.isCapturing == true,
-                                                        muted: model.live?.isMuted == true)
+        // M3-R10: the gate is asked about the pill surface only. The orb panel is presented
+        // by the presence wagon for every state and is never hidden from here.
+        let shows = MiniOrbVisibility.belongsOnScreen(.pill,
+                                                     capturing: model.live?.isCapturing == true,
+                                                     muted: model.live?.isMuted == true)
         if shows {
             guard coordinator.mode == .mini, !miniOrb.isVisible else { return }
             miniOrb.showSurface()

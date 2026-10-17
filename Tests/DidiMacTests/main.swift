@@ -61,12 +61,15 @@ expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
-// M3-R5: two surfaces with two jobs. The pill is the mic-live indicator, so it is on
-// screen only while the microphone is live and switched on; cold and hot-muted belong to
-// the orb alone.
-expect(MiniOrbVisibility.pillBelongsToLive(capturing: true, muted: false), "a live microphone shows the pill")
-expect(!MiniOrbVisibility.pillBelongsToLive(capturing: true, muted: true), "hot-muted hides the pill")
-expect(!MiniOrbVisibility.pillBelongsToLive(capturing: false, muted: false), "no session, no pill")
+// M3-R5 with M3-R10: two surfaces with two jobs, and the mic-live gate belongs to the
+// pill alone. The orb panel is the always-there presence, so no state takes it away; the
+// pill is on screen only while the microphone is live and switched on.
+expect(MiniOrbVisibility.belongsOnScreen(.orb, capturing: false, muted: false), "the orb is on screen in cold")
+expect(MiniOrbVisibility.belongsOnScreen(.orb, capturing: true, muted: true), "the orb is on screen in hot-muted")
+expect(MiniOrbVisibility.belongsOnScreen(.orb, capturing: true, muted: false), "the orb is on screen while live")
+expect(!MiniOrbVisibility.belongsOnScreen(.pill, capturing: false, muted: false), "no session, no pill")
+expect(!MiniOrbVisibility.belongsOnScreen(.pill, capturing: true, muted: true), "hot-muted hides the pill")
+expect(MiniOrbVisibility.belongsOnScreen(.pill, capturing: true, muted: false), "a live microphone shows the pill")
 
 // MINI2: the single key. Right Command is Naya's key; Right Option belongs to
 // SuperWhisper and is never watched. A tap fires, a chord use and a long hold do

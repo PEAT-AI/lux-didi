@@ -125,12 +125,27 @@ enum PresenceStep: String, Equatable {
     case live
 }
 
-/// M3-R5: two surfaces with two jobs. The orb is the always-there presence and carries
-/// every state; the pill is the mic-live indicator, so it is on screen only while the
-/// microphone is live and switched on. Cold and hot-muted belong to the orb alone, and the
-/// pill never stands in for it.
+/// M3-R5 with M3-R10: two surfaces with two jobs, and one gate that belongs to one of them.
+/// The orb panel (300 px) is the always-there presence: it is on screen in cold, connecting,
+/// hot-muted and every live state, and no mic-live gate ever takes it away. The notch pill
+/// (64x26) is the mic-live indicator: it is on screen only while the microphone is live and
+/// switched on.
+///
+/// The cold and hot-muted opacity of the orb belongs to the presence wagon's
+/// `PresenceSurfaceState` and is deliberately not decided here; this type answers one
+/// question per surface and nothing else.
+enum MiniOrbSurface {
+    case orb
+    case pill
+}
+
 enum MiniOrbVisibility {
-    static func pillBelongsToLive(capturing: Bool, muted: Bool) -> Bool { capturing && !muted }
+    static func belongsOnScreen(_ surface: MiniOrbSurface, capturing: Bool, muted: Bool) -> Bool {
+        switch surface {
+        case .orb: return true
+        case .pill: return capturing && !muted
+        }
+    }
 }
 
 /// Borderless, floating, non-activating panel that hosts the compact orb route.

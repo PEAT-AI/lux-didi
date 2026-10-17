@@ -188,7 +188,7 @@ describe('openai gpt-live adapter', () => {
   test('a split barge-in flushes once the server stops, and later audio still flows', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
-    speak(opened.f);
+    speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });
     await quiet();
@@ -202,7 +202,7 @@ describe('openai gpt-live adapter', () => {
     clock.advance(2_500);
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 2);
-    assert.equal(audioBytes(opened.captured), (7_200 + 7_200) * 2, 'audio flows again after the drop window');
+    assert.equal(audioBytes(opened.captured), 192_000 + 14_400, 'audio flows again after the drop window');
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' please' });
     await quiet();
     assert.equal(interruptions(opened.captured), 1, 'one flush per input episode');
@@ -248,7 +248,7 @@ describe('openai gpt-live adapter', () => {
     await until(() => logged().some(entry => entry['event'] === 'gptlive_no_flush'));
     const skipped = logged().filter(entry => entry['event'] === 'gptlive_no_flush');
     assert.equal(skipped.length, 1, 'one receipt per episode, not one per word');
-    assert.deepEqual(skipped[0], { event: 'gptlive_no_flush', reason: 'server_continued', words: 1 });
+    assert.deepEqual(skipped[0], { event: 'gptlive_no_flush', reason: 'server_continued', words: 2 });
     assert.ok(safeEvent(skipped[0]), 'the host log whitelist accepts the no-flush receipt');
   });
 

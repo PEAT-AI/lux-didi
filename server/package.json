@@ -26,6 +26,7 @@
     "dist/http",
     "dist/contracts",
     "dist/domain",
+    "dist/memory",
     "dist/host",
     "dist/chat",
     "dist/config",

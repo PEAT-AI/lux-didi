@@ -6,6 +6,7 @@ import { declarationsFor } from '../tools/declarations.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, PromptCompileError,
   type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem } from '../prompt/index.js';
 import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
+import { listStandingMemory } from '../memory/import.js';
 import * as summaries from '../domain/summaries.js';
 import { ChatError, type ChatConfig, type ClassificationSubject } from './types.js';
 import { selectedEvidenceId, type RunSelection } from './memorySelection.js';
@@ -82,6 +83,12 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
       dataClass: maxDataClass(entryLabel.dataClass, parentLabel.dataClass),
       id: selectedEvidenceId(record.entryId), sourceId: record.entryId, provenance: 'memory.selection',
       priority: 1, kind: 'source', text: JSON.stringify(record) });
+  }
+  // The same ranked set Live gets, as ordinary evidence: a standing note reaches text chat too.
+  for (const item of config.store.transaction(tx => listStandingMemory(tx))) {
+    evidence.push({ schemaVersion: 1 as const, ownerId: config.store.assistantId, dataClass: 'ordinary',
+      id: `standing:${item.id}`, sourceId: item.id, provenance: 'memory.standing', priority: 1, kind: 'source',
+      text: JSON.stringify(item) });
   }
   const capabilities = chatCapabilities(registry, [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,

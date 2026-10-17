@@ -251,12 +251,12 @@ test('Live remember reserves the gateway identity when MCP exposes the same name
   assert.equal(h.calls.length, 0, 'gateway does not execute the remote endpoint');
 });
 
-test('Live remember normalizes commands and pointers but stores the entire owner payload', async t => {
+test('Live remember normalizes commands and pointers and stores the model note', async t => {
   const h = await harness(t, { tools: true });
   await attached(h);
   const result = await remember(h, 'NAYA REMEMBER That Mint is Friday, after lunch.', { text: '  MINT  IS FRIDAY ', kind: 'fact' }, 2);
   assert.equal(result.remembered, true);
-  assert.equal(rows(h)[0]?.text, 'Mint is Friday, after lunch.');
+  assert.equal(rows(h)[0]?.text, 'MINT IS FRIDAY', 'the note saved is the model text, not the raw owner payload');
 });
 
 class RememberClock {

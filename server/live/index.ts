@@ -273,11 +273,40 @@ const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').tri
 // A leading request phrase is scaffolding, not the note: the qualifier test and the stored text both read past it.
 const command = /^(?:naya\s*,?\s+)?(?:(?:please\s+)?remember\b(?:\s+that\b)?|(?:please\s+)?note\s+that\b|(?:please\s+)?keep\s+in\s+mind\b(?:\s+that\b)?)[\s:,]*/i;
 const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensitive)\b)/i;
+// The owner transcript streams as many small deltas on some providers, so a turn is assembled from
+// a recent window of rows, never from the handful of arguments a model was handed. A few seconds of
+// speech is 64 rows: the window is ten minutes, capped so one session cannot grow it without bound.
+const MEMORY_WINDOW_MS = 10 * 60 * 1000;
+const MEMORY_WINDOW_ROWS = 2_000;
+// A paraphrase is still the owner's memory when this share of the note's content words is spoken.
+const MEMORY_SUPPORT_RATIO = 0.6;
+const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'your', 'with', 'that', 'this', 'from', 'have', 'has',
+  'had', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'about', 'into', 'than', 'then', 'they', 'them', 'there',
+  'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
+  'him', 'she', 'need', 'want', 'get', 'got', 'does', 'did', 'please', 'remember', 'note', 'keep', 'mind', 'naya', 'because',
+  'before', 'after', 'over', 'under', 'very', 'much', 'more', 'most', 'only', 'own', 'same', 'such', 'too', 'now']);
+const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+/** The note's content words: lower-cased tokens without stop words or two-letter noise. */
+const contentWords = (text: string): string[] => tokens(text).filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word));
+/** How much of the note one owner turn supports: the share of its content words the turn speaks. */
+function supportRatio(note: string, turn: string): number {
+  const words = contentWords(note);
+  if (!words.length) return 0;
+  const spoken = new Set(tokens(turn));
+  return words.filter(word => spoken.has(word)).length / words.length;
+}
 
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
+  // The note is the model's clean paraphrase; the owner's own words are only the support for it.
+  const noteText = String(args.text).replace(command, '').replace(/\s+/g, ' ').trim();
+  const words = contentWords(noteText);
+  const receipt = (result: JsonObject, support: number): JsonObject => {
+    hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'), words: words.length, supportRatio: Math.round(support * 1000) / 1000 });
+    return result;
+  };
   // A bounded journal window, assembled into owner turns, not provider/model arguments.
-  const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC LIMIT 64", [liveSessionId]).reverse();
+  const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND arrived_at>=? ORDER BY journal_id DESC LIMIT ?", [liveSessionId, now - MEMORY_WINDOW_MS, MEMORY_WINDOW_ROWS]).reverse();
   const turns: { seq: number; text: string }[] = [];
   let pending = '', pendingSeq = 0;
   for (const row of rows) {
@@ -287,23 +316,35 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // The model's tool call is the intent: the latest partial turn is owner speech too, because the
   // provider may never set the finished flag before the call arrives.
   if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
-  const pointer = normalized(args.text);
-  if (!pointer) return { remembered: false, code: 'owner_text_mismatch' };
-  const turn = [...turns].reverse().find(candidate => normalized(candidate.text).includes(pointer));
-  if (!turn) return { remembered: false, code: turns.length ? 'owner_text_mismatch' : 'owner_transcript_not_final' };
+  const pointer = normalized(noteText);
+  if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' }, 0);
+  // The supporting turn is one recent owner turn: it holds the note's words, or enough of them.
+  let turn: { seq: number; text: string } | undefined;
+  let support = 0;
+  for (let index = turns.length - 1; index >= 0 && !turn; index--) {
+    const candidate = turns[index]!;
+    const ratio = supportRatio(noteText, candidate.text);
+    if (normalized(candidate.text).includes(pointer)) { turn = candidate; support = 1; }
+    else if (ratio >= MEMORY_SUPPORT_RATIO) { turn = candidate; support = ratio; }
+  }
+  if (!turn) {
+    // An older turn is outside the window rather than unfinished; only a session with no owner
+    // speech at all reports that the transcript was never final.
+    const spoken = tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]);
+    return receipt({ remembered: false, code: spoken ? 'owner_text_mismatch' : 'owner_transcript_not_final' }, 0);
+  }
   const utterance = turn.text.trim();
-  const payload = utterance.replace(command, '').trim();
-  if (classified.test(payload)) return { remembered: false, code: 'private_memory_unsupported' };
+  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, support);
   const externalId = `${liveSessionId}:${turn.seq}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
-  if (existing) return { remembered: false, code: 'already_remembered', entryId: existing };
+  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, support);
   const clock = { now: () => now };
   const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  const entry = memory.appendEntry(tx, { sessionId: session.id, text: payload, capturedAt: now, timeZone: 'UTC',
+  const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  return { remembered: true, entryId: entry.id };
+  return receipt({ remembered: true, entryId: entry.id }, support);
 }
 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */

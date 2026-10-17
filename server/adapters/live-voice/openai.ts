@@ -27,16 +27,16 @@ const ENDPOINT = 'wss://api.openai.com/v1/live/sessions';
 export const OPENAI_DELEGATION_MODEL = 'gpt-6-luna';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
-/** `nira` is the documented Hindi voice (guides/live-conversations voice table), which the Language section forbids. */
+/** `nira` is the documented Hindi voice (guides/live-conversations voice table), which the persona forbids. */
 const REFUSED_VOICES: readonly string[] = ['nira'];
-export const OPENAI_LANGUAGE_SECTION = 'Language: speak English with a natural Indian English accent and rhythm throughout the conversation, including after every tool result. Never switch to Hindi unless the owner speaks Hindi first.';
+// PV1: the Language line is gone, because the host's accent block carries the accent and this line competed with it.
 export const OPENAI_TOOLS_SECTION = 'Tools: before a lookup, say one short natural line that you are checking; never go silent for more than a few seconds.';
-export const OPENAI_DELIVERY_SECTION = 'Delivery: sound like a quick, sharp young woman: confident, dry and a little edgy, never sugary or sing-song; keep the wit.';
+export const OPENAI_DELIVERY_SECTION = 'Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.';
 /** OpenAI's live prompting guide, verbatim: the server owns turn taking, so a stray sound is not a new turn. */
 const OPENAI_LISTENING_SECTION = 'Do not treat a cough, music, or nearby conversation as a new request.\nKeep listening while the owner pauses to think.';
 /** The shared persona is sent unchanged; the wrapper only appends the provider sections. */
 export function openAiInstructions(persona: string): string {
-  return `${persona}\n\n${OPENAI_LANGUAGE_SECTION}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
+  return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
 const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
@@ -61,6 +61,11 @@ const TURN_IDLE_QUIET_MS = 2_000;
  *  passed since the flush, whichever comes first. Both bounds are fixed, so the drop window never latches. */
 const POST_FLUSH_GAP_MS = 400;
 const POST_FLUSH_DROP_LIMIT_MS = 2_500;
+/** The server decides an interruption. While the owner has an open input episode, a flush waits this long with no
+ *  new output delta: a stream that keeps arriving is a backchannel or background speech the server chose to talk
+ *  over, and nothing is cut. An answer the server has already finished sending has no delta to push it out, so an
+ *  owner who speaks over buffered speech is obeyed after this gap (N1, session 82ab994a). */
+const SERVER_YIELD_GAP_MS = 350;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
 /** Head start at the start of a speaking stretch: 300 ms of audio held back so the native 80 ms jitter buffer
@@ -272,6 +277,10 @@ class Session implements LiveVoiceSession {
   private inputEpisode = '';
   private flushed = false;
   private episodeQuiet: unknown;
+  private yieldTimer: unknown;
+  /** What there was to cut when the episode's first word arrived, so a silent episode reports its own reason. */
+  private episodeQueuedMs = 0;
+  private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
   private lastForwardedAt = 0;
@@ -473,7 +482,12 @@ class Session implements LiveVoiceSession {
       case 'session.usage.updated': return this.touch();
       case 'session.closed': return this.sessionClosed(message);
       case 'error': return this.providerError(message);
-      default: this.touch(); return;
+      // N1: an unread frame may be the yield signal this adapter has no rule for yet, so it is counted by name
+      // and reported once per session instead of vanishing into a bare touch.
+      default:
+        if (typeof message.type === 'string') this.unknownFrames.set(message.type, (this.unknownFrames.get(message.type) ?? 0) + 1);
+        this.touch();
+        return;
     }
   }
 
@@ -501,6 +515,8 @@ class Session implements LiveVoiceSession {
     // gap this long means the answer that replay would cut is over.
     const gap = now - this.lastOutputDeltaAt;
     this.lastOutputDeltaAt = now;
+    // A delta during an open episode is the server still talking, so the yield is measured again from this frame.
+    if (!this.flushed && this.inputEpisode.length) this.armYield();
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
     // Contract invariant: no permanent frame dropping. Output audio of an open session is forwarded, and an input
@@ -598,14 +614,38 @@ class Session implements LiveVoiceSession {
   private noteInput(delta: string): void {
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
     this.episodeQuiet = this.clock.setTimer(INPUT_EPISODE_QUIET_MS, () => this.endInputEpisode());
+    if (!this.inputEpisode.length) {
+      // The episode's first word: record what audio it has to cut, so an episode that flushes nothing can say why.
+      const now = this.clock.now();
+      this.episodeQueuedMs = Math.round(Math.max(0, this.playbackUntil - now) + this.heldBytes / OUTPUT_PCM_BYTES_PER_MS);
+    }
     this.inputEpisode += delta;
-    const words = countWords(this.inputEpisode);
-    // Barge-in: at least two assembled words, at most one flush per episode, and audio actually to cut. Held head
-    // start counts as audio to cut, because the owner is about to hear it.
+    // N1: one word is enough to be worth cutting, but the server decides. The flush is due a gap after the newest
+    // of this word and the last output delta, and every delta that arrives first pushes it out again.
+    if (!this.flushed && this.yieldTimer === undefined) this.armYield();
+  }
+
+  /** Arm the yield test for the open episode, replacing any pending one: it fires SERVER_YIELD_GAP_MS from now. */
+  private armYield(): void {
+    if (this.yieldTimer !== undefined) this.clock.clearTimer(this.yieldTimer);
+    this.yieldTimer = this.clock.setTimer(SERVER_YIELD_GAP_MS, () => { this.yieldTimer = undefined; this.yieldCheck(); });
+  }
+
+  private yieldCheck(): void {
+    if (this.flushed || !this.inputEpisode.length) return;
     const now = this.clock.now();
+    // The server is still sending: it decided this was a backchannel, not an interruption. Its next delta re-arms.
+    if (now - this.lastOutputDeltaAt < SERVER_YIELD_GAP_MS) return;
     const queued = Math.max(0, this.playbackUntil - now) + this.heldBytes / OUTPUT_PCM_BYTES_PER_MS;
-    if (this.flushed || words < 2 || queued <= 0) return;
-    const queuedMs = Math.round(queued);
+    if (queued <= 0) return;
+    this.flush(queued, now);
+  }
+
+  private flush(queuedMs0: number, now: number): void {
+    const words = countWords(this.inputEpisode);
+    const queuedMs = Math.round(queuedMs0);
+    // The measured quiet that proved the server had yielded, which is what makes this a cut and not a chop.
+    const yieldGapMs = Math.round(now - this.lastOutputDeltaAt);
     this.flushed = true;
     this.generation += 1;
     this.muted = this.generation;
@@ -614,7 +654,7 @@ class Session implements LiveVoiceSession {
     this.audioSinceCompletion = false;
     this.outputTranscriptOpen = false;
     // The host flushes its native queue on `interrupted`, so the modelled queue and any head start go with it.
-    this.playbackUntil = this.clock.now();
+    this.playbackUntil = now;
     this.discardHeadStart();
     this.postFlushMs = 0;
     // The frames of the answer the owner cut keep arriving for a moment; the bounded drop window keeps them out
@@ -623,12 +663,18 @@ class Session implements LiveVoiceSession {
     this.postFlushDroppedMs = 0;
     this.silenceSent = false;
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    hostLogEvent({ event: 'gptlive_flush', words, queuedMs });
+    hostLogEvent({ event: 'gptlive_flush', words, queuedMs, yieldGapMs });
     this.emit({ type: 'interrupted' });
   }
 
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
+    if (this.yieldTimer !== undefined) { this.clock.clearTimer(this.yieldTimer); this.yieldTimer = undefined; }
+    if (!this.flushed && this.inputEpisode.length) {
+      // Once per episode: the owner's words cut nothing, because the server talked over them or because there was
+      // no audio left to cut.
+      hostLogEvent({ event: 'gptlive_no_flush', reason: this.episodeQueuedMs > 0 ? 'server_continued' : 'queue_empty', words: countWords(this.inputEpisode) });
+    }
     this.inputEpisode = '';
     this.flushed = false;
     this.reportPostFlush();
@@ -656,6 +702,12 @@ class Session implements LiveVoiceSession {
     if (ms === undefined) return;
     this.postFlushMs = undefined;
     hostLogEvent({ event: 'gptlive_post_flush_audio_ms', ms: Math.round(ms) });
+  }
+
+  /** Receipt, once per session: each provider frame name this adapter has no rule for, and how often it came. */
+  private reportUnknownFrames(): void {
+    for (const [type, count] of this.unknownFrames) hostLogEvent({ event: 'gptlive_unknown_frame', type, count });
+    this.unknownFrames.clear();
   }
 
   /**
@@ -934,9 +986,11 @@ class Session implements LiveVoiceSession {
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
+    if (this.yieldTimer !== undefined) { this.clock.clearTimer(this.yieldTimer); this.yieldTimer = undefined; }
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
     this.discardHeadStart();
     this.reportPostFlush();
+    this.reportUnknownFrames();
     this.secret = '';
     this.readiness.reject(new LiveVoiceError(code));
     this.emit({ type: 'outcome', outcome: this.terminal });

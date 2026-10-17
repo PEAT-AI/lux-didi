@@ -9,6 +9,7 @@ import {
   type LivePublicMarker, type LiveSessionSnapshot,
 } from '../live/index.js';
 import type { DataClass, LiveVoiceProvider } from '../adapters/live-voice/index.js';
+import type { LiveAccent } from '../prompt/live-persona.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
 import { nativeActions } from '../tools/open.js';
 
@@ -26,12 +27,12 @@ export interface LiveStatusPayload {
 
 /** The owner's persisted Live selection; it applies at the next start and never to a call in flight. */
 export interface LiveSelectionResult {
-  provider: LiveVoiceProvider; modelId: string; voice: string; appliesAt: 'next_start';
+  provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent; appliesAt: 'next_start';
 }
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */
 export interface LiveService {
   /** Persist a provider and voice choice into live.json. Absent when the service cannot write configuration. */
-  saveSelection?(input: { provider: unknown; voice?: unknown }): LiveSelectionResult;
+  saveSelection?(input: { provider: unknown; voice?: unknown; accent?: unknown }): LiveSelectionResult;
   current(cursor?: number): import('../live/types.js').LivePageProjection;
   lookupAuthority(runId: string): import('../tools/types.js').LiveAuthority | null;
   readonly enabled: boolean;

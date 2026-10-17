@@ -19,7 +19,8 @@ export type LiveErrorCode =
   | 'expired' | 'invalid_audio' | 'persistence_failed';
 export type LiveConfigErrorCode =
   | 'invalid_object' | 'invalid_provider' | 'invalid_model' | 'invalid_voice' | 'invalid_key_reference'
-  | 'invalid_route' | 'invalid_classes' | 'invalid_prompt' | 'invalid_limit' | 'invalid_language';
+  | 'invalid_route' | 'invalid_classes' | 'invalid_prompt' | 'invalid_limit' | 'invalid_language'
+  | 'invalid_accent';
 
 export class LiveError extends Error {
   constructor(readonly code: LiveErrorCode, message: string = code) { super(message); this.name = 'LiveError'; }

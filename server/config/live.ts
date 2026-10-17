@@ -1,4 +1,4 @@
-import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_LIVE_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
+import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_LIVE_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, type LiveAccent, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { dirname, join } from 'node:path';
 import { isLiveVoiceProvider, type DataClass, type LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
@@ -10,7 +10,20 @@ import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
 const liveLimit = 16 * 1024;
-const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences', 'limits'];
+const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'keyReference', 'dataClasses', 'preferences', 'limits'];
+// PV1: the owner's accent selection is its own live.json field, beside provider and voice. It applies from the
+// next session start, so it is kept as a process-current value rather than only inside the frozen profile.
+let currentAccent: LiveAccent = LIVE_DEFAULT_ACCENT;
+
+/** The owner's accent selection for the next session start; the default until a live.json or a save says otherwise. */
+export function currentLiveAccent(): LiveAccent { return currentAccent; }
+
+/** Validate one accent value: a listed selection, or the default when the field is absent. */
+export function liveAccent(value: unknown): LiveAccent {
+  if (value === undefined) return LIVE_DEFAULT_ACCENT;
+  if (typeof value !== 'string' || !(LIVE_ACCENTS as readonly string[]).includes(value)) throw new LiveConfigError('invalid_accent');
+  return value as LiveAccent;
+}
 // The debug journal is a host setting that lives beside the prompt preferences: owner content
 // stays on this computer, on by default. It is stripped before the prompt preferences validate.
 const journalKey = 'debugJournal';
@@ -97,6 +110,9 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     // read: a host with no live.json, or none this run can reach, still journals; the file can only
     // turn it off. This is the same data directory the persona overlay below resolves.
     configureDebugJournal(dirname(options.configDir), true);
+    // A load is the one authority on the accent this process composes with, so a file that is gone or
+    // unreadable falls back to the default rather than keeping a value a previous fixture left behind.
+    currentAccent = LIVE_DEFAULT_ACCENT;
     if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
     let text: string;
     try { text = readPrivate(join(options.configDir, 'live.json'), liveLimit); }
@@ -119,6 +135,10 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     if (reference !== undefined && reference !== slot.keyReference) fail('invalid_reference');
     const model = modelId(provider, input['modelId'] ?? slot.defaultLiveModelId);
     const chosenVoice = input['voice'] === undefined ? slot.defaultVoice : voice(input['voice']);
+    // The accent selection is read here and published as the process-current value: the next session start
+    // composes its anchors from it, so a later save needs no restart.
+    const chosenAccent = liveAccent(input['accent']);
+    currentAccent = chosenAccent;
     const dataClasses = classList(input['dataClasses']);
     // One host setting rides beside the prompt preferences, which keep their own exact key set.
     const declared = input['preferences'];
@@ -147,6 +167,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       base: NAYA_LIVE_BASE,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
+      accentSelection: chosenAccent,
     });
     const ownerProfile = options.ownerProfile ?? publicOwnerProfile(options.ownerId);
     const instruction = compileVoiceInstruction({
@@ -157,6 +178,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       base: NAYA_LIVE_BASE, ownerProfile,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
+      accentSelection: chosenAccent,
     });
     const profile = validateLiveProfile({
       provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference,
@@ -194,8 +216,8 @@ function slotChoice(provider: LiveVoiceProvider): { modelId: string; voice: stri
  * reaches a call in flight. Only the three selection fields are rewritten; limits, classes and persona
  * preferences survive byte for byte.
  */
-export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown }): {
-  provider: LiveVoiceProvider; modelId: string; voice: string;
+export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown; accent?: unknown }): {
+  provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent;
 } {
   try {
     requireAbsolutePath(options.configDir);
@@ -208,8 +230,11 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     if (!validateRoot(options.configDir)) fail('file_missing');
     const input = parseJson(readPrivate(join(options.configDir, 'live.json'), liveLimit)) as Record<string, unknown>;
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid_profile');
+    // A saved accent takes the next session start, so the process-current value moves with the file. A save
+    // that names no accent keeps the file's own choice instead of resetting it.
+    const chosenAccent = options.accent === undefined ? liveAccent(input['accent']) : liveAccent(options.accent);
     const model = modelId(provider, slot.defaultLiveModelId);
-    const next: Record<string, unknown> = { ...input, provider, modelId: model, voice: chosenVoice, keyReference: slot.keyReference };
+    const next: Record<string, unknown> = { ...input, provider, modelId: model, voice: chosenVoice, accent: chosenAccent, keyReference: slot.keyReference };
     // Validate the document we are about to publish through the same loader rules, minus prompt composition.
     const allowed = new Set(liveKeys);
     for (const key of Object.keys(next)) if (!allowed.has(key)) fail('invalid_profile');
@@ -219,7 +244,8 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     const pending = join(options.configDir, '.live.pending');
     writePrivateFile(pending, JSON.stringify(next), liveLimit);
     renameSync(pending, join(options.configDir, 'live.json'));
-    return { provider, modelId: model, voice: chosenVoice };
+    currentAccent = chosenAccent;
+    return { provider, modelId: model, voice: chosenVoice, accent: chosenAccent };
   } catch (error) {
     if (error instanceof LiveConfigError) throw error;
     throw safeError(error);

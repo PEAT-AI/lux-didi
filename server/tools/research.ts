@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
-import { INTERNAL, type IntentSubCall, type IntentSubResult } from './intent.js';
+import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
 
 /**
@@ -71,6 +71,12 @@ export const RESEARCH = Object.freeze({
   sourceDeadlineMs: 4_000,
   /** RD: a start call returns its answer, or its honest partial, inside this, so the owner hears a reply. */
   answerWithinMs: 6_000,
+  /**
+   * N3: the routed calendar read's own budget. It sits well inside `startDeadlineMs` because the read
+   * only survives if it settles before the caller aborts: at 15 s the abort discarded the partial read
+   * and the source reported `empty`. The primary calendar is one call, so this bounds a real read.
+   */
+  routedCalendarDeadlineMs: 8_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -101,12 +107,21 @@ export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', '
 export const MAX_LOOKUPS = 4;
 
 export interface ResearchLookup { source: LookupSource; query: string }
-/** Per-source outcome of a routed call: read something, read nothing, unreachable, or the read failed. */
-export type LookupOutcome = 'ok' | 'empty' | 'unavailable' | 'failed';
+/**
+ * Per-source outcome of a routed call: read something, read nothing, unreachable, the read failed, or
+ * the read was cut short by a deadline. `timeout` is its own value because a cut read is not an empty
+ * one: the audit found aborted knowledge reads reported as `empty` and voiced as "nothing matched".
+ */
+export type LookupOutcome = 'ok' | 'empty' | 'unavailable' | 'failed' | 'timeout';
 
 export interface ResearchRoutedLog {
   event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number;
   ms: number[]; outcomes: LookupOutcome[];
+}
+
+/** One metadata-only receipt per routed lookup: which layer, its outcome and its wall time, no query. */
+export interface ResearchLookupLog {
+  event: 'research_lookup'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
 }
 
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
@@ -130,11 +145,11 @@ export function normalizeLookups(value: unknown): ResearchLookup[] {
 }
 
 /** Calendar lookups may carry a day or a named window; anything else reads today. */
-export function calendarWindowOf(query: string): string {
+export function calendarWindowOf(query: string, fallback = 'today'): string {
   const value = query.trim().toLowerCase();
   if (value === 'today' || value === 'tomorrow' || value === 'week') return value;
   const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : /(\d{4}-\d{2}-\d{2})/.exec(value)?.[1];
-  return date ?? 'today';
+  return date ?? fallback;
 }
 
 /**
@@ -497,6 +512,8 @@ export interface RunState {
   calls: Set<string>;
   /** Per source, the query shape a search that matched nothing used, for a line the model can voice. */
   emptySearches: Map<SourceKind, string>;
+  /** N3: sources whose read a deadline cut short, so the reply can say so instead of "nothing matched". */
+  cutShort: Set<SourceKind>;
 }
 
 /** Session-local in-memory ledger. Nothing here is persisted or logged beyond its metadata. */
@@ -513,7 +530,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       cancelled: false, ended: false, stopped: false,
       ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -530,7 +547,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
       rounds: 0, cancelled: false, ended: false, stopped: false,
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
-      calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches),
+      calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -598,6 +615,11 @@ export interface ResearchDeps {
   configured: readonly SourceKind[];
   /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
   configuredNow?: (() => readonly SourceKind[]) | undefined;
+  /**
+   * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
+   * once instead of spending its deadline on sub-calls that cannot reach a stopped connector.
+   */
+  unavailableNow?: (() => readonly SourceKind[]) | undefined;
   selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
@@ -617,6 +639,8 @@ export interface ResearchDeps {
   memory?: ((query: string) => { text: string; lines: string[]; total: number } | Promise<{ text: string; lines: string[]; total: number }>) | undefined;
   /** K6: one metadata-only receipt per routed call; defaults to the host log sink. */
   logRouted?: ((event: ResearchRoutedLog) => void) | undefined;
+  /** N3: one receipt per routed lookup, so a per-lookup outcome and ms survive in the host log. */
+  logLookup?: ((event: ResearchLookupLog) => void) | undefined;
 
   ledger: ResearchLedger;
   replyLimit?: number;
@@ -870,8 +894,22 @@ function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string
   merged.sort((a, b) => a.start.localeCompare(b.start));
   const lines = merged.map(entry => entry.line);
   const shown = lines.slice(0, RESEARCH.calendarLines);
+  const notRead = calendarNotRead(results);
   if (!shown.length) return { text: '', source: 'calendar', lines: [], total: 0 };
-  return { text: `calendar: ${shown.length} of ${lines.length} shown\n${shown.join('\n')}`, source: 'calendar', lines: shown, total: lines.length };
+  const rendered = notRead === undefined ? shown : [...shown, notRead];
+  return { text: `calendar: ${shown.length} of ${lines.length} shown\n${rendered.join('\n')}`, source: 'calendar', lines: rendered, total: lines.length };
+}
+
+/**
+ * N3: a routed calendar read is the primary calendar only, so the result says plainly what it did not
+ * read. Counting rather than naming, because the connector's list carries no primary marker.
+ */
+function calendarNotRead(results: readonly IntentSubResult[]): string | undefined {
+  const listed = results.find(result => result.ok && result.name === INTERNAL.calendars);
+  if (listed === undefined) return undefined;
+  const others = Math.max(0, calendarIds(listed.text).length - 1);
+  if (others === 0) return 'not read: nothing, the primary calendar is the only one';
+  return `not read: ${others} other ${others === 1 ? 'calendar' : 'calendars'}, this read covers the primary calendar only`;
 }
 
 /**
@@ -986,8 +1024,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source)).map(([, label]) => label);
   const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
+  // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
+  const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source))
+    .map(([, label]) => `My ${label} read was cut short before it finished, so ask me again with a narrower question if it matters.`);
   const clauses = [
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
+    ...cutShort,
     ...searchedNothing,
   ];
   const note = clauses.length === 0 ? undefined : clauses.join(' ');
@@ -1020,7 +1062,17 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
   const subsConfig = { question: context.question, configured: context.configured, evidence: context.run.evidence, query };
-  if (lookup.source === 'calendar') return { source: 'calendar', kind: 'calendar_window', subs: candidateSubs('calendar_window', { ...subsConfig, window: calendarWindowOf(query), nowMs: context.now() }) };
+  // N3: a voice turn reads the primary calendar only, one bounded call. The merged read is one remote
+  // call per visible calendar (22 on the smoke account) and can never finish inside the run deadline, so
+  // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
+  // The calendar list rides along only so the result can say what it did not read.
+  if (lookup.source === 'calendar') {
+    const range = windowRange(calendarWindowOf(query, 'week'), context.now());
+    return { source: 'calendar', kind: 'calendar_window', subs: [
+      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines } as JsonObject },
+      { key: 'cal1', name: INTERNAL.calendars, args: { maxResults: 20 } as JsonObject },
+    ] };
+  }
   if (lookup.source === 'knowledge') return { source: 'knowledge', kind: 'knowledge_search', subs: candidateSubs('knowledge_search', subsConfig) };
   if (lookup.source === 'mail') return { source: 'mail', kind: 'mail_search', subs: candidateSubs('mail_search', subsConfig) };
   return { source: 'chat', kind: 'chat_search', subs: candidateSubs('chat_search', subsConfig) };
@@ -1031,52 +1083,114 @@ interface RoutedOutcome {
   outcome: LookupOutcome; ms: number; lines: string[]; total: number;
 }
 
-/** One lookup, always resolving: a failed or unreachable source never takes its neighbours down. */
-async function routedOne(deps: ResearchDeps, run: RunState, lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome> {
-  const readContext = { question: context.question, configured: context.configured, run, now: context.now };
+interface RoutedPlan { lookup: ResearchLookup; read: { source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
+
+/**
+ * N3: the wall-clock one coalesced batch may take. It grows with the number of lookups the batch
+ * carries, so coalescing never shrinks the time each lookup gets, except for the calendar: that read
+ * has its own budget which sits inside the start deadline, and multiplying it would put the calendar
+ * back on the deadline this change exists to keep it off. Never above what the run has left.
+ */
+export function lookupBound(source: SourceKind, lookups: number, remainingMs: number): number {
+  const perRead = source === 'calendar' ? RESEARCH.routedCalendarDeadlineMs : RESEARCH.sourceDeadlineMs;
+  const wanted = source === 'calendar' ? perRead : perRead * Math.max(1, lookups);
+  return Math.min(wanted, remainingMs);
+}
+
+/**
+ * N3: one source, one execution. Same-source lookups of one call are coalesced into a single batch
+ * carrying every query, because three knowledge searches issued at once contended for the same 4 s
+ * and all three were aborted, while a lone one returned in 2.2 s. The budget is `lookupBound`, sized by
+ * the number of lookups in the batch. Each lookup still settles on its own outcome from its own
+ * sub-results, so a cut or failed read never takes the others down.
+ */
+async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
-  const read = routedRead(lookup, readContext);
-  const settle = (outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome => ({ lookup, kind: read.kind, source: read.source, outcome, ms: context.now() - at, lines, total });
-  if (lookup.source === 'memory') {
-    if (deps.memory === undefined) return settle('unavailable');
+  const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
+    ({ lookup: plan.lookup, kind: plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
+  const done: RoutedOutcome[] = [];
+  // Her own memory is read locally by the composition that holds it, never over the network.
+  for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
+    if (deps.memory === undefined) { done.push(settle(plan, 'unavailable')); continue; }
     try {
-      const found = await deps.memory(lookup.query);
+      const found = await deps.memory(plan.lookup.query);
       const lines = found.lines.slice(0, RESEARCH.memoryLines);
-      return settle(lines.length > 0 ? 'ok' : 'empty', lines, found.total);
-    } catch { return settle('failed'); }
+      done.push(settle(plan, lines.length > 0 ? 'ok' : 'empty', lines, found.total));
+    } catch { done.push(settle(plan, 'failed')); }
   }
-  if (!context.configured.includes(read.source)) return settle('unavailable');
+  const reads = plans.filter(entry => entry.read.source !== 'memory');
+  if (reads.length === 0) return done;
+  const source = reads[0]!.read.source as SourceKind;
+  const all = (outcome: LookupOutcome): RoutedOutcome[] => reads.map(plan => settle(plan, outcome));
+  if (!context.configured.includes(source)) return [...done, ...all('unavailable')];
+  // #351: a connector that cannot serve a read right now settles at once, never spending the batch deadline.
+  if (context.unavailable.includes(source)) return [...done, ...all('unavailable')];
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
-  if (remainingMs <= 0) return settle('unavailable');
-  run.ops += Math.max(1, read.subs.length);
-  const bound = read.source === 'calendar' ? RESEARCH.calendarDeadlineMs : RESEARCH.sourceDeadlineMs;
-  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(Math.min(bound, remainingMs))]);
+  if (remainingMs <= 0) return [...done, ...all('unavailable')];
+  const subs: IntentSubCall[] = [];
+  const owned: number[][] = reads.map(() => []);
+  const seen = new Map<string, number>();
+  reads.forEach((plan, index) => {
+    for (const sub of plan.read.subs) {
+      // A sub two lookups would both issue (the calendar list serves every window) is dispatched once.
+      const signature = `${sub.name}:${JSON.stringify(sub.args)}`;
+      const existing = seen.get(signature);
+      if (existing !== undefined) { owned[index]!.push(existing); continue; }
+      subs.push(sub);
+      owned[index]!.push(subs.length - 1);
+      seen.set(signature, subs.length - 1);
+    }
+  });
+  if (subs.length === 0) return [...done, ...all('unavailable')];
+  run.ops += Math.max(1, subs.length);
+  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(lookupBound(source, reads.length, remainingMs))]);
   let results: IntentSubResult[];
-  try { results = await deps.execute(read.subs, signal); } catch { return settle('failed'); }
-  const block = shapeBlock(read.kind === 'memory_search' ? 'knowledge_search' : read.kind, results);
-  return settle(block.lines.length > 0 ? 'ok' : 'empty', block.lines, block.total);
+  try { results = await deps.execute(subs, signal); }
+  catch { return [...done, ...all(signal.aborted ? 'timeout' : 'failed')]; }
+  // The execute contract returns one result per sub, in order, so each lookup keeps its own lines.
+  const cutShort = signal.aborted;
+  reads.forEach((plan, index) => {
+    const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
+    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own);
+    const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : 'empty';
+    done.push(settle(plan, outcome, block.lines, block.total));
+  });
+  return done;
 }
 
 /**
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
-async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
+async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
+  const logLookup = deps.logLookup ?? ((event: ResearchLookupLog): void => { hostLogEvent(event); });
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
-  const pending = lookups.map(lookup => routedOne(deps, run, lookup, { question, configured, signal, now }));
-  const outcomes = await Promise.all(pending);
+  // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
+  // share one execution; the group keeps the order in which each source first appeared.
+  const readContext = { question, configured, run, now };
+  const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
+  for (const lookup of lookups) {
+    const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };
+    const bucket = groups.get(plan.read.source) ?? [];
+    bucket.push(plan);
+    groups.set(plan.read.source, bucket);
+  }
+  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, signal, now })))).flat();
   for (const outcome of outcomes) {
+    logLookup({ event: 'research_lookup', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms });
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
     run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
     if (outcome.source === 'memory') {
       if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
+      else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
       else if (outcome.outcome !== 'empty') run.sourcesFailed.add('memory');
       continue;
     }
-    if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); }
+    if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); run.cutShort.delete(outcome.source); }
     else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, ` for "${outcome.lookup.query.slice(0, 60)}"`); }
+    else if (outcome.outcome === 'timeout') { run.cutShort.add(outcome.source); }
     else run.sourcesFailed.add(outcome.source);
   }
   run.ended = true;
@@ -1098,6 +1212,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
   const now = () => deps.now();
   const configured = (deps.configuredNow ?? (() => deps.configured))();
+  const unavailable = (deps.unavailableNow ?? (() => []))();
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const publishStep = deps.step ?? liveToolStep;
   const stepCallId = call.callId ?? '';
@@ -1123,7 +1238,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
-  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, signal, now, limit);
+  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, signal, now, limit);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];

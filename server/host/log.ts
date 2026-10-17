@@ -24,13 +24,15 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
-const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed'];
+const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
+const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
@@ -186,6 +188,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     }
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
   }
+  if (value.event === 'memory_note') {
+    // Closed shape: whether the note was saved, its code, the note's content word count and the share
+    // of those words one owner turn supported. Never the note text.
+    if (Object.keys(value).sort().join(',') !== ['event', 'remembered', 'code', 'words', 'supportRatio'].sort().join(',')) return;
+    if (typeof value.remembered !== 'boolean') return;
+    if (typeof value.code !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.code)) return;
+    if (!Number.isSafeInteger(value.words) || Number(value.words) < 0 || Number(value.words) > 10_000) return;
+    if (typeof value.supportRatio !== 'number' || !Number.isFinite(value.supportRatio) || value.supportRatio < 0 || value.supportRatio > 1) return;
+    return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supportRatio: value.supportRatio };
+  }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
     if (Object.keys(value).sort().join(',') !== ['event','code','error','kind','bytes','keys'].sort().join(',')) return;
@@ -334,9 +346,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
   }
   if (value.event === 'gptlive_flush') {
-    if (!closedKeys(value, ['event', 'words', 'queuedMs'])) return;
-    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs)) return;
-    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs };
+    // N1: the measured output gap that proved the server yielded, alongside what was cut.
+    if (!closedKeys(value, ['event', 'words', 'queuedMs', 'yieldGapMs'])) return;
+    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs) || !isSafeCount(value.yieldGapMs)) return;
+    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs, yieldGapMs: value.yieldGapMs };
+  }
+  if (value.event === 'gptlive_no_flush') {
+    // N1: one record per owner episode that cut nothing, in a closed reason set, never the transcript.
+    if (!closedKeys(value, ['event', 'reason', 'words'])) return;
+    if (!isSafeMember(value.reason, ['server_continued', 'queue_empty'])) return;
+    if (!isSafeCount(value.words) || value.words < 1) return;
+    return { event: 'gptlive_no_flush', reason: value.reason, words: value.words };
+  }
+  if (value.event === 'gptlive_unknown_frame') {
+    // N1: an unread provider frame name, counted once per session. Bounded to a protocol token, never a body.
+    if (!closedKeys(value, ['event', 'type', 'count'])) return;
+    if (typeof value.type !== 'string' || value.type.length > 64 || !UNKNOWN_FRAME_TYPE.test(value.type)) return;
+    if (!isSafeCount(value.count) || value.count < 1) return;
+    return { event: 'gptlive_unknown_frame', type: value.type, count: value.count };
   }
   if (value.event === 'gptlive_turn_complete') {
     if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
@@ -452,6 +479,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
     return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
+  }
+  if (value.event === 'research_lookup') {
+    // N3: one receipt per routed lookup: the layer, its outcome and its wall time. Never a query.
+    const keys = ['event', 'researchId', 'source', 'outcome', 'ms'];
+    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
+    if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: 'research_lookup', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

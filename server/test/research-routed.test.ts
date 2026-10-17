@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, normalizeLookups, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, researchDeclaration, runResearch,
   validateResearch,
-  type ResearchDeps, type ResearchRoutedLog, type SourceKind,
+  type ResearchDeps, type ResearchLookupLog, type ResearchRoutedLog, type SourceKind,
 } from '../tools/research.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { safeEvent } from '../host/log.js';
@@ -35,6 +35,7 @@ function deferred<T>(): Deferred<T> {
 interface Harness {
   deps: ResearchDeps;
   routed: ResearchRoutedLog[];
+  lookups: ResearchLookupLog[];
   executed: string[];
   selectorCalls: () => number;
 }
@@ -48,6 +49,7 @@ function harness(opts: {
 } = {}): Harness {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
+  const lookups: ResearchLookupLog[] = [];
   let selectorCalls = 0;
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
@@ -59,12 +61,13 @@ function harness(opts: {
     emit: () => {},
     log: () => {},
     logRouted: event => routed.push(event),
+    logLookup: event => lookups.push(event),
     // A selector that answers, so "it was not called" is a real observation rather than a refusal.
     selector: { select: async () => { selectorCalls += 1; opts.selected?.(); return { questionClass: 'cross_source' as const, actions: [], pUseful: {} }; } },
     ledger: new ResearchLedger(),
     ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
   };
-  return { deps, routed, executed, selectorCalls: () => selectorCalls };
+  return { deps, routed, lookups, executed, selectorCalls: () => selectorCalls };
 }
 
 test('a routed start skips the selector and reads every named layer at once', async () => {
@@ -246,4 +249,158 @@ test('an unrouted start keeps the selector path and never touches memory', async
   assert.ok(h.executed.includes('search_knowledge'), 'the knowledge prime read is dispatched, exactly as before');
   assert.ok(!h.executed.includes('mattermost_search'), 'and nothing the selector did not choose');
   assert.deepEqual(h.routed, [], 'no routed receipt without lookups');
+});
+
+// --- N3: the calendar read, the cut-short outcome and same-source coalescing ---------------------
+
+const CALENDAR_EVENT = '- 2026-10-16T09:00:00+05:30, Standup, Room 1 | Primary [id e1]';
+const CALENDAR_LIST = '- Work [work@example.com]\n- Home [home]\n- Family [family]';
+
+/** The calendar layer's real answer: one primary-calendar event read plus the calendar list. */
+function calendarExecute(clock: { value: number }, slowMs = 0): { execute: ResearchDeps['execute']; calls: () => IntentSubCall[][]; live: () => boolean[] } {
+  const batches: IntentSubCall[][] = [];
+  const live: boolean[] = [];
+  const execute: ResearchDeps['execute'] = async (subs: readonly IntentSubCall[], signal: AbortSignal) => {
+    batches.push(subs.map(call => ({ ...call })));
+    live.push(!signal.aborted);
+    clock.value += slowMs;
+    return subs.map(call => call.name === 'gcal_list'
+      ? sub(call.name, CALENDAR_EVENT, true, call.key)
+      : sub(call.name, CALENDAR_LIST, true, call.key));
+  };
+  return { execute, calls: () => batches, live: () => live };
+}
+
+test('a routed calendar read is one bounded primary-calendar call that names what it did not read', async () => {
+  const clock = { value: 0 };
+  const calendar = calendarExecute(clock);
+  const h = harness({ now: () => clock.value, execute: calendar.execute });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on next week' }],
+  }, new AbortController().signal);
+  assert.equal(calendar.calls().length, 1, 'one execution for the calendar layer');
+  const [read, listed] = calendar.calls()[0]!;
+  assert.equal(read!.name, 'gcal_list');
+  assert.equal(read!.args['calendarId'], 'primary', 'the primary calendar only, never the 22-calendar merge');
+  assert.equal(listed!.name, 'gcal_calendars', 'the list rides along only to say what was not read');
+  const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
+  const found = findings.find(finding => finding.source === 'calendar');
+  assert.ok(found !== undefined, 'the calendar layer answers');
+  assert.match(found!.text, /Standup/, 'with a real event line');
+  assert.match(found!.text, /not read: 2 other calendars/, 'and it says the other calendars were not read');
+});
+
+test('a slow calendar read still settles ok with a line inside the run deadline, never empty', async () => {
+  const clock = { value: 0 };
+  const calendar = calendarExecute(clock, 6_000);
+  const receipts: ResearchLookupLog[] = [];
+  const h = harness({ now: () => clock.value, execute: calendar.execute });
+  const deps: ResearchDeps = { ...h.deps, logLookup: event => receipts.push(event) };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
+  }, new AbortController().signal);
+  assert.deepEqual(receipts.map(event => event.outcome), ['ok'], 'a 6 s read is ok, never empty');
+  assert.ok(receipts[0]!.ms < RESEARCH.startDeadlineMs, `the read settles at ${receipts[0]!.ms} ms, inside ${RESEARCH.startDeadlineMs} ms`);
+  const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
+  assert.ok(findings.some(finding => finding.source === 'calendar' && finding.text.includes('Standup')), 'the owner hears the event');
+});
+
+test('a read cut by the deadline reports timeout and the reply says so, never nothing matched', async () => {
+  const controller = new AbortController();
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => {
+      controller.abort();
+      return subs.map(call => sub(call.name, '', false, call.key));
+    },
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did we decide', lookups: [{ source: 'knowledge', query: 'release decision' }],
+  }, controller.signal);
+  assert.deepEqual(h.routed[0]!.outcomes, ['timeout'], 'a cut read is its own outcome, never empty');
+  assert.deepEqual(h.lookups.map(event => event.outcome), ['timeout'], 'and the per-lookup receipt says so');
+  assert.match(String(reply['note']), /cut short/i);
+  assert.doesNotMatch(String(reply['note']), /found nothing matching/i, 'nothing matched is never said about a cut read');
+});
+
+test('a dispatch that throws without a deadline stays failed, never timeout', async () => {
+  const h = harness({ execute: async () => { throw new Error('connector down'); } });
+  await runResearch(h.deps, {
+    action: 'start', question: 'what did we decide', lookups: [{ source: 'knowledge', query: 'release decision' }],
+  }, new AbortController().signal);
+  assert.deepEqual(h.routed[0]!.outcomes, ['failed']);
+});
+
+test('two lookups on one source coalesce into one execution, each reporting its own outcome', async () => {
+  const batches: string[][] = [];
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => {
+      batches.push(subs.map(call => call.name));
+      return subs.map((call, index) => sub(call.name, index === 0 ? EVIDENCE['search_knowledge']! : '', true, call.key));
+    },
+  });
+  await runResearch(h.deps, {
+    action: 'start', question: 'what did we decide about the release',
+    lookups: [{ source: 'knowledge', query: 'release decision' }, { source: 'knowledge', query: 'who owns the release' }],
+  }, new AbortController().signal);
+  assert.equal(batches.length, 1, 'one knowledge execution for both queries, so neither starves the other');
+  assert.equal(batches[0]!.length, 2, 'carrying both queries');
+  assert.deepEqual(h.lookups.map(event => event.source), ['knowledge', 'knowledge']);
+  assert.deepEqual(h.lookups.map(event => event.outcome), ['ok', 'empty'], 'each lookup keeps its own outcome');
+});
+
+test('the per-lookup receipt carries source, outcome and ms and never a query', async () => {
+  const h = harness({ now: () => 5 });
+  await runResearch(h.deps, {
+    action: 'start', question: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'secret release plan' }],
+  }, new AbortController().signal);
+  assert.equal(h.lookups.length, 1);
+  const receipt = h.lookups[0]!;
+  assert.deepEqual(Object.keys(receipt).sort(), ['event', 'ms', 'outcome', 'researchId', 'source']);
+  assert.equal(receipt.source, 'knowledge');
+  assert.equal(receipt.outcome, 'ok');
+  assert.equal(JSON.stringify(receipt).includes('secret release plan'), false, 'never the query text');
+});
+
+// --- N3 review F1/F2: the calendar budget and the batch the router hands it -----------------------
+
+test('the batch bound grows with the lookup count for every source except the calendar', () => {
+  assert.equal(lookupBound('calendar', 1, 15_000), RESEARCH.routedCalendarDeadlineMs);
+  assert.equal(lookupBound('calendar', 2, 15_000), RESEARCH.routedCalendarDeadlineMs, 'two windows never double the calendar budget');
+  assert.ok(lookupBound('calendar', 2, 15_000) < RESEARCH.startDeadlineMs, 'and it stays inside the start deadline, never equal to it');
+  assert.equal(lookupBound('knowledge', 1, 15_000), RESEARCH.sourceDeadlineMs);
+  assert.equal(lookupBound('knowledge', 2, 15_000), RESEARCH.sourceDeadlineMs * 2, 'a coalesced batch buys the time each lookup needs');
+  assert.equal(lookupBound('knowledge', 4, 9_000), 9_000, 'never past what the run has left');
+});
+
+test('the calendar read is handed a live signal and settles well inside the start deadline', async () => {
+  const clock = { value: 0 };
+  const calendar = calendarExecute(clock, 6_000);
+  const h = harness({ now: () => clock.value, execute: calendar.execute });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
+  }, new AbortController().signal);
+  assert.deepEqual(calendar.live(), [true], 'the batch was not already aborted when the read started');
+  assert.ok(RESEARCH.routedCalendarDeadlineMs < RESEARCH.startDeadlineMs, 'the bound itself is inside the run deadline');
+  const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
+  assert.ok(findings.some(finding => finding.source === 'calendar'), 'and the read answered');
+});
+
+test('two calendar windows share one calendar-list read and one budget, each reporting its own outcome', async () => {
+  const clock = { value: 0 };
+  const calendar = calendarExecute(clock);
+  const h = harness({ now: () => clock.value, execute: calendar.execute });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is on my calendar',
+    lookups: [{ source: 'calendar', query: 'today' }, { source: 'calendar', query: 'next week' }],
+  }, new AbortController().signal);
+  assert.equal(calendar.calls().length, 1, 'one execution for both windows');
+  const names = calendar.calls()[0]!.map(call => call.name);
+  assert.deepEqual(names, ['gcal_list', 'gcal_calendars', 'gcal_list'], 'the calendar list is dispatched once for both windows');
+  assert.deepEqual(h.lookups.map(event => event.source), ['calendar', 'calendar']);
+  assert.deepEqual(h.lookups.map(event => event.outcome), ['ok', 'ok']);
+  const windows = calendar.calls()[0]!.filter(call => call.name === 'gcal_list').map(call => `${String(call.args['timeMin'])}|${String(call.args['timeMax'])}`);
+  assert.equal(new Set(windows).size, 2, 'and each window is its own read');
+  assert.ok(lookupBound('calendar', 2, RESEARCH.startDeadlineMs) === RESEARCH.routedCalendarDeadlineMs, 'two windows get one read budget, never two');
+  const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
+  assert.ok(findings.some(finding => finding.source === 'calendar'), 'the calendar layer answers for both windows');
 });

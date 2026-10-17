@@ -90,6 +90,11 @@ export interface LiveSummary {
   provider: string | null;
   modelId: string | null;
   voice: string | null;
+  /**
+   * The accent selection the next session start composes with. Unlike provider and voice it describes the next
+   * call, not a call in flight: each session start reads it from live.json, which is why a save applies at once.
+   */
+  accent: string | null;
   personaName: string | null;
   limits: { sessionMs: number; idleMs: number } | null;
   /** Present only while the running provider is OpenAI: the delegation backend its calls use. */
@@ -98,10 +103,10 @@ export interface LiveSummary {
 }
 
 /** The owner's persisted Live provider and voice; it applies when the service next starts. */
-export interface LiveSelection { provider: string; modelId: string; voice: string; appliesAt: string }
+export interface LiveSelection { provider: string; modelId: string; voice: string; accent: string; appliesAt: string }
 
-/** Persist the Live provider and voice choice into live.json. Never touches a call in flight. */
-export async function saveLiveSelection(input: { provider: string; voice: string }, signal?: AbortSignal): Promise<LiveSelection> {
+/** Persist the Live provider, voice and accent choice into live.json. Never touches a call in flight. */
+export async function saveLiveSelection(input: { provider: string; voice: string; accent: string }, signal?: AbortSignal): Promise<LiveSelection> {
   return request<LiveSelection>('/live/settings', { method: 'POST', body: input, signal });
 }
 

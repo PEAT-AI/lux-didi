@@ -63,9 +63,9 @@ class HostLiveService implements LiveService {
   lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return { ...statusFromProfile(this.profile), ...{ memory: this.owner.profileProjection().memory } }; }
   /** Owner choice persisted into live.json; the loaded profile here keeps the call in flight untouched. */
-  saveSelection(input: { provider: unknown; voice?: unknown }): LiveSelectionResult {
+  saveSelection(input: { provider: unknown; voice?: unknown; accent?: unknown }): LiveSelectionResult {
     const saved = saveLiveSelection({ configDir: this.configDir, ownerId: this.store.assistantId, provider: input.provider,
-      ...(input.voice !== undefined ? { voice: input.voice } : {}) });
+      ...(input.voice !== undefined ? { voice: input.voice } : {}), ...(input.accent !== undefined ? { accent: input.accent } : {}) });
     return { ...saved, appliesAt: 'next_start' };
   }
   private requireKey(): void { if (!this.keyPresent) unavailable('key_missing'); }

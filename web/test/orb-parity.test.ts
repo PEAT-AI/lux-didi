@@ -73,7 +73,7 @@ test('the connected consent stays inline above the composer, never inside a coll
   const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
   assert.match(connected, /<section class="connected-conversation" aria-label="Connected Naya conversation">/);
   assert.match(connected, /\$\{grant \|\| this\.#consent \? '' : `<p class="connected-disclosure">/);
-  assert.doesNotMatch(connected, /connected-chat|<details|<\/details>/);
+  assert.doesNotMatch(connected, /connected-chat|Connected text chat/, 'the removed collapsed chat disclosure never returns');
 });
 
 test('typed text goes through the connected composer, Enter to send, not the removed Live text box', () => {

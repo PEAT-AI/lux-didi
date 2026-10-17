@@ -7,6 +7,7 @@ import {
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
 import './research-shape.test.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
@@ -350,7 +351,15 @@ test('a calendar read keeps its own budget and is never starved by the start dea
   assert.ok(read, 'the calendar read still runs');
   assert.equal(read!.ok, true);
   assert.ok(read!.items >= 1, 'the read carries real events');
-  assert.equal(reply['status'], 'answered');
+  // The run's own budget is unchanged: the read finished after the start deadline, so the run says so.
+  assert.equal(reply['status'], 'partial');
+});
+
+test('the calendar deadline sits above the connector read budget it must outlive', async () => {
+  // A read cut by the caller's abort is discarded by the result gate, so the two constants are one
+  // invariant across two modules: the batch deadline must outlive the connector's own read budget.
+  assert.ok(RESEARCH.calendarDeadlineMs > GOOGLE_CALENDAR_READ_MS,
+    `${RESEARCH.calendarDeadlineMs} must exceed ${GOOGLE_CALENDAR_READ_MS}`);
 });
 
 test('the calendar budget never extends another source past the start deadline', async () => {

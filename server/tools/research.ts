@@ -949,8 +949,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   let driver: ResearchDriver | undefined;
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
-  let deadlineAt = started + run.deadlineMs;
-
+  const deadlineAt = started + run.deadlineMs;
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
 
   // Dead air: the model is told the run is alive every few seconds. A selector that burns its whole
@@ -1053,13 +1052,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
     for (const batch of batches) {
       // The calendar source carries its own budget: its merged window read fans out one serialized
-      // remote call per visible calendar, so the start deadline sized for a single read would abort it
-      // mid-fan-out and report a refused, empty read. Every other source keeps the run deadline.
-      if (batch.includes('calendar_window')) {
-        const calendarDeadline = started + RESEARCH.calendarDeadlineMs;
-        if (calendarDeadline > deadlineAt) { deadlineAt = calendarDeadline; run.deadlineMs = Math.max(run.deadlineMs, calendarDeadline - started); }
-      }
-      const remainingMs = deadlineAt - now();
+      // remote call per visible calendar, so the run deadline sized for a single read would abort it
+      // mid-fan-out and report a refused, empty read. Only this batch is widened; every other source and
+      // every later round keeps the run deadline, and the run's own budget is never rewritten.
+      const batchDeadline = batch.includes('calendar_window')
+        ? Math.max(deadlineAt, started + RESEARCH.calendarDeadlineMs)
+        : deadlineAt;
+      const remainingMs = batchDeadline - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);
       const latencies = new Map<CandidateKind, number>();

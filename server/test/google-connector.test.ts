@@ -144,9 +144,9 @@ test('a merged calendar read stops at its own budget and names the calendars it 
     calendars: [{ id: 'primary', summary: 'Mine', primary: true }, { id: 'b', summary: 'Beta' }, { id: 'c', summary: 'Gamma' }, { id: 'd', summary: 'Delta' }],
     eventsFor: id => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }),
     // The primary answers at once and every other calendar takes longer than the read budget.
-    delayFor: id => (id === 'primary' ? undefined : 200),
+    delayFor: id => (id === 'primary' ? undefined : 1500),
   });
-  const result = await (await calendarReader(fake.port, { calendarReadMs: 120 })).gcalList({});
+  const result = await (await calendarReader(fake.port, { calendarReadMs: 600 })).gcalList({});
   const data = dataOf(result);
   const events = data['events'] as Record<string, unknown>[];
   assert.deepEqual(events.map(event => event['id']), ['e-primary'], 'the calendar read before the budget keeps its event');

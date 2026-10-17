@@ -359,7 +359,8 @@ test('the journal defaults on when live.json is absent and the file can turn it 
   assert.equal(currentDebugJournal()?.dataDir, dir, 'the journal root is the data directory');
   // An explicit false is the one thing that turns it off.
   writeFileSync(join(configDir, 'live.json'), JSON.stringify({
-    schemaVersion: 1, enabled: true, dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', debugJournal: false },
+    schemaVersion: 1, enabled: true, dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'brief', debugJournal: false },
   }), { mode: 0o600 });
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
   assert.equal(status.status, 'configured');

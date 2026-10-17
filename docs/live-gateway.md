@@ -51,8 +51,8 @@ require an explicit restart. No dynamic watch and no automatic grant rebinding.
 `gemini` (Gemini 3.8 Live, `models/...` ids on `gemini-primary`) or `openai` (GPT-Live, `gpt-live-*`
 ids on `openai-primary`). `modelId` is validated by the selected provider's own pattern and
 `keyReference` must name that provider's slot, so a Gemini id can never be paired with an OpenAI key.
-The adapter factory selects on `provider`; a provider with no adapter yet fails loudly with
-`unsupported_provider` and never borrows another adapter. A missing key in the selected slot fails
+The adapter factory selects on `provider`; every provider in the union has its own adapter, and an
+unknown name is refused by the union as `unsupported_provider` instead of borrowing another adapter. A missing key in the selected slot fails
 closed with `file_missing` and never falls back across slots. The Live status payload reports the
 provider the profile carries.
 

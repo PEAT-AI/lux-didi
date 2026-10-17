@@ -125,6 +125,17 @@
 /* The lookup check sits in the voice-lane status subtitle; accent green, never the dimmed hint (U1). */
 .lookup-check{color:var(--accent);font-weight:700}
 @media (prefers-reduced-motion:reduce){.activity-line,.activity-done{animation:none}.activity-indicator{animation:none;opacity:.75}}
+/* Live tool steps: one small line per source under the activity line, so the owner sees at a glance
+   which source is being read and on what. The list dims a few seconds after she starts answering. */
+.feed-steps{display:flex;flex-direction:column;gap:2px;max-width:420px;margin:4px auto 0;padding:0 22px 6px;animation:activity-in .3s ease-out}
+.feed-steps-out{animation:activity-fade 3.6s ease-in forwards}
+.step-line{display:flex;align-items:baseline;gap:8px;margin:0;font-size:.78rem;color:var(--activity-dim);line-height:1.35}
+.step-line .step-text{overflow-wrap:anywhere}
+.step-mark{flex:0 0 auto;width:10px;color:var(--text-secondary);font-weight:700;line-height:1}
+.step-done .step-mark{color:var(--teal)}
+.step-failed{color:var(--warn)}
+.step-failed .step-mark{color:var(--danger)}
+@media (prefers-reduced-motion:reduce){.feed-steps,.feed-steps-out{animation:none}}
 /* --- Three-lane layout: rail | Voice | Chat, global header, sheets, live pill. --- */
 .app-shell{flex-direction:column;height:100vh;overflow:hidden}
 .app-header{display:flex;align-items:center;gap:10px;height:56px;flex-shrink:0;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface);position:relative;z-index:30}

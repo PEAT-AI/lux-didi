@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading } from '../src/live-view.ts';
+import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -833,4 +834,56 @@ test('UI3b N2 the voice view drops to blank on the first starting frame and only
   assert.equal(startingReset('idle', 'starting'), true, 'a new Live session enters starting and clears the lane');
   assert.equal(startingReset('starting', 'starting'), false, 'a second starting frame clears nothing again');
   for (const state of ['live', 'idle', 'stopping', 'error'] as const) assert.equal(startingReset('idle', state), false, state);
+});
+
+// U-k3: the live tool steps under the orb. One line per source, what it is reading and on what,
+// then how it ended. The mini orb shows no text beyond its one caption.
+const stepsOf = (steps: LiveCurrent['steps']): LiveCurrent => ({
+  state: 'thinking', cursor: 0,
+  entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'research', status: 'called' } }],
+  steps,
+});
+
+test('the voice view lists each source being read, with its subject, then its result', () => {
+  const html = liveMarkup(stepsOf([
+    { callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze, last 7 days', phase: 'start' },
+    { callId: 'c1', stepId: 's2', source: 'mail', action: 'search', subject: 'release freeze', phase: 'start' },
+    { callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze, last 7 days', phase: 'end', resultCount: 13, ok: true },
+  ]));
+  assert.match(html, /data-seg="steps"/);
+  assert.match(html, /Searching Mail: release freeze/);
+  assert.match(html, /Mattermost: 13 messages/, 'the answered source reports its own count');
+  assert.match(html, /step-done/, 'a done source carries a quiet done mark');
+  assert.equal(html.includes('Searching Mattermost: release freeze'), false, 'the end step replaces its start line in place');
+});
+
+test('a source that failed or timed out says so plainly', () => {
+  const html = liveMarkup(stepsOf([
+    { callId: 'c1', stepId: 's1', source: 'calendar', action: 'read', subject: 'this week', phase: 'start' },
+    { callId: 'c1', stepId: 's1', source: 'calendar', action: 'read', subject: 'this week', phase: 'end', ok: false },
+  ]));
+  assert.match(html, /Reading your calendar: this week/);
+  assert.match(html, /Calendar did not answer/);
+  assert.match(html, /step-failed/);
+});
+
+test('the step list dims once she starts answering, and carries nothing while nothing runs', () => {
+  const steps: LiveCurrent['steps'] = [{ callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze', phase: 'end', resultCount: 2, ok: true }];
+  assert.equal(stepsFading({ ...stepsOf(steps), state: 'thinking' }), false);
+  assert.match(stepListMarkup({ ...stepsOf(steps), state: 'speaking' }), /feed-steps-out/);
+  assert.doesNotMatch(stepListMarkup({ ...stepsOf(steps), state: 'thinking' }), /feed-steps-out/);
+  assert.equal(stepListMarkup(undefined), '');
+  assert.equal(stepListMarkup(stepsOf([])), '');
+});
+
+test('the mini orb renders no step lines, only its one caption', () => {
+  const live = stepsOf([
+    { callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze', phase: 'start' },
+    { callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze', phase: 'end', resultCount: 13, ok: true },
+  ]);
+  const mini = miniMarkup(miniState('PROCESSING', liveActivity(live)), 'Searching your mail');
+  assert.equal(mini.includes('data-seg="steps"'), false, 'the mini route never renders the step list');
+  assert.equal(mini.includes('Mattermost'), false, 'no source line and no count reaches the mini orb');
+  assert.equal(mini.includes('release freeze'), false, 'no subject reaches the mini orb');
+  assert.match(liveMarkup(live), /Mattermost: 13 messages/, 'the full view is where the steps live');
 });

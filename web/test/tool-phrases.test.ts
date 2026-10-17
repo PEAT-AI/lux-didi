@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TOOL_PHRASES, toolPhrase, toolPhrases, toolConnector } from '../src/tool-phrases.ts';
+import { TOOL_PHRASES, stepPhrase, toolPhrase, toolPhrases, toolConnector } from '../src/tool-phrases.ts';
 
 /** Every current Live tool and the phrase it must render. */
 const LIVE_TOOLS: readonly (readonly [string, string])[] = [
@@ -45,4 +45,17 @@ test('a batch of calls merges into one calm line', () => {
 test('toolConnector gives a readable connector', () => {
   assert.equal(toolConnector('mattermost_search'), 'Mattermost');
   assert.equal(toolConnector('gcal_list'), 'Calendar');
+});
+
+// U-k3: a live step reads as one line: what she is looking at, then what came back.
+test('a live step reads as source, action and subject, then as its result', () => {
+  assert.equal(stepPhrase({ source: 'chat', action: 'search', subject: 'release freeze, last 7 days', phase: 'start' }), 'Searching Mattermost: release freeze, last 7 days');
+  assert.equal(stepPhrase({ source: 'mail', action: 'search', subject: 'release freeze', phase: 'start' }), 'Searching your mail: release freeze');
+  assert.equal(stepPhrase({ source: 'calendar', action: 'read', subject: 'today', phase: 'start' }), 'Reading your calendar: today');
+  assert.equal(stepPhrase({ source: 'knowledge', action: 'search', phase: 'start' }), 'Searching your knowledge base');
+  assert.equal(stepPhrase({ source: 'chat', action: 'search', phase: 'end', resultCount: 13, ok: true }), 'Mattermost: 13 messages');
+  assert.equal(stepPhrase({ source: 'chat', action: 'search', phase: 'end', resultCount: 1, ok: true }), 'Mattermost: 1 message');
+  assert.equal(stepPhrase({ source: 'mail', action: 'search', phase: 'end', resultCount: 0, ok: true }), 'Mail: nothing found');
+  assert.equal(stepPhrase({ source: 'calendar', action: 'read', phase: 'end', ok: false }), 'Calendar did not answer');
+  assert.equal(stepPhrase({ source: 'unknownsource', action: 'use', phase: 'start' }), 'Using unknownsource');
 });

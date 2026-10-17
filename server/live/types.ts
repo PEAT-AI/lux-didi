@@ -1,5 +1,6 @@
 import type { createToolsOwner } from '../tools/index.js';
 import type { ResearchSelector } from '../tools/research.js';
+import type { LiveToolStepBody } from '../tools/host-events.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort, LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
@@ -86,6 +87,9 @@ export interface LivePageProjection {
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
   entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal' | 'researchProgress'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] }; progress?: ResearchProgressView }[];
   cursor: number;
+  /** The tool steps of the turn in flight, newest last. In memory only: a settled session keeps none,
+   *  so the voice view dims them without a schema change. */
+  steps?: LiveToolStepBody[];
 }
 
 /** Metadata only: the research phase and source kinds, never the question or a result. */

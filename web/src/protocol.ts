@@ -28,7 +28,10 @@ export interface LiveTool { name: string; status: 'called' | 'completed' | 'erro
 export interface ResearchProgressView { researchId: string; phase: 'started' | 'round' | 'done' | 'stopped'; sourcesDone: string[]; sourcesPending: string[]; elapsedMs: number }
 export interface LiveEntry { event?: 'rebuilding' | 'resumed'; reason?: string; seq: number; kind: LiveKind; text?: string; tool?: LiveTool; progress?: ResearchProgressView }
 export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
-export interface LiveCurrent { pastSession?: { outcome: 'closed' | 'failed' | 'cancelled' | 'deadline' | 'not_started' | 'outcome_unknown' | 'journal_limit' | 'consumer_backpressure' | 'expired' | 'revoked' | 'unknown'; endedAt: number | null; lastObservedAt: number }; jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }
+/** One live tool step: which source, what action, on what, and how it ended. */
+export interface LiveToolStepView { callId: string; stepId: string; source: string; action: string; subject?: string; phase: 'start' | 'end'; resultCount?: number; ok?: boolean; ms?: number }
+
+export interface LiveCurrent { pastSession?: { outcome: 'closed' | 'failed' | 'cancelled' | 'deadline' | 'not_started' | 'outcome_unknown' | 'journal_limit' | 'consumer_backpressure' | 'expired' | 'revoked' | 'unknown'; endedAt: number | null; lastObservedAt: number }; jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number; steps?: LiveToolStepView[] }
 
 export interface EntryTombstone { entryId: string; deletedAt: string; actor: string; reasonCode: 'owner_request' }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }

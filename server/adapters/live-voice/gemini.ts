@@ -15,7 +15,13 @@ const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.'
 // `upstreamStallMs`) is joined by two earlier signals and a websocket ping, so a stalled socket reaches the
 // owner recovery path before the provider session is lost.
 const STALL_QUEUE_BYTES = 128 * 1024; // queued bytes held above this for STALL_QUIET_MS counts as a stall
-const STALL_QUIET_MS = 2_000;         // no drain (or queue held) this long counts as a stall
+// A no-drain stall needs a real backlog behind it. One audio frame is ~2-3 KB (2217 bytes sat on an idle local
+// queue in the 3h-b smoke that R1 dropped), while the 10-16 forensics held ~1.07 MB for many seconds. 64 KB is
+// ~20 frames (about 2 s of 16 kHz PCM16 audio) and 16x below that evidence: a healthy socket drains
+// continuously and never parks that much, so bytes above it mean the upstream stopped draining.
+const STALL_DRAIN_FLOOR_BYTES = 64 * 1024;
+const STALL_QUIET_MS = 2_000;         // queue held above STALL_QUEUE_BYTES this long counts as a stall
+const STALL_DRAIN_QUIET_MS = 5_000;   // sustained no-drain window above the floor, well short of the 10-16 stall
 const PING_INTERVAL_MS = 5_000;        // websocket ping cadence
 const PING_MISSED_LIMIT = 2;           // missed pongs before the socket is declared stalled
 // Observability (release 3g-c): while the send queue is elevated, surface its depth about once a second.
@@ -325,10 +331,11 @@ class Session implements LiveVoiceSession {
       if (this.queueStalledSince === undefined) this.queueStalledSince = now;
       else if (now - this.queueStalledSince >= STALL_QUIET_MS) { drop('queue_stalled'); return; }
     } else this.queueStalledSince = undefined;
-    // Earlier signal: the queue never drains for STALL_QUIET_MS while bytes are still owed.
+    // Earlier signal: a real backlog above the floor never drains for STALL_DRAIN_QUIET_MS. A small idle
+    // queue is not evidence of a stall, so it never counts (#291).
     if (this.lastQueuedBytes === undefined || buffered < this.lastQueuedBytes) { this.lastQueuedBytes = buffered; this.lastDrainAt = now; }
     else this.lastQueuedBytes = buffered;
-    if (buffered > 0 && now - this.lastDrainAt >= STALL_QUIET_MS) { drop('no_drain'); return; }
+    if (buffered > STALL_DRAIN_FLOOR_BYTES && now - this.lastDrainAt >= STALL_DRAIN_QUIET_MS) { drop('no_drain'); return; }
     // Observability: report an elevated queue depth about once a second while it is above 64 KB.
     if (buffered > QUEUE_LOG_BYTES && (this.lastQueueLogAt === undefined || now - this.lastQueueLogAt >= QUEUE_LOG_INTERVAL_MS)) {
       this.lastQueueLogAt = now;

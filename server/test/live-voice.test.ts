@@ -1008,6 +1008,7 @@ test('a backlog that grows past 64 KB without draining is one stalled transport'
   assert.equal(outcome.recoverable, true);
   assert.equal(outcome.upstream!.errorKind, 'no_drain');
   assert.ok(outcome.upstream!.bufferedAmount > 64 * 1024, 'the drop needs a real backlog behind it');
+  assert.ok(outcome.upstream!.sessionMs >= 4_000, 'and a sustained no-drain window, not the first flat tick');
 });
 
 test('two missed websocket pongs are a stalled transport', async t => {

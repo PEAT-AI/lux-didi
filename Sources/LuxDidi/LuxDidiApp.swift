@@ -339,8 +339,13 @@ import WebKit
         if let route = bridgeRoute() { bridge.pushRoute(route) }
     }
 
+    /// #311: the FULL window's mode button is a presentation switch, so the model
+    /// forwards it to the app and never touches Live or audio itself.
+    var onMiniMode: (() -> Void)?
+
     func handleBridgeCommand(_ message: BridgeInbound) {
         switch message {
+        case .mini: onMiniMode?()
         case .start: startLive()
         case .stop: stopLive()
         case .mute: if live?.isMuted == false { live?.toggleMute() }
@@ -436,9 +441,9 @@ struct RootView: View {
         startLive: { [weak self] in self?.model.startLive() },
         stopLive: { [weak self] in self?.model.stopLive() },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
-        presentPanel: { [weak self] in self?.presentMiniPanel() },
+        presentPanel: { [weak self] in _ = self?.coordinator.presentMini() },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
-        expandToWindow: { [weak self] in self?.show() })
+        expandToWindow: { [weak self] in _ = self?.coordinator.presentFull(activating: true) })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -460,20 +465,39 @@ struct RootView: View {
     private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
     private var quitting = false
+    /// The one owner of the visible surface (#311). Every entry point (Dock
+    /// click, hotkey, orb click, mode button, close) reports through it, so no
+    /// sequence leaves two surfaces on screen.
+    private(set) lazy var coordinator = PresentationCoordinator(
+        showFull: { [weak self] activating in self?.presentWindow(activating: activating) },
+        hideFull: { [weak self] in
+            self?.model.stopDictation("Didi hidden")
+            self?.window?.orderOut(nil)
+        },
+        showMini: { [weak self] in self?.presentMiniPanel() ?? false },
+        hideMini: { [weak self] in self?.miniOrb.hideSurface() },
+        liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true })
     func applicationDidFinishLaunching(_ notification: Notification) {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
-        NSApp.setActivationPolicy(.accessory)
-        OwnedWindowReadiness.trace("app:setActivationPolicy-accessory",
+        // UI3A-R1: a regular app for the interactive, login-item and install
+        // relaunch kinds, accessory for the non-activating proof kinds. Set once,
+        // never switched at runtime, and the launch itself never activates.
+        NSApp.setActivationPolicy(launchKind.activationPolicy)
+        OwnedWindowReadiness.trace("app:setActivationPolicy",
             ["activationPolicy": NSApp.activationPolicy().rawValue])
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         // One all-dark window: transparent hidden titlebar, traffic lights over the web rail.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        // UI3A: a standard window at the normal level that stays in front of a
+        // normal window stack instead of vanishing when the app deactivates.
+        window.level = .normal
+        window.hidesOnDeactivate = false
         window.backgroundColor = BridgeTheme.dark.backgroundColor
         window.appearance = NSAppearance(named: BridgeTheme.dark.appearanceName)
         window.title = ""; window.center(); window.delegate = self
@@ -487,6 +511,7 @@ struct RootView: View {
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
+        model.onMiniMode = { [weak self] in _ = self?.coordinator.presentMini() }
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Didi")
@@ -616,8 +641,10 @@ struct RootView: View {
         action.copy()
     }
 
+    /// The menu, the launch and the Dock all land on the FULL window and never
+    /// leave the orb visible beside it.
     @objc func show() {
-        presentWindow(activating: launchKind.activates)
+        coordinator.presentFull(activating: launchKind.activates)
     }
     /// Presents the window for the current launch kind. Only an interactive launch
     /// makes the window key and activates the app; every other launch orders the
@@ -727,16 +754,25 @@ struct RootView: View {
         guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")
     }
-    func toggle() { window.isVisible ? hide() : show() }
+    func toggle() { coordinator.toggleWindow(activating: launchKind.activates) }
     /// Hiding the window stops dictation but never Live; Live is stopped only by
     /// an explicit action (menu, Ctrl-Opt-Shift-L, or hiding the mini orb).
-    func hide() { model.stopDictation("Didi hidden"); window.orderOut(nil) }
-    func escape() { if miniOrb.isVisible { miniOrb.hide() } else { hide() } }
-    @objc func toggleMiniOrb() { miniOrb.toggle() }
-    private func presentMiniPanel() {
+    func hide() { coordinator.hideAll() }
+    func escape() {
+        if coordinator.mode == .mini { miniOrb.hide(); coordinator.hideMiniSurface() } else { hide() }
+    }
+    /// Ctrl-Opt-Space: the mini orb, and a second press brings the window back.
+    @objc func toggleMiniOrb() {
+        if coordinator.mode == .mini { _ = coordinator.presentFull(activating: launchKind.activates) } else { miniOrb.show() }
+    }
+    /// The FULL window's mode button (#311), and the same path the web button
+    /// takes through the bridge. Presentation only: Live keeps running.
+    @objc func showMiniOrb() { _ = coordinator.presentMini() }
+    @discardableResult
+    private func presentMiniPanel() -> Bool {
         guard let shell = miniShellForDisplay() else {
-            // No page to host: show the window so the connection state is visible.
-            show(); return
+            // No page to host: the coordinator falls back to the FULL window.
+            return false
         }
         let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] in self?.miniOrb.expand() }
         miniPanel = panel
@@ -746,6 +782,7 @@ struct RootView: View {
             miniCookie = cookie
             Task { await shell.load(cookie: cookie) }
         }
+        return true
     }
     /// The mini view reuses the one live page session: same service origin, same
     /// page cookie, never a second bootstrap (which would revoke the first view).
@@ -757,7 +794,16 @@ struct RootView: View {
         miniPanel = nil
         return shell
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
+    /// UI3A-R2: Cmd+W and the close button. An active Live session switches to
+    /// the mini orb and keeps running; otherwise the window hides and the app
+    /// stays in the Dock.
+    func windowShouldClose(_ sender: NSWindow) -> Bool { coordinator.closeFull(); return false }
+    /// A Dock click always presents the FULL window and never leaves the orb
+    /// beside it.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        coordinator.presentFull(activating: launchKind.activates)
+        return false
+    }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func runInstalledProof() async {

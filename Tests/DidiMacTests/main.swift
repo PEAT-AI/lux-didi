@@ -65,6 +65,76 @@ expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 570,
 let miniSaved = CGRect(x: 100, y: 120, width: 300, height: 300)
 expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == miniSaved, "mini orb frame is remembered")
 expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen]) != CGRect(x: 5000, y: 5000, width: 300, height: 300), "an off-screen mini frame is replaced")
+// UI3A-R1: the activation policy per launch kind. The interactive, login-item and
+// install-relaunch kinds are regular apps (Dock tile, Cmd-Tab); the four
+// non-activating proof kinds stay accessory so a check never gains either.
+expect(LaunchKind.interactive.activation == .regular && LaunchKind.interactive.activationPolicy == .regular, "an interactive launch is a regular app")
+expect(LaunchKind.loginItem.activation == .regular && LaunchKind.loginItem.activationPolicy == .regular, "a login-item launch is a regular app")
+expect(LaunchKind.installRelaunch.activation == .regular && LaunchKind.installRelaunch.activationPolicy == .regular, "an install relaunch is a regular app")
+for kind in [LaunchKind.installedProof, .selfCheck, .uiProof, .verification] {
+    expect(kind.activation == .accessory && kind.activationPolicy == .accessory, "a non-activating proof launch stays accessory: \(kind)")
+}
+expect(LaunchKind.installedProof.presentsWindowAtLaunch && LaunchKind.loginItem.presentsWindowAtLaunch == false, "the mini work keeps the launch window policy")
+
+// UI3A: the presentation coordinator owns the one visible surface. A Dock reopen
+// always presents FULL, a close during an active Live session switches to MINI and
+// keeps the session, and no sequence of switches leaves two surfaces or touches Live.
+var visibleSurfaces: Set<String> = []
+var miniPageHostable = true
+var liveActive = false
+let liveSession = "live-session-42"
+let coordinator = PresentationCoordinator(
+    showFull: { _ in visibleSurfaces.remove("mini"); visibleSurfaces.insert("full") },
+    hideFull: { visibleSurfaces.remove("full") },
+    showMini: { visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return miniPageHostable },
+    hideMini: { visibleSurfaces.remove("mini") },
+    liveIsRunning: { liveActive })
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
+coordinator.presentFull(activating: true)
+expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a FULL presentation shows the window alone")
+coordinator.presentMini()
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a MINI presentation shows the orb alone")
+coordinator.presentFull(activating: true)
+expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a Dock reopen presents FULL from MINI")
+liveActive = true
+coordinator.closeFull()
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a close during an active Live session switches to MINI")
+expect(liveActive && liveSession == "live-session-42", "the Live session survives the switch to MINI with its id")
+coordinator.presentFull(activating: true)
+liveActive = false
+coordinator.closeFull()
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a close while idle hides every surface")
+coordinator.presentFull(activating: true)
+coordinator.toggleWindow(activating: true)
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the window shortcut hides a visible window")
+coordinator.toggleWindow(activating: true)
+expect(coordinator.mode == .full && visibleSurfaces == ["full"], "the window shortcut brings the window back")
+for _ in 0..<20 { coordinator.presentMini(); coordinator.presentFull(activating: false); coordinator.presentMini() }
+expect(visibleSurfaces.count == 1 && coordinator.mode == .mini, "rapid switching ends with exactly one surface")
+miniPageHostable = false
+coordinator.presentFull(activating: false)
+coordinator.presentMini()
+expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a mini orb with no page falls back to the FULL window")
+miniPageHostable = true
+
+// UI3A: the orb never becomes key or main, floats above normal windows over every
+// Space, and stays out of the app switcher.
+expect(MiniOrbPanelPolicy.becomesKey == false && MiniOrbPanelPolicy.becomesMain == false, "the mini panel can become neither key nor main")
+expect(MiniOrbPanelPolicy.styleMask.contains(.nonactivatingPanel) && MiniOrbPanelPolicy.styleMask.contains(.borderless), "the mini panel is borderless and never activates the app")
+expect(MiniOrbPanelPolicy.level == .floating, "the mini panel floats above normal windows")
+let behavior = MiniOrbPanelPolicy.collectionBehavior
+expect(behavior.contains(.canJoinAllSpaces) && behavior.contains(.fullScreenAuxiliary) && behavior.contains(.ignoresCycle), "the mini panel joins every Space, floats over full screen and stays out of the window cycle")
+expect(behavior.contains(.stationary) == false, "the mini panel moves with its Space")
+
+// UI3A: a remembered frame is clamped into a visible screen, on restore and after a
+// display disappears, never discarded and never resized.
+let offScreen = MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen])
+expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 300, height: 300), "an off-screen mini frame is clamped into a visible screen at its size")
+let halfOff = MiniOrbFrameRestore.resolve(CGRect(x: -120, y: 820, width: 300, height: 300), screens: [miniScreen])
+expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 300, height: 300), "a partly off-screen mini frame is clamped, not resized")
+let goneDisplay = MiniOrbFrameRestore.resolve(CGRect(x: 1600, y: 100, width: 300, height: 300), screens: [miniScreen])
+expect(miniScreen.contains(goneDisplay), "a frame left on a removed display is clamped into the remaining screen")
+
 print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Tests/DidiMacTests/main.swift")
 
 let connectionRows = try JSONDecoder().decode([NativeLiveConnection].self, from: Data("[{\"id\":\"calendar\",\"state\":\"error\",\"reasonCode\":\"credential_missing\"}]".utf8))

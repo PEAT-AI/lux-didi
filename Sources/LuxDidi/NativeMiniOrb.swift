@@ -26,18 +26,29 @@ final class MiniOrbToggle {
     /// The chord or the menu item: show the orb and start Live when it is not
     /// already running.
     func show() {
-        if isVisible { presentPanel(); return }
-        isVisible = true
-        if !liveIsRunning() { startLive() }
-        presentPanel()
+        if !isVisible, !liveIsRunning() { startLive() }
+        showSurface()
     }
 
     /// The explicit stop: hide the orb and stop Live.
     func hide() {
         guard isVisible else { return }
+        hideSurface()
+        stopLive()
+    }
+
+    /// A presentation switch that starts and stops nothing: the mini button and
+    /// the close-during-Live path only move the surface, so a running session is
+    /// never restarted and an idle app never opens one.
+    func showSurface() {
+        isVisible = true
+        presentPanel()
+    }
+
+    func hideSurface() {
+        guard isVisible else { return }
         isVisible = false
         dismissPanel()
-        stopLive()
     }
 
     /// A click on the orb: expand the full window and keep Live running.
@@ -51,16 +62,39 @@ final class MiniOrbToggle {
 
 /// Mini orb position, remembered like `WindowFrameRestore` but at 300x300 and
 /// without the 980x760 window minimum, so a compact frame is never rejected.
+/// A frame that is still partly on a screen is clamped into that screen rather
+/// than discarded, so unplugging a display never throws the orb away.
 enum MiniOrbFrameRestore {
     static let size = CGSize(width: 300, height: 300)
     static func resolve(_ saved: CGRect?, screens: [CGRect]) -> CGRect {
-        let screen = screens.first ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let width = min(size.width, screen.width), height = min(size.height, screen.height)
-        if let saved, saved.width >= 120, saved.height >= 120, screens.contains(where: { $0.contains(saved) }) {
-            return saved
+        let fallback = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        if let saved, saved.width >= 120, saved.height >= 120 {
+            let screen = screens.first(where: { $0.intersects(saved) }) ?? screens.first ?? fallback
+            let width = min(saved.width, screen.width), height = min(saved.height, screen.height)
+            return clamp(CGRect(x: saved.minX, y: saved.minY, width: width, height: height), into: screen)
         }
+        let screen = screens.first ?? fallback
+        let width = min(size.width, screen.width), height = min(size.height, screen.height)
         return CGRect(x: screen.midX - width / 2, y: screen.midY - height / 2, width: width, height: height)
     }
+    /// Shifts a rect inside `screen` without resizing it: the orb never lands
+    /// under the menu bar, off an edge, or outside every Space it can join.
+    static func clamp(_ rect: CGRect, into screen: CGRect) -> CGRect {
+        let x = min(max(rect.minX, screen.minX), screen.maxX - rect.width)
+        let y = min(max(rect.minY, screen.minY), screen.maxY - rect.height)
+        return CGRect(x: x, y: y, width: rect.width, height: rect.height)
+    }
+}
+
+/// The panel's presentation rules, kept as values so "the orb never becomes key,
+/// never becomes main, floats over full-screen apps and stays out of the app
+/// switcher" is asserted without creating a window (UI3A, decision file).
+enum MiniOrbPanelPolicy {
+    static let styleMask: NSWindow.StyleMask = [.borderless, .nonactivatingPanel]
+    static let level: NSWindow.Level = .floating
+    static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+    static let becomesKey = false
+    static let becomesMain = false
 }
 
 /// Borderless, floating, non-activating panel that hosts the compact orb route.
@@ -75,10 +109,10 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onExpand: @escaping @MainActor () -> Void) {
         self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView()
         super.init(contentRect: NSRect(origin: .zero, size: MiniOrbFrameRestore.size),
-                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                   styleMask: MiniOrbPanelPolicy.styleMask, backing: .buffered, defer: false)
         isFloatingPanel = true
-        level = .floating
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        level = MiniOrbPanelPolicy.level
+        collectionBehavior = MiniOrbPanelPolicy.collectionBehavior
         isMovableByWindowBackground = true
         isOpaque = false
         backgroundColor = .clear
@@ -106,14 +140,23 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         contentView = container
         delegate = self
         restoreFrame()
+        observeScreenChanges()
     }
 
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { MiniOrbPanelPolicy.becomesKey }
+    override var canBecomeMain: Bool { MiniOrbPanelPolicy.becomesMain }
 
     private func restoreFrame() {
         let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
     }
+    /// A display that appears, sleeps or disappears re-clamps the remembered
+    /// frame, so the orb is never stranded on a screen that is gone.
+    private func observeScreenChanges() {
+        NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+    @objc private func screenParametersChanged() { restoreFrame(); rememberFrame() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
     private func rememberFrame() { UserDefaults.standard.set(NSStringFromRect(frame), forKey: frameKey) }

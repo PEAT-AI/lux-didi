@@ -459,19 +459,21 @@ export class LiveSessionOwner {
       // P1-R1: one source of the earlier-conversation section. A warm assembly younger than ten
       // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
       // stale or absent one is assembled here, exactly as before, and adopted for the next start.
-      const start = chooseStartContext(this.#warm.take(), () => {
-        // The summaries fill what the other sections leave under the target, so measure it first.
-        earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
-          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(composeSession(undefined).text.length) });
-        return { persona: configuredPrompt.system, memory: [] as readonly string[],
-          summary: earlier.section.length ? earlier.section : undefined, calendar: undefined };
-      });
-      if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [], omitted: [] };
-      else this.#warm.adopt(start.sections);
-      const composed = (() => {
-        try { return earlier.section ? composeSession(earlier.section) : composeSession(undefined); }
-        catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
-      })();
+      const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
+        const start = chooseStartContext(this.#warm.take(), () => {
+          // The summaries fill what the other sections leave under the target, so measure it first.
+          earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
+            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(composeSession(undefined).text.length) });
+          return { persona: configuredPrompt.system, memory: [] as readonly string[],
+            summary: earlier.section.length ? earlier.section : undefined, calendar: undefined };
+        });
+        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [], omitted: [] };
+        else this.#warm.adopt(start.sections);
+        return earlier.section ? composeSession(earlier.section) : composeSession(undefined);
+      };
+      let composed: ReturnType<typeof composeLiveSessionInstruction>;
+      try { composed = compose(); }
+      catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };

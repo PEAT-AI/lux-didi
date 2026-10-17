@@ -3,7 +3,7 @@ import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, FakeClock, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
+import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 
@@ -29,8 +29,8 @@ const completions = (captured: Captured) => captured.events.filter(event => even
 /** Let every queued event reach the collector, so a "nothing was emitted" assertion is not a race. */
 const quiet = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
 const sendAudio = (f: { send: (value: unknown) => void }, samples: number) => f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(samples)) });
-/** 7200 samples at 16 kHz is 14400 bytes of 24 kHz s16 mono, exactly the 300 ms head start a stretch must fill. */
-const speak = (f: { send: (value: unknown) => void }, samples = 7_200) => sendAudio(f, samples);
+/** 9600 samples at 16 kHz is 19200 bytes of 24 kHz s16 mono, exactly the 400 ms head start a stretch must fill. */
+const speak = (f: { send: (value: unknown) => void }, samples = 9_600) => sendAudio(f, samples);
 const tools = () => [{ name: 'research', description: 'Look something up', parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false } }];
 type Start = { type: string; session: Record<string, unknown> };
 
@@ -80,6 +80,11 @@ describe('openai gpt-live adapter', () => {
     assert.equal(delegation.type, 'responses');
     assert.deepEqual(delegation.responses['tools'], [{ type: 'function', ...tools()[0] }]);
     assert.equal(delegation.responses['tool_choice'], 'auto');
+    // Ruling O1-R1 (delegation-probe-1018.md): both are accepted by delegation.responses and the final answer
+    // arrives 1.6 to 2.3 s sooner per tool turn; no other delegation field is pinned.
+    assert.equal(delegation.responses['parallel_tool_calls'], true);
+    assert.deepEqual(delegation.responses['reasoning'], { effort: 'low' });
+    assert.deepEqual(Object.keys(delegation.responses).sort(), ['model', 'parallel_tool_calls', 'reasoning', 'tool_choice', 'tools'], 'no other delegation field');
     assert.equal('max_output_tokens' in delegation.responses, false, 'no output cap below the provider default');
     assert.equal(start.session['input'], undefined);
     // The key is a header on the documented endpoint, never a query parameter.
@@ -302,6 +307,9 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.equal(completions(opened.captured), 0);
     sendAudio(opened.f, 240);
+    // 3o: the pause drained the modelled playback, so the cushion re-arms before the next 20 ms plays.
+    await quiet();
+    clock.advance(400);
     await until(() => audioOf(opened.captured).length === 2);
     clock.advance(1_900);
     await quiet();
@@ -359,28 +367,28 @@ describe('openai gpt-live adapter', () => {
     await until(() => completions(opened.captured) === 2);
   });
 
-  test('a head start of 300 ms is held once, then audio passes through and loses no byte', async t => {
+  test('a head start of 400 ms is held once, then audio passes through and loses no byte', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
-    for (let index = 0; index < 2; index += 1) sendAudio(opened.f, 2_400);
+    for (let index = 0; index < 3; index += 1) sendAudio(opened.f, 2_400);
     await quiet();
-    assert.deepEqual(audioOf(opened.captured), [], 'nothing is forwarded before 300 ms of audio');
+    assert.deepEqual(audioOf(opened.captured), [], 'nothing is forwarded before 400 ms of audio');
     sendAudio(opened.f, 2_400);
     await until(() => audioOf(opened.captured).length === 1);
-    assert.deepEqual(audioOf(opened.captured), [14_400], 'the first 300 ms leaves as one event');
+    assert.deepEqual(audioOf(opened.captured), [19_200], 'the first 400 ms leaves as one event');
     for (let index = 0; index < 3; index += 1) sendAudio(opened.f, 2_400);
     await until(() => audioOf(opened.captured).length === 4);
     assert.deepEqual(audioOf(opened.captured).slice(1), [4_800, 4_800, 4_800], 'then each delta passes through');
-    assert.equal(audioBytes(opened.captured), 6 * 4_800, 'the hold never drops a byte');
+    assert.equal(audioBytes(opened.captured), 7 * 4_800, 'the hold never drops a byte');
   });
 
-  test('a head start that never fills is released by the 300 ms clock', async t => {
+  test('a head start that never fills is released by the 400 ms clock', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     sendAudio(opened.f, 2_400);
     await quiet();
     assert.deepEqual(audioOf(opened.captured), []);
-    clock.advance(300);
+    clock.advance(400);
     await until(() => audioOf(opened.captured).length === 1);
     assert.deepEqual(audioOf(opened.captured), [4_800], 'the first 100 ms of a slow stretch still plays');
   });
@@ -392,18 +400,16 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
     await quiet();
-    // N1: the 300 ms head start of the stretch is released before the 350 ms yield gap, so 200 ms of her first
-    // syllable plays. That sliver is accepted: the server's yield, not the transcript, now decides the cut.
-    clock.advance(300);
-    await until(() => audioOf(opened.captured).length === 1);
-    assert.deepEqual(audioOf(opened.captured), [9_600], 'the head start had already begun to play');
-    clock.advance(50);
+    // N1 with the 3o cushion: the 400 ms hold is longer than the 350 ms yield gap, so the owner's barge-in lands
+    // before her first syllable plays and the held audio is discarded with the rest of the cut answer.
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
+    assert.deepEqual(audioOf(opened.captured), [], 'the cut answer plays nothing');
     await quiet();
     clock.advance(2_500);
     speak(opened.f);
-    await until(() => audioOf(opened.captured).length === 2);
-    assert.deepEqual(audioOf(opened.captured), [9_600, 14_400], 'the next stretch starts a fresh head start');
+    await until(() => audioOf(opened.captured).length === 1);
+    assert.deepEqual(audioOf(opened.captured), [19_200], 'the next stretch starts a fresh head start');
   });
 
   test('two parallel tool calls are answered one at a time and sent upstream once', async t => {
@@ -751,5 +757,86 @@ describe('openai gpt-live turn states', () => {
     await until(() => audioOf(opened.captured).length >= before + 1);
     await quiet();
     assert.equal(audioOf(opened.captured).length, before + 1, 'only the frame after the gap plays');
+  });
+
+  // 3o: the mic path. A slow uplink sheds the oldest queued mic frames, so the model hears the newest speech
+  // instead of a backlog of seconds, and the capture path never waits.
+  test('a backed-up uplink sheds the oldest mic frames and hands the socket no backlog', async t => {
+    const receipts = hostReceipts(t);
+    const { socket, session } = await fakeReady(t);
+    socket.bufferedAmount = 96 * 1024;
+    for (let index = 0; index < 12; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    assert.deepEqual(socket.micFrames(), [], 'a backlogged uplink is never handed more mic audio');
+    const shed = receipts().filter(record => record.event === 'uplink_shed');
+    assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
+    assert.ok(Number(shed[0]!.bytes) > 0, 'the receipt counts the shed bytes');
+    assert.ok(Number(shed[0]!.bufferedPeak) >= 96 * 1024, 'and the peak backlog it was shed against');
+    // The uplink recovers: eleven of the twelve frames are gone, so what the model gets is the newest speech.
+    socket.bufferedAmount = 0;
+    session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    assert.equal(socket.micFrames().length, 2, 'only the newest frames are left to send');
+  });
+
+  // 3o: a stall is inbound silence, never an upload queue. Both halves of the measured session are pinned here.
+  test('inbound frames keep arriving while the upload is backed up: the session is not stalled', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 10; step += 1) {
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(2_000);
+    }
+    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'a lossy uplink is not a teardown');
+    assert.equal(receipts().filter(record => record.event === 'live_stall').length, 0, 'and never writes a stall receipt');
+    session.close();
+  });
+
+  test('no inbound frame and no pong for eight seconds is a stall on the existing recovery path', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    t.mock.timers.tick(10_000);
+    await until(() => captured.events.some(event => event.type === 'outcome'));
+    const outcome = captured.events.find(event => event.type === 'outcome');
+    assert.ok(outcome && outcome.type === 'outcome');
+    if (outcome.type !== 'outcome') return;
+    assert.equal(outcome.outcome.status, 'failed');
+    assert.equal(outcome.outcome.code, 'transport_error');
+    assert.equal(outcome.outcome.recoverable, true, 'the R1F rebuild still owns the recovery');
+    assert.equal(outcome.outcome.upstream?.errorKind, 'stalled');
+    const stall = receipts().filter(record => record.event === 'live_stall');
+    assert.equal(stall.length, 1, 'one stall receipt');
+    assert.ok(Number(stall[0]!.silentMs) >= 8_000, 'and it carries the inbound silence that ended the transport');
+  });
+
+  // 3o: the standing cushion. After any dry the native 80 ms prebuffer is below one 100 ms delta, so the hold
+  // comes back whenever the modelled playback has drained, not only at the start of a stretch.
+  test('a drained playback re-arms a 400 ms head start, and no byte is lost', async t => {
+    const clock = new FakeClock();
+    const receipts = hostReceipts(t);
+    const opened = await ready(t, { clock });
+    sendAudio(opened.f, 2_400);
+    await quiet();
+    clock.advance(400);
+    await until(() => audioOf(opened.captured).length === 1);
+    assert.deepEqual(audioOf(opened.captured), [4_800], 'the first stretch is held for 400 ms');
+    clock.advance(150);
+    await quiet();
+    sendAudio(opened.f, 2_400);
+    await quiet();
+    assert.equal(audioOf(opened.captured).length, 1, 'the drained playback re-arms the hold');
+    clock.advance(399);
+    await quiet();
+    assert.equal(audioOf(opened.captured).length, 1, '399 ms is not the cushion');
+    clock.advance(1);
+    await until(() => audioOf(opened.captured).length === 2);
+    assert.equal(audioBytes(opened.captured), 9_600, 'no byte is lost across the re-arm');
+    clock.advance(5_000);
+    await quiet();
+    const rearm = receipts().filter(record => record.event === 'playback_rearm');
+    assert.equal(rearm.length, 1, 'the turn reports its re-arm count once');
+    assert.equal(rearm[0]!.count, 1);
   });
 });

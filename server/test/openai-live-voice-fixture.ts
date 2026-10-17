@@ -1,6 +1,8 @@
 import type { IncomingMessage } from 'node:http';
+import { EventEmitter } from 'node:events';
 import type { TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
+import { OpenAiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceClock, LiveVoiceEvent, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
 
 /**
@@ -114,8 +116,49 @@ export class FakeClock implements LiveVoiceClock {
   }
 }
 
-/** Open a session against the fake server and take it past the start barrier. */
-export async function ready(t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}, input: Partial<LiveVoiceRequest> = {}) {
+/**
+ * A fake uplink socket: no network, no timers, and `bufferedAmount` is a test knob, which a real ws socket can
+ * never offer. The adapter cannot tell it from `ws`: it emits the same events and takes the same calls.
+ */
+export class FakeSocket extends EventEmitter {
+  readyState = 0;
+  bufferedAmount = 0;
+  readonly sent: string[] = [];
+  pings = 0;
+  /** The PCM bytes of every mic frame this socket was asked to send, in send order. */
+  micFrames(): number[] {
+    return this.sent.flatMap(frame => {
+      const parsed = JSON.parse(frame) as { type?: string; audio?: string };
+      return parsed.type === 'session.input_audio.append' && parsed.audio ? [Buffer.from(parsed.audio, 'base64').byteLength] : [];
+    });
+  }
+  send(frame: string, callback?: (error?: Error) => void) { this.sent.push(frame); callback?.(); }
+  close() { if (this.readyState === 3) return; this.readyState = 3; this.emit('close', 1000); }
+  terminate() { this.close(); }
+  ping() { this.pings += 1; }
+  /** An inbound provider frame, exactly as the wire delivers it. */
+  deliver(body: Record<string, unknown>) { this.emit('message', Buffer.from(JSON.stringify(body))); }
+}
+
+/** A session on the fake socket, taken past the start barrier. Nothing here touches the network or a real clock. */
+export async function fakeReady(t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}) {
+  const socket = new FakeSocket();
+  const session = new OpenAiLiveVoiceAdapter(options({
+    ...overrides,
+    socketFactory: (() => {
+      queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    }) satisfies NonNullable<LiveVoiceAdapterOptions['socketFactory']>,
+  })).open(request(), control());
+  t.after(() => session.close());
+  const captured = collect(session);
+  for (let attempt = 0; attempt < 20 && !socket.sent.length; attempt += 1) await new Promise<void>(resolve => setImmediate(resolve));
+  socket.deliver({ type: 'session.started', session: { id: 'sess_fake' } });
+  await session.ready;
+  return { socket, session, captured };
+}
+
+/** Open a session against the fake server and take it past the start barrier. */export async function ready(t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}, input: Partial<LiveVoiceRequest> = {}) {
   const f = await fixture(t);
   const { OpenAiLiveVoiceAdapter } = await import('../adapters/live-voice/index.js');
   const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, ...overrides })).open(request(input), control());

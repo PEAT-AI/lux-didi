@@ -5,6 +5,7 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
 import type { DataClass, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
+import { capJournalText, journalRecord } from '../host/journal.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -168,9 +169,17 @@ export class ChatService implements ChatPort {
     const model = this.#config.model!;
     const tools = this.#config.tools;
     let dataClass: 'private' | 'sensitive' = 'private';
+    let rounds = 0;
     const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
       if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
-      return model.generate(outgoing, outgoingControl);
+      const round = ++rounds;
+      return model.generate(outgoing, outgoingControl).then(result => {
+        // One journal line per model round: the provider's own timings and its stop reason.
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'model_round', round,
+          requestMs: result.timings.firstTextMs ?? result.timings.totalMs, responseMs: result.timings.totalMs,
+          requestChars: outgoing.system.length, stopReason: result.status });
+        return result;
+      });
     };
     if (!tools) { const result = await generate(request, control); return { status: result.status, text: result.text, dataClass }; }
     const active = this.#toolAuthorities.get(run.runId)!;
@@ -641,6 +650,13 @@ export class ChatService implements ChatPort {
       const deadlineMs = this.#now() + duration;
       const deadline = new Promise<'deadline'>(resolve => { timeout = setTimeout(() => resolve('deadline'), duration); });
       if (!this.#config.model) throw new ContextFailure('unavailable');
+      // The debug journal: the composed instructions once per chat run, then what the owner said.
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_start',
+        provider: this.#config.route.provider, model: this.#config.route.model,
+        instructionChars: request.system.length, instructions: request.system });
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'transcript', speaker: 'owner',
+        text: request.contents.filter(content => content.role === 'user').slice(-1)
+          .flatMap(content => content.parts.flatMap(part => typeof part.text === 'string' ? [part.text] : [])).join('\n') });
       const generation = this.#generate(run, context, request, registry, { signal: controller.signal, deadlineMs,
         onEvent: event => { if (event.type === 'text') this.#partial(run, context, event.text); } });
       const aborted = new Promise<'aborted'>(resolve => {
@@ -648,13 +664,25 @@ export class ChatService implements ChatPort {
         else controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
       });
       const result = await Promise.race([generation, deadline, aborted]);
-      if (result === 'aborted') return;
-      if (result === 'deadline') { this.#finish(run, context, 'deadline'); controller.abort(); return; }
+      if (result === 'aborted') {
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_end', code: 'cancelled', by: 'owner' });
+        return;
+      }
+      if (result === 'deadline') {
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'deadline', name: 'chat_turn', configuredMs: duration });
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_end', code: 'deadline', by: 'host' });
+        this.#finish(run, context, 'deadline'); controller.abort(); return;
+      }
       const outcome = this.#outcome(result);
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'transcript', speaker: 'model', text: result.text });
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_end', code: outcome, by: 'host' });
       try { this.#finish(run, context, outcome, result.text, result.dataClass); }
       catch { this.#finish(run, context, 'persistence_failed', result.text); }
     } catch (error) {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';
+      journalRecord({ kind: 'chat', sessionId: accepted.runId, event: 'provider_error',
+        message: error instanceof Error ? capJournalText(error.message) : 'unknown' });
+      journalRecord({ kind: 'chat', sessionId: accepted.runId, event: 'session_end', code: outcome, by: 'host' });
       try { this.#finish(accepted, context, outcome); }
       catch { this.#emit(accepted.runId, { type: 'resync_required', sequence: accepted.sequence, reason: 'storage_unavailable' }); }
     } finally { if (timeout !== undefined) clearTimeout(timeout); this.#workers.delete(accepted.runId); }

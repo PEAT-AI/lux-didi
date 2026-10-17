@@ -14,6 +14,7 @@ import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { capJournalText, journalRecord } from '../host/journal.js';
 import { hostLogEvent } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
@@ -348,6 +349,29 @@ function jobRow(job: ToolJob): import('./types.js').PendingLiveJob {
   };
 }
 
+// Per-second audio counters. Numbers only: the journal never sees a sample. One bucket per second
+// per session, flushed on the next bucket so a stall shows as a second with no output.
+const audioBuckets = new WeakMap<ActiveSession, { second: number; input: number; output: number; silent: number }>();
+const audioTotals = new WeakMap<ActiveSession, number>();
+function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: number): void {
+  const now = Date.now(), second = Math.floor(now / 1000);
+  const bucket = audioBuckets.get(handle);
+  if (bucket === undefined) { audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: 0 }); return; }
+  if (bucket.second === second) {
+    if (channel === 'input') bucket.input += bytes; else bucket.output += bytes;
+    return;
+  }
+  journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio',
+    at: bucket.second, inputBytes: bucket.input, outputBytes: bucket.output });
+  if (bucket.output > 0) audioTotals.set(handle, (audioTotals.get(handle) ?? 0) + bucket.output);
+  // A stall marker needs a speaking second followed by three with no playback at all.
+  if (bucket.output === 0 && handle.speaking) bucket.silent += 1; else bucket.silent = 0;
+  if (bucket.silent === 3) {
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio_marker', marker: 'stall', silentSeconds: bucket.silent });
+  }
+  audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent });
+}
+
 export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: number): import('./types.js').PendingLiveJob[] {
   return jobs.filter(job => job.deferred
     && (job.deliverySessionId ?? job.originSessionId) === liveSessionId
@@ -497,6 +521,12 @@ export class LiveSessionOwner {
       }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      // The debug journal's session start: the composed instructions once, then the identity and sizes
+      // a debugging session needs. host.log keeps only the content-free sizes line above.
+      journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'session_start',
+        provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
+        instructionChars: composed.text.length, instructionSections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])),
+        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
@@ -769,6 +799,8 @@ export class LiveSessionOwner {
     const deadlineAt = this.#now() + sessionMs;
     const callDeadlineAt = this.#now() + this.#profile.limits.callMaxMs;
     let session: LiveVoiceSession;
+    // The journal's provider clock: request time to the open call, response time to the ready ack.
+    const openedAt = Date.now();
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
       session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits });
@@ -796,7 +828,11 @@ export class LiveSessionOwner {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
       catch (error) { handle.done.reject(error); }
     };
+    journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'provider_setup', stage: 'open',
+      requestMs: Date.now() - openedAt, requestChars: request.system.text.length, declarations: declarations.length });
     session.ready.then(() => {
+      journalRecord({ kind: 'live', sessionId: liveSessionId, generation: handle.generation, event: 'provider_setup', stage: 'ready',
+        responseMs: Date.now() - openedAt });
       if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
       const job = this.#jobs.forSession(liveSessionId);
@@ -809,7 +845,10 @@ export class LiveSessionOwner {
     // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
     // the owner call ceiling ends the call for time exactly as before. Neither is the other.
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
-    handle.callTimer = this.#schedule(() => { this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
+    handle.callTimer = this.#schedule(() => {
+      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'deadline',
+        name: 'call_ceiling', configuredMs: this.#profile.limits.callMaxMs });
+      this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
@@ -941,6 +980,8 @@ export class LiveSessionOwner {
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'continuity', state: event,
+      ...(reason === undefined ? {} : { reason }) });
     const journalSequence = this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event, ...(reason ? { reason } : {}) }) }, 'continuity');
     if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return; }
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
@@ -970,6 +1011,8 @@ export class LiveSessionOwner {
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
   #sessionWindowEnded(handle: ActiveSession): void {
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'deadline',
+      name: 'provider_session', configuredMs: this.#profile.limits.sessionMs });
     if (this.#attended(handle)) { void this.#continueSession(handle); return; }
     this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
   }
@@ -1029,6 +1072,8 @@ export class LiveSessionOwner {
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
   #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'recovery', path,
+      attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
   }
 
   /**
@@ -1125,6 +1170,7 @@ export class LiveSessionOwner {
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     // 3j: a mic frame is not conversation. Idle measures silence, so frames keep flowing without resetting it.
+    countAudio(handle, 'input', pcm.byteLength);
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
   }
 
@@ -1195,6 +1241,7 @@ export class LiveSessionOwner {
     while (!this.#settled(handle)) {
     const session = handle.session, generation = handle.generation;
     let outcome: LiveVoiceOutcome | undefined;
+    let ownerTurnOpen = false;
     try {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
@@ -1204,6 +1251,7 @@ export class LiveSessionOwner {
         // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
         if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
         if (event.type === 'modelTurnStarted') {
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
@@ -1217,10 +1265,17 @@ export class LiveSessionOwner {
         if (event.type === 'goAway') {
           handle.goAwayUntil = this.#now() + event.timeLeftMs;
           hostLogEvent({ event: 'live_go_away', timeLeftMs: event.timeLeftMs });
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'deadline',
+            name: 'provider_go_away', configuredMs: event.timeLeftMs });
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
         }
         if (event.type === 'contextUsage') {
+          // The provider's own usage report, kept with the other numbers and never a payload.
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'context_usage',
+            totalTokens: event.totalTokens,
+            ...(event.promptTokens === undefined ? {} : { promptTokens: event.promptTokens }),
+            ...(event.responseTokens === undefined ? {} : { responseTokens: event.responseTokens }) });
           hostLogEvent({ event: 'live_context_usage', totalTokens: event.totalTokens, ...(event.promptTokens !== undefined ? { promptTokens: event.promptTokens } : {}), ...(event.responseTokens !== undefined ? { responseTokens: event.responseTokens } : {}) });
           continue;
         }
@@ -1268,6 +1323,10 @@ export class LiveSessionOwner {
           handle.thinking = false;
           handle.turnInterrupted = true;
           logTurnScript(handle);
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'interrupt',
+            sinceLastModelAudioMs: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'audio_marker', marker: 'drain',
+            outputBytes: audioTotals.get(handle) ?? 0 });
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -1275,8 +1334,7 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') {
-          handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete' }); handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
@@ -1284,6 +1342,7 @@ export class LiveSessionOwner {
         }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
+          countAudio(handle, 'output', event.pcm.byteLength);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
@@ -1296,11 +1355,26 @@ export class LiveSessionOwner {
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
+        // The journal keeps what was actually said, both sides, as each transcription finalises.
+        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'transcript',
+            speaker: event.type === 'inputTranscription' ? 'owner' : 'model', text: event.text, final: event.finished === true });
+        }
         if (event.type === 'inputTranscription') {
+          if (!ownerTurnOpen) {
+            ownerTurnOpen = true;
+            journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'owner' });
+          }
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
-          if (handle.inputFinal) handle.inputFinalAt = handle.inputAt;
+          if (handle.inputFinal) {
+            handle.inputFinalAt = handle.inputAt;
+            if (ownerTurnOpen) {
+              ownerTurnOpen = false;
+              journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'owner', reason: 'final' });
+            }
+          }
         }
         const kind = journalKind(event.type);
         if (kind === null) continue;
@@ -1315,13 +1389,21 @@ export class LiveSessionOwner {
         }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted) });
       }
-    } catch (error) { handle.persistFailure = error; }
+    } catch (error) {
+      handle.persistFailure = error;
+      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'provider_error',
+        message: error instanceof Error ? capJournalText(error.message) : 'unknown' });
+    }
     if (!handle.terminal) {
       // A session-deadline continuation opens a new session from the timer; the ended one is superseded.
       if (generation !== handle.generation) continue;
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
         outcome ??= await session.done.catch(() => undefined);
+        journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'provider_close',
+          status: outcome?.status ?? 'unknown', code: outcome?.code ?? 'unknown',
+          closeCode: outcome?.upstream?.closeCode ?? null, reason: outcome?.upstream?.errorKind ?? null,
+          recoverable: outcome?.recoverable === true });
         const failedRecovery = handle.rebuilding && !handle.ready;
         if (failedRecovery) handle.recoveries += 1;
         if (outcome?.recoverable || failedRecovery) {
@@ -1703,6 +1785,9 @@ export class LiveSessionOwner {
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
+    // The journal's session end: the terminal code and who ended it, written before the row closes.
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'session_end',
+      code: 'code' in outcome ? outcome.code : outcome.state, by: consumerState, complete });
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;

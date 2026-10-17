@@ -55,6 +55,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!SAFE_TOKEN.test(String(value.tool)) || typeof value.count !== 'number' || !Number.isInteger(value.count) || value.count < 1 || value.count > 1_000_000) return;
     return { event: 'tool_redaction', tool: value.tool, count: value.count };
   }
+  if (value.event === 'debug_journal_error') {
+    // The journal's own receipt: the failing stage only, never a path, a line or a message.
+    if (Object.keys(value).sort().join(',') !== ['code', 'event'].sort().join(',')) return;
+    if (!isSafeMember(value.code, ['open', 'write', 'prune'])) return;
+    return { event: 'debug_journal_error', code: value.code };
+  }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.

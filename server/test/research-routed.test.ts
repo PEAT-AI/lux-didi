@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, normalizeLookups, researchDeclaration, runResearch,
   validateResearch,
-  type ResearchDeps, type ResearchLookup, type ResearchRoutedLog, type SourceKind,
+  type ResearchDeps, type ResearchRoutedLog, type SourceKind,
 } from '../tools/research.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { safeEvent } from '../host/log.js';

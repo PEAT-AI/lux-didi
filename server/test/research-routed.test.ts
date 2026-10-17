@@ -12,7 +12,16 @@ import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
 
-function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
+/** The shaped text each connector really returns, so a fixture answer becomes findings. */
+const EVIDENCE: Record<string, string> = {
+  search_knowledge: '### Release 3k scope (decision | 2026-10-17) [id 123]',
+  gmail_list: '- Release notes | from: Ana | date: 2026-10-16 [id m1]',
+  mattermost_search: '- the release thread, from Ana',
+  mattermost_attention: '- one question from Ana is waiting on him',
+  search_mongoose: '- Plantix organisation chart',
+};
+
+function sub(name: string, text = EVIDENCE[name] ?? 'evidence', ok = true, key = name): IntentSubResult {
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
 }
 
@@ -45,7 +54,7 @@ function harness(opts: {
     configured: opts.configured ?? CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push(call.name);
-      return subs.map(call => sub(call.name, `${call.name} evidence`, true, call.key));
+      return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
     }),
     emit: () => {},
     log: () => {},
@@ -69,7 +78,7 @@ test('a routed start skips the selector and reads every named layer at once', as
       if (entered.length === 2) gate.resolve();
       else await gate.promise;
       clock += 1_000;
-      return subs.map(call => sub(call.name, `${call.name} evidence`, true, call.key));
+      return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
     },
   });
   const reply = await Promise.race([
@@ -109,7 +118,7 @@ test('a routed lookup that fails is isolated and the other layers still answer',
   const h = harness({
     execute: async (subs: readonly IntentSubCall[]) => {
       if (subs[0]!.name === 'gmail_list') throw Error('mail_down');
-      return subs.map(call => sub(call.name, `${call.name} evidence`, true, call.key));
+      return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
     },
   });
   const reply = await runResearch(h.deps, {
@@ -234,6 +243,6 @@ test('an unrouted start keeps the selector path and never touches memory', async
   const h = harness({ memory: () => { throw Error('memory must not be read'); } });
   await runResearch(h.deps, { action: 'start', question: 'where does the project stand', lookups: [] }, new AbortController().signal);
   assert.equal(h.selectorCalls(), 1, 'no lookups means today\'s selector');
-  assert.deepEqual(h.executed, [], 'a selector that answers no action reads nothing');
+  assert.ok(h.executed.every(name => name === 'search_knowledge'), 'only the knowledge prime read is dispatched, exactly as before');
   assert.deepEqual(h.routed, [], 'no routed receipt without lookups');
 });

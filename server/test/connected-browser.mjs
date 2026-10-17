@@ -137,6 +137,8 @@ try {
     await page.locator('[data-tab="Settings"]').click();
     await page.locator('#connected-history').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });
+    await page.locator('#sheet-close').click();
+    await page.locator('#sheet').waitFor({ state: 'detached' });
     await closePanel('left');
   });
   await step('same-profile real restart preserves consent/history and never resends', async () => {

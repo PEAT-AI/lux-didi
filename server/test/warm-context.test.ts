@@ -6,10 +6,12 @@ const sections = {
   persona: 'Naya is the owner\'s assistant.',
   memory: ['Prefers morning calls', 'Lives in Pune'],
   summary: 'Yesterday: release planning.',
-  summaryIds: ['summary-17'],
-  summaryOmitted: [{ id: 'summary-03', reason: 'budget' as const }],
   calendar: '10:00 standup, 15:00 review.',
 };
+/** What a source collection produces: the four slots, with no selection provenance. */
+const collected = { ...sections, summaryIds: [] as readonly string[], summaryOmitted: [] as readonly { id: string; reason: 'budget' | 'stale' }[] };
+/** What the owner adopts after building a real summary section. */
+const withProvenance = { ...sections, summaryIds: ['summary-17'], summaryOmitted: [{ id: 'summary-03', reason: 'budget' as const }] };
 
 /** A local, model-free source set: every getter is a counter, never a socket. */
 function sources() {
@@ -26,7 +28,7 @@ function sources() {
 }
 
 test('the assembly carries persona, memory, the recent summary and the calendar digest in priority order', () => {
-  assert.equal(assembleContext(sections, 4_000),
+  assert.equal(assembleContext(collected, 4_000),
     'Persona: Naya is the owner\'s assistant.\n\n'
     + 'Remembered:\n- Prefers morning calls\n- Lives in Pune\n\n'
     + 'Recent conversation: Yesterday: release planning.\n\n'
@@ -34,15 +36,15 @@ test('the assembly carries persona, memory, the recent summary and the calendar 
 });
 
 test('a missing connector simply leaves its section out', () => {
-  const text = assembleContext({ ...sections, calendar: undefined, summary: undefined }, 4_000);
+  const text = assembleContext({ ...collected, calendar: undefined, summary: undefined }, 4_000);
   assert.doesNotMatch(text, /Today:/);
   assert.doesNotMatch(text, /Recent conversation:/);
   assert.match(text, /^Persona: /);
 });
 
 test('the instruction budget bounds the assembly and truncates in priority order', () => {
-  const full = assembleContext(sections, 4_000);
-  const bounded = assembleContext(sections, 30);
+  const full = assembleContext(collected, 4_000);
+  const bounded = assembleContext(collected, 30);
   assert.ok(bounded.length <= 30, 'the bounded assembly never exceeds the budget, got ' + bounded.length);
   assert.match(bounded, /^Persona: /);
   assert.doesNotMatch(bounded, /Today:/, 'the lowest priority section is what a tight budget drops');
@@ -51,15 +53,15 @@ test('the instruction budget bounds the assembly and truncates in priority order
 
 test('every source is read exactly once per collection', () => {
   const local = sources();
-  const collected = collectSections(local.value);
+  const read = collectSections(local.value);
   assert.deepEqual(local.calls, { persona: 1, memory: 1, summary: 1, calendar: 1 });
-  assert.deepEqual(collected, sections);
+  assert.deepEqual(read, collected);
 });
 
 test('a warm start keeps the summary provenance it was assembled with, never empties', () => {
   let now = 900_000;
-  const cache = new WarmContextCache({ sources: sources().value, budget: 4_000, now: () => now });
-  cache.refresh();
+  const cache = new WarmContextCache({ budget: 4_000, now: () => now });
+  cache.adopt(withProvenance);
   const start = chooseStartContext(cache.take(), () => {
     throw new Error('a warm start must not assemble again');
   });
@@ -79,7 +81,7 @@ test('start path A: an assembly inside ten minutes is used as it stands, with no
     throw new Error('a warm start must not assemble again');
   });
   assert.equal(start.warm, true);
-  assert.deepEqual(start.sections, sections);
+  assert.deepEqual(start.sections, collected);
   assert.deepEqual(local.calls, { persona: 1, memory: 1, summary: 1, calendar: 1 }, 'the store is never read twice');
 });
 
@@ -91,7 +93,7 @@ test('start path B: a stale or absent assembly is assembled now, and adopted for
   // Absent: the caller assembles, then adopts, so nothing is assembled twice.
   const absent = chooseStartContext(cache.take(), () => collectSections(local.value));
   assert.equal(absent.warm, false);
-  assert.deepEqual(absent.sections, sections);
+  assert.deepEqual(absent.sections, collected);
   assert.deepEqual(local.calls, { persona: 1, memory: 1, summary: 1, calendar: 1 });
   cache.adopt(absent.sections);
   assert.equal(cache.assemblies, 1);
@@ -140,7 +142,7 @@ test('a session may only start from a warm assembly younger than ten minutes', (
   const cache = new WarmContextCache({ sources: sources().value, budget: 4_000, now: () => now });
   cache.refresh();
   assert.equal(cache.ageMs, 0);
-  assert.deepEqual(cache.take()?.sections, sections);
+  assert.deepEqual(cache.take()?.sections, collected);
 
   now += warmContextMaxAgeMs - 1;
   assert.ok(cache.take() !== undefined, 'one millisecond short of ten minutes is still warm');

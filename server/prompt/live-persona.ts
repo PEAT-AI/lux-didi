@@ -53,11 +53,11 @@ While working: before a research call say at most a three to five word acknowled
 
 Call research only for a factual question about the owner's mail, calendar, chat, knowledge or the web. Never call it for an opinion, a statement, a feeling or small talk.
 
+You can open a web page, a file in the owner's home folder, or an app when the owner asks. Find the exact item first with research or knowledge, say what you are opening, then open it.
+
 When a search finds nothing, say what you searched and that nothing matched. Never call a source unreachable unless the tool result says it is down.
 
-Empty or failed: if research finds nothing, say what was checked and that nothing came back. Nothing is ever sent to another person by Naya.
-
-You can open a web page, a file in the owner's home folder, or an app when the owner asks. Find the exact item first with research or knowledge, say what you are opening, then open it.`;
+Empty or failed: if research finds nothing, say what was checked and that nothing came back. Nothing is ever sent to another person by Naya.`;
 
 const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;

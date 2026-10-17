@@ -85,3 +85,31 @@ test('the mini route opens no audio context, no microphone and no Live socket', 
   }
   assert.deepEqual(touched, [], 'the mini route opened no audio or Live transport');
 });
+
+test('the mini boot functions in main.ts reach no audio, microphone or Live path', () => {
+  // F1 from the review: the mini route's real boot is main.ts, not only mini.ts,
+  // so the guard walks the three functions that boot and repaint the mini stage.
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const bodyOf = (name: string): string => {
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start > -1, `main.ts must still define ${name}`);
+    const open = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === '{') depth += 1;
+      else if (source[index] === '}') {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, index + 1);
+      }
+    }
+    throw new Error(`unbalanced body for ${name}`);
+  };
+  const forbidden = ['AudioContext', 'getUserMedia', 'mediaDevices', 'MediaRecorder', 'RTCPeerConnection',
+    'WebSocket', 'EventSource', 'fetch(', 'new LiveMachine', 'liveMachine.request'];
+  for (const name of ['renderMini', 'paintMiniStage', 'miniCaptionMarkup']) {
+    const body = bodyOf(name);
+    for (const needle of forbidden) {
+      assert.equal(body.includes(needle), false, `${name} must not reference ${needle}`);
+    }
+  }
+});

@@ -287,8 +287,10 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   t.after(resetDebugJournal);
   const work: (() => void)[] = [];
   // One tool call, then the answer: the shape the chat tool loop drives through the tools owner.
+  const seen: { declarations: string[]; responses: number }[] = [];
   const toolModel: ModelPort = {
     generate: async (request: ModelRequest) => {
+      seen.push({ declarations: (request.declarations ?? []).map(declaration => declaration.name), responses: request.contents.filter(content => content.parts.some(part => part.functionResponse !== undefined)).length });
       if (request.declarations?.some(declaration => declaration.name === 'search_knowledge')
         && !request.contents.some(content => content.parts.some(part => part.functionResponse !== undefined))) {
         return {
@@ -342,7 +344,7 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   const calls = records(path).filter(line => line['event'] === 'tool');
   if (calls.length !== 1) {
     const files = readdirSync(join(dir, 'debug')).flatMap(dayNameDir => readdirSync(join(dir, 'debug', dayNameDir)).map(name => `${dayNameDir}/${name}`));
-    console.error(JSON.stringify({ probe: 'journal-dump', failures: currentDebugJournal()?.failures, root: currentDebugJournal()?.root, files,
+    console.error(JSON.stringify({ probe: 'journal-dump', seen, state: chat.get(run.runId, f.context).state, failures: currentDebugJournal()?.failures, root: currentDebugJournal()?.root, files,
       lines: records(path), everywhere: files.flatMap(name => records(join(dir, 'debug', name)).map(record => record['event'])) }));
   }
   assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer: ${JSON.stringify(records(path).map(line => line['event']))}`);

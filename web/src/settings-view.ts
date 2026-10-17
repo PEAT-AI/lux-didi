@@ -134,7 +134,7 @@ function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: Setting
   return `<dt>Live provider</dt><dd>${provider ? escapeHtml(providerLabel(provider) ?? provider) : unavailable()}</dd>
 <dt>Live model</dt><dd>${model ? escapeHtml(model) : unavailable()}</dd>
 <dt>Live voice</dt><dd>${voice ? escapeHtml(voice) : unavailable()}</dd>
-<dt>Accent</dt><dd>${accent ? escapeHtml(accentLabel(accent) ?? accent) : unavailable()}</dd>${delegationRow}
+<dt>Accent for the next call</dt><dd>${accent ? escapeHtml(accentLabel(accent) ?? accent) : unavailable()}</dd>${delegationRow}
 <dt>Session limit</dt><dd>${session ?? unavailable()}</dd>
 <dt>Idle limit</dt><dd>${idle ?? unavailable()}</dd>${pendingNote}`;
 }

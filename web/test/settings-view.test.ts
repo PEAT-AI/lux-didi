@@ -171,7 +171,7 @@ test('the OpenAI voice list is the gpt-live-1 table in its own order, marin firs
 
 test('PV1: the Accent row renders the three choices and selects the running one', () => {
   const html = settingsMarkup({ status, summary: { ...summary, accent: 'indian-light' } });
-  assert.match(html, /<dt>Accent<\/dt><dd>Indian English, light<\/dd>/);
+  assert.match(html, /<dt>Accent for the next call<\/dt><dd>Indian English, light<\/dd>/, 'the row says which call it describes');
   const at = html.indexOf('id="live-accent"');
   assert.ok(at > 0, 'the accent select is in the switch form');
   const select = html.slice(at, html.indexOf('</select>', at));
@@ -184,7 +184,7 @@ test('PV1: an absent accent shows the default choice, never a blank select', () 
   const at = html.indexOf('id="live-accent"');
   const select = html.slice(at, html.indexOf('</select>', at));
   assert.match(select, /<option value="indian-strong" selected>/);
-  assert.match(html, /<dt>Accent<\/dt><dd><span class="settings-unavailable">Unavailable<\/span><\/dd>/);
+  assert.match(html, /<dt>Accent for the next call<\/dt><dd><span class="settings-unavailable">Unavailable<\/span><\/dd>/);
 });
 
 test('PV1: a saved accent that differs from the running one shows a pending notice', () => {

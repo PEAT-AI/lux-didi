@@ -90,7 +90,10 @@ export interface LiveSummary {
   provider: string | null;
   modelId: string | null;
   voice: string | null;
-  /** The accent selection the next session start composes with. */
+  /**
+   * The accent selection the next session start composes with. Unlike provider and voice it describes the next
+   * call, not a call in flight: each session start reads it from live.json, which is why a save applies at once.
+   */
   accent: string | null;
   personaName: string | null;
   limits: { sessionMs: number; idleMs: number } | null;

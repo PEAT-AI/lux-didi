@@ -55,6 +55,10 @@ const INPUT_EPISODE_QUIET_MS = 700;
 const TURN_IDLE_QUIET_MS = 2_000;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
+/** Head start at the start of a speaking stretch: 300 ms of audio held back so the native 80 ms jitter buffer
+ *  never underruns while the server sends at about real time. */
+const HEAD_START_MS = 300;
+const HEAD_START_BYTES = HEAD_START_MS * OUTPUT_PCM_BYTES_PER_MS;
 /** The production clock: the adapter's own windows go through it so a test can drive them without sleeping. */
 const REAL_CLOCK: LiveVoiceClock = {
   now: () => Date.now(),
@@ -247,6 +251,8 @@ class Session implements LiveVoiceSession {
   private creatingSocket = false;
   private readonly upsampler = new Pcm16Upsampler();
   private pendingCalls: LiveToolCall[] = [];
+  /** Answers already received for the pending calls of the current delegated turn, by call id. */
+  private readonly answeredCalls = new Map<string, JsonObject>();
   /** Generation counter: bumped by every interruption and every new backend response. */
   private generation = 0;
   /** The generation the owner cut off; its remaining audio deltas are dropped until a new response starts. */
@@ -267,6 +273,13 @@ class Session implements LiveVoiceSession {
   private delegatedOutstanding = false;
   /** Forwarded playback milliseconds since the last barge-in, reported as the post-flush receipt. */
   private postFlushMs: number | undefined;
+  /** The head start of the current speaking stretch: PCM held until HEAD_START_MS or HEAD_START_BYTES, and its timer. */
+  /** A speaking stretch is open between its first delta and its completion, flush, provider error or close. */
+  private stretchOpen = false;
+  private holding = false;
+  private held: Uint8Array[] = [];
+  private heldBytes = 0;
+  private headStartTimer: unknown;
   private readonly clock: LiveVoiceClock;
   private readonly diagnostic = {
     audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
@@ -472,10 +485,47 @@ class Session implements LiveVoiceSession {
     // Contract invariant: no frame dropping. Output audio of an open session is always forwarded; an input
     // transcript can never silence the assistant, because gpt-live-1 hands turn taking to the server.
     this.audioSinceCompletion = true;
+    if (!this.stretchOpen) {
+      // Head start: the first audio of a speaking stretch is held so the 80 ms native jitter buffer starts full.
+      this.stretchOpen = true;
+      this.holding = true;
+      this.headStartTimer = this.clock.setTimer(HEAD_START_MS, () => { this.headStartTimer = undefined; this.releaseHeadStart(); });
+    }
+    if (this.holding) {
+      this.held.push(pcm);
+      this.heldBytes += pcm.byteLength;
+      if (this.heldBytes >= HEAD_START_BYTES) this.releaseHeadStart();
+      this.touch();
+      return;
+    }
     this.queuePlayback(pcm.byteLength);
     this.emit({ type: 'audio', pcm, rate: 24_000 });
     this.settleTurn();
     this.touch();
+  }
+
+  /** Forward the held audio as one event, or nothing when the stretch was cut before it filled. */
+  private releaseHeadStart(): void {
+    if (this.headStartTimer !== undefined) { this.clock.clearTimer(this.headStartTimer); this.headStartTimer = undefined; }
+    this.holding = false;
+    if (!this.heldBytes) return;
+    const pcm = new Uint8Array(this.heldBytes);
+    let offset = 0;
+    for (const part of this.held) { pcm.set(part, offset); offset += part.byteLength; }
+    this.held = [];
+    this.heldBytes = 0;
+    this.queuePlayback(pcm.byteLength);
+    this.emit({ type: 'audio', pcm, rate: 24_000 });
+    this.settleTurn();
+  }
+
+  /** A barge-in, a provider error or a close discards the head start: that audio is never played. */
+  private discardHeadStart(): void {
+    if (this.headStartTimer !== undefined) { this.clock.clearTimer(this.headStartTimer); this.headStartTimer = undefined; }
+    this.stretchOpen = false;
+    this.holding = false;
+    this.held = [];
+    this.heldBytes = 0;
   }
 
   /**
@@ -493,7 +543,7 @@ class Session implements LiveVoiceSession {
   private inputTranscript(message: ObjectValue): void {
     if (typeof message.delta !== 'string') fail('protocol_error');
     if (!message.delta.length) return;
-    // Review F1: a whitespace-only fragment is still journaled below, but it carries no word, so it starts no
+    // Ruling GL1-R1: a whitespace-only fragment is still journaled below, but it carries no word, so it starts no
     // episode, takes no word and never touches the barge-in latch.
     if (message.delta.trim().length) this.noteInput(message.delta);
     this.userTranscriptOpen = true;
@@ -513,9 +563,12 @@ class Session implements LiveVoiceSession {
     this.episodeQuiet = this.clock.setTimer(INPUT_EPISODE_QUIET_MS, () => this.endInputEpisode());
     this.inputEpisode += delta;
     const words = countWords(this.inputEpisode);
-    // Barge-in: at least two assembled words, at most one flush per episode, and audio actually to flush.
-    if (this.flushed || words < 2 || this.clock.now() >= this.playbackUntil) return;
-    const queuedMs = Math.max(0, Math.round(this.playbackUntil - this.clock.now()));
+    // Barge-in: at least two assembled words, at most one flush per episode, and audio actually to cut. Held head
+    // start counts as audio to cut, because the owner is about to hear it.
+    const now = this.clock.now();
+    const queued = Math.max(0, this.playbackUntil - now) + this.heldBytes / OUTPUT_PCM_BYTES_PER_MS;
+    if (this.flushed || words < 2 || queued <= 0) return;
+    const queuedMs = Math.round(queued);
     this.flushed = true;
     this.generation += 1;
     this.muted = this.generation;
@@ -523,8 +576,9 @@ class Session implements LiveVoiceSession {
     // The cut turn is over at the host, so no idle completion is owed to it; later audio reopens the account.
     this.audioSinceCompletion = false;
     this.outputTranscriptOpen = false;
-    // The host flushes its native queue on `interrupted`, so the modelled queue starts empty at the same instant.
+    // The host flushes its native queue on `interrupted`, so the modelled queue and any head start go with it.
     this.playbackUntil = this.clock.now();
+    this.discardHeadStart();
     this.postFlushMs = 0;
     console.error(JSON.stringify({ event: 'gptlive_flush', words, queuedMs }));
     this.emit({ type: 'interrupted' });
@@ -553,7 +607,7 @@ class Session implements LiveVoiceSession {
   private settleTurn(): void {
     if (this.terminal) return;
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
-    if (this.delegatedOutstanding || !this.audioSinceCompletion) return;
+    if (this.holding || this.delegatedOutstanding || !this.audioSinceCompletion) return;
     const now = this.clock.now();
     const wait = Math.max(TURN_IDLE_QUIET_MS - (now - this.lastForwardedAt), Math.ceil(this.playbackUntil - now), 0);
     if (wait <= 0) { this.completeTurn(); return; }
@@ -563,6 +617,7 @@ class Session implements LiveVoiceSession {
   private completeTurn(): void {
     const idleMs = Math.max(0, Math.round(this.clock.now() - this.lastForwardedAt));
     this.audioSinceCompletion = false;
+    this.stretchOpen = false;
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
     console.error(JSON.stringify({ event: 'gptlive_turn_complete', idleMs, drained: true }));
@@ -646,6 +701,7 @@ class Session implements LiveVoiceSession {
       this.muted = this.generation;
       // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
       this.playbackUntil = this.clock.now();
+      this.discardHeadStart();
       this.audioSinceCompletion = false;
       this.emit({ type: 'interrupted' });
     }
@@ -721,18 +777,30 @@ class Session implements LiveVoiceSession {
     }
   }
 
+  /**
+   * The host answers each delegated call on its own, so an answer is recorded and the turn continues only once
+   * every pending call of that turn has one: `function_call_output` per call_id, then one `response.create`.
+   */
   sendToolResponse(input: { responses: LiveToolResponse[] }): void {
     if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
-    if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length
-      || new Set(input.responses.map(r => r.id)).size !== input.responses.length
-      || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
+    if (!object(input) || !Array.isArray(input.responses) || !input.responses.length
+      || new Set(input.responses.map(response => (object(response) ? response.id : undefined))).size !== input.responses.length
+      || input.responses.some(response => !object(response) || !object(response.response) || typeof response.id !== 'string')) fail('invalid_request');
+    // A call id this turn never delegated is a protocol fault, not a bad request shape.
+    if (input.responses.some(response => !this.pendingCalls.some(call => call.id === response.id && call.name === response.name))) fail('protocol_error');
     for (const { id, response } of input.responses) {
-      // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
-      if (!this.write(JSON.stringify({ type: 'response.item.create', item: { type: 'function_call_output', call_id: id, output: JSON.stringify(response) } }))) return;
+      if (this.answeredCalls.has(id)) fail('protocol_error');
+      this.answeredCalls.set(id, response);
     }
-    this.pendingCalls = [];
+    if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) return;
+    for (const call of this.pendingCalls) {
+      const response = this.answeredCalls.get(call.id)!;
+      // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
+      if (!this.write(JSON.stringify({ type: 'response.item.create', item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) return;
+    }
+    this.pendingCalls = []; this.answeredCalls.clear();
     // Council ruling: once the owner has started a new turn after a barge-in, the finished result is
     // recorded without another response.create. The docs add that an accepted response.create waits for
     // the current backend response, so a second one would be refused.
@@ -783,6 +851,7 @@ class Session implements LiveVoiceSession {
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
+    this.discardHeadStart();
     this.reportPostFlush();
     this.secret = '';
     this.readiness.reject(new LiveVoiceError(code));

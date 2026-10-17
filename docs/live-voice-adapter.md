@@ -166,6 +166,13 @@ boundaries itself, and never drops an output frame doing it.
   re-arms the once-per-episode latch, so the deltas of one word count as one word and a
   one-word utterance ("mm", "stop") never cuts the reply. The host flushes its native playback
   queue on `interrupted`.
+- Head start. gpt-live-1 sends output audio at about 1x real time and the native jitter buffer is 80 ms, so the
+  first audio of each speaking stretch is held and forwarded as one event once it holds 300 ms of audio
+  (`HEAD_START_MS`) or 300 ms of clock time have passed, whichever comes first; after that every delta passes
+  through. A barge-in, a provider error or a close discards the hold, and held audio counts as playback to be cut.
+- Delegated calls. The host answers each delegated call on its own, so the adapter records each answer and sends
+  one `function_call_output` per pending call of the turn plus a single `response.create` when the last one arrives.
+  A call id the turn never delegated is a `protocol_error`.
 - End of turn. The adapter emits `turnComplete` and closes the output transcript once when all
   hold: audio was forwarded since the last completion, no output delta for 2000 ms
   (`TURN_IDLE_QUIET_MS`), the modelled playback queue has drained, and no delegated response is

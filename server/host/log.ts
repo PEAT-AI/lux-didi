@@ -123,6 +123,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
     return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])), languageCode: value.languageCode, voice: value.voice };
   }
+  if (value.event === 'conversation_summary_injection') {
+    // Closed shape: how many summaries were injected, how many were dropped, and the section size.
+    // Counts and one size only, never a summary id or any text.
+    if (Object.keys(value).sort().join(',') !== ['event','injected','omitted','chars'].sort().join(',')) return;
+    for (const key of ['injected', 'omitted', 'chars'] as const) {
+      if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
+    }
+    return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
+  }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
     if (Object.keys(value).sort().join(',') !== ['event','code','error','kind','bytes','keys'].sort().join(',')) return;

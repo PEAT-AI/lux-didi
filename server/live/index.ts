@@ -12,7 +12,7 @@ import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -181,18 +181,21 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // A bounded journal window, assembled into owner turns, not provider/model arguments.
   const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC LIMIT 64", [liveSessionId]).reverse();
   const turns: { seq: number; text: string }[] = [];
-  let pending = '';
+  let pending = '', pendingSeq = 0;
   for (const row of rows) {
-    pending += String(row.text ?? '');
-    if (Number(row.finished) === 1) { turns.push({ seq: Number(row.journal_id), text: pending }); pending = ''; }
+    pending += String(row.text ?? ''); pendingSeq = Number(row.journal_id);
+    if (Number(row.finished) === 1) { turns.push({ seq: pendingSeq, text: pending }); pending = ''; }
   }
-  const turn = turns.reverse().find(turn => command.test(turn.text.trim().replace(/\s+/g, ' ')));
-  if (!turn) return { remembered: false, code: 'owner_transcript_not_final' };
+  // The model's tool call is the intent: the latest partial turn is owner speech too, because the
+  // provider may never set the finished flag before the call arrives.
+  if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
+  const pointer = normalized(args.text);
+  if (!pointer) return { remembered: false, code: 'owner_text_mismatch' };
+  const turn = [...turns].reverse().find(candidate => normalized(candidate.text).includes(pointer));
+  if (!turn) return { remembered: false, code: turns.length ? 'owner_text_mismatch' : 'owner_transcript_not_final' };
   const utterance = turn.text.trim();
   const payload = utterance.replace(command, '').trim();
   if (classified.test(payload)) return { remembered: false, code: 'private_memory_unsupported' };
-  const pointer = normalized(args.text), ownerText = normalized(payload);
-  if (!pointer || !ownerText || !ownerText.includes(pointer)) return { remembered: false, code: 'owner_text_mismatch' };
   const externalId = `${liveSessionId}:${turn.seq}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
   if (existing) return { remembered: false, code: 'already_remembered', entryId: existing };
@@ -375,20 +378,26 @@ export class LiveSessionOwner {
       let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
-      const earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone });
-      let composed: ReturnType<typeof composeLiveSessionInstruction>;
-      try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-        ...(earlier.section ? { earlierConversations: earlier.section } : {}),
+        ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
-        ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
+        ...(pickup ? { pickupNote: pickupInstruction } : {}) });
+      let composed: ReturnType<typeof composeLiveSessionInstruction>;
+      let earlier: ReturnType<typeof buildEarlierConversationsSection>;
+      try {
+        // The summaries fill what the other sections leave under the target, so measure it first.
+        const basis = composeSession(undefined);
+        earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+        composed = earlier.section ? composeSession(earlier.section) : basis;
+      }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
-      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length });
+      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: earlier.section.length });
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
@@ -631,7 +640,7 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => this.#active.get(id)?.inputFinal ? rememberOwnerNote(tx, id, args, this.#now()) : { remembered: false, code: 'owner_transcript_not_final' }).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }

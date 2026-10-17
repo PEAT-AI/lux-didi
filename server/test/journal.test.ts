@@ -323,6 +323,7 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
     lookupAuthority: async (runId, signal) => authority?.(runId, signal) ?? null, log: () => {},
   });
   t.after(async () => { await mcp.close(); });
+  assert.deepEqual(mcp.connectionIds(), [endpoint.id], 'the fixture endpoint is published');
   const chat = new ChatService({
     ...f.config,
     tools: { owner: mcp.owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: source => { authority = source; } },
@@ -339,7 +340,7 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   const path = join(dir, 'debug', dayName(Date.now()), `chat-${run.runId}.jsonl`);
   assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
   const calls = records(path).filter(line => line['event'] === 'tool');
-  assert.equal(calls.length, 1, 'the tool call reaches the session journal from the tools layer');
+  assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer: ${JSON.stringify(records(path).map(line => line['event']))}`);
   assert.equal(calls[0]!['tool'], 'search_knowledge');
   assert.equal(typeof calls[0]!['ms'], 'number');
   assert.equal(typeof calls[0]!['outcome'], 'string');

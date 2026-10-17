@@ -149,7 +149,7 @@ export async function fakeReady(t: TestContext, overrides: Partial<LiveVoiceAdap
       queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
       return socket as unknown as WebSocket;
     }) satisfies NonNullable<LiveVoiceAdapterOptions['socketFactory']>,
-  })).open(request(), { signal: new AbortController().signal, deadlineMs: Number.MAX_SAFE_INTEGER });
+  })).open(request(), { signal: new AbortController().signal, deadlineMs: Date.now() + 600_000 });
   t.after(() => session.close());
   const captured = collect(session);
   for (let attempt = 0; attempt < 20 && !socket.sent.length; attempt += 1) await new Promise<void>(resolve => setImmediate(resolve));

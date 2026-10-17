@@ -731,6 +731,7 @@ describe('openai gpt-live turn states', () => {
     assert.equal(audioOf(opened.captured).length, before, 'the cut answer never replays inside the window');
     clock.advance(600);
     sendAudio(opened.f, 7_200);
+    await quiet();
     // 3o: the cut drained the modelled playback, so the standing cushion re-arms before this frame plays.
     clock.advance(400);
     await until(() => audioOf(opened.captured).length >= before + 1);
@@ -756,6 +757,7 @@ describe('openai gpt-live turn states', () => {
     await quiet();
     clock.advance(400);
     sendAudio(opened.f, 7_200);
+    await quiet();
     clock.advance(400);
     await until(() => audioOf(opened.captured).length >= before + 1);
     await quiet();

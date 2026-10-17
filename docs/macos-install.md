@@ -14,7 +14,9 @@ scripts/build-macos-app.sh "<output>/Lux Didi.app" \
 - The native compile identity (flags, `-parse-as-library Sources/LuxDidi/*.swift`,
   `Resources/Info.plist`, entitlements) is fixed in this producer and reused by
   `Tests/DidiMacTests/check-mac.sh`; there is no second compile/identity path and
-  no duplicate `Info.plist`, entitlements or launcher.
+  no duplicate `Info.plist`, entitlements or launcher. `Resources/AppIcon.icns` is
+  copied to `Contents/Resources/AppIcon.icns` and named by `CFBundleIconFile`, so
+  the Dock tile and the app switcher show the Naya icon.
 - `--assets DIR` composes an accepted producer output:
   - `DIR/node` → `Contents/MacOS/node`
   - `DIR/server/` → `Contents/Resources/server`

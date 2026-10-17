@@ -147,7 +147,7 @@ requirement.
 
 There is one web interface, not two. The same responsive orb and conversation surface is loaded by a
 browser (F19) and displayed inside the Mac companion in its own web view (F23). The companion keeps
-the surfaces that must be native: global hotkey, menu bar and window lifecycle, on-device speech,
+the surfaces that must be native: global hotkey, the menu bar, the FULL and MINI window modes, on-device speech,
 notifications, the credential store and the outbound service client.
 
 The web page is not an authority and there is no privileged bridge into the native process:

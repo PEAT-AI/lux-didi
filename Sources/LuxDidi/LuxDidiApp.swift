@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 import Carbon
 import Security
+import WebKit
 
 @MainActor final class AppModel: ObservableObject {
     @Published var draft = ""
@@ -12,7 +13,7 @@ import Security
     var error: String? {
         get {
             if supervisor?.state == .unavailable, supervisor?.startupFailureDiagnostic?.stage == .canonicalFile {
-                return "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+                return "Naya couldn’t verify its saved connection. Reconnect the service explicitly."
             }
             return operationError
         }
@@ -59,6 +60,10 @@ import Security
     private var checkingLiveCalls = false
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
+    /// The one live page-session cookie, obtained once by `bootstrap()` and
+    /// handed to every page view (full window and mini orb) so a second view
+    /// never revokes the first session.
+    private(set) var pageCookie: HTTPCookie?
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
     @Published private(set) var sendingConnected = false
@@ -111,7 +116,7 @@ import Security
                         self?.liveAuthorityOwner.unavailable()
                         self?.bootstrapFailureCode = owner?.startupFailureCode
                         self?.bootstrapFailureDiagnostic = owner?.startupFailureDiagnostic
-                        self?.error = "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+                        self?.error = "Naya couldn’t verify its saved connection. Reconnect the service explicitly."
                     }
                     return
                 }
@@ -150,7 +155,9 @@ import Security
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
             bootstrapFailureCode = nil
             bootstrapFailureDiagnostic = nil
-            await shell.load(cookie: try await client.bootstrap())
+            let cookie = try await client.bootstrap()
+            pageCookie = cookie
+            await shell.load(cookie: cookie)
             await refreshLiveDetails(); error = nil
         } catch {
             bootstrapFailureCode = supervisor?.startupFailureCode ?? "bootstrap/" + ((error as? CompanionError).map { String(describing: $0) } ?? "platformFailure")
@@ -332,8 +339,13 @@ import Security
         if let route = bridgeRoute() { bridge.pushRoute(route) }
     }
 
+    /// #311: the FULL window's mode button is a presentation switch, so the model
+    /// forwards it to the app and never touches Live or audio itself.
+    var onMiniMode: (() -> Void)?
+
     func handleBridgeCommand(_ message: BridgeInbound) {
         switch message {
+        case .mini: onMiniMode?()
         case .start: startLive()
         case .stop: stopLive()
         case .mute: if live?.isMuted == false { live?.toggleMute() }
@@ -355,11 +367,14 @@ import Security
         guard live?.isCapturing != true else { error = "Stop Live voice before starting dictation."; return }
         voice.start()
     }
-    func stopRecording(_ reason: String) {
-        stopLive()
+    func stopDictation(_ reason: String) {
         let wasRecording = voice.state.phase == .recording
         voice.stop(reason: reason)
         if wasRecording && !voice.state.transcript.isEmpty { draft = voice.state.transcript }
+    }
+    func stopRecording(_ reason: String) {
+        stopLive()
+        stopDictation(reason)
     }
     func logout() async {
         stopRecording("Logout")
@@ -383,7 +398,7 @@ struct RootView: View {
             } else {
                 // Only on a failed configure, where there is no service page to show.
                 VStack(spacing: 12) {
-                    Text("Connect Didi").font(.title2)
+                    Text("Connect Naya").font(.title2)
                     Button("Connect") { Task { await model.reconnect() } }
                 }.foregroundStyle(.white)
             }
@@ -410,6 +425,16 @@ struct RootView: View {
         stop: { [weak self] in self?.model.stopLive() })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
+    private var miniShell: CompanionWeb?
+    private var miniPanel: MiniOrbPanel?
+    private var miniCookie: HTTPCookie?
+    private lazy var miniOrb = MiniOrbToggle(
+        startLive: { [weak self] in self?.model.startLive() },
+        stopLive: { [weak self] in self?.model.stopLive() },
+        liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
+        presentPanel: { [weak self] in self?.presentMiniThroughCoordinator() },
+        dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
+        expandToWindow: { [weak self] in self?.expandThroughCoordinator() })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -431,20 +456,36 @@ struct RootView: View {
     private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
     private var quitting = false
+    /// The one owner of the visible surface (#311). Every entry point (Dock
+    /// click, hotkey, orb click, mode button, close) reports through it, so no
+    /// sequence leaves two surfaces on screen.
+    private(set) lazy var coordinator = PresentationCoordinator(
+        showFull: { [weak self] activating in self?.presentWindow(activating: activating) },
+        hideFull: { [weak self] in self?.orderOutFullWindow() },
+        showMini: { [weak self] in self?.hostMiniSurface() ?? false },
+        hideMini: { [weak self] in self?.dismissMiniSurface() },
+        liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true })
     func applicationDidFinishLaunching(_ notification: Notification) {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
-        NSApp.setActivationPolicy(.accessory)
-        OwnedWindowReadiness.trace("app:setActivationPolicy-accessory",
+        // UI3A-R1: a regular app for the interactive, login-item and install
+        // relaunch kinds, accessory for the non-activating proof kinds. Set once,
+        // never switched at runtime, and the launch itself never activates.
+        NSApp.setActivationPolicy(launchKind.activationPolicy)
+        OwnedWindowReadiness.trace("app:setActivationPolicy",
             ["activationPolicy": NSApp.activationPolicy().rawValue])
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         // One all-dark window: transparent hidden titlebar, traffic lights over the web rail.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        // UI3A: a standard window at the normal level that stays in front of a
+        // normal window stack instead of vanishing when the app deactivates.
+        window.level = .normal
+        window.hidesOnDeactivate = false
         window.backgroundColor = BridgeTheme.dark.backgroundColor
         window.appearance = NSAppearance(named: BridgeTheme.dark.appearanceName)
         window.title = ""; window.center(); window.delegate = self
@@ -454,13 +495,16 @@ struct RootView: View {
             if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
         }
         window.isReleasedWhenClosed = false
+        // UI3A-R7: a real File menu, so Command-W reaches the close path.
+        NSApp.mainMenu = WindowMenu.build(appName: "Naya", closeTarget: window)
         window.contentView = makeRootContent()
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
+        model.onMiniMode = { [weak self] in _ = self?.coordinator.presentMini() }
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Didi")
+        statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
         let menu = NSMenu()
         menu.delegate = self
         liveMenuItem = menu.addItem(withTitle: "Naya: stopped", action: nil, keyEquivalent: "")
@@ -470,21 +514,24 @@ struct RootView: View {
         menu.addItem(NSMenuItem.separator())
         loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
-        menu.addItem(withTitle: "Show Didi", action: #selector(show), keyEquivalent: "")
+        menu.addItem(withTitle: "Show Naya", action: #selector(show), keyEquivalent: "")
+        menu.addItem(withTitle: "Show mini orb", action: #selector(toggleMiniOrb), keyEquivalent: "")
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
         menu.addItem(withTitle: NativeDiagnosticsAction.itemTitle, action: #selector(copyDiagnostics), keyEquivalent: "")
-        menu.addItem(withTitle: "Quit Didi", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Naya", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }; statusItem.menu = menu
-        hotkey.onToggle = { [weak self] in self?.toggle() }
+        hotkey.onToggle = { [weak self] in self?.toggleMiniOrb() }
         hotkeyCode = hotkey.register()
-        model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · registered" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
+        model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · mini orb" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
         liveShortcuts.onStart = { [weak self] in self?.startLiveFromMenu() }
         liveShortcuts.onMute = { [weak self] in self?.muteLiveFromMenu() }
+        liveShortcuts.onWindow = { [weak self] in self?.toggle() }
         liveShortcuts.register()
         menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Toggle Naya ⌃ ⌥ ⇧ Space: " + liveShortcuts.windowStatus, action: nil, keyEquivalent: "")
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
                 self?.updateLiveStatus(state: state)
@@ -584,8 +631,10 @@ struct RootView: View {
         action.copy()
     }
 
+    /// The menu, the launch and the Dock all land on the FULL window and never
+    /// leave the orb visible beside it.
     @objc func show() {
-        presentWindow(activating: launchKind.activates)
+        coordinator.presentFull(activating: launchKind.activates)
     }
     /// Presents the window for the current launch kind. Only an interactive launch
     /// makes the window key and activates the app; every other launch orders the
@@ -693,10 +742,65 @@ struct RootView: View {
         guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")
     }
-    func toggle() { window.isVisible ? hide() : show() }
-    func hide() { model.stopRecording("Didi hidden"); window.orderOut(nil) }
-    func escape() { hide() }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
+    func toggle() { coordinator.toggleWindow(activating: launchKind.activates) }
+    /// Hiding the window stops dictation but never Live; Live is stopped only by
+    /// an explicit action (menu, Ctrl-Opt-Shift-L, or hiding the mini orb).
+    func hide() { coordinator.hideAll() }
+    func escape() {
+        if coordinator.mode == .mini { miniOrb.hide(); coordinator.hideMiniSurface() } else { hide() }
+    }
+    /// Ctrl-Opt-Space: the mini orb, and a second press brings the window back.
+    @objc func toggleMiniOrb() {
+        if coordinator.mode == .mini { _ = coordinator.presentFull(activating: launchKind.activates) } else { miniOrb.show() }
+    }
+    /// The FULL window's mode button (#311), and the same path the web button
+    /// takes through the bridge. Presentation only: Live keeps running.
+    @objc func showMiniOrb() { _ = coordinator.presentMini() }
+    // The surface seam the two lazy properties share. Each step goes through a
+    // method so neither lazy initializer has to mention the other.
+    private func orderOutFullWindow() {
+        model.stopDictation("Didi hidden")
+        window?.orderOut(nil)
+    }
+    private func hostMiniSurface() -> Bool { presentMiniPanel() }
+    private func dismissMiniSurface() { miniOrb.hideSurface() }
+    private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }
+    private func expandThroughCoordinator() { _ = coordinator.presentFull(activating: true) }
+    @discardableResult
+    private func presentMiniPanel() -> Bool {
+        guard let shell = miniShellForDisplay() else {
+            // No page to host: the coordinator falls back to the FULL window.
+            return false
+        }
+        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] in self?.miniOrb.expand() }
+        miniPanel = panel
+        panel.orderFrontRegardless()
+        if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {
+            miniCookie = cookie
+            Task { await shell.load(cookie: cookie) }
+        }
+        return true
+    }
+    /// The mini view reuses the one live page session: same service origin, same
+    /// page cookie, never a second bootstrap (which would revoke the first view).
+    private func miniShellForDisplay() -> CompanionWeb? {
+        if let shell = miniShell, let origin = model.shell?.descriptor.origin, shell.descriptor.origin == origin { return shell }
+        guard let descriptor = model.shell?.descriptor ?? (try? ServiceDescriptor.configured()) else { return nil }
+        let shell = CompanionWeb(descriptor: descriptor, route: .mini)
+        miniShell = shell
+        miniPanel = nil
+        return shell
+    }
+    /// UI3A-R2: Cmd+W and the close button. An active Live session switches to
+    /// the mini orb and keeps running; otherwise the window hides and the app
+    /// stays in the Dock.
+    func windowShouldClose(_ sender: NSWindow) -> Bool { coordinator.closeFull(); return false }
+    /// A Dock click always presents the FULL window and never leaves the orb
+    /// beside it.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        coordinator.presentFull(activating: launchKind.activates)
+        return false
+    }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private func runInstalledProof() async {
@@ -745,6 +849,18 @@ struct RootView: View {
         escape()
         guard !window.isVisible, model.draft.contains("retained"), !applicationShouldTerminateAfterLastWindowClosed(NSApp) else { failProof("Escape/lifecycle retention"); return }
         show()
+        // UI3A-R7: the Command-W key equivalent a keystroke sends reaches the close
+        // path and hides the window exactly like the traffic light.
+        guard let closeItem = NSApp.mainMenu?.item(withTitle: "File")?.submenu?.items
+                .first(where: { $0.action == #selector(NSWindow.performClose(_:)) }),
+              closeItem.keyEquivalent == "w", closeItem.keyEquivalentModifierMask == .command,
+              let keyDown = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                  timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                  context: nil, characters: "w", charactersIgnoringModifiers: "w",
+                  isARepeat: false, keyCode: UInt16(kVK_ANSI_W)),
+              NSApp.mainMenu?.performKeyEquivalent(with: keyDown) == true, !window.isVisible
+        else { failProof("Command-W must reach the close path"); return }
+        show()
         do {
             let url = URL(fileURLWithPath: path)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -789,7 +905,7 @@ struct RootView: View {
             window.endSheet(sheet); gettingStartedSheet = nil; gettingStartedProofRows = nil
             print("MAC-UI PASS screenshot=\(path) close=retains-agent escape=hides draft=retained hotkeyCallback=show quit=clean-no-session voiceEffects=none notificationEffects=none")
             NSApp.terminate(nil)
-        } catch { failProof("Screenshot could not be written") }
+        } catch { failProof("Screenshot could not be written: \(error)") }
     }
     func failProof(_ reason: String) { fputs("MAC-PROOF FAIL: \(reason)\n", stderr); exit(1) }
 }

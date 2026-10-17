@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type Memor
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -12,6 +12,7 @@ import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
+import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -21,6 +22,7 @@ let nativeBridge: Bridge | undefined;
 let nativeFake: { requestStart(): void; requestStop(): void } | undefined;
 let liveMachine = new LiveMachine(() => {});
 const root = document.querySelector<HTMLDivElement>('#app')!;
+const miniRoute = isMiniRoute(location.search);
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
@@ -257,12 +259,34 @@ function bindScrollAnchors() {
     scrollObserver?.observe(el);
   }
 }
+const miniGlow: MiniState[] = ['listening', 'thinking', 'speaking', 'tool'];
+/** The mini stage's caption: main's state line plus the one shared activity
+ * line, so a running tool stays readable in the orb (W15-R1) without a second
+ * renderer. */
+function miniCaptionMarkup(): string {
+  return orbStateLineMarkup() + activityMarkup(liveActivity(live));
+}
+function paintMiniStage() {
+  const stage = document.querySelector('.mini-stage');
+  if (!stage) return;
+  const state = miniState(orbState(), liveActivity(live));
+  stage.setAttribute('data-mini-state', state);
+  stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
+}
+function renderMini() {
+  if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
+  orb?.destroy(); orb = undefined;
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), miniCaptionMarkup());
+  const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
+  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
+}
 function render() {
+  if (miniRoute) { renderMini(); return; }
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
   orb?.destroy();orb=undefined;transcriptPin?.stop();transcriptPin=undefined;
-  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" style="--panel-left-w:${layout.leftWidth}px;--panel-right-w:${layout.rightWidth}px" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
+  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" style="--panel-left-w:${layout.leftWidth}px;--panel-right-w:${layout.rightWidth}px" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${livePillMarkup()}${miniModeButtonMarkup(nativeBridge !== undefined)}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   bind();
   bindScrollAnchors();
   connectedView.attach();
@@ -345,6 +369,7 @@ function bind() {
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
+  document.getElementById('mini-mode')?.addEventListener('click', () => nativeBridge?.send({ type: 'mini' }));
   const appearance = root.querySelector<HTMLSelectElement>('#appearance-theme');
   if(appearance) appearance.onchange=()=>{theme=appearance.value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);nativeBridge?.send({type:'theme',mode:theme});render();};
   bindLiveDisclosure();
@@ -518,7 +543,7 @@ function paintLive(){
   if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
   const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);
   if(jobs&&jobs.innerHTML!==jobMarkup)jobs.innerHTML=jobMarkup;
-  const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  const caption=document.querySelector('.orb-caption');const markup=miniRoute?miniCaptionMarkup():orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);
   // The control reflects the projection: swap the actions in place and rebind, never tear the stage down.
@@ -526,6 +551,9 @@ function paintLive(){
   if(actions){const controls=orbControlsMarkup();if(actions.innerHTML!==controls){actions.innerHTML=controls;bindOrbControls();}}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
   if(liveMachine.view.state==='starting')transcriptPin?.repin();
+  // The mini stage repaints from the same projection as the full shell. It is
+  // the last step of paintLive, not of any other binder (UI3a merge).
+  if (miniRoute) paintMiniStage();
 }
 function bindOrbControls() {
   document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());

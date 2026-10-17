@@ -48,25 +48,34 @@ struct LiveShortcutRegistration {
     let startStatus: String
     let muteStatus: String
     let windowStatus: String
-    init(register: (_ key: Int, _ id: UInt32) -> Int32) {
-        startStatus = ShortcutStatus.describe(code: register(kVK_ANSI_L, 1))
-        muteStatus = ShortcutStatus.describe(code: register(kVK_ANSI_M, 2))
-        windowStatus = ShortcutStatus.describe(code: register(kVK_Space, 3))
+    /// MINI2: Control-Option-Space shows and hides the pill.
+    let pillStatus: String
+    /// One registration per hotkey, each with its own Carbon modifier mask, so a
+    /// conflict in one never hides another.
+    init(register: (_ key: Int, _ id: UInt32, _ modifiers: Int) -> Int32) {
+        startStatus = ShortcutStatus.describe(code: register(kVK_ANSI_L, 1, NativeShortcuts.windowModifiers))
+        muteStatus = ShortcutStatus.describe(code: register(kVK_ANSI_M, 2, NativeShortcuts.windowModifiers))
+        windowStatus = ShortcutStatus.describe(code: register(kVK_Space, 3, NativeShortcuts.windowModifiers))
+        pillStatus = ShortcutStatus.describe(code: register(kVK_Space, 4, NativeShortcuts.pillModifiers))
     }
 }
 /// Control-Option-Shift-L starts/shows Live; Control-Option-Shift-M mutes;
-/// Control-Option-Shift-Space toggles the full window (Ctrl-Option-Space now
-/// toggles the mini orb).
+/// Control-Option-Shift-Space toggles the full window; Control-Option-Space
+/// (MINI2) toggles the pill.
 /// Each registration and Carbon event identity is independent of Show/hide.
 @MainActor final class NativeShortcuts {
+    static let windowModifiers = controlKey | optionKey | shiftKey
+    static let pillModifiers = controlKey | optionKey
     private var references: [EventHotKeyRef] = []
     private var handler: EventHandlerRef?
     var onStart: (() -> Void)?
     var onMute: (() -> Void)?
     var onWindow: (() -> Void)?
+    var onPill: (() -> Void)?
     private(set) var startStatus = "Not registered"
     private(set) var muteStatus = "Not registered"
     private(set) var windowStatus = "Not registered"
+    private(set) var pillStatus = "Not registered"
     func register() {
         var specification = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let installed = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
@@ -79,13 +88,14 @@ struct LiveShortcutRegistration {
             DispatchQueue.main.async {
                 let owner = Unmanaged<NativeShortcuts>.fromOpaque(context).takeUnretainedValue()
                 if id == 1 { owner.onStart?() } else if id == 2 { owner.onMute?() } else if id == 3 { owner.onWindow?() }
+                    else if id == 4 { owner.onPill?() }
             }
             return noErr
         }, 1, &specification, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        func registerKey(_ key: Int, _ id: UInt32) -> Int32 {
+        func registerKey(_ key: Int, _ id: UInt32, _ modifiers: Int) -> Int32 {
             guard installed == noErr else { return installed }
             var reference: EventHotKeyRef?
-            let code = RegisterEventHotKey(UInt32(key), UInt32(controlKey | optionKey | shiftKey),
+            let code = RegisterEventHotKey(UInt32(key), UInt32(modifiers),
                 EventHotKeyID(signature: 0x4E415941, id: id), GetApplicationEventTarget(), 0, &reference)
             if let reference { references.append(reference) }
             return code
@@ -94,6 +104,7 @@ struct LiveShortcutRegistration {
         startStatus = registration.startStatus
         muteStatus = registration.muteStatus
         windowStatus = registration.windowStatus
+        pillStatus = registration.pillStatus
     }
     func unregister() {
         for reference in references { UnregisterEventHotKey(reference) }

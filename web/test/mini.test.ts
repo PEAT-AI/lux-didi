@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState } from '../src/mini.ts';
+import { singleKeyRow, singleKeyState } from '../src/settings-view.ts';
 
 test('the mini route is a query on the one built page', () => {
   assert.equal(isMiniRoute('?view=mini'), true);
@@ -12,7 +13,12 @@ test('the mini route is a query on the one built page', () => {
 
 test('one glance state folds voice and tool activity, error wins', () => {
   assert.equal(miniState('LISTENING', undefined), 'listening');
-  assert.equal(miniState('CONNECTING', undefined), 'thinking');
+  // MINI2: muted and connecting are their own pill states, not the thinking
+  // shimmer, because the pill dims for one and spins for the other.
+  assert.equal(miniState('LISTENING', undefined, true), 'muted');
+  assert.equal(miniState('SPEAKING', undefined, true), 'muted', 'muted outranks the voice states');
+  assert.equal(miniState('LISTENING', { kind: 'tools', text: 'Searching' }, true), 'tool', 'a running tool still shows while muted');
+  assert.equal(miniState('CONNECTING', undefined), 'connecting');
   assert.equal(miniState('SPEAKING', undefined), 'speaking');
   assert.equal(miniState('PROCESSING', { kind: 'tools', text: 'Searching your mail' }), 'tool');
   assert.equal(miniState('CONNECTED', { kind: 'thinking', text: 'Thinking' }), 'thinking');
@@ -20,23 +26,43 @@ test('one glance state folds voice and tool activity, error wins', () => {
   assert.equal(miniState('CONNECTED', undefined), 'idle');
 });
 
-test('mini markup is orb-only with the shared caption and no transcript', () => {
-  const caption = '<p class="orb-label">Listening</p><p class="activity-line">Searching your mail</p>';
+test('the pill is an orb and five level bars with no text at all', () => {
+  const caption = '<p class="orb-label">Listening</p>';
   const html = miniMarkup('tool', caption);
-  assert.match(html, /id="didi-orb"/);
-  assert.match(html, /class="orb-stage mini-stage"/);
+  assert.match(html, /class="mini-stage mini-pill"/);
   assert.match(html, /data-mini-state="tool"/);
-  assert.ok(html.includes(caption));
-  assert.doesNotMatch(html, /conversation-history|data-tab|voice-text|draft|transcript|sidebar/i);
+  assert.match(html, /id="didi-orb"/);
+  assert.equal((html.match(/<i data-bar="\d"><\/i>/g) ?? []).length, 5, 'exactly five level bars');
+  assert.match(html, /class="mini-level"/);
+  // No text: the caption the caller still passes is dropped, and nothing else
+  // in the markup is a character the owner could read.
+  assert.equal(html.includes(caption), false, 'the pill renders no caption');
+  const text = html.replace(/<[^>]*>/g, '').trim();
+  assert.equal(text, '', `the pill carries no text, got ${JSON.stringify(text)}`);
+  assert.doesNotMatch(html, /conversation-history|data-tab|voice-text|draft|transcript|sidebar|orb-caption/i);
 });
 
-test('mini markup carries each glance state and only glows while active', () => {
-  for (const state of ['idle', 'listening', 'thinking', 'speaking', 'tool', 'error'] as const) {
+test('mini markup carries each glance state', () => {
+  for (const state of ['idle', 'listening', 'thinking', 'speaking', 'muted', 'connecting', 'tool', 'error'] as const) {
     assert.match(miniMarkup(state, ''), new RegExp(`data-mini-state="${state}"`));
   }
-  assert.match(miniMarkup('speaking', ''), /presence-glow visible/);
-  assert.match(miniMarkup('idle', ''), /presence-glow"/);
+  assert.match(miniMarkup('speaking', ''), /presence-glow/, 'the glow is a state-independent element the CSS lights');
   assert.doesNotMatch(miniMarkup('error', ''), /presence-glow visible/);
+});
+
+test('the settings view names the single key, its on/off and why it can be inactive', () => {
+  assert.deepEqual(singleKeyState(undefined), { enabled: true, granted: false }, 'on by default, inactive until a grant');
+  assert.deepEqual(singleKeyState({ enabled: true, granted: true }), { enabled: true, granted: true });
+  assert.deepEqual(singleKeyState({ enabled: false, granted: true }), { enabled: false, granted: true });
+  assert.deepEqual(singleKeyState('nonsense'), { enabled: true, granted: false }, 'a malformed push reads as the default');
+  assert.match(singleKeyRow({ enabled: false, granted: false }), /Right Command tap<\/strong> off/, 'the row states off');
+  assert.match(singleKeyRow({ enabled: false, granted: false }), /menu bar menu/, 'the row says where to turn it back on');
+  assert.match(singleKeyRow({ enabled: true, granted: false }), /Inactive: macOS has not granted Accessibility/, 'the row says why the key is inactive');
+  assert.match(singleKeyRow({ enabled: true, granted: false }), /Control Option Space still works/, 'the chord works without the grant');
+  assert.match(singleKeyRow({ enabled: true, granted: true }), /Active: a tap starts and stops Naya/);
+  for (const row of [singleKeyRow({ enabled: true, granted: true }), singleKeyRow({ enabled: true, granted: false })]) {
+    assert.match(row, /Right Option belongs to SuperWhisper and is never used/, 'Right Option is never claimed');
+  }
 });
 
 test('the FULL window offers one visible, labelled mode button', () => {

@@ -8,21 +8,39 @@ Press **Mute** to pause the microphone, then press it again to resume. Press
 
 Global shortcuts:
 
-- Control Option Space: show or hide the mini orb. Showing it starts Live when Live is not already running; hiding it stops Live.
+- Control Option Space: show or hide the pill. Showing it starts Live when Live is not already running; hiding it stops Live.
 - Control Option Shift Space: show or hide the full Naya window (Live keeps running when the window hides).
 - Control Option Shift L: show Naya and start Live.
 - Control Option Shift M: mute or unmute Live.
 - Escape while the mini orb is focused: hide the orb and stop Live. Escape while the window is focused: hide the window; Live keeps running.
 
-Click the orb in the mini view to expand to the full window; Live keeps running.
+Click the pill to expand to the full window; Live keeps running.
 
-Naya has two modes and only one is ever on screen. The full window has a **mini**
-button in its header (its accessible label is "Show the mini orb") that moves the
-app to the floating orb. The orb shows only listening, thinking and talking and
-never takes focus; it can be dragged anywhere, and Naya remembers where you put it.
-Closing the window with Cmd+W while Live is running switches to the orb and keeps
-the session; closing it while Live is off just hides the window. A click on the
-Dock icon always brings the full window back.
+Naya has two modes and only one is ever on screen. The second mode is the **pill**:
+a small capsule, about 64 by 26 points, that sits top-center just below the menu bar
+(or below the notch on a notched display). Inside it a tiny orb and a five-bar level
+meter show the state and nothing else, because there is no text in the pill:
+listening breathes and follows the microphone, thinking shimmers slowly, speaking
+pulses, muted dims to one flat bar, and connecting shows a spinner ring. The pill
+never takes focus. Drag it anywhere and Naya remembers where you put it, and a
+display that disappears never strands it off-screen.
+The full window has a **mini** button in its header (its accessible label is
+"Show the mini orb") that moves the app to the pill. Closing the window with Cmd+W
+while Live is running switches to the pill and keeps the session; closing it while
+Live is off just hides the window. A click on the Dock icon always brings the full
+window back, and clicking the pill opens the full window.
+
+### The single key
+
+If you prefer one key to the chord, turn on **Right Command tap** in the menu bar
+menu (it is on by default). A short tap of the right Command key starts or stops
+Naya exactly like Control Option Space: it ignores the key while you are using it in
+a chord such as Cmd+C, and it ignores a press held longer than 300 milliseconds, so
+ordinary typing never triggers it. The first time you launch Naya by hand, macOS
+asks once for Accessibility (or Input Monitoring) permission with a one-line
+explanation; the chord keeps working whether or not you allow it, and the settings
+page says when the key is inactive and why. Right Option belongs to SuperWhisper, so
+Naya never uses it.
 
 Use the menu if a shortcut is unavailable.
 

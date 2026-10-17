@@ -1,14 +1,14 @@
-/** Compact orb-only view for the floating mini orb panel.
+/** MINI2: the pill, the MINI surface at 64x26 pt.
  *
- * Reuses the authorized Canvas renderer (orb.ts) and the live level feed
- * (window.didiOrbLevel), so there is one renderer and one voice surface. The
- * mini route is the same built page with `?view=mini`; main.ts renders this
- * markup instead of the full window shell.
+ * Reuses the authorized Canvas renderer (orb.ts) at 18 pt, so there is one
+ * renderer and one voice surface. The mini route is the same built page with
+ * `?view=mini`; main.ts renders this markup instead of the full window shell.
+ * The pill carries no text at all: an orb and a 5-bar level meter.
  */
 import type { VoiceState } from './orb.ts';
 import type { LiveActivity } from './live-view.ts';
 
-export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'error';
+export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted' | 'connecting' | 'tool' | 'error';
 
 /** The compact route is a query on the one built page, so the loopback static
  * handler and the same compiled assets serve it unchanged. */
@@ -16,27 +16,32 @@ export function isMiniRoute(search: string): boolean {
   return new URLSearchParams(search).get('view') === 'mini';
 }
 
-/** The one glance state for the mini orb: listening, thinking, speaking, a
- * running tool, or error. Tool activity outranks the quieter voice states so a
- * long call stays visible under the orb. */
-export function miniState(voice: VoiceState, activity: LiveActivity | undefined): MiniState {
+/** The one glance state for the pill: listening, thinking, speaking, muted,
+ * connecting, a running tool, or error. Muted and connecting are their own
+ * states so the pill can dim or spin instead of borrowing the thinking shimmer,
+ * and tool activity outranks the quieter voice states so a long call stays
+ * visible under the orb. */
+export function miniState(voice: VoiceState, activity: LiveActivity | undefined, muted = false): MiniState {
   if (voice === 'ERROR' || voice === 'DISCONNECTED' || voice === 'INTERRUPTED') return 'error';
   if (activity?.kind === 'tools' || activity?.kind === 'failed') return 'tool';
+  // The live projection carries mute beside the voice state, not inside it.
+  if (muted) return 'muted';
+  if (voice === 'CONNECTING') return 'connecting';
   if (voice === 'SPEAKING') return 'speaking';
   if (voice === 'LISTENING') return 'listening';
-  if (voice === 'CONNECTING' || voice === 'PROCESSING' || activity?.kind === 'thinking') return 'thinking';
+  if (voice === 'PROCESSING' || activity?.kind === 'thinking') return 'thinking';
   return 'idle';
 }
 
-/** Orb-only stage: no transcript, no tabs, no text field. The caption is the
- * shared voice-landing caption (state line plus one tool phrase) so both views
- * agree and a tool line is never a second renderer. */
-export function miniMarkup(state: MiniState, caption: string): string {
-  const glow = state === 'listening' || state === 'thinking' || state === 'speaking' || state === 'tool';
-  return `<section class="orb-stage mini-stage" data-mini-state="${state}" aria-label="Naya voice">`
-    + `<div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div>`
-    + `<canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas>`
-    + `<div class="orb-caption">${caption}</div></section>`;
+/** The pill's markup: the orb canvas and five level bars, and no text. The
+ * caption parameter is kept so the caller needs no change; the pill ignores it,
+ * because the decision file says no text in the pill. */
+export function miniMarkup(state: MiniState, _caption = ''): string {
+  const bars = Array.from({ length: 5 }, (_, index) => `<i data-bar="${index + 1}"></i>`).join('');
+  return `<section class="mini-stage mini-pill" data-mini-state="${state}" aria-label="Naya">`
+    + `<div class="presence-glow" aria-hidden="true"></div>`
+    + `<canvas id="didi-orb" width="72" height="72" aria-hidden="true"></canvas>`
+    + `<div class="mini-level" aria-hidden="true">${bars}</div></section>`;
 }
 
 /** The FULL window's one mode control (#311): a visible button with an

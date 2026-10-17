@@ -269,14 +269,14 @@ function miniCaptionMarkup(): string {
 function paintMiniStage() {
   const stage = document.querySelector('.mini-stage');
   if (!stage) return;
-  const state = miniState(orbState(), liveActivity(live));
+  const state = miniState(orbState(), liveActivity(live), live?.muted === true);
   stage.setAttribute('data-mini-state', state);
   stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
 }
 function renderMini() {
   if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
   orb?.destroy(); orb = undefined;
-  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), miniCaptionMarkup());
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live), live?.muted === true), miniCaptionMarkup());
   const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
 }

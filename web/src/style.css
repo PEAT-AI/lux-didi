@@ -445,33 +445,50 @@ html,body{height:100%;overflow:hidden}
 .attach-button .notes-count{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);color:var(--accent-contrast);font-size:10px;line-height:16px;text-align:center}
 
 /* (8) The consent line sits inside the 760 px column with the same side padding, small and muted. */
-#connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}/* W15 mini orb: the floating panel's compact orb-only route. A rounded dark
-   300x300 stage with the orb as the hero, centred above the shared
-   voice-landing caption, with the rings fully inside the panel (UI3A-R8: the
-   outer ring diameter is 240px, 0.80 of the 300px side, and the caption sits
-   below it inside the same panel); the tool phrase reads at >=4.5:1 on one line
-   with an ellipsis. Scoped with html.mini so the small-viewport rules for the
-   full window never resize it. */
-html.mini{background:transparent}
+#connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}
+
+/* MINI2, the pill: the MINI surface is a 64x26 pt capsule (the panel is exactly
+   that size), dark translucent fill, one hairline, radius = height / 2. Inside
+   it an 18 pt orb and a 5-bar level meter and no text at all. All sizes are in
+   CSS pixels, so the same markup renders the same pill at 1x and at 2x.
+   Scoped with html.mini so the small-viewport rules for the full window never
+   resize it. */
+html.mini{background:transparent;color-scheme:dark}
 html.mini body{background:transparent;overflow:hidden}
-html.mini .mini-stage{position:relative;display:block;width:300px;height:300px;min-height:300px;max-width:none;border:none;border-radius:28px;margin:0;background:radial-gradient(circle at 50% 40%,#242a33 0,#161b21 58%,#0d1014 100%);overflow:hidden}
-html.mini .mini-stage .presence-glow{top:132px;left:50%;transform:translate(-50%,-50%);width:240px;height:240px;margin:0}
-/* margin:0 overrides the full-window rule's -48px margins, which would push the
-   orb above the panel (UI3A-R8). */
-html.mini .mini-stage canvas{position:absolute;left:50%;top:132px;width:240px;height:240px;margin:0;transform:translate(-50%,-50%);display:block}
-html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);width:276px;max-width:276px;margin:0;padding:0 12px;box-sizing:border-box}
-html.mini .mini-stage .orb-label{font-size:1.05rem;color:#f1ede2}
-html.mini .mini-stage .voice-honesty{font-size:.68rem;color:#b8c0c7}
-html.mini .mini-stage .voice-honesty span{color:#9aa2a8}
-html.mini .mini-stage .activity-line{max-width:100%;font-size:.94rem;color:#f7fafc;font-weight:600;animation:none}
-html.mini .mini-stage .activity-line .activity-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;overflow-wrap:normal}
-html.mini .mini-stage .activity-indicator{background:#7fd4c1}
-html.mini .mini-stage .activity-mark{color:#7fd4c1}
-html.mini .mini-stage .activity-thinking{color:#f0c98a}
-html.mini .mini-stage .activity-thinking .activity-indicator{background:#d9a65a}
-html.mini .mini-stage .activity-failed{color:#f2a892}
-html.mini .mini-stage .activity-failed .activity-indicator{background:#d97f66}
-html.mini .mini-stage canvas[data-state=IDLE],html.mini .mini-stage canvas[data-state=DISCONNECTED],html.mini .mini-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.9) opacity(.9)}
+html.mini .mini-pill{position:relative;display:flex;align-items:center;gap:5px;box-sizing:border-box;width:64px;height:26px;min-height:26px;max-width:none;margin:0;padding:0 5px;border:1px solid rgba(255,255,255,.16);border-radius:13px;background:rgba(13,16,20,.86);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);overflow:hidden}
+/* The presence glow is one soft wash behind the orb, never a second drawing. */
+html.mini .mini-pill .presence-glow{position:absolute;left:9px;top:50%;width:26px;height:26px;margin:0;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(120,220,200,.5),rgba(120,220,200,0) 70%);opacity:0;transition:opacity .4s ease}
+html.mini .mini-pill[data-mini-state=listening] .presence-glow,
+html.mini .mini-pill[data-mini-state=thinking] .presence-glow,
+html.mini .mini-pill[data-mini-state=speaking] .presence-glow,
+html.mini .mini-pill[data-mini-state=tool] .presence-glow{opacity:1}
+/* The one orb renderer at 18 pt; the canvas backing store is larger so the orb
+   stays crisp on a Retina pill and in a 2x shot. */
+html.mini .mini-pill canvas{position:static;flex:0 0 18px;width:18px;height:18px;margin:0;transform:none}
+html.mini .mini-level{display:flex;align-items:center;justify-content:space-between;flex:1 1 26px;height:12px;gap:2px}
+html.mini .mini-level i{flex:1 1 auto;height:30%;border-radius:1px;background:rgba(160,230,215,.75)}
+/* Each state has one motion, so a glance is unambiguous: listening follows the
+   mic in five steps, thinking holds still, speaking pulses, muted is one flat
+   dim bar and connecting is a slow spinner ring. */
+html.mini .mini-pill[data-mini-state=listening] .mini-level i{animation:mini-level 1.1s ease-in-out infinite}
+html.mini .mini-pill[data-mini-state=listening] .mini-level i:nth-child(2){animation-delay:.12s}
+html.mini .mini-pill[data-mini-state=listening] .mini-level i:nth-child(3){animation-delay:.24s}
+html.mini .mini-pill[data-mini-state=listening] .mini-level i:nth-child(4){animation-delay:.36s}
+html.mini .mini-pill[data-mini-state=listening] .mini-level i:nth-child(5){animation-delay:.48s}
+html.mini .mini-pill[data-mini-state=thinking] .mini-level i{height:38%;background:rgba(215,200,150,.7)}
+html.mini .mini-pill[data-mini-state=speaking] .mini-level i{animation:mini-speak .6s ease-in-out infinite alternate;background:rgba(140,235,215,.95)}
+html.mini .mini-pill[data-mini-state=speaking] .mini-level i:nth-child(2){animation-delay:.08s}
+html.mini .mini-pill[data-mini-state=speaking] .mini-level i:nth-child(3){animation-delay:.16s}
+html.mini .mini-pill[data-mini-state=speaking] .mini-level i:nth-child(4){animation-delay:.24s}
+html.mini .mini-pill[data-mini-state=speaking] .mini-level i:nth-child(5){animation-delay:.32s}
+html.mini .mini-pill[data-mini-state=muted] canvas{opacity:.4}
+html.mini .mini-pill[data-mini-state=muted] .mini-level i{display:none}
+html.mini .mini-pill[data-mini-state=muted] .mini-level i:first-child{display:block;height:1px;background:rgba(200,200,200,.5)}
+html.mini .mini-pill[data-mini-state=connecting]:after{content:"";position:absolute;right:5px;width:8px;height:8px;border:1px solid rgba(255,255,255,.2);border-top-color:rgba(160,230,215,.95);border-radius:50%;animation:mini-spin 1.4s linear infinite}
+@keyframes mini-level{0%,100%{height:24%}50%{height:88%}}
+@keyframes mini-speak{from{height:30%}to{height:92%}}
+@keyframes mini-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){html.mini .mini-pill .mini-level i,html.mini .mini-pill[data-mini-state=connecting]:after{animation:none}html.mini .mini-pill .mini-level i{height:60%}}
 
 /* UI3a: the FULL window's one mode control (#311). A quiet text button that sits
    with the live pill in the header; it is only rendered under the native bridge,

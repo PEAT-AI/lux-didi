@@ -122,7 +122,9 @@ export function stepsSummary(steps: readonly ChatStep[]): string {
 const PROSE: Record<string, string> = { Calendar: 'calendar', Gmail: 'mail', 'lux-knowledge': 'the knowledge base' };
 export function connectorProse(name: string): string { return PROSE[name] ?? name; }
 
-/** Tools that change something outside Didi. None of today's read-only tools match, so a failed run
- * never claims "Content may have been sent" (target turn, item 6). */
+/** Tools that change something outside Didi, recognised by their last verb. The one behaviour this rule must
+ * hold: only a suffix verb seen here counts as a write. None of today's tools matches, so a failed run never
+ * claims "Content may have been sent" (target turn, item 6), and the suite pins every current tool as read-only
+ * so a new writer has to be named here deliberately. */
 const WRITE_TOOL = /_(?:post|send|reply|create|update|delete|invite|schedule)$/;
 export function wroteExternally(names: readonly string[]): boolean { return names.some(name => WRITE_TOOL.test(name)); }

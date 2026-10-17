@@ -176,7 +176,8 @@ function sourceLabel(name: string): string { return toolLabel(name) || toolConne
 const ITEM_START = /^(?:[-*]\s|#{1,6}\s|\*\*)/;
 const OMITTED_LINE = /^\[(?:omitted:|[+-]\d+ chars)/;
 const RAW_ID = /\[(?:id|post) [^\]\s]*\]/g;
-const EMPHASIS = /[*`_]{1,2}/g;
+// Emphasis only: `*` and backticks. An underscore is prose here (channel, branch and note names).
+const EMPHASIS = /[*`]{1,2}/g;
 const SNIPPET_CHARS = 120;
 
 /** One evidence row: the one-line shape the owner reads, its optional snippet, and its sort stamp. */
@@ -258,9 +259,14 @@ export function evidenceRow(tool: ToolEvidence, block: { fields: string[]; snipp
     return { line: [parts[0], parts[1], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: snippet || clipWords(parts[3] ?? ''), at: stampOf(stamp) };
   }
   if (/^gmail_/.test(tool.name)) {
-    const sender = (parts[1] ?? '').replace(/^from:\s*/i, '');
-    const stamp = parts[2] ?? '';
-    return { line: [sender, parts[0], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: clipWords(parts[3] ?? '') || snippet, at: stampOf(stamp) };
+    // The shaper omits a field the source lacks, so a role is recognised by its own prefix and a field it
+    // does not carry is dropped, never shifted into the sender slot (F2).
+    const fromIndex = parts.findIndex((part, index) => index > 0 && /^from:/i.test(part));
+    const dateIndex = parts.findIndex((part, index) => index > 0 && /^date:/i.test(part));
+    const sender = fromIndex > 0 ? parts[fromIndex]!.replace(/^from:\s*/i, '') : '';
+    const stamp = dateIndex > 0 ? parts[dateIndex]!.replace(/^date:\s*/i, '') : '';
+    const leftover = parts.filter((_part, index) => index !== 0 && index !== fromIndex && index !== dateIndex);
+    return { line: [sender, parts[0], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: clipWords(leftover.join(' ')) || snippet, at: stampOf(stamp) };
   }
   if (/^gcal_/.test(tool.name)) {
     const pieces = (parts[0] ?? '').split(',').map(piece => piece.trim());

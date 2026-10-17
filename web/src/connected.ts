@@ -5,6 +5,8 @@ import { toolConnector, wroteExternally } from './tool-phrases.ts';
 import { composerIntent, draftHeightPx } from './composer.ts';
 import { attachPin } from './autoscroll.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
+/** The outcomes that mean the run stopped on time, not on an error: the partial family (F4). */
+const TIMEOUT_OUTCOME = /^(?:deadline|timeout|truncated)$/;
 interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
 interface Run { toolEvidence?: ToolEvidence[]; finalEntryId: string | null; runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null }
@@ -238,12 +240,13 @@ export class ConnectedView {
   }
   #runSection(r: Run): string {
     const failed = r.state === 'terminal' && r.outcome !== 'complete';
-    // A partial turn says in plain words where it stopped, and offers the next action.
-    const partial = failed && !!r.partialText;
+    // A turn that stopped early says in plain words where it stopped and offers the next action: a run that
+    // ran out of it carries a deadline outcome before it carries saved text (F4).
+    const partial = failed && (!!r.partialText || TIMEOUT_OUTCOME.test(r.outcome ?? ''));
     // The detached "Content may have been sent" copy belongs to a write action only, and no current
     // read-only tool writes (target turn, item 6).
     const message = failed && !partial ? escape(runFailureWords(r.outcome, r.mayHaveBeenSent && wroteExternally(this.#toolNames(r)))) : '';
-    const progress = partial ? `<p class="partial">${escape(partialWords(this.#unanswered(r)))}</p>${answerMarkup(r.partialText)}<button type="button" id="connected-retry" class="quiet">Try again</button>` : '';
+    const progress = partial ? `<p class="partial">${escape(partialWords(this.#unanswered(r)))}</p>${r.partialText ? answerMarkup(r.partialText) : ''}<button type="button" id="connected-retry" class="quiet">Try again</button>` : '';
     const cancel = r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : '';
     const hidden = !message && !progress && !cancel;
     return `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}"${hidden ? ' hidden' : ''}>${message}${progress}${cancel}${hidden ? '' : this.#usage(r)}</div>`;

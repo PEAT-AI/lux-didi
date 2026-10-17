@@ -38,6 +38,7 @@ const TRANSITIONS = [
 const fixture = await startFixture({ configured: false });
 let browser;
 const written = [];
+const moved = [];
 try {
   browser = await chromium.launch({
     channel: 'chromium', headless: true,
@@ -55,6 +56,13 @@ try {
     return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : String(gl && gl.getParameter(gl.RENDERER));
   });
   assert.match(String(renderer), /Metal/i, `headless renderer must be Metal, got ${renderer}`);
+
+  /// The frame's own bytes. A still orb encodes to one identical PNG; a moving one
+  /// does not, so this is the number that says the picture actually moved.
+  const frameHash = async (name) => {
+    const bytes = await readFile(join(shots, `${name}.png`));
+    return bytes.subarray(20).toString('base64').length + ':' + bytes.length;
+  };
 
   const setState = (state) => page.locator('.mini-pill').evaluate((el, next) => el.setAttribute('data-mini-state', next), state);
   const capture = async (name, pill) => {
@@ -100,12 +108,18 @@ try {
       }
       await setState(to);
       const started = Date.now();
+      const samples = [];
       for (let frame = 0; frame < 6; frame += 1) {
         const due = started + frame * 100;
         const wait = due - Date.now();
         if (wait > 0) await page.waitForTimeout(wait);
-        await capture(`transition-${from}-to-${to}-${frame}-${enlarged ? '300' : 'pill'}`, !enlarged);
+        const name = `transition-${from}-to-${to}-${frame}-${enlarged ? '300' : 'pill'}`;
+        await capture(name, !enlarged);
+        samples.push(await frameHash(name));
       }
+      const distinct = new Set(samples).size;
+      assert.ok(distinct >= 3, `${from} to ${to} moves through at least three frames, got ${JSON.stringify(samples)}`);
+      moved.push(`${from}-to-${to}${enlarged ? '@300' : ''}:${distinct}`);
       if (enlarged) {
         await page.locator('.mini-pill').evaluate((el) => {
           el.style.width = ''; el.style.height = '';
@@ -115,7 +129,7 @@ try {
     }
   }
   assert.deepEqual(errors, [], 'the pill raised no page error');
-  console.log(`ORB-MOTION-SHOTS PASS ${shots} files=${written.length} ${written.join(' ')}`);
+  console.log(`ORB-MOTION-SHOTS PASS ${shots} files=${written.length} frames-moved=${moved.join(' ')} ${written.join(' ')}`);
 } finally {
   if (browser) await browser.close();
   await fixture.close();

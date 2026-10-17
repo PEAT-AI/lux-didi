@@ -69,11 +69,11 @@ test('the orb stage uses the Vicuna dark gradient and a visible presence glow', 
   assert.match(style, /\.orb-stage \.presence-glow\{width:420px;height:420px\}/);
 });
 
-test('the connected consent wall is a closed disclosure', () => {
+test('the connected consent stays inline above the composer, never inside a collapsed disclosure', () => {
   const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
-  assert.match(connected, /<details class="connected-chat"><summary><span>Connected text chat<\/span>/);
-  assert.match(connected, /id="connected-disclosure"|class="connected-disclosure"/);
-  assert.match(connected, /<\/details>/);
+  assert.match(connected, /<section class="connected-conversation" aria-label="Connected Naya conversation">/);
+  assert.match(connected, /\$\{grant \|\| this\.#consent \? '' : `<p class="connected-disclosure">/);
+  assert.doesNotMatch(connected, /connected-chat|<details|<\/details>/);
 });
 
 test('typed text goes through the connected composer, Enter to send, not the removed Live text box', () => {

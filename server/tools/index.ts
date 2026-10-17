@@ -444,7 +444,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               // persisted to tool_calls, put into evidence or source cards, or sent to the model.
               const redacted = redactSecretsWithCount(value.response);
               if (redacted.count > 0) {
-                options.log?.({ event: 'tool_redaction', tool: name, count: redacted.count });
+                // The owner log accepts one closed failure shape; the host log validates this receipt's
+                // own closed shape (event, tool, count) and drops anything else, so no value can ride along.
+                const receipt = options.log as unknown as ((event: Record<string, unknown>) => void) | undefined;
+                receipt?.({ event: 'tool_redaction', tool: name, count: redacted.count });
                 value = { ...value, response: redacted.value };
               }
               if (prepared?.notice !== undefined && typeof value.response['text'] === 'string') {

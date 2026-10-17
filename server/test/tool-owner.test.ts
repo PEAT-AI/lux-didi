@@ -20,7 +20,7 @@ import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions, ToolFailureEvent, ToolRedactionEvent } from '../tools/types.js';
+import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions, ToolFailureEvent } from '../tools/types.js';
 
 const tools: McpTool[] = [
   { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
@@ -565,7 +565,7 @@ for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_
 });
 
 test('a thrown MCP transport failure is logged without exception payload and remains unknown', async t => {
-  const events: (ToolFailureEvent | ToolRedactionEvent)[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
   assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'timeout');
@@ -573,14 +573,14 @@ test('a thrown MCP transport failure is logged without exception payload and rem
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
 test('an oversize unknown outcome is logged as invalid_result, never a generic transport code', async t => {
-  const events: (ToolFailureEvent | ToolRedactionEvent)[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
   t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
   assert.equal(outcome.status, 'uncertain');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
 test('a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
-  const events: (ToolFailureEvent | ToolRedactionEvent)[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
   const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
   assert.equal(outcome.status, 'complete');

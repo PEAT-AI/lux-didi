@@ -1375,7 +1375,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
   await attachment.ready;
   h.advance(100); scheduler.runDue();
   assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
-  assert.equal(scheduler.pending.size, 2, 'only active session and idle budgets remain');
+  assert.equal(scheduler.pending.size, 3, 'only the session window, the call deadline and the idle budget remain');
   t.mock.restoreAll();
   const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
   h.advance(21);
@@ -1968,6 +1968,37 @@ test('a provider session deadline continues in a new seeded window; the call cei
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'session_timeout' }, 'only the call ceiling ends a call for time');
   assert.equal(h.f.connections, 2);
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+});
+
+test('the owner hard deadline ends a call terminally while a continuation is in flight', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 1000, callMaxMs: 1600, idleMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'owner-hard-deadline');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ serverContent: { inputTranscription: { text: 'still here', finished: true } } });
+  await transcription(output, 'still here');
+  // The provider session limit is a window, not a call length: the call continues in a fresh seeded window.
+  h.advance(1000); scheduler.runDue();
+  await h.f.frame(2);
+  assert.equal(h.requests[1]!.openingText, LIVE_RECOVERY_PICKUP, 'the provider session limit continues in a fresh seeded window');
+  // Drop the fresh window before it is ready: the continuation is in flight in a recovery backoff.
+  h.f.remoteClose('', 1011);
+  await tick();
+  h.advance(600); scheduler.runDue();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'session_timeout' }, 'the owner hard deadline ends the call for time');
+  assert.equal(h.f.connections, 2, 'the owner hard deadline continues nothing afterwards');
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'session_timeout' });
+});
+
+test('an unattended call ends at its session deadline instead of taking another window', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 1000, idleMs: 2000 } });
+  const { session, attachment } = await attached(h, 'socket-close-deadline');
+  attachment.detach();
+  // idleMs exceeds the session deadline, exactly the frozen native profile whose consumer socket closed.
+  h.advance(1000); scheduler.runDue(); await tick();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'session_timeout' }, 'a detached call is durably terminal at its hard deadline, never idle or unknown');
+  assert.equal(h.f.connections, 1, 'an unattended call never opens another provider window');
 });
 
 test('idle expiry still ends a call after a resume', async t => {

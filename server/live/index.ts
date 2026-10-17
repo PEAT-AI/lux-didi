@@ -69,7 +69,7 @@ interface ActiveSession {
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
   recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
   nudgeTimer?: ReturnType<JobTimer> | undefined; nudgeTurn: number; nudgeFiredTurn: number;
-  sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
+  sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
   researchLedger: ResearchLedger;
@@ -740,7 +740,7 @@ export class LiveSessionOwner {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       recoveries: 0, nudgeTurn: 0, nudgeFiredTurn: 0,
-      sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
+      sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
       registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
@@ -765,7 +765,10 @@ export class LiveSessionOwner {
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
-    handle.sessionTimer = this.#schedule(() => { if (!this.#settled(handle)) void this.#continueSession(handle); }, sessionMs);
+    // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
+    // the owner call ceiling ends the call for time exactly as before. Neither is the other.
+    handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
+    handle.callTimer = this.#schedule(() => { this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
@@ -851,6 +854,15 @@ export class LiveSessionOwner {
     return { turns: kept, chars };
   }
 
+  /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
+  #sessionWindowEnded(handle: ActiveSession): void {
+    if (this.#attended(handle)) { void this.#continueSession(handle); return; }
+    this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
+  }
+
+  /** Only an attended call takes another provider window; a caller who already left never holds one open. */
+  #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
+
   #isSessionDeadline(outcome: LiveVoiceOutcome | undefined): boolean {
     return outcome !== undefined && (outcome.code === 'session_timeout' || outcome.code === 'deadline');
   }
@@ -896,7 +908,7 @@ export class LiveSessionOwner {
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
     } catch { return false; }
-    handle.sessionTimer = this.#schedule(() => { if (!this.#settled(handle)) void this.#continueSession(handle); }, Math.max(1, Math.ceil(remaining)));
+    handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
     return true;
   }
 
@@ -1192,7 +1204,7 @@ export class LiveSessionOwner {
           const rebuilt = await this.#recoverFromDrop(handle, outcome);
           if (outcome?.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
           if (rebuilt) continue;
-        } else if (this.#isSessionDeadline(outcome)) {
+        } else if (this.#isSessionDeadline(outcome) && this.#attended(handle)) {
           // A provider session deadline continues in a new window; only the call ceiling or idle ends a call.
           if (await this.#continueSession(handle)) continue;
         }
@@ -1530,7 +1542,7 @@ export class LiveSessionOwner {
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
-    handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
+    handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
     let journalSequence: number;
     try {

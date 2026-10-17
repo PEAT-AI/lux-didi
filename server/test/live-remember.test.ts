@@ -322,7 +322,7 @@ test('Live remember resumes on an explicit final input frame before the quiet de
   assert.equal(deferred[0]?.waitedMs, 99);
 });
 
-test('Live remember refuses after 1500 ms when newer speech invalidates the turn boundary', async t => {
+test('Live remember grounds on the completed owner turn after 1500 ms of newer speech', async t => {
   const scheduler = new RememberClock();
   const h = await harness(t, { tools: true, scheduler });
   const { session } = await attached(h);
@@ -334,8 +334,11 @@ test('Live remember refuses after 1500 ms when newer speech invalidates the turn
   h.f.send({ serverContent: { inputTranscription: { text: 'is Friday' } } });
   await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'inputTranscription').length === 2);
   scheduler.advance(1499); await drain();
-  assert.deepEqual(await result, { remembered: false, code: 'owner_transcript_not_final' });
-  assert.equal(rows(h).length, 0);
+  // The two frames read together as one owner sentence, so the note is grounded and stored once.
+  const outcome = await result;
+  assert.equal(outcome.remembered, true);
+  assert.equal(typeof outcome.entryId, 'string');
+  assert.equal(rows(h).length, 1);
   const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0]?.waitedMs, 1500);
@@ -397,7 +400,7 @@ test('the model phrasing decides, not a remember prefix, and the stored note rea
       assert.equal(typeof result.entryId, 'string');
       assert.ok(rows(h).some(row => String(row.text).includes(note) && utterance.toLowerCase().includes(String(row.text).toLowerCase())), 'the owner words are stored verbatim');
       const journal = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind='toolResult'", [session.liveSessionId]));
-      assert.ok(journal.some(row => String(row['text']).includes(String(result.entryId))), 'the journal confirms the stored note');
+      assert.ok(journal.some(row => String(row['text']).includes('"name":"remember_note"') && String(row['text']).includes('"status":"completed"')), 'the journal confirms the stored note');
       const next = h.owner.create({ idempotencyKey: `next-${utterance.slice(0, 12)}`, inputClass: 'ordinary' }, h.ctx);
       assert.ok(String(frozen(h, next.liveSessionId)?.accepted_prompt_snapshot).includes(note), 'the next session recalls the note');
     });

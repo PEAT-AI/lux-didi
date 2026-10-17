@@ -1534,6 +1534,30 @@ test('a tool batch resolving late still completes inline in the same turn', asyn
   }
 });
 
+test('F2 the live tool steps retire when the turn completes, never into the next question', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'step1', name: 'search_knowledge', args: { query: 'release freeze', limit: 1 } }] } });
+  const waitFor = async (want: (steps: import('../live/types.js').LivePageProjection['steps']) => boolean): Promise<import('../live/types.js').LivePageProjection['steps']> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const steps = h.owner.current().steps;
+      if (want(steps)) return steps;
+      await tick();
+    }
+    throw new Error('the step list never reached the expected state');
+  };
+  const running = await waitFor(steps => (steps ?? []).length > 0);
+  assert.equal(running![0]!.phase, 'start', 'the source being read is projected under the orb while it runs');
+  assert.equal(running![0]!.callId, 'step1');
+  assert.equal(running![0]!.subject, 'release freeze');
+  await h.f.frame(2);
+  const ended = await waitFor(steps => (steps ?? [])[0]?.phase === 'end');
+  assert.equal(ended![0]!.ok, true);
+  h.f.send({ serverContent: { outputTranscription: { text: 'Here is the answer.', finished: true }, turnComplete: true } });
+  await waitFor(steps => steps === undefined);
+  assert.equal(h.owner.current().steps, undefined, 'the finished answer retires the list, so the next question shows nothing stale');
+});
+
 test('a tool call past its deadline returns the typed timeout failure stage inline', async t => {
   const h = await harness(t, { tools: true, beforeTool: () => Promise.reject(new Error('connector deadline')) });
   await attached(h);

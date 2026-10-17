@@ -1185,7 +1185,13 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; logTurnScript(handle); }
+        if (event.type === 'turnComplete') {
+          handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+          // The answer is done, so the turn's step lines retire here: a later question that reads nothing
+          // must not show the previous turn's sources as if they were running (review finding F2).
+          if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
+          logTurnScript(handle);
+        }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();

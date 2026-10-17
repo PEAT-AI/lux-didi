@@ -125,6 +125,8 @@ export class FakeSocket extends EventEmitter {
   bufferedAmount = 0;
   readonly sent: string[] = [];
   pings = 0;
+  /** A live peer answers a ping; a dead one does not, which is what the 8 s silence rule measures. */
+  answersPings = true;
   /** The PCM bytes of every mic frame this socket was asked to send, in send order. */
   micFrames(): number[] {
     return this.sent.flatMap(frame => {
@@ -135,7 +137,7 @@ export class FakeSocket extends EventEmitter {
   send(frame: string, callback?: (error?: Error) => void) { this.sent.push(frame); callback?.(); }
   close() { if (this.readyState === 3) return; this.readyState = 3; this.emit('close', 1000); }
   terminate() { this.close(); }
-  ping() { this.pings += 1; }
+  ping() { this.pings += 1; if (this.answersPings) queueMicrotask(() => { if (this.readyState === 1) this.emit('pong'); }); }
   /** An inbound provider frame, exactly as the wire delivers it. */
   deliver(body: Record<string, unknown>) { this.emit('message', Buffer.from(JSON.stringify(body))); }
 }

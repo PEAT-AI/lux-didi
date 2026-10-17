@@ -801,7 +801,9 @@ describe('openai gpt-live turn states', () => {
   test('no inbound frame and no pong for eight seconds is a stall on the existing recovery path', async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     const receipts = hostReceipts(t);
-    const { captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    const { socket, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    // A dead transport answers nothing: no inbound frame and no pong, which is the only shape that stalls.
+    socket.answersPings = false;
     t.mock.timers.tick(10_000);
     await until(() => captured.events.some(event => event.type === 'outcome'));
     const outcome = captured.events.find(event => event.type === 'outcome');

@@ -3,18 +3,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
+import type { DataClass, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
+import { hostLogEvent } from '../tools/host-events.js';
 import { canonicalJSON } from '../tools/canonical.js';
 import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } from '../tools/types.js';
 import type { ToolEvidence } from './types.js';
 import { assemble, chatAllowsToolClasses, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
-import { answerInstruction, chatToolRegistry, deterministicAnswer, notReachedLabels } from './tools.js';
+import { answerInstruction, chatToolRegistry, deterministicAnswer, notReachedLabels, type ChatCallRecord } from './tools.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
 import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatStepEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
@@ -181,19 +182,34 @@ export class ChatService implements ChatPort {
     const steps: ChatStepEvent[] = [];
     const rounds: number[] = [];
     const onStep = (event: ChatStepEvent) => { steps.push(event); this.#emit(run.runId, event); };
-    const acquire = chatToolRegistry(registry, { runId: run.runId, onStep });
+    // The end event carries the result count, known only once the round's responses are shaped.
+    const finished: ChatCallRecord[] = [];
+    const release = (source: readonly number[]) => {
+      const counts = [...source];
+      while (finished.length) {
+        const record = finished.shift()!;
+        const resultCount = counts.shift() ?? 0;
+        onStep({ type: 'chat_step', runId: run.runId, stepId: record.stepId, tool: record.tool, phase: 'end',
+          label: record.label, ok: record.ok, ms: record.ms, resultCount });
+      }
+    };
+    const countOf = (response: JsonObject) => sourceCards({ text: response.text, markdown: response.markdown, sources: response.sources }).length;
+    const acquire = chatToolRegistry(registry, { runId: run.runId, onStep, onFinished: record => finished.push(record) });
     const fence = new AbortController();
     const signal = AbortSignal.any([control.signal, fence.signal]);
     // One run budget: acquisition ends at the fence, the answer phase keeps the remainder.
-    const runBudget = Math.max(1, control.deadlineMs - this.#now());
+    const startedAt = this.#now();
+    const runBudget = Math.max(1, control.deadlineMs - startedAt);
     const acquireMs = Math.min(70_000, Math.round(runBudget * 0.78));
-    const answerMs = Math.max(200, runBudget - acquireMs);
+    // Headroom: the outer race arms its deadline timer first, so the answer must finish inside it.
+    const answerMs = Math.max(200, runBudget - acquireMs - 3_000);
     const fenceTimer = setTimeout(() => fence.abort(), acquireMs);
     const acquirePhase = async () => runTools({ model: { generate: async (next, nextControl) => {
       // Consent and route currency are checked before EVERY request, including evidence follow-ups.
       this.#checkPolicy(run.runId, run.sessionId, context);
       if (!this.lookupAuthority(run.runId) || next.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) throw new ContextFailure('unavailable');
       const toolEvidence = this.#toolEvidence(next);
+      release(next.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [countOf(part.functionResponse.response)] : [])));
       this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
         const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
@@ -210,9 +226,15 @@ export class ChatService implements ChatPort {
       journal: tools.owner.journal, resultGate: tools.owner.resultGate });
     // A fenced or throwing acquisition still answers from what it gathered.
     let loop: LoopResult | undefined;
+    let failure: unknown;
     try { loop = await acquirePhase(); }
-    catch { loop = undefined; }
+    catch (error) { failure = error; loop = undefined; }
     finally { clearTimeout(fenceTimer); fence.abort(); }
+    // A refused run keeps its refusal: consent, route and the result gate still own the outcome.
+    if (failure instanceof ContextFailure) throw failure;
+    // The calls the fence cut are named before their end events are released.
+    const cutLabels = notReachedLabels(steps);
+    release([]);
     // The finite bound can stop after a tool result, before another model request.
     // Read its projection through the SAME canonical gate, never from raw journal JSON.
     if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
@@ -226,9 +248,13 @@ export class ChatService implements ChatPort {
     }
     const settled = loop;
     if (settled !== undefined && settled.status === 'complete' && settled.text.trim().length > 0) {
+      this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'answered');
       return { status: 'complete', text: settled.text, dataClass };
     }
-    // A gate refusal is not a cut run: it keeps its own outcome, never an invented answer.
+    // A gate refusal or a provider error is not a cut run: it keeps its own outcome, never an invented answer.
+    if (settled !== undefined && (settled.status === 'denied' || settled.status === 'error')) {
+      return { status: settled.status, text: settled.text, dataClass };
+    }
     if (settled !== undefined && settled.text.trim().length > 0 && settled.status !== 'limit'
       && settled.status !== 'uncertain' && settled.status !== 'empty') {
       return { status: settled.status, text: settled.text, dataClass };
@@ -236,9 +262,14 @@ export class ChatService implements ChatPort {
     // ANSWER: one tool-free call over the frozen evidence, then a deterministic answer if it fails.
     // Nothing gathered during acquisition is discarded at the fence.
     const evidence = this.#frozenEvidence(run);
-    const notReached = notReachedLabels(steps);
+    const notReached = cutLabels;
     let answer = '';
-    if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
+    if (!control.signal.aborted) {
+      // The answer request passes the same check as every acquire request, evidence included.
+      this.#checkPolicy(run.runId, run.sessionId, context);
+      if (!this.lookupAuthority(run.runId) || request.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) {
+        throw new ContextFailure('unavailable');
+      }
       const answerAbort = new AbortController();
       const answerTimer = setTimeout(() => answerAbort.abort(), answerMs);
       try {
@@ -246,12 +277,22 @@ export class ChatService implements ChatPort {
           contents: [...request.contents, { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
         { signal: AbortSignal.any([control.signal, answerAbort.signal]), deadlineMs: this.#now() + answerMs });
         answer = result.text.trim();
-      } catch { answer = ''; }
-      finally { clearTimeout(answerTimer); }
+      } catch (error) {
+        if (error instanceof ContextFailure) throw error;
+        answer = '';
+      } finally { clearTimeout(answerTimer); }
     }
+    this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'fenced');
     return { status: 'complete', text: answer || deterministicAnswer(evidence, notReached), dataClass, partial: true, notReached };
   }
 
+  /** One bounded receipt per run: model and tool milliseconds and counts only, never text. */
+  #timing(run: RunSnapshot, rounds: readonly number[], steps: readonly ChatStepEvent[], fenceMs: number,
+    acquireMs: number, answerMs: number, outcome: 'answered' | 'fenced'): void {
+    hostLogEvent({ event: 'chat_timing', runId: run.runId, outcome, rounds: [...rounds],
+      tools: steps.filter(step => step.phase === 'end').map(step => ({ tool: step.tool, ok: step.ok === true, ms: step.ms ?? 0 })),
+      fenceMs, acquireMs, answerMs });
+  }
   /** The evidence persisted before every model request: frozen at the fence, never re-read from a call. */
   #frozenEvidence(run: RunSnapshot): { name: string; markdown: string }[] {
     let stored: unknown[] = [];

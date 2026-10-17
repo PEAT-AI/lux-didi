@@ -37,5 +37,20 @@ provisional and list what was not reached.
 
 ## Timing receipts
 
-`host.log` records one `chat_timing` receipt per run: per-round model milliseconds, per-tool
-milliseconds and outcome, and the fence time, with counts and durations only.
+`host.log` records one `chat_timing` receipt per run that answered or was fenced, validated by
+`server/host/log.ts`, milliseconds and counts only and never text:
+
+```
+{ event: "chat_timing", runId, outcome: "answered" | "fenced",
+  rounds: [modelMs, ...], tools: [{ tool, ok, ms }, ...],
+  fenceMs, acquireMs, answerMs }
+```
+
+`fenceMs` is the wall time from run start to the end of acquisition; `acquireMs` and `answerMs` are the
+budgets the run was given, so a receipt shows whether the fence cut the run early or the budget did.
+
+## resultCount
+
+Every `end` event carries `resultCount`: the number of result cards the tool's response yields, the
+same `sourceCards` projection the owner evidence uses. A call that failed, was cut by the fence, or
+whose response was refused by the result gate carries `0`.

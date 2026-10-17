@@ -6,7 +6,7 @@ export const CHAT_TOOL_TIMEOUT_MS = 15_000;
 
 /** Short human phrases for the step list. The end event carries counts only, never content. */
 const LABELS: Record<string, string> = {
-  search: 'searched everything', mail: 'searched mail', calendar: 'checked the calendar', drive: 'searched Drive',
+  search: 'searched everything', search_knowledge: 'searched the knowledge base', mail: 'searched mail', calendar: 'checked the calendar', drive: 'searched Drive',
   contacts: 'checked contacts', memory: 'read saved memory',
   gmail_list: 'listed mail', gmail_read: 'read a message', gmail_search: 'searched mail',
   gcal_list: 'listed calendar events', gcal_read: 'read an event', gcal_search: 'searched the calendar',
@@ -18,9 +18,14 @@ export function toolLabel(tool: string): string {
   return LABELS[tool] ?? (tool.replace(/[._-]+/g, ' ').trim() || 'used a tool');
 }
 
+/** One settled call, before its count is known: the caller owns the count and the end event. */
+export interface ChatCallRecord { stepId: string; tool: string; label: string; ok: boolean; ms: number }
+
 export interface ChatStepHooks {
   runId: string;
   onStep(event: ChatStepEvent): void;
+  /** Called once per settled call, in call order; the caller publishes the end event with its count. */
+  onFinished?(record: ChatCallRecord): void;
   timeoutMs?: number;
   now?(): number;
 }
@@ -59,8 +64,7 @@ export function chatToolRegistry(tools: readonly ToolDefinition[], hooks: ChatSt
       const stepId = `${hooks.runId}:${++counter}`;
       const label = toolLabel(tool.name);
       const startedAt = now();
-      const end = (ok: boolean) => hooks.onStep({ type: 'chat_step', runId: hooks.runId, stepId, tool: tool.name,
-        phase: 'end', label, ok, ms: now() - startedAt });
+      const end = (ok: boolean) => hooks.onFinished?.({ stepId, tool: tool.name, label, ok, ms: now() - startedAt });
       hooks.onStep({ type: 'chat_step', runId: hooks.runId, stepId, tool: tool.name, phase: 'start', label });
       const abort = new AbortController();
       let timedOut = false;

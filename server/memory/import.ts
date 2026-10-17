@@ -57,6 +57,24 @@ const confidences: readonly MemoryConfidence[] = ['high', 'medium', 'low'];
  * becomes an ordinary entry through an import either.
  */
 const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensitive)\b)/i;
+
+export interface ScreenedText {
+  /** The text to store: what the import writes, never the raw input. */
+  readonly text: string;
+  /** A refusal code, or null when the text may be stored. */
+  readonly refused: string | null;
+}
+
+/**
+ * The one content seam every imported note text passes through, and the only
+ * place the import decides what may be stored. K1's secret redactor is pointed
+ * at this function when it lands, so returning the screened text here is enough
+ * for every import path to inherit it. Today the text is unchanged and the
+ * classified detector refuses it.
+ */
+export function screenImportText(text: string): ScreenedText {
+  return classified.test(text.trim()) ? { text, refused: 'private_memory_unsupported' } : { text, refused: null };
+}
 const control = /[\u0000-\u001f\u007f]/;
 const dateShape = /^\d{4}-\d{2}-\d{2}$/;
 const itemIdShape = /^[0-9a-f]{16}$/;
@@ -102,7 +120,8 @@ function item(raw: unknown): ImportItem | string {
   if (typeof importance !== 'number' || !Number.isInteger(importance) || importance < 1 || importance > 3) return 'invalid_field';
   if (!isDate(value['capturedAt'])) return 'invalid_field';
   if (!isNoteText(value['text'])) return 'invalid_field';
-  if (classified.test(String(value['text']).trim())) return 'private_memory_unsupported';
+  const screened = screenImportText(value['text'] as string);
+  if (screened.refused !== null) return screened.refused;
   const rawSources = value['sources'];
   if (!Array.isArray(rawSources) || rawSources.length > MAX_PROVENANCE) return 'invalid_field';
   const sources: ImportProvenance[] = [];
@@ -117,7 +136,7 @@ function item(raw: unknown): ImportItem | string {
     id: value['id'] as string, kind: value['kind'] as MemoryKind, label: value['label'] as string,
     topic: value['topic'] as string, status: value['status'] as MemoryStatus,
     importance: importance as 1 | 2 | 3, confidence: value['confidence'] as MemoryConfidence,
-    capturedAt: value['capturedAt'] as string, text: value['text'] as string, sources: Object.freeze(sources),
+    capturedAt: value['capturedAt'] as string, text: screened.text, sources: Object.freeze(sources),
   });
 }
 

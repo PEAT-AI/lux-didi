@@ -83,6 +83,11 @@ A `text` that begins with the private or sensitive marker (`privately ...`,
 applies, so an import cannot label something ordinary that Live would have
 refused to remember.
 
+Every item text passes through one function, `screenImportText` in
+`server/memory/import.ts`. It is the single seam a secret redactor attaches to:
+the text it returns is what the import stores, so wiring a redactor there covers
+the whole import without touching a call site.
+
 A minimal, synthetic line:
 
 ```json

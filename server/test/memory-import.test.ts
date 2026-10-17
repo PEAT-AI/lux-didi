@@ -11,7 +11,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import { hostMigrations } from '../host/runtime.js';
 import { resolveLiveMemory } from '../host/live.js';
-import { IMPORT_PROVIDER, importedEntryId, listStandingMemory, parseImportFile } from '../memory/import.js';
+import { IMPORT_PROVIDER, importedEntryId, listStandingMemory, parseImportFile, screenImportText } from '../memory/import.js';
 import {
   NAYA_LIVE_BASE, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
   composeLiveSessionInstruction,
@@ -79,6 +79,14 @@ test('line validation refuses an unknown key, a bad date and a classified note w
   assert.deepEqual(privateNote.rejected, [{ line: 1, code: 'private_memory_unsupported' }]);
   assert.equal(privateNote.items.length, 0);
   assert.deepEqual(parseImportFile(line({ text: 'privately, the mint is Friday' })).rejected, [{ line: 1, code: 'private_memory_unsupported' }]);
+});
+
+test('every item text passes through the one screening seam, which returns what is stored', () => {
+  assert.deepEqual(screenImportText('the mint is Friday'), { text: 'the mint is Friday', refused: null });
+  assert.deepEqual(screenImportText('This is private'), { text: 'This is private', refused: 'private_memory_unsupported' });
+  const first = parseImportFile(sampleText).items[0]!;
+  const parsed = parseImportFile(JSON.stringify({ ...first, text: 'a screened synthetic note' }));
+  assert.equal(parsed.items[0]!.text, 'a screened synthetic note', 'the stored text is the seam output');
 });
 
 test('dry run counts the sample, prints no text and writes nothing', t => {

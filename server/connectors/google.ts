@@ -277,11 +277,11 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     };
     const primaryOnly = explicit === undefined && selected.length > 0 && calendars[0]?.primary === true;
     // 1. The primary calendar, awaited on its own so it never loses the race to the deadline.
-    if (primaryOnly && signal?.aborted !== true && Date.now() < stopAt) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
+    if (primaryOnly && signal?.aborted !== true) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
     // 2. Every remaining calendar, concurrently, cut short by the caller's deadline.
     let next = primaryOnly ? 1 : 0;
     const worker = async (): Promise<void> => {
-      while (next < selected.length && signal?.aborted !== true && Date.now() < stopAt) {
+      while (next < selected.length && signal?.aborted !== true) {
         const index = next++;
         record(index, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal));
       }
@@ -290,7 +290,6 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     await Promise.race([
       Promise.all(Array.from({ length: width }, worker)),
       new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }),
-      new Promise<void>(resolve => { const left = stopAt - Date.now(); if (left <= 0) resolve(); else setTimeout(resolve, left).unref(); }),
     ]);
     // A credentialed or failed read must stay visible: never an empty success.
     if (out.every(entry => entry === undefined) && (failure ?? refusal) !== undefined) return (failure ?? refusal)!;

@@ -1055,9 +1055,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       // remote call per visible calendar, so the run deadline sized for a single read would abort it
       // mid-fan-out and report a refused, empty read. Only this batch is widened; every other source and
       // every later round keeps the run deadline, and the run's own budget is never rewritten.
-      const batchDeadline = batch.includes('calendar_window')
-        ? Math.max(deadlineAt, started + RESEARCH.calendarDeadlineMs)
-        : deadlineAt;
+      const batchDeadline = deadlineAt;
       const remainingMs = batchDeadline - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);

@@ -25,6 +25,18 @@ export const LIVE_PROVIDERS: readonly { provider: string; label: string; voices:
   ] },
   { provider: 'gemini', label: 'Gemini 3.8 Live', voices: ['Aoede'] },
 ];
+/**
+ * The accent selections the host composes with, in order, with the value an absent setting means. The
+ * labels are the owner's words for the three choices; the server validates the values.
+ */
+export const LIVE_ACCENTS: readonly { value: string; label: string }[] = [
+  { value: 'indian-strong', label: 'Indian English, strong' },
+  { value: 'indian-light', label: 'Indian English, light' },
+  { value: 'voice-default', label: 'The voice’s own' },
+];
+function accentLabel(value: string | undefined): string | undefined {
+  return LIVE_ACCENTS.find(choice => choice.value === value)?.label;
+}
 function providerLabel(value: string | undefined): string | undefined {
   return LIVE_PROVIDERS.find(choice => choice.provider === value)?.label;
 }
@@ -47,7 +59,7 @@ export interface SettingsInput {
   summary?: LiveSummary;
   summaryUnavailable?: boolean;
   /** The owner's saved Live choice, when this session saved one: it applies at the next start. */
-  saved?: { provider: string; voice: string; appliesAt?: string };
+  saved?: { provider: string; voice: string; accent?: string; appliesAt?: string };
   /** Connected-conversation settings owned by the chat surface: the stay-connected switch and saved conversations. */
   connected?: {
     conversations: { title: string; sessionId: string; model?: string; state?: string; active?: boolean }[];
@@ -103,6 +115,7 @@ function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: Setting
   if (row.profileEnabled !== true) return `<dt>Live profile</dt><dd>${unavailable('Live profile disabled')}</dd>`;
   const model = text(row.modelId, 120);
   const voice = text(row.voice, 60);
+  const accent = text(row.accent, 40);
   const limits = record(row.limits);
   const session = limitMinutes(limits?.sessionMs);
   const idle = limitMinutes(limits?.idleMs);
@@ -114,11 +127,14 @@ function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: Setting
   // The saved choice is the one the next start will use; naming it makes a pending change visible.
   const savedProvider = text(saved?.provider, 40);
   const savedVoice = text(saved?.voice, 64);
-  const pendingNote = savedProvider !== undefined && savedVoice !== undefined && (savedProvider !== provider || savedVoice !== voice)
-    ? `<p class="muted" role="status">Saved: ${escapeHtml(savedProvider)}/${escapeHtml(savedVoice)}, applies on next start</p>` : '';
+  const savedAccent = text(saved?.accent, 40);
+  const accentPending = savedAccent !== undefined && savedAccent !== accent;
+  const pendingNote = savedProvider !== undefined && savedVoice !== undefined && (savedProvider !== provider || savedVoice !== voice || accentPending)
+    ? `<p class="muted" role="status">Saved: ${escapeHtml(savedProvider)}/${escapeHtml(savedVoice)}${accentPending ? `, accent ${escapeHtml(accentLabel(savedAccent) ?? savedAccent)}` : ''}, applies on next start</p>` : '';
   return `<dt>Live provider</dt><dd>${provider ? escapeHtml(providerLabel(provider) ?? provider) : unavailable()}</dd>
 <dt>Live model</dt><dd>${model ? escapeHtml(model) : unavailable()}</dd>
-<dt>Live voice</dt><dd>${voice ? escapeHtml(voice) : unavailable()}</dd>${delegationRow}
+<dt>Live voice</dt><dd>${voice ? escapeHtml(voice) : unavailable()}</dd>
+<dt>Accent</dt><dd>${accent ? escapeHtml(accentLabel(accent) ?? accent) : unavailable()}</dd>${delegationRow}
 <dt>Session limit</dt><dd>${session ?? unavailable()}</dd>
 <dt>Idle limit</dt><dd>${idle ?? unavailable()}</dd>${pendingNote}`;
 }
@@ -172,6 +188,10 @@ function liveSwitch(summary: unknown, summaryUnavailable: boolean, saved?: Setti
   // the running values above it say what a call in flight actually ran with.
   const current = text(saved?.provider, 40) ?? text(row?.provider, 40) ?? LIVE_PROVIDERS[0]!.provider;
   const voice = text(saved?.voice, 64) ?? text(row?.voice, 64) ?? voicesOf(current)[0]!;
+  // The accent applies from the next session start, so the running summary already names what will run.
+  const accent = text(saved?.accent, 40) ?? text(row?.accent, 40) ?? LIVE_ACCENTS[0]!.value;
+  const accentOptions = LIVE_ACCENTS.map(choice =>
+    `<option value="${escapeHtml(choice.value)}"${choice.value === accent ? ' selected' : ''}>${escapeHtml(choice.label)}</option>`).join('');
   const options = LIVE_PROVIDERS.map(choice =>
     `<option value="${escapeHtml(choice.provider)}"${choice.provider === current ? ' selected' : ''}>${escapeHtml(choice.label)}</option>`).join('');
   const voices = [...new Set([...voicesOf(current), voice])].map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
@@ -181,7 +201,9 @@ function liveSwitch(summary: unknown, summaryUnavailable: boolean, saved?: Setti
 <label for="live-voice">Voice</label>
 <input id="live-voice" name="voice" value="${escapeHtml(voice)}" list="live-voices" autocomplete="off">
 <datalist id="live-voices">${voices}</datalist>
-<p class="muted">Saved to <code>live.json</code>. It applies when Lux Didi next starts; a call in progress is never switched.</p>
+<label for="live-accent">Accent</label>
+<select id="live-accent" name="accent">${accentOptions}</select>
+<p class="muted">Saved to <code>live.json</code>. The accent applies from the next call; a call in progress is never switched.</p>
 <div class="button-row"><button type="submit">Save provider</button></div></form>`;
 }
 

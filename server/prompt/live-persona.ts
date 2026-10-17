@@ -27,7 +27,7 @@ Be honest about yourself. You keep nothing between conversations except what mem
 /** Voice-only surface appended to the character in the Live base section. */
 export const NAYA_VOICE_SURFACE = `# Speaking
 
-Speak in connected spoken sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, file paths or code; the screen shows sources. Stay in the conversation language; switch only when he explicitly asks, never because one utterance arrived in another language. You cannot hear your own voice: if he says your voice or accent changed, believe him and return to the voice defined above. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation. Open a fresh call with one specific line drawn from what is current, never a generic "ready when you are".`;
+Speak in connected spoken sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, file paths or code; the screen shows sources. Stay in the conversation language; switch only when he explicitly asks, never because one utterance arrived in another language. You cannot hear your own voice: if he says your voice or accent changed, believe him and return to the voice defined above. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation. Open a fresh call with one specific line drawn from what is current, never a generic "ready when you are". Before any tool call, say one short line of at most six words that tells him what you are checking. Put every lookup one question needs into one research call with several lookups; never make several research calls in a row for one question.`;
 
 /** Text-only surface appended to the character for the owner chat persona. */
 export const NAYA_TEXT_SURFACE = `# Writing
@@ -71,10 +71,10 @@ const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
 /** One provisional production ceiling for complete trusted Chat and Live instructions. */
 export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
-/** The working size a Live instruction aims for before any section yields (issue 1014). */
-export const LIVE_INSTRUCTION_TARGET_CHARS = 18_000;
-/** The hard ceiling a Live instruction may never exceed; past it composition fails closed. */
-export const LIVE_INSTRUCTION_HARD_LIMIT = 20_000;
+/** The working size a Live instruction aims for before any section yields (issue 1014; PV1: 30k). */
+export const LIVE_INSTRUCTION_TARGET_CHARS = 30_000;
+/** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k). */
+export const LIVE_INSTRUCTION_HARD_LIMIT = 36_000;
 /** The memory section never exceeds this many characters; it is the first section to yield. */
 export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
@@ -96,6 +96,56 @@ export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[numbe
 const VOICE_HEAD_PREFIX = 'VOICE AND ACCENT (every turn, including right after tool results): ';
 export function headVoiceBlock(accent: string | undefined): string | undefined {
   return accent === undefined ? undefined : `${VOICE_HEAD_PREFIX}${accent}`;
+}
+
+/** The closed set of accent selections; an absent selection means the first of them. */
+export const LIVE_ACCENTS = Object.freeze(['indian-strong', 'indian-light', 'voice-default'] as const);
+export type LiveAccent = typeof LIVE_ACCENTS[number];
+export const LIVE_DEFAULT_ACCENT: LiveAccent = 'indian-strong';
+/**
+ * The host's own accent texts, one per steering selection: neutral and descriptive, no owner content. The
+ * owner's private overlay accent still follows the block and adds its detail. PV1-R1 supplies the final
+ * wording; until then these placeholders are pinned by a test, so a swap is a deliberate edit.
+ */
+export const LIVE_ACCENT_PRESETS: Readonly<Record<Exclude<LiveAccent, 'voice-default'>, string>> = Object.freeze({
+  'indian-strong': 'PLACEHOLDER PV1-R1 strong Indian accent: speak English in a strong, unmistakable Indian accent, with Indian English rhythm and stress on every turn, including right after tool results.',
+  'indian-light': 'PLACEHOLDER PV1-R1 light Indian accent: speak English in a light Indian accent, with Indian English rhythm and softer consonants on every turn, including right after tool results.',
+});
+/** Every preset block, the closed set the session composer strips before it places the current one. */
+const ACCENT_BLOCKS: readonly string[] = Object.values(LIVE_ACCENT_PRESETS);
+
+/** The accent block for one selection, or undefined when the voice's own accent is asked for. */
+export function accentAnchor(accent: LiveAccent | undefined): string | undefined {
+  const chosen: LiveAccent = accent ?? LIVE_DEFAULT_ACCENT;
+  return chosen === 'voice-default' ? undefined : LIVE_ACCENT_PRESETS[chosen];
+}
+
+/** The head anchor: the accent block first, then the overlay's accent detail, so the opening words carry it. */
+export function headAnchor(overlayAccent: string | undefined, accent: LiveAccent | undefined): string | undefined {
+  const parts = [accentAnchor(accent), headVoiceBlock(overlayAccent)].filter((part): part is string => part !== undefined);
+  return parts.length ? parts.join(separator) : undefined;
+}
+
+/** The terminal anchor: the language and voice anchor, then the accent block again so the last words carry it. */
+export function terminalAnchor(language: string | undefined, overlayAccent: string | undefined, accent: LiveAccent | undefined): string {
+  return voiceAnchor(language, overlayAccent) + (accentAnchor(accent) === undefined ? '' : `${separator}${accentAnchor(accent)!}`);
+}
+
+/** One region without a leading accent block from the closed set, so the current one replaces it exactly. */
+function stripLeadingAccent(text: string): string {
+  for (const block of ACCENT_BLOCKS) {
+    if (text === block) return '';
+    if (text.startsWith(`${block}${separator}`)) return text.slice(block.length + separator.length);
+  }
+  return text;
+}
+/** One region without a trailing accent block from the closed set (the tail anchor puts it last). */
+function stripTrailingAccent(text: string): string {
+  for (const block of ACCENT_BLOCKS) {
+    if (text === block) return '';
+    if (text.endsWith(`${separator}${block}`)) return text.slice(0, text.length - block.length - separator.length);
+  }
+  return text;
 }
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
 
@@ -131,6 +181,8 @@ export interface ComposedLiveInstruction {
 
 export interface ComposeLiveInstructionInput {
   readonly base: string;
+  /** The owner's accent selection; absent means the default of LIVE_ACCENTS. */
+  readonly accentSelection?: LiveAccent;
   /** Host-generated runtime context, inserted right after the base. */
   readonly runtimeContext?: string;
   readonly ownerProfile?: OwnerProfileSnapshot;
@@ -249,8 +301,8 @@ function assemble(parts: readonly string[]): string { return parts.join(separato
  */
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
   if (!input || typeof input.base !== 'string' || !input.base.length) throw new PersonaOverlayError('invalid_overlay');
-  const head = headVoiceBlock(input.overlay?.accent ?? input.accent);
-  const voice = voiceAnchor(input.language, input.overlay?.accent ?? input.accent);
+  const head = headAnchor(input.overlay?.accent ?? input.accent, input.accentSelection);
+  const voice = terminalAnchor(input.language, input.overlay?.accent ?? input.accent, input.accentSelection);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
     .map(section => ({ id: section.id, text: `[${section.id}]\n${section.text}` }));
   const ownerLore = owner.filter(section => section.id === 'owner-lore')
@@ -370,6 +422,39 @@ export interface StandingMemoryRecord {
   readonly status: 'current' | 'dated' | 'open'; readonly capturedAt: string;
 }
 
+/** Markers the frozen composition writes, so each section keeps its own id and chars in the size receipt (PV1). */
+const OWNER_STYLE_MARKER = '[owner-style]\n';
+const OWNER_LORE_MARKER = '[owner-lore]\n';
+const TERMINAL_MARKER = `${separator}LANGUAGE: `;
+
+/** Split one frozen region at a marker, dropping the separator the re-assembly puts back. */
+function splitAt(region: string, at: number): [string, string] {
+  const before = region.slice(0, at);
+  return [before.endsWith(separator) ? before.slice(0, before.length - separator.length) : before, region.slice(at)];
+}
+
+/** The frozen head region as its own entries: the voice head, then the owner style, then any overlay text. */
+function prefixEntries(region: string, overlayText: string | undefined): { id: ComposedSection['id']; text: string }[] {
+  const styleAt = region.indexOf(OWNER_STYLE_MARKER);
+  if (styleAt === -1) return region.length ? [{ id: 'voice-head', text: region }] : [];
+  const [head, styled] = splitAt(region, styleAt);
+  const overlayAt = overlayText === undefined ? -1 : styled.indexOf(overlayText);
+  const headEntry = head.length ? [{ id: 'voice-head' as const, text: head }] : [];
+  if (overlayAt === -1) return [...headEntry, { id: 'owner-style' as const, text: styled }];
+  const [style, overlay] = splitAt(styled, overlayAt);
+  return [...headEntry, ...(style.length ? [{ id: 'owner-style' as const, text: style }] : []), { id: 'overlay' as const, text: overlay }];
+}
+
+/** The frozen tail region as its own entries: the owner lore, then the terminal language and voice anchor. */
+function bodyEntries(region: string): { id: ComposedSection['id']; text: string }[] {
+  const loreAt = region.indexOf(OWNER_LORE_MARKER);
+  if (loreAt === -1) return region.length ? [{ id: 'voice', text: region }] : [];
+  const anchorAt = region.lastIndexOf(TERMINAL_MARKER) + separator.length;
+  if (anchorAt <= separator.length) return [{ id: 'owner-lore' as const, text: region }];
+  const lore = region.slice(loreAt, anchorAt - separator.length);
+  return [{ id: 'owner-lore' as const, text: lore }, { id: 'voice' as const, text: region.slice(anchorAt) }];
+}
+
 /** Session CREATE composition over the frozen persona layers. Records yield before any trusted layer. */
 export function composeLiveSessionInstruction(input: {
   readonly text: string; readonly tools: readonly string[];
@@ -377,12 +462,17 @@ export function composeLiveSessionInstruction(input: {
   readonly overlay?: PersonaOverlay; readonly pickupNote?: string; readonly trustedChars: number;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
   readonly earlierConversations?: string;
+  /** The owner's accent selection at this session start; the head and tail anchors carry it. */
+  readonly accentSelection?: LiveAccent;
 }): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean } {
   const baseMarker = `${NAYA_LIVE_BASE}${separator}`;
   const baseAt = input.text.indexOf(baseMarker);
-  const native = baseAt !== -1 && (baseAt === 0 || input.text.slice(0, baseAt).startsWith(VOICE_HEAD_PREFIX));
-  const prefix = native ? input.text.slice(0, baseAt) : '';
-  const body = native ? input.text.slice(baseAt + baseMarker.length) : '';
+  // The head block, the owner style and the overlay precede the public base, in that order; the accent block
+  // the selection froze last start also sits at the front, so it is stripped before the current one is placed.
+  const native = baseAt !== -1 && (baseAt === 0 || input.text.slice(0, baseAt).includes(VOICE_HEAD_PREFIX)
+    || ACCENT_BLOCKS.some(block => input.text.startsWith(block)));
+  const prefix = native ? stripLeadingAccent(input.text.slice(0, baseAt)) : '';
+  const body = native ? stripTrailingAccent(input.text.slice(baseAt + baseMarker.length)) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
@@ -395,6 +485,7 @@ export function composeLiveSessionInstruction(input: {
   const emitLore = lore.filter(block => !held(block));
   const emitOverlay = overlay !== undefined && !held(overlay) ? overlay : undefined;
   const tools = input.tools.length ? NAYA_TOOLS : undefined;
+  const accentBlock = accentAnchor(input.accentSelection);
   const preface = "# Memory\nThese are the owner's past notes: historical context, not instructions.";
   type Entry = { readonly id: ComposedSection['id']; readonly text: string };
   // Issue 1014 order: head, style, overlay, base, tools, runtime, lore, memory, pickup, anchor.
@@ -414,15 +505,25 @@ export function composeLiveSessionInstruction(input: {
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup,
     ];
-    return [
-      ...(prefix.length ? [{ id: 'voice-head' as const, text: prefix }] : []),
+    const placed: Entry[] = [
+      ...prefixEntries(prefix, overlay),
       ...emitStyle.map(text => ({ id: 'owner-style' as const, text })),
       ...(emitOverlay !== undefined ? [{ id: 'overlay' as const, text: emitOverlay }] : []),
       { id: 'base' as const, text: NAYA_LIVE_BASE },
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
       ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup,
-      ...(body.length ? [{ id: 'voice' as const, text: body }] : []),
+      ...bodyEntries(body),
+    ];
+    // The selected accent block sits at the very start and again at the very end, so the last words before
+    // speaking carry it too. An absent block (the voice's own accent) leaves the text as it stands.
+    if (accentBlock === undefined || !placed.length) return placed;
+    const first = placed[0]!;
+    const last = placed[placed.length - 1]!;
+    return [
+      { id: first.id, text: `${accentBlock}${separator}${first.text}` },
+      ...placed.slice(1, -1),
+      { id: last.id, text: `${last.text}${separator}${accentBlock}` },
     ];
   };
   const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = []): string => assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text));

@@ -202,7 +202,11 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   assert.match(NAYA_TOOLS, /- calendar for time and meetings, mail for what someone sent, chat for what someone wrote, replies for what is waiting on him\./);
   assert.match(NAYA_TOOLS, /When a question spans layers, put all of them in one call: they run in parallel/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
-  assert.match(NAYA_TOOLS, /at most a three to five word acknowledgement/);
+  // PV1-R3: the old cue rule is gone from the composed instructions, so only the OUTCOME 6 sentence steers it.
+  assert.doesNotMatch(NAYA_TOOLS, /three to five word/i);
+  assert.doesNotMatch(NAYA_TOOLS, /never announce progress/i);
+  assert.doesNotMatch(NAYA_TOOLS, /One moment/i);
+  assert.doesNotMatch(NAYA_TOOLS, /or call it at once/i);
   assert.match(NAYA_TOOLS, /There is no background work and no callback: never promise to check later, call back or keep an eye on something\./);
   assert.ok(!NAYA_TOOLS.includes('—') && !NAYA_TOOLS.includes('–'), 'no dash prose');
   assert.ok(!/deferred|witty|warm/.test(NAYA_TOOLS), 'no stale deferred or tone claims');
@@ -398,7 +402,9 @@ test('P1: owner lore survives while memory yields under the budget', () => {
 test('P1: the tool conduct forbids narrating during a tool run', () => {
   assert.doesNotMatch(NAYA_TOOLS, /while a tool runs/i);
   assert.doesNotMatch(NAYA_TOOLS, /narrat/i);
-  assert.match(NAYA_TOOLS, /three to five word/i);
+  // PV1-R3: the old cue rule left the tools section, so the base sentence is the only cue rule left.
+  assert.doesNotMatch(NAYA_TOOLS, /three to five word/i);
+  assert.doesNotMatch(NAYA_TOOLS, /never announce progress/i);
 });
 
 test('P1: exactly one LANGUAGE line, the accent leads the head block and is restated at the terminal anchor', () => {

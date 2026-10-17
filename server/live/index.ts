@@ -465,9 +465,10 @@ export class LiveSessionOwner {
           earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(composeSession(undefined).text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
-            summary: earlier.section.length ? earlier.section : undefined, calendar: undefined };
+            summary: earlier.section.length ? earlier.section : undefined,
+            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: undefined };
         });
-        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [], omitted: [] };
+        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
         else this.#warm.adopt(start.sections);
         return earlier.section ? composeSession(earlier.section) : composeSession(undefined);
       };

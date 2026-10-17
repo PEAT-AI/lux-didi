@@ -17,11 +17,18 @@ export type WarmContextSources = {
   readonly calendar: () => string | undefined;
 };
 
+/** One summary candidate dropped while the section was built. */
+export type WarmContextOmission = { readonly id: string; readonly reason: 'budget' | 'stale' };
+
 /** One assembly's parts, kept apart so a session start can consume them by slot. */
 export type WarmContextSections = {
   readonly persona: string | undefined;
   readonly memory: readonly string[];
   readonly summary: string | undefined;
+  /** The summary ids the section was built from, so a warm start keeps true provenance. */
+  readonly summaryIds: readonly string[];
+  /** The summaries the section left out, with why. Carried, never re-derived. */
+  readonly summaryOmitted: readonly WarmContextOmission[];
   readonly calendar: string | undefined;
 };
 
@@ -33,7 +40,8 @@ export type WarmContext = {
 
 /** Read every source once. This is the only place a source is consulted. */
 export function collectSections(sources: WarmContextSources): WarmContextSections {
-  return { persona: sources.persona(), memory: [...sources.memory()], summary: sources.summary(), calendar: sources.calendar() };
+  return { persona: sources.persona(), memory: [...sources.memory()], summary: sources.summary(),
+    summaryIds: [], summaryOmitted: [], calendar: sources.calendar() };
 }
 
 /** Sections in priority order, each trimmed to what the instruction budget has left. */

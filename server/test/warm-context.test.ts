@@ -6,6 +6,8 @@ const sections = {
   persona: 'Naya is the owner\'s assistant.',
   memory: ['Prefers morning calls', 'Lives in Pune'],
   summary: 'Yesterday: release planning.',
+  summaryIds: ['summary-17'],
+  summaryOmitted: [{ id: 'summary-03', reason: 'budget' as const }],
   calendar: '10:00 standup, 15:00 review.',
 };
 
@@ -52,6 +54,17 @@ test('every source is read exactly once per collection', () => {
   const collected = collectSections(local.value);
   assert.deepEqual(local.calls, { persona: 1, memory: 1, summary: 1, calendar: 1 });
   assert.deepEqual(collected, sections);
+});
+
+test('a warm start keeps the summary provenance it was assembled with, never empties', () => {
+  let now = 900_000;
+  const cache = new WarmContextCache({ sources: sources().value, budget: 4_000, now: () => now });
+  cache.refresh();
+  const start = chooseStartContext(cache.take(), () => {
+    throw new Error('a warm start must not assemble again');
+  });
+  assert.deepEqual(start.sections.summaryIds, ['summary-17'], 'the selected summary ids travel with the section');
+  assert.deepEqual(start.sections.summaryOmitted, [{ id: 'summary-03', reason: 'budget' }]);
 });
 
 test('start path A: an assembly inside ten minutes is used as it stands, with no second read', () => {

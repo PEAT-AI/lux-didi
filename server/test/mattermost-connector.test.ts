@@ -197,7 +197,7 @@ test('the research chat thread read uses the argument name the child declares, s
     const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE });
     // Shape the read the way the host does before it reaches the model.
     const projected = result.state === 'completed'
-      ? projectMattermostResult(f.adapter, { state: 'completed', tool: call.name as never, projection: result.projection, response: result.payload })
+      ? projectMattermostResult(f.adapter, { decodedResult: result.decodedResult, state: 'completed', tool: call.name, source: result.source, observedAt: Date.now(), coverage: result.coverage, projection: result.projection, response: result.payload })
       : { ok: false as const, reason: result.state };
     const text = projected.ok ? projected.projection.text : '';
     return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };

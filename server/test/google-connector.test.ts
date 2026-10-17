@@ -139,6 +139,26 @@ test('a granted google endpoint calls the real child with bounded defaults and b
   }
 });
 
+test('a merged calendar read stops at its own budget and reports the calendars it did not reach as unread', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'slow', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
+    // The child answers the primary at once and every other calendar after 250 ms.
+    const calendar = readerFor(adapter, registry, digest, { family: 'calendar', calendarReadMs: 120 });
+    const merged = completed(await calendar.gcalList({}));
+    payloadPorts.set(merged, adapter);
+    const data = envelopeOf(merged)['data'] as Record<string, unknown>;
+    assert.equal((data['events'] as unknown[]).length, 1, 'the calendar read before the budget carries its event');
+    assert.deepEqual(data['partial'], { unread: 1 }, 'the calendar the read did not reach is reported, never dropped');
+  } finally {
+    await adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a default gmail_list asks the child for exactly the digest cap, so the upstream per-message metadata fetch count is the digest cap not ten', async () => {
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();

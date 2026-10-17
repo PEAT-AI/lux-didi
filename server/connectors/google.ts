@@ -19,6 +19,13 @@ export type GoogleFamily = 'gmail' | 'calendar';
 /** Bounded argument defaults; a caller may only narrow them. */
 export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 5, maxListResults: 50, readBodyChars: 4000 } as const;
 
+/**
+ * How long one merged calendar window read may spend. It is one remote call per visible calendar and the
+ * calendar backend serializes those calls (measured 1.7-6 s each), so the read stops here and reports the
+ * calendars it did not reach as unread instead of running until the caller aborts and losing the result.
+ */
+export const GOOGLE_CALENDAR_READ_MS = 40_000;
+
 export interface GoogleConfig {
   endpointId: string;
   account: string;
@@ -32,6 +39,8 @@ export interface GoogleConfig {
   maxListResults?: number;
   /** Bound on a gmail_read plain-text body in characters. Defaults 4000. */
   readBodyChars?: number;
+  /** Wall-clock bound on one merged calendar window read. Defaults 40000 and never above it. */
+  calendarReadMs?: number;
 }
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
@@ -107,7 +116,7 @@ function requirePositiveSafeInteger(value: unknown): number {
 
 interface Settings {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
-  family: GoogleFamily; maxListResults: number; readBodyChars: number;
+  family: GoogleFamily; maxListResults: number; readBodyChars: number; calendarReadMs: number;
 }
 
 /** A family the config names must be a real one; an unknown family is a config fault, never a silent default. */
@@ -147,6 +156,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     family: family.family,
     maxListResults: Math.min(positive(config.maxListResults, GOOGLE_DEFAULTS.maxListResults), GOOGLE_DEFAULTS.maxListResults),
     readBodyChars: positive(config.readBodyChars, GOOGLE_DEFAULTS.readBodyChars),
+    calendarReadMs: Math.min(positive(config.calendarReadMs, GOOGLE_CALENDAR_READ_MS), GOOGLE_CALENDAR_READ_MS),
   };
   if (settings.readBodyChars > GOOGLE_DEFAULTS.readBodyChars) throw new Error('invalid-connector-config');
 

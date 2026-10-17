@@ -60,6 +60,11 @@ export const RESEARCH = Object.freeze({
    * did not reach as unread, so a shorter budget never turns into a silent empty.
    */
   calendarDeadlineMs: 26_000,
+  /**
+   * The calendar source's own budget, set above GOOGLE_CALENDAR_READ_MS: a read cut by the caller's abort
+   * is discarded by the result gate, so the partial read the connector returns must still be accepted.
+   */
+  calendarDeadlineMs: 46_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */

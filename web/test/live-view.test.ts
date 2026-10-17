@@ -863,9 +863,9 @@ test('a source that failed or timed out says so plainly', () => {
     { callId: 'c1', stepId: 's1', source: 'calendar', action: 'read', subject: 'this week', phase: 'start' },
     { callId: 'c1', stepId: 's1', source: 'calendar', action: 'read', subject: 'this week', phase: 'end', ok: false },
   ]));
-  assert.match(html, /Reading your calendar: this week/);
   assert.match(html, /Calendar did not answer/);
   assert.match(html, /step-failed/);
+  assert.equal(html.includes('this week'), false, 'the failed line replaces its start line, subject and all');
 });
 
 test('the step list dims once she starts answering, and carries nothing while nothing runs', () => {

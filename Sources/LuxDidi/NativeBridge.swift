@@ -113,6 +113,9 @@ enum BridgeInbound: Equatable {
     case mute
     case unmute
     case consentGranted
+    /// #311: the FULL window's mode button asks for the mini orb. A presentation
+    /// command only: it starts and stops no audio and no session.
+    case mini
     case theme(String)
     case openExternal(String)
     case unknown(String)
@@ -135,6 +138,7 @@ enum BridgeInbound: Equatable {
         case "mute": return .mute
         case "unmute": return .unmute
         case "consentGranted": return .consentGranted
+        case "mini": return .mini
         case "theme": return .theme(object?["mode"] as? String ?? "")
         case "openExternal": return .openExternal(object?["url"] as? String ?? "")
         default: return .unknown(type)
@@ -272,7 +276,7 @@ struct LevelBatcher {
             onCommand?(message)
         case .unknown(let name):
             logUnknown(name)
-        case .start, .stop, .mute, .unmute, .openExternal:
+        case .start, .stop, .mute, .unmute, .openExternal, .mini:
             onCommand?(message)
         }
     }

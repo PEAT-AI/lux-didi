@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { renderMarkdown, TRANSCRIPT_MARKDOWN } from '../src/markdown.ts';
+import { decodeEntities, renderMarkdown, TRANSCRIPT_MARKDOWN } from '../src/markdown.ts';
 
 test('renders bold text', () => {
   assert.match(renderMarkdown('**Answer** here'), /<strong>Answer<\/strong>/);
@@ -128,4 +128,14 @@ test('answer text is rendered as text: an entity is escaped, never decoded into 
   const html = renderMarkdown("Tom&#39;s <b>bold</b>");
   assert.equal(html.includes('<b>'), false, 'raw html from the answer is never injected');
   assert.match(html, /Tom&amp;#39;s &lt;b&gt;bold&lt;\/b&gt;/);
+});
+
+test('UI3b stored text that arrives HTML-encoded is read as words, never as entity names', () => {
+  assert.equal(decodeEntities('Rock &amp; roll'), 'Rock & roll');
+  assert.equal(decodeEntities('&quot;quoted&quot; &#39;apostrophe&#39;'), '"quoted" \'apostrophe\'');
+  assert.equal(decodeEntities('&lt;b&gt;not markup&lt;/b&gt;'), '<b>not markup</b>');
+  assert.equal(decodeEntities('&amp;amp;'), '&amp;', 'one pass only, so a decoded ampersand is not re-read');
+  assert.equal(decodeEntities('&notanentity;'), '&notanentity;', 'an unknown name is left exactly as it arrived');
+  // The decoded words are still escaped on the way out, so no tag survives: decode, then escape.
+  assert.match(renderMarkdown(decodeEntities('Tom &amp; Jerry &lt;b&gt;bold&lt;/b&gt;')), /<p>Tom &amp; Jerry &lt;b&gt;bold&lt;\/b&gt;<\/p>/);
 });

@@ -63,6 +63,7 @@ export type WebToNative =
   | { type: 'mute' }
   | { type: 'unmute' }
   | { type: 'consentGranted' }
+  | { type: 'mini' }
   | { type: 'theme'; mode: ThemeMode }
   | { type: 'openExternal'; url: string };
 

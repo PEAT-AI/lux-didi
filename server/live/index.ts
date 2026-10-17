@@ -4,7 +4,7 @@ import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
+import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
@@ -44,6 +44,8 @@ const SEED_CHAR_LIMIT = 8_000;
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
 const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+/** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
+const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
 
@@ -66,7 +68,7 @@ interface ActiveSession {
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
   recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
   nudgeTimer?: ReturnType<JobTimer> | undefined; nudgeTurn: number; nudgeFiredTurn: number;
-  sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
+  sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
   researchLedger: ResearchLedger;
@@ -297,6 +299,22 @@ export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transacti
   return { liveSessionRetainsUntilRebuild: false, publish: () => {} };
 }
 
+/** The feed's job rows (UI3b): only the current session's, and never a delivered row past its
+ * one day outbox expiry. A job belongs to the session that picked it up, else the one that started it. */
+function jobRow(job: ToolJob): import('./types.js').PendingLiveJob {
+  return {
+    id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
+    markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
+  };
+}
+
+export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: number): import('./types.js').PendingLiveJob[] {
+  return jobs.filter(job => job.deferred
+    && (job.deliverySessionId ?? job.originSessionId) === liveSessionId
+    && !(job.delivered && job.createdAt + JOB_EXPIRY_MS <= now))
+    .map(jobRow);
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
@@ -477,11 +495,14 @@ export class LiveSessionOwner {
     return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
   }
 
+  /** The feed's own job rows: this session's jobs only. A completed job keeps its card until the
+   * outbox row expires a day later; after that the row is stale data and never a current line. */
+  #feedJobs(tx: Transaction, liveSessionId: string): import('./types.js').PendingLiveJob[] {
+    return feedJobs(this.#jobs.list(tx), liveSessionId, this.#now());
+  }
+
   #jobProjection(pendingOnly: boolean): import('./types.js').PendingLiveJob[] {
-    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
-      id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
-      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
-    }));
+    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(jobRow);
   }
 
   pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
@@ -497,9 +518,11 @@ export class LiveSessionOwner {
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
-    const jobs = this.#jobProjection(false);
     const page: LivePageProjection = this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      // A fresh origin or session restart opens on a blank voice view: an idle page carries no job rows,
+      // and a live page carries only the rows of its own session (UI3b).
+      const jobs = row ? this.#feedJobs(tx, String(row.live_session_id)) : [];
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
@@ -716,7 +739,7 @@ export class LiveSessionOwner {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       recoveries: 0, nudgeTurn: 0, nudgeFiredTurn: 0,
-      sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
+      sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
       registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
@@ -741,7 +764,10 @@ export class LiveSessionOwner {
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
-    handle.sessionTimer = this.#schedule(() => { if (!this.#settled(handle)) void this.#continueSession(handle); }, sessionMs);
+    // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
+    // the owner call ceiling ends the call for time exactly as before. Neither is the other.
+    handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
+    handle.callTimer = this.#schedule(() => { this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
@@ -827,6 +853,15 @@ export class LiveSessionOwner {
     return { turns: kept, chars };
   }
 
+  /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
+  #sessionWindowEnded(handle: ActiveSession): void {
+    if (this.#attended(handle)) { void this.#continueSession(handle); return; }
+    this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
+  }
+
+  /** Only an attended call takes another provider window; a caller who already left never holds one open. */
+  #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
+
   #isSessionDeadline(outcome: LiveVoiceOutcome | undefined): boolean {
     return outcome !== undefined && (outcome.code === 'session_timeout' || outcome.code === 'deadline');
   }
@@ -872,7 +907,7 @@ export class LiveSessionOwner {
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
     } catch { return false; }
-    handle.sessionTimer = this.#schedule(() => { if (!this.#settled(handle)) void this.#continueSession(handle); }, Math.max(1, Math.ceil(remaining)));
+    handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
     return true;
   }
 
@@ -1168,7 +1203,7 @@ export class LiveSessionOwner {
           const rebuilt = await this.#recoverFromDrop(handle, outcome);
           if (outcome?.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
           if (rebuilt) continue;
-        } else if (this.#isSessionDeadline(outcome)) {
+        } else if (this.#isSessionDeadline(outcome) && this.#attended(handle)) {
           // A provider session deadline continues in a new window; only the call ceiling or idle ends a call.
           if (await this.#continueSession(handle)) continue;
         }
@@ -1506,7 +1541,7 @@ export class LiveSessionOwner {
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
-    handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
+    handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
     let journalSequence: number;
     try {

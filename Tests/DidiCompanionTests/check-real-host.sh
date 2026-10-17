@@ -94,6 +94,7 @@ for i,r in enumerate(reports):
  assert all(readiness['events'][-1]['state'].values()), 'native AppKit window was not ready before AX/SCK'
  context=readiness['diagnostics']['context']; activation=readiness['diagnostics']['activation']; loop=readiness['diagnostics']['runLoop']
  assert isinstance(context['frontmostIsSelf'],bool) and context['parentPid']>0
+ assert context['frontmostIsSelf'] is False, 'UI3A-R3: a non-activating proof launch must not be frontmost'
  assert activation['api']=='NSRunningApplication.activate(options:[])' and activation['semantics']=='request-sent-not-readiness'
  assert isinstance(activation['attempted'],bool) and (isinstance(activation['requestSent'],bool) if activation['attempted'] else activation['requestSent'] is None)
  assert loop['disposed'] is True and loop['count']>=0

@@ -46,7 +46,7 @@ Status: accepted design directions with named owners. These decisions were taken
 
 - D-27 One shared web interface, not two. The same responsive orb and conversation page serves a
   browser (F19) and is hosted inside the Mac companion in its own web view (F23). Native surfaces
-  stay native: hotkey, menu bar and lifecycle, on-device speech, notifications, credentials and the
+  stay native: hotkey, the menu bar, the FULL and MINI presentation modes, on-device speech, notifications, credentials and the
   outbound service client. There is no inbound JavaScript-to-native handler, no generic native RPC
   and no injected bearer; speech starts from a native control; the web view uses a nonpersistent data
   store, an exact configured origin and main-frame navigation only. Owner: F23, F19, F01.
@@ -58,6 +58,17 @@ Status: accepted design directions with named owners. These decisions were taken
 - D-29 Context economy. A turn receives a concise source-linked digest, and originals are retrieved
   on demand. Full logs, mail archives and long transcripts are never placed in a model prompt
   wholesale. Owner: B11, B05, C03.
+- D-30 Naya has two presentation modes, FULL window and MINI floating orb, with a regular Dock
+  presence. One presentation coordinator owns the visible surface: a Dock click, the hotkey, an orb
+  click, the full window's **mini** button and the close button all report through it, so exactly one
+  surface is visible after any sequence. FULL is a standard window at the normal level that does not
+  hide on deactivate; MINI is a borderless non-activating panel that can become neither key nor main,
+  joins every Space, floats over full screen, stays out of the window cycle, moves by its background
+  and clamps its remembered frame into a visible screen. The mini route is presentation only (no
+  audio context, no microphone, no Live socket); a mode switch never starts, stops or restarts Live.
+  The activation policy is set once at launch from the launch kind: regular for interactive,
+  login-item and install-relaunch, accessory for the non-activating proof launches. Owner: F23, F19.
+
 - Q-01 Which host shell wins? Resolved by PLAN-R1 into D-20: one TypeScript and Node service, a Swift Mac companion and a responsive browser client, with the pinned third-party host retained only as a design reference.
 - Q-02 Is any third-party component retained, and under which licence and notice terms? Owner A01, open; per-component licence review before reuse.
 - Q-03 Will the existing harness grant a scoped companion-controller contract for steer and cancel, or must a master delegate? Owner A11, blocked on that contract; observation-only until then.

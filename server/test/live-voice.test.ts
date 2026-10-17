@@ -969,19 +969,45 @@ test('an upstream queue held above 128 KB for two seconds is a stalled transport
   assert.equal(outcome.upstream!.errorKind, 'queue_stalled');
 });
 
-test('a queue that never drains for two seconds is a stalled transport', async t => {
+test('an idle queue of one audio frame for a minute is not a stalled transport', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const peer = new StallPeer();
   const session = stallSession(peer);
   const captured = collect(session);
   await session.ready;
-  peer.bufferedAmount = 1024;
-  session.sendAudio({ pcm, dataClass: 'ordinary' });
-  t.mock.timers.tick(2000);
-  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  // The 3h-b smoke shape: an idle session whose local queue holds one audio frame while the socket is healthy.
+  peer.bufferedAmount = 2217;
+  let settled = false;
+  void session.done.then(() => { settled = true; });
+  for (let second = 0; second < 60; second += 1) {
+    session.sendAudio({ pcm, dataClass: 'ordinary' });
+    t.mock.timers.tick(1000);
+    peer.emit('pong'); // the socket answers every ping: it is alive, just not draining a frame per tick
+  }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'a small idle queue never counts as a stall (#291)');
+  assert.equal(peer.readyState, 1, 'the socket stays open');
+  assert.equal(captured.events.some(event => event.type === 'outcome'), false);
+  session.close(); await captured.done;
+});
+
+test('a backlog that grows past 64 KB without draining is one stalled transport', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const peer = new StallPeer();
+  const session = stallSession(peer);
+  const captured = collect(session);
+  await session.ready;
+  for (let step = 1; step <= 12; step += 1) {
+    peer.bufferedAmount = step * 8 * 1024; // never drains, so the backlog only grows
+    session.sendAudio({ pcm, dataClass: 'ordinary' });
+    t.mock.timers.tick(1000);
+    peer.emit('pong');
+  }
   const outcome = await session.done; await captured.done;
   assert.equal(outcome.code, 'transport_error');
+  assert.equal(outcome.recoverable, true);
   assert.equal(outcome.upstream!.errorKind, 'no_drain');
+  assert.ok(outcome.upstream!.bufferedAmount > 64 * 1024, 'the drop needs a real backlog behind it');
 });
 
 test('two missed websocket pongs are a stalled transport', async t => {

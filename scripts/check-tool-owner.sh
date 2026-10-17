@@ -10,10 +10,12 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-tool-owner.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,adapters/model,adapters/mcp,adapters/live-voice}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,host,adapters/model,adapters/mcp,adapters/live-voice}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
+# server/tools imports the debug journal receipt: copy the module it compiles against.
+cp "$root/server/host/journal.ts" "$out/source/host/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"

@@ -17,7 +17,11 @@ const FILE_ROWS: [string, string][] = [
 
 /** The selectable voice providers, in switch order, with the first voice of each list as its default. */
 export const LIVE_PROVIDERS: readonly { provider: string; label: string; voices: readonly string[] }[] = [
-  { provider: 'openai', label: 'OpenAI GPT-Live', voices: ['marin'] },
+  // OV1-R6: the gpt-live-1 English voice table, in its own order, marin first as the default. Cedar is a
+  // Realtime voice and is deliberately absent; nira is never listed.
+  { provider: 'openai', label: 'OpenAI GPT-Live', voices: [
+    'marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder',
+  ] },
   { provider: 'gemini', label: 'Gemini 3.8 Live', voices: ['Aoede'] },
 ];
 function providerLabel(value: string | undefined): string | undefined {

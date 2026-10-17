@@ -56,6 +56,10 @@ same fields through `saveLiveSelection`, and the change applies when the service
 `gemini` (Gemini 3.8 Live, `models/...` ids on `gemini-primary`) or `openai` (GPT-Live, `gpt-live-*`
 ids on `openai-primary`). `modelId` is validated by the selected provider's own pattern and
 `keyReference` must name that provider's slot, so a Gemini id can never be paired with an OpenAI key.
+The settings page offers `marin` first and then the gpt-live-1 English voice table
+(`marin, vesper, ripple, willow, gleam, meridian, stone, quartz, beacon, delta, cinder`); `cedar` is a
+Realtime voice and is not offered (OV1-R6).
+
 The adapter factory selects on `provider`; every provider in the union has its own adapter, and an
 unknown name is refused by the union as `unsupported_provider` instead of borrowing another adapter. A missing key in the selected slot fails
 closed with `file_missing` and never falls back across slots. The Live status payload reports the

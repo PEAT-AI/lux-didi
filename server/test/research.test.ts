@@ -337,6 +337,32 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
 });
 
+test('a calendar read keeps its own budget and is never starved by the start deadline (probe10)', async () => {
+  // The merged window read fans out one serialized remote call per visible calendar, so the calendar
+  // source needs its budget even when selection and the other reads already spent the start deadline.
+  let clock = 0;
+  const lateSelector: ResearchSelector = {
+    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
+  };
+  const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  const read = h.subcalls.find(entry => entry.tool === 'gcal_list');
+  assert.ok(read, 'the calendar read still runs');
+  assert.equal(read!.ok, true);
+  assert.ok(read!.items >= 1, 'the read carries real events');
+  assert.equal(reply['status'], 'answered');
+});
+
+test('the calendar budget never extends another source past the start deadline', async () => {
+  let clock = 0;
+  const lateMailSelector: ResearchSelector = {
+    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:1d' }], pUseful: { mail_search: 1 } }; },
+  };
+  const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
+  await runResearch(h.deps, { action: 'start', question: 'any mail today' }, new AbortController().signal);
+  assert.equal(h.executed.some(entry => entry.name === 'gmail_list'), false);
+});
+
 test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {
   const body = 'k'.repeat(60);
   const items = Array.from({ length: 41 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);

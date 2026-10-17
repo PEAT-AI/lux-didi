@@ -52,6 +52,14 @@ export const RESEARCH = Object.freeze({
   selectorDeadlineMs: 6_000,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
+  /**
+   * The calendar source's own budget. A merged calendar window read is one remote call per visible
+   * calendar (22 on the smoke account), and the calendar connector backend serializes those calls, so
+   * the source costs a serialized fan-out (measured 1.7-3.8 s per calendar) rather than the single-read
+   * p50 above. Sized for the calendars read first plus shaping; the connector reports the calendars it
+   * did not reach as unread, so a shorter budget never turns into a silent empty.
+   */
+  calendarDeadlineMs: 26_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -940,7 +948,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   let driver: ResearchDriver | undefined;
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
-  const deadlineAt = started + run.deadlineMs;
+  let deadlineAt = started + run.deadlineMs;
 
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
 
@@ -1043,6 +1051,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     const batches: CandidateKind[][] = [];
     for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
     for (const batch of batches) {
+      // The calendar source carries its own budget: its merged window read fans out one serialized
+      // remote call per visible calendar, so the start deadline sized for a single read would abort it
+      // mid-fan-out and report a refused, empty read. Every other source keeps the run deadline.
+      if (batch.includes('calendar_window')) {
+        const calendarDeadline = started + RESEARCH.calendarDeadlineMs;
+        if (calendarDeadline > deadlineAt) { deadlineAt = calendarDeadline; run.deadlineMs = Math.max(run.deadlineMs, calendarDeadline - started); }
+      }
       const remainingMs = deadlineAt - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);

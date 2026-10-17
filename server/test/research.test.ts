@@ -593,7 +593,7 @@ test('the first sufficient source keeps its own second hop when the round is cut
       return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('abandoned')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     }
     if (subs.some(call => call.name === 'get_insight')) winnerSignalAborted = signal.aborted;
-    return subs.map(call => sub(call.name, call.name === 'get_insight' ? 'the body' : 'the release is green [id 7]', true, call.key));
+    return subs.map(call => sub(call.name, call.name === 'get_insight' ? 'the body' : '### Insight (PATTERN) [id 7]\nthe release is green', true, call.key));
   } });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
   assert.ok(read.includes('get_insight'), 'the winner opened the insight it found before the round closed');

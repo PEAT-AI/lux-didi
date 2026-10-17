@@ -938,6 +938,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];
   let selectorMs = 0;
+  // B7: `cut` is not in the closed host-log disposition set, so a cut read is logged `skipped` and the
+  // run-level flag below keeps the answer honest as partial.
+  let sawCut = false;
   let fallbackUsed = false;
   // #260: how this run chose its sources, recorded where the loop decides it. selector dominates a
   // later fallback; the fixed recipe and the single-source hint never override a selector decision.
@@ -1182,13 +1185,15 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         // One settle turn of grace, so a source that answers in the same batch is credited rather than cut.
         await Promise.race([all, new Promise<void>(resolve => setImmediate(resolve))]);
         for (const kind of readStarted) if (kind !== winner && !latencies.has(kind)) { cutKinds.add(kind); abandon.get(kind)!.abort(); }
+        if (cutKinds.size > 0) sawCut = true;
         stopReason = 'answered';
       }
       await all;
       // The answer bound is a cut like any other: the read it stopped is named, and the turn ends partial.
       if (answerCut.signal.aborted && !answered) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
+      if (cutKinds.size > 0) sawCut = true;
 
-      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) ? 'cut' : latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
+      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named
       // unchecked, and the model can ask to continue instead of another round silently spending time.
       if (cutKinds.size > 0 && !answered) { stopReason = 'deadline'; break; }
@@ -1212,7 +1217,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   run.ended = true;
   const elapsedMs = now() - started;
-  const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sourceLog.some(entry => entry.disposition === 'cut') ? 'partial' : 'answered') : 'partial');
+  const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sawCut ? 'partial' : 'answered') : 'partial');
   const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
   heartbeat.cancel();
   answerTimer.cancel();

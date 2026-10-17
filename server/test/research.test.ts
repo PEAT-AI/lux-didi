@@ -7,6 +7,7 @@ import {
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { safeEvent } from '../host/log.js';
 import './research-shape.test.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
@@ -562,7 +563,7 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   assert.ok((reply['unchecked'] as string[]).includes('mail'), 'the source the cut abandoned is named as unchecked');
   const log = h.logs[0]!;
   assert.ok(log.elapsedMs <= RESEARCH.sourceDeadlineMs + 1_000, `one slow source never owns the turn: ${log.elapsedMs}`);
-  assert.equal(log.sources.find(entry => entry.kind === 'mail')?.disposition, 'cut');
+  assert.equal(log.sources.find(entry => entry.kind === 'mail')?.disposition, 'skipped');
   assert.notEqual(log.status, 'answered', 'a cut read is a partial answer, never an answered one');
 });
 
@@ -615,4 +616,21 @@ test('a start call returns inside six seconds even when its first read never ans
   const reply = await Promise.race([running, settle().then(() => null)]);
   assert.notEqual(reply, null, 'the call came back instead of waiting for the read');
   assert.ok(h.logs[0]!.elapsedMs <= RESEARCH.answerWithinMs + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
+});
+
+// B7: a run whose source was cut must still reach the host log; `cut` is not a disposition the log admits.
+test('a cut source logs a disposition the host log admits and the whole run line survives', async () => {
+  const clock = fakeClock();
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
+    return subs.map(call => sub(call.name, 'evidence', true, call.key));
+  } });
+  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  await settle();
+  clock.advance(RESEARCH.sourceDeadlineMs); await settle();
+  await running;
+  const line = h.logs[0]!;
+  assert.equal(line.sources.find(entry => entry.kind === 'mail')?.disposition, 'skipped');
+  assert.ok(safeEvent(line) !== undefined, 'the cut run line survives the host log');
 });

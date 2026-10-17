@@ -9,6 +9,7 @@ import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { redactSecretsWithCount } from './redact.js';
+import { journalRecord } from '../host/journal.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
@@ -412,6 +413,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
             parameters: declaration.parameters,
             async execute(args, context) {
+              // The debug journal's per-call clock. A journal write is a side effect only: it never
+              // changes the call, its status or its result.
+              const startedAt = Date.now();
+              const journalTool = (outcome: string, result: Record<string, unknown> | undefined): void => {
+                const text = result === undefined ? '' : typeof result['text'] === 'string' ? result['text'] : JSON.stringify(result);
+                journalRecord({ sessionId: context.runId, event: 'tool', tool: name, args: args as Record<string, unknown>, ms: Date.now() - startedAt,
+                  outcome, resultChars: text.length, result: text });
+              };
               if (context.signal.aborted) return { status: 'unknown' };
               // Independent dispatch guard, checked at call time and not at declaration time: a
               // connector whose current generation is not published and ready never reaches its
@@ -441,6 +450,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               try { evidence = await reader.call(name, callArgs, context.signal); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
+                journalTool('failed', undefined);
                 return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
               }
               // A completed read carries real data even when the turn deadline fired while it finished:
@@ -476,6 +486,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               // One boundary for every connector: a projected tool result is redacted before it is
               // persisted to tool_calls, put into evidence or source cards, or sent to the model.
               const redacted = redactSecretsWithCount(value.response);
+              // K1's redaction point is the one place a completed call's result text is final, so the
+              // journal copies it from here: already redacted, capped by the journal itself.
+              journalTool('completed', redacted.value as unknown as Record<string, unknown>);
               if (redacted.count > 0) {
                 // The owner log accepts one closed failure shape; the host log validates this receipt's
                 // own closed shape (event, tool, count) and drops anything else, so no value can ride along.

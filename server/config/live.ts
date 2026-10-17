@@ -5,12 +5,16 @@ import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, vali
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
+import { configureDebugJournal } from '../host/journal.js';
 import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
 const liveLimit = 16 * 1024;
 const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences', 'limits'];
 const preferenceKeys = ['dataClass', 'language', 'register', 'humor', 'verbosity'];
+// The debug journal is a host setting that lives beside the prompt preferences: owner content
+// stays on this computer, on by default. It is stripped before the prompt preferences validate.
+const journalKey = 'debugJournal';
 const requiredKeys = ['schemaVersion', 'enabled', 'dataClasses', 'preferences'];
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 
@@ -40,6 +44,8 @@ export interface LiveConfiguredProfile {
   readonly voice: string;
   readonly dataClasses: readonly DataClass[];
   readonly profileIdentity: string;
+  /** The private debug journal preference; absent files default to on. */
+  readonly debugJournal: boolean;
 }
 export interface LiveReadyProfile extends LiveConfiguredProfile { readonly profile: LiveProfile }
 
@@ -97,14 +103,18 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const model = modelId(provider, input['modelId'] ?? slot.defaultLiveModelId);
     const chosenVoice = input['voice'] === undefined ? slot.defaultVoice : voice(input['voice']);
     const dataClasses = classList(input['dataClasses']);
-    const preferences = validatePreferences(
-      { ...fields(input['preferences'], preferenceKeys, 'invalid_profile'), schemaVersion: 1, ownerId: options.ownerId },
-      options.ownerId,
-    );
+    const declared = fields(input['preferences'], [...preferenceKeys, journalKey], 'invalid_profile');
+    const debugJournal = declared[journalKey] === undefined ? true : declared[journalKey] === true;
+    const promptPreferences: Record<string, unknown> = { ...declared, schemaVersion: 1, ownerId: options.ownerId };
+    delete promptPreferences[journalKey];
+    const preferences = validatePreferences(promptPreferences, options.ownerId);
     const config: LiveConfiguredProfile = Object.freeze({
-      provider, preferences, model, voice: chosenVoice, dataClasses,
+      provider, preferences, model, voice: chosenVoice, dataClasses, debugJournal,
       profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),
     });
+    // The debug journal is rooted at the host data directory, the same place the persona overlay
+    // lives, and it is installed here so one owner preference governs both the live and chat paths.
+    configureDebugJournal(dirname(options.configDir), debugJournal);
     // The optional local overlay lives beside the data directory, outside Git; an invalid file
     // fails closed into a typed status instead of silently falling back to the public base.
     const overlay = loadPersonaOverlay({ dataDir: dirname(options.configDir) });

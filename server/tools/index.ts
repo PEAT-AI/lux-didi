@@ -10,6 +10,7 @@ import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, openParameters, validateOpen } from './open.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -141,6 +142,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
     if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
+    }
+    if (call.accountId === OPEN_IDENTITY.accountId && call.resourceId === OPEN_IDENTITY.resourceId && OPEN_TOOL_NAMES.has(call.toolName)) {
+      // Host-native open tools; the native side re-checks the allowlist before anything opens.
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
     }
@@ -352,6 +358,32 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             return complete(call as ToolCallIntent, response, ['ordinary'], tx);
           });
           return { status: 'completed', result };
+        },
+      });
+      // Host-native open actions: the frame goes down the local Live socket and the ack is the result.
+      for (const openTool of OPEN_TOOLS) definitions.push({
+        name: openTool.name, description: openTool.description, effect: 'read', accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
+        parameters: openParameters(openTool), validate: args => validateOpen(args, openTool),
+        async execute(args, context) {
+          if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+          const subject = args[openTool.parameter]!;
+          const code = await nativeActions.dispatch(runId, openTool.name, subject);
+          nativeActionReceipt(openTool.name, code, subject);
+          if (context.signal.aborted) return { status: 'failed' as const };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: openTool.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            return complete(call as ToolCallIntent, { code }, ['ordinary'], tx);
+          });
+          return { status: 'completed' as const, result };
         },
       });
       return definitions;

@@ -10,6 +10,7 @@ import {
 } from '../live/index.js';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
+import { nativeActions } from '../tools/open.js';
 
 export interface LiveStatusPayload {
   service: 'live';
@@ -85,6 +86,11 @@ function control(raw: string): (typeof controls)[number] | null {
   return typeof type === 'string' && (controls as readonly string[]).includes(type) ? type as (typeof controls)[number] : null;
 }
 
+/** Parse one JSON frame without judging it; the native-action bus owns its own closed shape. */
+function parseFrame(raw: string): unknown {
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
 export interface LiveUpgradeOptions {
   live: LiveService;
   store: Store;
@@ -158,8 +164,14 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
   }
 
   async function drive(ws: WebSocket, attachment: LiveAttachment): Promise<void> {
-    ws.on('error', () => { attachment.detach(); });
-    ws.on('close', () => { attachment.detach(); });
+    // One native-action sender per Live session; this socket is also the only path audio already uses.
+    const forgetActions = nativeActions.bind(attachment.liveSessionId, frame => {
+      if (ws.readyState !== ws.OPEN) return false;
+      ws.send(JSON.stringify(frame));
+      return true;
+    });
+    ws.on('error', () => { forgetActions(); attachment.detach(); });
+    ws.on('close', () => { forgetActions(); attachment.detach(); });
     ws.on('message', (data: RawData, isBinary: boolean) => {
       if (ws.readyState !== ws.OPEN) return;
       if (isBinary) {
@@ -169,7 +181,9 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
         try { attachment.sendAudio({ pcm }); } catch { ws.close(1002, 'not_ready'); }
         return;
       }
-      const type = control(data.toString());
+      const raw = data.toString();
+      if (raw.includes('"native_action_result"') && nativeActions.settle(attachment.liveSessionId, parseFrame(raw))) return;
+      const type = control(raw);
       if (type === null) { ws.close(1002, 'invalid_control'); return; }
       if (type === 'endAudioStream') { try { attachment.endAudioStream(); } catch { ws.close(1002, 'invalid_command'); } return; }
       attachment.close();

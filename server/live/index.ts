@@ -4,6 +4,7 @@ import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
+import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -692,7 +693,7 @@ export class LiveSessionOwner {
     const history = this.#jobHistory(liveSessionId, inputClass);
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note');
+    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || OPEN_TOOL_NAMES.has(tool.name));
     const declarations = modelFacing.length ? declarationsFor(modelFacing).declarations : [];
     const system = acceptedPrompt.system;
     const request: LiveVoiceRequest = { opening: 'model_first',

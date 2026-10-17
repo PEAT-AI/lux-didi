@@ -55,6 +55,15 @@ async function openPanel(id) {
   await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
   assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
 }
+// #282 keeps side panels two-state at every width, so a panel opened for a shot is closed again before the
+// narrow pass: the launch state is the open chat alone, and an open 240 px rail plus the 360 px chat lane does
+// not fit a 375 px viewport.
+async function closePanel(id) {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') === 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="collapsed"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'false', `${id} panel toggled closed`);
+}
 try {
   await start();
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -128,6 +137,7 @@ try {
     await page.locator('[data-tab="Settings"]').click();
     await page.locator('#connected-history').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });
+    await closePanel('left');
   });
   await step('same-profile real restart preserves consent/history and never resends', async () => {
     const port = new URL(descriptor.origin).port; await stop(); await start(Number(port)); await page.reload();
@@ -168,8 +178,8 @@ try {
     await viewport('history', '#connected-entries');
     await page.locator('#connected-draft').fill('Unsent synthetic mobile viewport proof; do not send automatically.');
     await viewport('composer', '#connected-draft');
-    assert.ok(positions.at(-1).send.visible && positions.at(-1).send.unoccluded, 'Actual Send control fully visible and unoccluded at375px');
-    assert.ok(positions.at(-1).draft.visible && positions.at(-1).draft.unoccluded, 'Actual composer fully visible and unoccluded at375px');
+    assert.ok(positions.at(-1).send.visible && positions.at(-1).send.unoccluded, `Actual Send control fully visible and unoccluded at375px (${JSON.stringify(positions.at(-1).send)})`);
+    assert.ok(positions.at(-1).draft.visible && positions.at(-1).draft.unoccluded, `Actual composer fully visible and unoccluded at375px (${JSON.stringify(positions.at(-1).draft)})`);
     assert.equal(await page.locator('#connected-send').isEnabled(), true);
     await writeFile(join(artifacts, `mobile-dom-${sha}.json`), JSON.stringify({ sha, counts, positions, savedTurns, source: 'actual shipped DOM and hardware-rendered unstitched viewport captures' }, null, 2));
   });

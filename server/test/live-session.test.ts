@@ -2993,6 +2993,7 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   assert.deepEqual(phases(), ['armed'], 'no nudge and no rebuild while the delegated response generates');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt');
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);

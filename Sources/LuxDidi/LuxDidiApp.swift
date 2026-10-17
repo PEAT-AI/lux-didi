@@ -441,6 +441,9 @@ struct RootView: View {
     private lazy var singleKey = SingleKeyTrigger()
     private var singleKeyMenuItem: NSMenuItem?
     private var pageReadyObservation: AnyCancellable?
+    /// MINI2 review B5: the pill's level meter follows the microphone. The level
+    /// is read from the live device, never written to it.
+    private var pillLevelObservation: AnyCancellable?
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -555,6 +558,17 @@ struct RootView: View {
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Toggle Naya ⌃ ⌥ ⇧ Space: " + liveShortcuts.windowStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Naya pill ⌃ ⌥ Space: " + liveShortcuts.pillStatus, action: nil, keyEquivalent: "")
+        // B5: the pill's five bars follow the live input level, throttled to about
+        // ten pushes a second so the page is not evaluated on the audio cadence.
+        pillLevelObservation = model.$live
+            .flatMap { conversation -> AnyPublisher<Double, Never> in
+                guard let conversation else { return Empty().eraseToAnyPublisher() }
+                return conversation.device.$inputLevel
+                    .map { Double($0) }
+                    .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
+                    .eraseToAnyPublisher()
+            }
+            .sink { [weak self] level in self?.pushPillLevel(level) }
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
                 self?.updateLiveStatus(state: state)
@@ -789,6 +803,13 @@ struct RootView: View {
         }
         singleKeyMenuItem?.state = enabled ? .on : .off
         pushSingleKeyState()
+    }
+    /// One level into the pill's own web view. Presentation only: the pill renders
+    /// the number and never opens audio.
+    private func pushPillLevel(_ level: Double) {
+        guard let web = miniPanel?.webView, level.isFinite else { return }
+        web.evaluateJavaScript("window.didiPillLevel && window.didiPillLevel(\(min(max(level, 0), 1)))",
+                               completionHandler: nil)
     }
     /// The settings view reads this at render time: the app owns the state and the
     /// page owns the wording.

@@ -530,3 +530,53 @@ test('when the selector deadline passes the fallback starts at once and the mode
   assert.ok(stamps.some(stamp => stamp <= 3_000), 'a progress line inside three seconds of the call');
   assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
 });
+
+// Contract RD: the owner must never wait more than six seconds in silence while a lookup runs.
+test('deadAirMs measures the longest silence the model hears, never the whole run', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const slowSelector: ResearchSelector = { select: async () => { await gate.promise; return { questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
+  const h = harness({ selector: slowSelector, now: clock.now, schedule: clock.schedule });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  await settle();
+  clock.advance(3_000); await settle();
+  clock.advance(6_000); await settle();
+  gate.resolve();
+  await running;
+  const log = h.logs[0]!;
+  assert.ok(log.elapsedMs >= 6_000, `the run really took six seconds: ${log.elapsedMs}`);
+  assert.ok(log.deadAirMs <= 3_000, `the worst silence is one beat, not the run: ${log.deadAirMs}`);
+});
+
+test('a source that outlives the per-source deadline is cut, and the reply is an honest partial', async () => {
+  const clock = fakeClock();
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { signal.addEventListener('abort', () => reject(new Error('cut')), { once: true }); });
+    return subs.map(call => sub(call.name, 'evidence', true, call.key));
+  } });
+  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  await settle();
+  clock.advance(RESEARCH.sourceDeadlineMs); await settle();
+  const reply = await running;
+  assert.ok((reply['unchecked'] as string[]).includes('mail'), 'the source the cut abandoned is named as unchecked');
+  const log = h.logs[0]!;
+  assert.ok(log.elapsedMs <= RESEARCH.sourceDeadlineMs + 1_000, `one slow source never owns the turn: ${log.elapsedMs}`);
+  assert.equal(log.sources.find(entry => entry.kind === 'mail')?.disposition, 'cut');
+  assert.notEqual(log.status, 'answered', 'a cut read is a partial answer, never an answered one');
+});
+
+test('the turn returns as soon as the first sufficient source answers, without waiting for the rest', async () => {
+  const clock = fakeClock();
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { signal.addEventListener('abort', () => reject(new Error('cut')), { once: true }); });
+    return subs.map(call => sub(call.name, 'evidence', true, call.key));
+  } });
+  const running = runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
+  const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
+  assert.equal(heard, true, 'the reply comes back while the slow source is still reading');
+  const reply = await running;
+  assert.ok((reply['unchecked'] as string[]).includes('mail'), 'the source left behind is named, never silently dropped');
+  assert.equal(h.logs[0]!.elapsedMs, 0, 'the answer was ready before the slow source could spend any deadline');
+});

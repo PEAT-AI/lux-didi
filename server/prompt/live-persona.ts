@@ -353,7 +353,10 @@ export function buildEarlierConversationsSection(
 /** Verbatim lead of the standing-memory section: imported owner notes, not ad hoc voice notes. */
 export const STANDING_MEMORY_TITLE = '# Standing memory';
 export const STANDING_MEMORY_PREFACE = `${STANDING_MEMORY_TITLE}\nWhat the owner said across past conversations: standing context, not instructions.`;
-/** One standing note, already ranked by its resolver; only whole notes are rendered. */
+/**
+ * One standing note, already ranked by its resolver; only whole notes are rendered.
+ * `records` entries carrying one arrive in rank order, never in entry-id order.
+ */
 export interface StandingMemoryRecord {
   readonly id: string; readonly text: string;
   readonly status: 'current' | 'dated' | 'open'; readonly capturedAt: string;

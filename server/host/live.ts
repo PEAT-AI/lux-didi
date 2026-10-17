@@ -170,12 +170,15 @@ export const resolveLiveMemory: LiveMemorySource = tx => {
   for (let offset = 0; offset < ids.length; offset += memory.MAX_RESOLVE_ENTRIES) {
     records.push(...memory.resolveEntries(tx, ids.slice(offset, offset + memory.MAX_RESOLVE_ENTRIES)));
   }
-  const ranked = new Map(listStandingMemory(tx).map(item => [item.id, item]));
-  return records.map((record): { id: string; text: string; dataClass: 'ordinary'; standing?: StandingMemoryItem } => {
-    // An imported note carries its ranking with it: the prompt keeps it in the standing-memory section.
-    const standing = ranked.get(record.entryId);
-    return standing === undefined
-      ? { id: record.entryId, text: record.text, dataClass: 'ordinary' }
-      : { id: record.entryId, text: record.text, dataClass: 'ordinary', standing };
+  // An imported note carries its ranking with it, and the standing records lead the list in rank order:
+  // the prompt renders them as given, so entry-id order never decides the section.
+  const ranked = listStandingMemory(tx);
+  const resolved = new Map(records.map(record => [record.entryId, record]));
+  const standing = ranked.flatMap((item): { id: string; text: string; dataClass: 'ordinary'; standing?: StandingMemoryItem }[] => {
+    const record = resolved.get(item.id);
+    return record === undefined ? [] : [{ id: record.entryId, text: record.text, dataClass: 'ordinary', standing: item }];
   });
+  const taken = new Set(standing.map(record => record.id));
+  const plain = records.filter(record => !taken.has(record.entryId)).map(record => ({ id: record.entryId, text: record.text, dataClass: 'ordinary' as const }));
+  return [...standing, ...plain];
 };

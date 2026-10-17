@@ -31,6 +31,8 @@ const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
+const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
@@ -344,9 +346,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
   }
   if (value.event === 'gptlive_flush') {
-    if (!closedKeys(value, ['event', 'words', 'queuedMs'])) return;
-    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs)) return;
-    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs };
+    // N1: the measured output gap that proved the server yielded, alongside what was cut.
+    if (!closedKeys(value, ['event', 'words', 'queuedMs', 'yieldGapMs'])) return;
+    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs) || !isSafeCount(value.yieldGapMs)) return;
+    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs, yieldGapMs: value.yieldGapMs };
+  }
+  if (value.event === 'gptlive_no_flush') {
+    // N1: one record per owner episode that cut nothing, in a closed reason set, never the transcript.
+    if (!closedKeys(value, ['event', 'reason', 'words'])) return;
+    if (!isSafeMember(value.reason, ['server_continued', 'queue_empty'])) return;
+    if (!isSafeCount(value.words) || value.words < 1) return;
+    return { event: 'gptlive_no_flush', reason: value.reason, words: value.words };
+  }
+  if (value.event === 'gptlive_unknown_frame') {
+    // N1: an unread provider frame name, counted once per session. Bounded to a protocol token, never a body.
+    if (!closedKeys(value, ['event', 'type', 'count'])) return;
+    if (typeof value.type !== 'string' || value.type.length > 64 || !UNKNOWN_FRAME_TYPE.test(value.type)) return;
+    if (!isSafeCount(value.count) || value.count < 1) return;
+    return { event: 'gptlive_unknown_frame', type: value.type, count: value.count };
   }
   if (value.event === 'gptlive_turn_complete') {
     if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;

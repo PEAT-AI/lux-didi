@@ -453,30 +453,21 @@ export class LiveSessionOwner {
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) });
-      // P1-R1: one source of the volatile block. A warm assembly younger than ten minutes supplies
-      // the memory and the earlier conversation section as they stand, so the store is not read a
-      // second time. A stale or absent one is assembled here, exactly as before, and adopted so the
-      // next start inside the window reuses it.
-      const read: { records: MemoryRecords; earlier: Earlier } = { records, earlier };
+      // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
+      try { records = this.#memorySource?.(tx) ?? []; }
+      catch { throw new LiveError('memory_unavailable'); }
+      // P1-R1: one source of the earlier-conversation section. A warm assembly younger than ten
+      // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
+      // stale or absent one is assembled here, exactly as before, and adopted for the next start.
       const start = chooseStartContext(this.#warm.take(), () => {
-        try { records = this.#memorySource?.(tx) ?? []; }
-        catch { throw new LiveError('memory_unavailable'); }
         // The summaries fill what the other sections leave under the target, so measure it first.
-        const basis = composeSession(undefined);
         earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
-          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
-        read.records = records; read.earlier = earlier;
-        return { persona: configuredPrompt.system,
-          memory: records.filter(record => record.dataClass === 'ordinary').map(record => record.text),
+          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(composeSession(undefined).text.length) });
+        return { persona: configuredPrompt.system, memory: [] as readonly string[],
           summary: earlier.section.length ? earlier.section : undefined, calendar: undefined };
       });
-      if (start.warm) {
-        records = start.sections.memory.map((text, index) => ({ id: 'warm:' + index, text, dataClass: 'ordinary' as const }));
-        earlier = { section: start.sections.summary ?? '', selectedIds: [], omitted: [] };
-      } else {
-        this.#warm.adopt(start.sections);
-        earlier = read.earlier;
-      }
+      if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [], omitted: [] };
+      else this.#warm.adopt(start.sections);
       const composed = (() => {
         try { return earlier.section ? composeSession(earlier.section) : composeSession(undefined); }
         catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }

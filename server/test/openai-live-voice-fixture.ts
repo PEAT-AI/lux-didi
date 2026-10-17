@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
-import type { LiveVoiceAdapterOptions, LiveVoiceEvent, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceClock, LiveVoiceEvent, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
 
 /**
  * Fake GPT-Live server: a real WebSocketServer on port 0 with no network, no key and no sleep. The
@@ -83,6 +83,35 @@ export function collect(session: LiveVoiceSession) {
   const events: LiveVoiceEvent[] = [];
   const done = (async () => { for await (const event of session.events) events.push(event); })();
   return { events, done };
+}
+
+/**
+ * A fake clock for the adapter's turn-taking windows: `advance` fires every timer due inside the window in
+ * order, so a test drives whole seconds of input-episode quiet and playback drain with no timer and no sleep.
+ */
+export class FakeClock implements LiveVoiceClock {
+  private time = 1_000_000;
+  private next = 1;
+  private pending: { id: number; at: number; fire: () => void }[] = [];
+  now(): number { return this.time; }
+  setTimer(ms: number, fire: () => void): unknown {
+    const id = this.next; this.next += 1;
+    this.pending.push({ id, at: this.time + Math.max(0, ms), fire });
+    return id;
+  }
+  clearTimer(handle: unknown): void { this.pending = this.pending.filter(timer => timer.id !== handle); }
+  get timers(): number { return this.pending.length; }
+  advance(ms: number): void {
+    const target = this.time + Math.max(0, ms);
+    for (;;) {
+      const due = this.pending.filter(timer => timer.at <= target).sort((a, b) => a.at - b.at || a.id - b.id)[0];
+      if (!due) break;
+      this.pending = this.pending.filter(timer => timer !== due);
+      this.time = Math.max(this.time, due.at);
+      due.fire();
+    }
+    this.time = target;
+  }
 }
 
 /** Open a session against the fake server and take it past the start barrier. */

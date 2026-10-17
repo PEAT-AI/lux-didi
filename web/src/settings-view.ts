@@ -160,6 +160,9 @@ function liveSwitch(summary: unknown, summaryUnavailable: boolean): string {
 <datalist id="live-voices">${voices}</datalist>
 <p class="muted">Saved to <code>live.json</code>. It applies when Lux Didi next starts; a call in progress is never switched.</p>
 <div class="button-row"><button type="submit">Save provider</button></div></form>`;
+}
+
+/**
  * MINI2: the single key. The app owns the state, because only the app can watch a
  * key, and pushes it to the page as `window.didiSingleKey`; a browser preview or
  * a test has no push and reads the default (on, and inactive until a grant).

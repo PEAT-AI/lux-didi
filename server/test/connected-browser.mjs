@@ -241,6 +241,9 @@ try {
         const lifecycle = await Promise.all([pairResponse, clearResponse]);
         for (const response of lifecycle) assert.equal(response.status(), 200, 'expected real pairing/selection-clear route success');
         await page.locator('#connected-send').waitFor(); paired = true;
+        // #282: side panels launch collapsed, so the chat panel is opened the owner's way here too, as the
+        // main flow does, before its consent and composer are read or clicked.
+        await openPanel('right');
         const status = await api('/status'), route = await api('/chat/status');
         const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
         assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: label });

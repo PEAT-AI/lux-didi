@@ -552,7 +552,7 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { signal.addEventListener('abort', () => reject(new Error('cut')), { once: true }); });
+    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
@@ -570,7 +570,7 @@ test('the turn returns as soon as the first sufficient source answers, without w
   const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { signal.addEventListener('abort', () => reject(new Error('cut')), { once: true }); });
+    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);

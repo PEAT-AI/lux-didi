@@ -1088,7 +1088,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           let out: IntentSubResult[] = [];
           try { out = await deps.execute(list, readSignal); } catch { out = []; }
           const failed = list.map((_, index) => index).filter(index => !(out[index]?.ok));
-          if (failed.length > 0 && deadlineAt - now() > 1_000) {
+          if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
             try {
               const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
               failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
@@ -1168,16 +1168,19 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       await Promise.race([all, firstSufficient]);
       if (answered) roundCut.abort();
       await all;
-      if (answered) stopReason = 'sufficient';
+      if (answered) stopReason = 'answered';
 
       const cutKinds = batch.filter(kind => readStarted.has(kind) && !latencies.has(kind));
       for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: latencies.has(kind) ? 'completed' : cutKinds.includes(kind) ? 'cut' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
+      // A source that ran out of its own deadline ends the turn as an honest partial: it is named
+      // unchecked, and the model can ask to continue instead of another round silently spending time.
+      if (cutKinds.length > 0 && !answered) { stopReason = 'deadline'; break; }
       if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
       if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
     }
     run.rounds = round;
     notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
-    if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'sufficient') break;
+    if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'answered') break;
     // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
     if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
 

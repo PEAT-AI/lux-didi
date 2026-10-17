@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
 import {
-  capJournalText, configureDebugJournal, currentDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
+  capJournalText, configureDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
 } from '../host/journal.js';
 import { safeEvent } from '../host/log.js';
 import { randomUUID } from 'node:crypto';
@@ -280,13 +280,12 @@ test('a live session journals its instructions, provider ack, transcripts and it
   assert.equal(typeof end['by'], 'string');
 });
 
-test('a chat tool loop journals the call at the tools layer, not only in the writer', async t => {
+test('a chat tool loop journals the call at the tools layer', async t => {
   const dir = tempDir(t);
   resetDebugJournal();
   configureDebugJournal(dir, true);
   t.after(resetDebugJournal);
-  const work: (() => void)[] = [];
-  // One tool call, then the answer: the shape the chat tool loop drives through the tools owner.
+  // The shape is chat-tools': a real tools owner over an in-process MCP endpoint, driven by a chat turn.
   const seen: { declarations: string[]; responses: number }[] = [];
   const toolModel: ModelPort = {
     generate: async (request: ModelRequest) => {
@@ -301,7 +300,7 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
       return result(request, 'complete', 'Synthetic answer from evidence');
     },
   };
-  const f = openFixture(dir, toolModel, { schedule: task => work.push(task) }, undefined, toolsMigrations);
+  const f = openFixture(dir, toolModel, {}, undefined, toolsMigrations);
   const endpoint = { id: 'journal-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
   const sdk = new Server({ name: 'journal-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
@@ -311,9 +310,9 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   await sdk.connect(transport);
   t.after(async () => { await transport.close(); await sdk.close(); });
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-    const req = new Request(input, init);
-    if (req.method === 'GET') return new Response(null, { status: 405 });
-    return transport.handleRequest(req);
+    const request = new Request(input, init);
+    if (request.method === 'GET') return new Response(null, { status: 405 });
+    return transport.handleRequest(request);
   });
   writeFileSync(join(dir, 'mcp.json'), JSON.stringify({
     schemaVersion: 1, grantMode: 'owner-trusted-reads',
@@ -326,28 +325,20 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   });
   t.after(async () => { await mcp.close(); });
   assert.deepEqual(mcp.connectionIds(), [endpoint.id], 'the fixture endpoint is published');
-  const chat = new ChatService({
-    ...f.config,
-    tools: { owner: mcp.owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: source => { authority = source; } },
-  });
+  const composition = { owner: mcp.owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
+  const chat = new ChatService({ ...f.config, tools: composition });
   chat.recover(f.recoveryContext);
+  // The host registers the chat's own authority lookup with the tools composition; the test does the same.
+  composition.registerAuthoritySource(async (id: string, signal: AbortSignal) => signal.aborted ? null : chat.lookupAuthority(id));
   t.after(() => chat.shutdown());
-  const session = f.createSession();
-  const run = chat.accept({ sessionId: session.id, text: 'Synthetic owner question', idempotencyKey: 'journal-tools' }, f.context);
-  const stream = chat.subscribe(run.runId, f.context);
-  const finished = (async () => { for await (const event of stream) { if (event.type === 'snapshot' && event.run.state === 'terminal') return; } })();
-  work.shift()!();
-  await finished;
+  const sessionId = chat.enroll({ title: 'Synthetic tools', timeZone: 'UTC', idempotencyKey: randomUUID() }, f.context).sessionId;
+  const accepted = chat.accept({ sessionId, text: 'Synthetic owner question', idempotencyKey: randomUUID() }, f.context);
+  for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
 
-  const path = join(dir, 'debug', dayName(Date.now()), `chat-${run.runId}.jsonl`);
+  const path = join(dir, 'debug', dayName(Date.now()), `chat-${accepted.runId}.jsonl`);
   assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
   const calls = records(path).filter(line => line['event'] === 'tool');
-  if (calls.length !== 1) {
-    const files = readdirSync(join(dir, 'debug')).flatMap(dayNameDir => readdirSync(join(dir, 'debug', dayNameDir)).map(name => `${dayNameDir}/${name}`));
-    console.error(JSON.stringify({ probe: 'journal-dump', seen, state: chat.get(run.runId, f.context).state, failures: currentDebugJournal()?.failures, root: currentDebugJournal()?.root, files,
-      lines: records(path), everywhere: files.flatMap(name => records(join(dir, 'debug', name)).map(record => record['event'])) }));
-  }
-  assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer: ${JSON.stringify(records(path).map(line => line['event']))}`);
+  assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer (model saw ${JSON.stringify(seen)})`);
   assert.equal(calls[0]!['tool'], 'search_knowledge');
   assert.equal(typeof calls[0]!['ms'], 'number');
   assert.equal(typeof calls[0]!['outcome'], 'string');

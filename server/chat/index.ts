@@ -184,6 +184,8 @@ export class ChatService implements ChatPort {
     const onStep = (event: ChatStepEvent) => { steps.push(event); this.#emit(run.runId, event); };
     // The end event carries the result count, known only once the round's responses are shaped.
     const finished: ChatCallRecord[] = [];
+    // `next.contents` is cumulative history, so only responses that have not been consumed are new.
+    let consumed = 0;
     const release = (source: readonly number[]) => {
       const counts = [...source];
       while (finished.length) {
@@ -209,7 +211,9 @@ export class ChatService implements ChatPort {
       this.#checkPolicy(run.runId, run.sessionId, context);
       if (!this.lookupAuthority(run.runId) || next.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) throw new ContextFailure('unavailable');
       const toolEvidence = this.#toolEvidence(next);
-      release(next.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [countOf(part.functionResponse.response)] : [])));
+      const seen = next.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [countOf(part.functionResponse.response)] : []));
+      release(seen.slice(consumed));
+      consumed = seen.length;
       this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
         const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};

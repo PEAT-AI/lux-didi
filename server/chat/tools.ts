@@ -138,7 +138,9 @@ export function deterministicAnswer(evidence: readonly FrozenEvidence[], notReac
 
 
 /** One sub read the plan ran, already materialized through the result gate. */
-export interface ChatSubResult { name: string; ok: boolean; response: JsonObject }
+export interface ChatSubResult { name: string; ok: boolean; response: JsonObject;
+  /** The classes the gate authorized for this read; the digest inherits them, never ordinary by default. */
+  dataClasses?: readonly DataClass[] }
 
 export interface ChatIntentOptions {
   /** Runs the planned connector calls; the caller owns the loop, the journal and the result gate. */
@@ -146,6 +148,8 @@ export interface ChatIntentOptions {
   /** The intent journaled for this execution, so the shaped digest completes under it. */
   callOf(executionId: string): ToolCallIntent | undefined;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
+  /** The real capability identity of the covered source; the builder never invents one. */
+  identity(toolName: string): { accountId: string; resourceId: string };
   declarations?: readonly IntentDeclaration[];
 }
 
@@ -162,18 +166,20 @@ export function chatIntentTools(options: ChatIntentOptions): ToolDefinition[] {
   return declarations.map(declaration => ({
     name: declaration.name, description: declaration.description, guidance: declaration.guidance,
     parameters: declaration.parameters, validate: declaration.validate,
-    effect: 'read' as const, accountId: 'gateway:chat-voice-parity', resourceId: 'intent',
+    effect: 'read' as const, ...options.identity(declaration.name),
     execute: async (args: JsonObject, context: ExecutionContext): Promise<ToolOutcome> => {
       const call = options.callOf(context.executionId);
       // No journaled intent means the shaped digest has nothing to complete under: fail closed.
       if (!call) return { status: 'failed', code: 'handler_outcome' };
       let plan: ReturnType<typeof planIntent>;
       try { plan = planIntent(declaration.name, args); } catch { return { status: 'failed', code: 'handler_outcome' }; }
+      const classes = new Set<DataClass>();
       const shape = (planned: readonly { name: string; args: JsonObject }[], results: readonly ChatSubResult[]): IntentSubResult[] =>
         planned.map((entry, index) => {
           const result = results[index];
           const ok = result !== undefined && result.name === entry.name && result.ok;
           const text = ok ? textOf(result.response) : '';
+          if (ok) for (const dataClass of result.dataClasses ?? []) classes.add(dataClass);
           return { key: String(index), name: entry.name, ok, text, originalCharacters: text.length,
             omittedCharacters: 0, ...(ok ? {} : { code: 'connector_error' }) };
         });
@@ -183,7 +189,9 @@ export function chatIntentTools(options: ChatIntentOptions): ToolDefinition[] {
         if (extra.length) results.push(...shape(extra, await options.runSubs(extra, context.signal)));
       }
       // One model-visible digest under the intent's own journaled call, shaped by the shared combiner.
-      return { status: 'completed', result: options.complete(call, intentResponse(plan.combine(results), declaration.name), []) };
+      // The digest carries the union of the authorized classes: a private read never lands as ordinary.
+      const dataClasses = [...classes];
+      return { status: 'completed', result: options.complete(call, intentResponse(plan.combine(results), declaration.name), dataClasses) };
     },
   }));
 }

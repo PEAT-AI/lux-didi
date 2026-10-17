@@ -579,7 +579,7 @@ struct RootView: View {
         // MINI2: the single key is the same toggle as the chord. The grant is
         // asked for once, on the first interactive launch only, and the chord
         // works whether or not the key does.
-        singleKey.onTap = { [weak self] in self?.presence.toggle(.hotkey) }
+        bindRightCommandTap(singleKey, to: presence)
         SingleKeyTrigger.requestGrantIfNeeded(for: launchKind)
         singleKey.start()
         pageReadyObservation = model.$shell

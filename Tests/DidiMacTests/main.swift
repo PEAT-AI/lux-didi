@@ -116,18 +116,21 @@ expect(singleKeyDetector.handle(.rightCommandUp, at: 63) == false, "a chord befo
 
 // P1-R1: the Right Command tap the detector fires is the one presence toggle, and Right
 // Option is SuperWhisper's: the detector has no case for it and never consumes an event.
+// The binding the app installs, not a copy: bindRightCommandTap is what LuxDidiApp calls.
+var presenceSurfaces: [PresenceState] = []
+let presence = NativePresence(effects: PresenceEffects(setCaptureMuted: { _ in },
+    surface: { posture in presenceSurfaces.append(posture.state) }))
+let wiredSingleKey = SingleKeyTrigger()
+bindRightCommandTap(wiredSingleKey, to: presence)
+expect(presence.state == .cold, "presence starts cold and silent")
 var presenceTap = RightCommandTapDetector()
 let presenceTapped = presenceTap.handle(.rightCommandDown, at: 200) == false
     && presenceTap.handle(.rightCommandUp, at: 200.1)
 expect(presenceTapped, "a Right Command tap is the presence toggle")
-var presenceSurfaces: [PresenceState] = []
-let presence = NativePresence(effects: PresenceEffects(setCaptureMuted: { _ in },
-    surface: { posture in presenceSurfaces.append(posture.state) }))
-expect(presence.state == .cold, "presence starts cold and silent")
-if presenceTapped { presence.toggle(.hotkey) }
-expect(presence.state == .connecting, "the Right Command tap opens the presence session")
+if presenceTapped { wiredSingleKey.onTap?() }
+expect(presence.state == .connecting, "the installed Right Command binding opens the presence session")
 expect(presenceSurfaces.last == .connecting, "the tap renders the presence surface")
-presence.toggle(.hotkey)
+wiredSingleKey.onTap?()
 expect(presence.state == .cold, "a second tap while connecting returns to cold")
 var rightOptionTap = RightCommandTapDetector()
 expect(rightOptionTap.handle(.otherModifiers(held: true), at: 210) == false, "a Right Option press is never a tap")

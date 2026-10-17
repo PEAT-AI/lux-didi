@@ -79,6 +79,10 @@ function classList(value: unknown): readonly DataClass[] {
 export function loadLiveConfig(options: { configDir: string; ownerId: string; ownerProfile?: OwnerProfileSnapshot }): LiveConfigStatus {
   try {
     if (!options || typeof options !== 'object' || typeof options.configDir !== 'string' || typeof options.ownerId !== 'string') fail('invalid_arguments');
+    // The debug journal is a host setting with its own default, so it is installed before live.json is
+    // read: a host with no live.json, or none this run can reach, still journals; the file can only
+    // turn it off. This is the same data directory the persona overlay below resolves.
+    configureDebugJournal(dirname(options.configDir), true);
     if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
     let text: string;
     try { text = readPrivate(join(options.configDir, 'live.json'), liveLimit); }

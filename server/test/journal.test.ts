@@ -1,19 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
 import {
-  capJournalText, configureDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
+  capJournalText, configureDebugJournal, currentDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
 } from '../host/journal.js';
 import { safeEvent } from '../host/log.js';
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { openMemoryFixture } from './memory-context-process.js';
 import { openFixture, result } from './chat-process.js';
+import { loadLiveConfig } from '../config/live.js';
 import { ChatService } from '../chat/index.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
@@ -345,4 +345,24 @@ test('a chat tool loop journals the call at the tools layer', async t => {
   assert.equal(typeof calls[0]!['outcome'], 'string');
   assert.deepEqual(calls[0]!['args'], { query: 'synthetic question', limit: 3 });
   assert.equal(calls[0]!['outcome'], 'completed', 'the call was authorized and executed');
+});
+
+test('the journal defaults on when live.json is absent and the file can turn it off', t => {
+  const dir = tempDir(t);
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  resetDebugJournal();
+  t.after(resetDebugJournal);
+  // No live.json at all: the preference defaults on and the journal is installed at the data directory.
+  assert.deepEqual(loadLiveConfig({ configDir, ownerId: 'synthetic-owner' }), { status: 'unconfigured' });
+  assert.equal(currentDebugJournal()?.enabled, true, 'default ON with no live.json');
+  assert.equal(currentDebugJournal()?.dataDir, dir, 'the journal root is the data directory');
+  // An explicit false is the one thing that turns it off.
+  writeFileSync(join(configDir, 'live.json'), JSON.stringify({
+    schemaVersion: 1, enabled: true, dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', debugJournal: false },
+  }), { mode: 0o600 });
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(status.status, 'configured');
+  assert.equal(status.status === 'configured' ? status.config.debugJournal : null, false);
+  assert.equal(currentDebugJournal()?.enabled, false);
 });

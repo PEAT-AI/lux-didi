@@ -4,6 +4,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { currentLiveAccent, loadLiveConfig, saveLiveSelection } from '../config/live.js';
+import { resolveRoute } from '../http/routes.js';
+import { ServiceError } from '../contracts/errors.js';
 import { LiveConfigError } from '../live/types.js';
 
 /** A private config dir with both credential slots seeded: the switch never has to borrow a key. */
@@ -69,4 +71,23 @@ test('PV1: the accent selection validates, defaults and reaches the next session
   // The voice's own accent is a real selection, not an absence.
   assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', accent: 'voice-default' }).accent, 'voice-default');
   assert.equal(currentLiveAccent(), 'voice-default');
+});
+
+test('PV1-R3: the settings route accepts the accent field and the config layer answers a typed 400', t => {
+  const url = new URL('http://didi.test/api/v1/live/settings');
+  // The closed field list admits the accent, so a provider, voice and accent save is no longer refused here.
+  const route = resolveRoute('POST', url, { provider: 'openai', voice: 'marin', accent: 'indian-light' });
+  assert.equal(route.kind, 'live');
+  assert.equal(route.action, 'settings');
+  assert.equal(route.input['accent'], 'indian-light');
+  // A wrong type is the route's own typed refusal, and it fires before any file is touched.
+  assert.throws(() => resolveRoute('POST', url, { provider: 'openai', accent: 42 }),
+    (error: unknown) => error instanceof ServiceError && error.status === 400 && error.message === 'Invalid accent');
+  // A value outside the closed set passes the route and fails the config layer with its own typed code, which
+  // server.ts answers as a 400 carrying invalid_accent.
+  const f = fixture(t);
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'fake-indian' }),
+    (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_accent');
+  // And the same save with a listed value lands, which is the path the page takes.
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'indian-light' }).accent, 'indian-light');
 });

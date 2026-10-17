@@ -10,8 +10,9 @@ import type { LiveSummary } from './api.ts';
 /** Where each setting lives on disk, by file name under the operator config dir. Never file contents. */
 const FILE_ROWS: [string, string][] = [
   ['Live model, voice and limits', 'live.json'],
-  ['Conversation model and persona', 'profile.json'],
-  ['Model credential reference', 'gemini-primary.json'],
+  ['Text chat model and persona', 'profile.json'],
+  ['Text model credential reference', 'gemini-primary.json'],
+  ['OpenAI Live credential reference', 'openai-primary.json'],
   ['Connectors', 'provider-config/mcp.json'],
 ];
 
@@ -30,6 +31,10 @@ function providerLabel(value: string | undefined): string | undefined {
 function voicesOf(value: string | undefined): readonly string[] {
   return LIVE_PROVIDERS.find(choice => choice.provider === value)?.voices ?? LIVE_PROVIDERS[0]!.voices;
 }
+/** The voices the switch offers for a provider, so the page and the server refuse the same pairs. */
+export function providerVoices(provider: string | undefined): readonly string[] { return voicesOf(provider); }
+/** A provider's default voice: the first of its own list, never another provider's. */
+export function providerDefaultVoice(provider: string | undefined): string { return voicesOf(provider)[0]!; }
 
 export interface SettingsInput {
   /** Envelope data from GET /api/v1/status. */
@@ -41,6 +46,8 @@ export interface SettingsInput {
   /** Envelope data from GET /api/v1/live/summary, when the browser could read it. */
   summary?: LiveSummary;
   summaryUnavailable?: boolean;
+  /** The owner's saved Live choice, when this session saved one: it applies at the next start. */
+  saved?: { provider: string; voice: string; appliesAt?: string };
   /** Connected-conversation settings owned by the chat surface: the stay-connected switch and saved conversations. */
   connected?: {
     conversations: { title: string; sessionId: string; model?: string; state?: string; active?: boolean }[];
@@ -86,7 +93,7 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}) };
 }
 
-function liveRows(summary: unknown, summaryUnavailable: boolean): string {
+function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
   const row = summaryUnavailable ? undefined : record(summary);
   const unavailableRows = `<dt>Live model</dt><dd>${unavailable()}</dd>
 <dt>Live voice</dt><dd>${unavailable()}</dd>
@@ -100,11 +107,20 @@ function liveRows(summary: unknown, summaryUnavailable: boolean): string {
   const session = limitMinutes(limits?.sessionMs);
   const idle = limitMinutes(limits?.idleMs);
   const provider = text(row.provider, 40);
+  // The delegation backend exists only on the OpenAI adapter, so the row appears only there.
+  const delegation = provider === 'openai' ? text(row.delegationModel, 120) : undefined;
+  const delegationRow = provider === 'openai'
+    ? `<dt>Voice delegation model</dt><dd>${delegation ? escapeHtml(delegation) : unavailable()}</dd>` : '';
+  // The saved choice is the one the next start will use; naming it makes a pending change visible.
+  const savedProvider = text(saved?.provider, 40);
+  const savedVoice = text(saved?.voice, 64);
+  const pendingNote = savedProvider !== undefined && savedVoice !== undefined && (savedProvider !== provider || savedVoice !== voice)
+    ? `<p class="muted" role="status">Saved: ${escapeHtml(savedProvider)}/${escapeHtml(savedVoice)}, applies on next start</p>` : '';
   return `<dt>Live provider</dt><dd>${provider ? escapeHtml(providerLabel(provider) ?? provider) : unavailable()}</dd>
 <dt>Live model</dt><dd>${model ? escapeHtml(model) : unavailable()}</dd>
-<dt>Live voice</dt><dd>${voice ? escapeHtml(voice) : unavailable()}</dd>
+<dt>Live voice</dt><dd>${voice ? escapeHtml(voice) : unavailable()}</dd>${delegationRow}
 <dt>Session limit</dt><dd>${session ?? unavailable()}</dd>
-<dt>Idle limit</dt><dd>${idle ?? unavailable()}</dd>`;
+<dt>Idle limit</dt><dd>${idle ?? unavailable()}</dd>${pendingNote}`;
 }
 
 /** The persona display name the Live summary carries, only while the Live profile is enabled. */
@@ -117,12 +133,12 @@ function summaryPersona(input: SettingsInput): string | undefined {
 function serviceRows(status: unknown, statusUnavailable: boolean, summaryName?: string): string {
   const persona = summaryName ?? (statusUnavailable ? undefined : text(record(record(status)?.ownerProfile)?.displayName, 120));
   const personaCell = persona ? escapeHtml(persona) : unavailable(statusUnavailable ? 'Unavailable' : 'Not reported');
-  if (statusUnavailable) return `<dt>Persona name</dt><dd>${personaCell}</dd><dt>Conversation model</dt><dd>${unavailable()}</dd>`;
+  if (statusUnavailable) return `<dt>Persona name</dt><dd>${personaCell}</dd><dt>Text chat and research model</dt><dd>${unavailable()}</dd>`;
   const row = record(status);
   const model = record(row?.model);
   const modelLabel = model?.configured === true ? [text(model.provider, 60), text(model.model, 120)].filter(Boolean).join(' ') || 'Configured' : 'Not configured';
   return `<dt>Persona name</dt><dd>${personaCell}</dd>
-<dt>Conversation model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
+<dt>Text chat and research model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
 }
 
 function connectorsSection(connections: unknown, connectionsUnavailable: boolean): string {
@@ -148,10 +164,14 @@ ${connected.conversations.length ? `<label for="connected-history">Connected his
  * The one writable setting: which voice provider and voice the next Live session uses. The choice is stored in
  * live.json, so it applies at the next start of the service and never interrupts a call in flight.
  */
-function liveSwitch(summary: unknown, summaryUnavailable: boolean): string {
+function liveSwitch(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
   const row = summaryUnavailable ? undefined : record(summary);
-  const current = text(row?.provider, 40) ?? LIVE_PROVIDERS[0]!.provider;
-  const voice = text(row?.voice, 64) ?? voicesOf(current)[0]!;
+  // A failed read never falls back to a default that would look like the saved choice.
+  if (!row) return `<p role="status" class="settings-unavailable">Live provider unavailable. No provider or voice is shown while the running service cannot be read.</p>`;
+  // The switch shows the saved choice when there is one, because that is what the next start will use;
+  // the running values above it say what a call in flight actually ran with.
+  const current = text(saved?.provider, 40) ?? text(row?.provider, 40) ?? LIVE_PROVIDERS[0]!.provider;
+  const voice = text(saved?.voice, 64) ?? text(row?.voice, 64) ?? voicesOf(current)[0]!;
   const options = LIVE_PROVIDERS.map(choice =>
     `<option value="${escapeHtml(choice.provider)}"${choice.provider === current ? ' selected' : ''}>${escapeHtml(choice.label)}</option>`).join('');
   const voices = [...new Set([...voicesOf(current), voice])].map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
@@ -216,11 +236,11 @@ export function settingsMarkup(input: SettingsInput): string {
   return `<section id="settings-summary" class="panel didi-settings" aria-label="Didi settings">
 <h2>Didi settings</h2>
 <p class="muted">Summary of what this Didi is running with. Only the Live voice provider below can be changed here; everything else is read-only.</p>
-<dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
+<dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true, input.saved)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
 <dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
 <section class="settings-section">${connectorsSection(input.connections, input.connectionsUnavailable === true)}</section>
 ${connectedSection(input.connected)}
-<section class="settings-section"><h3>Live voice provider</h3>${liveSwitch(input.summary, input.summaryUnavailable === true)}</section>
+<section class="settings-section"><h3>Live voice provider</h3>${liveSwitch(input.summary, input.summaryUnavailable === true, input.saved)}</section>
 <section class="settings-section"><h3>Appearance</h3>
 <label for="appearance-theme">Appearance</label>
 <select id="appearance-theme" name="appearance-theme"><option value="dark"${input.theme === 'light' ? '' : ' selected'}>Dark</option><option value="light"${input.theme === 'light' ? ' selected' : ''}>Light</option></select>

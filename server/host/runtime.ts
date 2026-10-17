@@ -216,6 +216,12 @@ export async function startHost(config: HostConfig) {
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    // The names a call will use, on the start event: a log alone then proves which provider, model and
+    // voice served it. The status projection carries no key, reference or prompt.
+    const liveNow = live.status();
+    if (liveNow.status === 'configured' && liveNow.provider !== undefined && liveNow.model !== undefined && liveNow.voice !== undefined) {
+      log.event({ event: 'live_started', provider: liveNow.provider, modelId: liveNow.model, voice: liveNow.voice });
+    }
     void summarizer.reconcile().catch(error => log.error(error));
     void summarizer.requeueFailed().catch(error => log.error(error));
     // Observe the actual durable provider settlement, which does not emit console text.

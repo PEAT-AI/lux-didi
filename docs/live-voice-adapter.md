@@ -149,3 +149,45 @@ socket errors are final, not inferred network failures. Known network errno
 failures such as `ECONNRESET`, `ETIMEDOUT` and `EPIPE`, abnormal close1006 without
 a prior protocol failure, server-error close1011 and provider drains retain
 recoverability. HTTP refusal bodies and error text are never diagnostics.
+
+## GPT-Live turn taking
+
+`gpt-live-1` publishes no turn detection, speech start or spoken-response end, and the
+protocol has no input buffer commit, clear or output-audio-done frame: the server owns turn
+taking (`server/adapters/live-voice/openai.ts`). The adapter therefore derives both
+boundaries itself, and never drops an output frame doing it.
+
+- No frame dropping. Every valid `session.output_audio.delta` of an open session is forwarded
+  at 24 kHz. An input transcript event can never silence future output audio.
+- Barge-in. The adapter emits `interrupted`, once per input episode, only when assistant audio
+  is queued or playing (the modelled playback queue below) and the assembled input transcript
+  of that episode holds at least two words. An input episode ends after 700 ms with no
+  input-transcript delta (`INPUT_EPISODE_QUIET_MS`), which resets the assembled transcript and
+  re-arms the once-per-episode latch, so the deltas of one word count as one word and a
+  one-word utterance ("mm", "stop") never cuts the reply. The host flushes its native playback
+  queue on `interrupted`.
+- Head start. gpt-live-1 sends output audio at about 1x real time and the native jitter buffer is 80 ms, so the
+  first audio of each speaking stretch is held and forwarded as one event once it holds 300 ms of audio
+  (`HEAD_START_MS`) or 300 ms of clock time have passed, whichever comes first; after that every delta passes
+  through. A barge-in, a provider error or a close discards the hold, and held audio counts as playback to be cut.
+- Delegated calls. The host answers each delegated call on its own, so the adapter records each answer and sends
+  one `function_call_output` per pending call of the turn plus a single `response.create` when the last one arrives.
+  A call id the turn never delegated is a `protocol_error`.
+- End of turn. The adapter emits `turnComplete` and closes the output transcript once when all
+  hold: audio was forwarded since the last completion, no output delta for 2000 ms
+  (`TURN_IDLE_QUIET_MS`), the modelled playback queue has drained, and no delegated response is
+  outstanding between `response.created` and `response.done`. A delegated `response.done`
+  clears the outstanding flag and never declares playback drained. Later audio simply reopens
+  speaking.
+- Playback drain. No native playback-drained signal reaches the host, so the adapter models the
+  queue from forwarded PCM: 24 kHz s16 mono is 48,000 bytes per second, appended behind whatever
+  is still queued and reset by a flush or a provider error.
+- Receipts, metadata only and never transcript text: `gptlive_flush` {words, queuedMs},
+  `gptlive_turn_complete` {idleMs, drained}, `gptlive_post_flush_audio_ms` {ms} for the audio
+  still received after a barge-in before the next input episode, and `openai_instructions_size`
+  {chars, bytes} at session start, which proves in a log that the instructions were not cut.
+  Empty and whitespace-only input transcript deltas carry no word: they start no episode and
+  never flush.
+- The wrapper instructions additionally carry OpenAI's live prompting lines "Do not treat a
+  cough, music, or nearby conversation as a new request." and "Keep listening while the owner
+  pauses to think."

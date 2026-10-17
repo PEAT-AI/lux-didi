@@ -63,6 +63,20 @@ function voice(value: unknown): string {
   if (typeof value !== 'string' || !value.length || value.length > 64) throw new LiveConfigError('invalid_voice');
   return value;
 }
+
+/**
+ * The voices each provider can serve, the same list the settings switch offers. A saved pair outside the
+ * provider's own list is refused rather than stored, so a Gemini session can never be saved with marin.
+ */
+const providerVoices: Readonly<Record<LiveVoiceProvider, readonly string[]>> = Object.freeze({
+  openai: Object.freeze(['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder']),
+  gemini: Object.freeze(['Aoede']),
+});
+function providerVoice(provider: LiveVoiceProvider, value: unknown): string {
+  const chosen = voice(value);
+  if (!providerVoices[provider].includes(chosen)) throw new LiveConfigError('invalid_voice');
+  return chosen;
+}
 function classList(value: unknown): readonly DataClass[] {
   if (!Array.isArray(value) || !value.length || value.some(item => !classes.includes(item as DataClass)) || new Set(value).size !== value.length) throw new LiveConfigError('invalid_classes');
   return Object.freeze([...value] as DataClass[]);
@@ -190,7 +204,7 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     const slot = slotFor(provider);
     // A provider whose credential slot is empty is refused here; the switch never falls back to another key.
     if (!slotKeyPresent(options.configDir, slot.keyReference)) fail('file_missing');
-    const chosenVoice = options.voice === undefined ? slot.defaultVoice : voice(options.voice);
+    const chosenVoice = options.voice === undefined ? slot.defaultVoice : providerVoice(provider, options.voice);
     if (!validateRoot(options.configDir)) fail('file_missing');
     const input = parseJson(readPrivate(join(options.configDir, 'live.json'), liveLimit)) as Record<string, unknown>;
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid_profile');

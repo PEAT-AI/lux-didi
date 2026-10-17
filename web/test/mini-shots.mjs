@@ -33,6 +33,32 @@ try {
   await page.setViewportSize({ width: 300, height: 300 });
 
   await openMini({ state: 'idle', since, entries: [], cursor: 0 });
+  // UI3A-R8: the orb and its rings fit inside the panel with even padding, and the
+  // caption stays below the orb inside the same panel.
+  const geometry = await page.evaluate(() => {
+    const box = element => {
+      const r = element.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const stage = document.querySelector('.mini-stage');
+    return { stage: box(stage), orb: box(stage.querySelector('canvas')),
+      glow: box(stage.querySelector('.presence-glow')),
+      caption: box(stage.querySelector('.orb-caption')) };
+  });
+  const shorter = Math.min(geometry.stage.width, geometry.stage.height);
+  assert.ok(geometry.orb.width <= shorter * 0.86 + 0.5, `orb width ${geometry.orb.width} must be at most 0.86 of ${shorter}`);
+  assert.ok(geometry.orb.height <= shorter * 0.86 + 0.5, `orb height ${geometry.orb.height} must be at most 0.86 of ${shorter}`);
+  for (const part of ['orb', 'glow']) {
+    const b = geometry[part];
+    assert.ok(b.left >= geometry.stage.left - 0.5 && b.right <= geometry.stage.right + 0.5 &&
+      b.top >= geometry.stage.top - 0.5 && b.bottom <= geometry.stage.bottom + 0.5, `${part} must fit inside the panel`);
+  }
+  assert.ok(geometry.caption.top >= geometry.orb.bottom - 0.5, 'the caption sits below the orb');
+  assert.ok(geometry.caption.bottom <= geometry.stage.bottom + 0.5 && geometry.caption.left >= geometry.stage.left - 0.5 &&
+    geometry.caption.right <= geometry.stage.right + 0.5, 'the caption stays inside the panel');
+  assert.ok(Math.abs(geometry.orb.left - geometry.stage.left - (geometry.stage.right - geometry.orb.right)) < 1,
+    'the orb is horizontally even');
+  console.log('MINI-GEOMETRY ' + JSON.stringify(geometry));
   await page.locator('.mini-stage[data-mini-state="idle"]').waitFor({ timeout: 15000 });
   assert.equal(await page.locator('.sidebar, [data-tab], .voice-text').count(), 0, 'mini route has no full-window chrome');
   await page.waitForTimeout(500);

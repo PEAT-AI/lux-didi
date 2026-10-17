@@ -446,16 +446,18 @@ html,body{height:100%;overflow:hidden}
 
 /* (8) The consent line sits inside the 760 px column with the same side padding, small and muted. */
 #connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}/* W15 mini orb: the floating panel's compact orb-only route. A rounded dark
-   300x300 stage with the orb as the hero (160-180px across, rings included)
-   centred above the shared voice-landing caption; the tool phrase reads at
-   >=4.5:1 on one line with an ellipsis. Scoped with html.mini so the
-   small-viewport rules for the full window never resize it. */
+   300x300 stage with the orb as the hero, centred above the shared
+   voice-landing caption, with the rings fully inside the panel (UI3A-R8: the
+   outer ring diameter is 240px, 0.80 of the 300px side, and the caption sits
+   below it inside the same panel); the tool phrase reads at >=4.5:1 on one line
+   with an ellipsis. Scoped with html.mini so the small-viewport rules for the
+   full window never resize it. */
 html.mini{background:transparent}
 html.mini body{background:transparent;overflow:hidden}
 html.mini .mini-stage{position:relative;display:block;width:300px;height:300px;min-height:300px;max-width:none;border:none;border-radius:28px;margin:0;background:radial-gradient(circle at 50% 40%,#242a33 0,#161b21 58%,#0d1014 100%);overflow:hidden}
-html.mini .mini-stage .presence-glow{top:112px;left:50%;transform:translate(-50%,-50%);width:288px;height:288px}
-html.mini .mini-stage canvas{position:absolute;left:50%;top:112px;width:630px;height:630px;transform:translate(-50%,-50%);display:block}
-html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);width:272px;max-width:272px;margin:0;padding:0 12px}
+html.mini .mini-stage .presence-glow{top:132px;left:50%;transform:translate(-50%,-50%);width:240px;height:240px}
+html.mini .mini-stage canvas{position:absolute;left:50%;top:132px;width:240px;height:240px;transform:translate(-50%,-50%);display:block}
+html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);width:276px;max-width:276px;margin:0;padding:0 12px;box-sizing:border-box}
 html.mini .mini-stage .orb-label{font-size:1.05rem;color:#f1ede2}
 html.mini .mini-stage .voice-honesty{font-size:.68rem;color:#b8c0c7}
 html.mini .mini-stage .voice-honesty span{color:#9aa2a8}

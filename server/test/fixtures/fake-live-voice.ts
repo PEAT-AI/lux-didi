@@ -11,9 +11,7 @@ export type FakeLiveVoiceEvent =
   | { type: 'resumptionHandle'; handle: string }
   | { type: 'goAway'; timeLeftMs: number }
   | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
-  | { type: 'modelText'; text: string; thought: boolean }
-  | { type: 'waitingForInput'; value: boolean }
-  | { type: 'toolCall'; calls: { id: string; name: string; args: Record<string, unknown> }[] };
+  | { type: 'modelText'; text: string; thought: boolean };
 export interface FakeLiveVoice {
   readonly port: LiveVoicePort;
   readonly requests: LiveVoiceRequest[];

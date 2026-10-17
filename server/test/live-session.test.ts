@@ -2936,11 +2936,67 @@ test('a model turn start enters THINKING and every live_state change is written 
   assert.deepEqual(states(), ['listening', 'thinking'], 'a generation start is the think time');
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   await settle();
-  fake.emit({ type: 'waitingForInput', value: true });
-  await settle();
   fake.emit({ type: 'turnComplete' });
   await settle();
   assert.deepEqual(states(), ['listening', 'thinking', 'speaking', 'listening'], 'each change is written once, when it happens');
   assert.equal(h.owner.get(session.liveSessionId).consumerState, 'attached', 'the owner is still attached and listening');
+  attachment.close();
+});
+
+test('an owner turn that ends arms the watchdog, and the next turn arms it again', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, language: 'en-IN' });
+  const session = h.owner.create({ idempotencyKey: 'watchdog-rearm', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const phases = () => receipts.map(record => String(record.phase));
+  const ownerTurnEnd = async (text: string) => {
+    fake.emit({ type: 'inputTranscription', text, finished: true });
+    fake.emit({ type: 'modelTurnStarted' });
+    for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  };
+  await ownerTurnEnd('what is on my plate');
+  assert.deepEqual(phases(), ['armed'], 'the ended owner turn owes a reply');
+  fake.emit({ type: 'turnComplete' });
+  await ownerTurnEnd('and then what');
+  assert.deepEqual(phases(), ['armed', 'armed'], 'the second turn is watched as well, so the watchdog is never blind');
+  attachment.close();
+});
+
+test('a delegated response that thinks for ten seconds is busy, not mute', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, language: 'en-IN' });
+  const session = h.owner.create({ idempotencyKey: 'delegated-busy', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const phases = () => receipts.map(record => String(record.phase));
+  const advance = async (ms: number) => { h.advance(ms); scheduler.runDue(); for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
+  // The fake port's event union does not declare the tool events the host already handles, so the shape is named here.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'call_1', name: 'research_lookup', args: { q: 'plate' } }] } as unknown as Parameters<typeof fake.emit>[0]);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => fake.toolResponses.length === 1);
+  fake.emit({ type: 'modelTurnStarted' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.deepEqual(phases(), ['armed'], 'the delegated response is watched from its start');
+  for (let second = 0; second < 10; second += 1) await advance(1_000);
+  assert.deepEqual(phases(), ['armed'], 'no nudge and no rebuild while the delegated response generates');
+  assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt');
+  fake.emit({ type: 'audio', pcm, rate: 24_000 });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  for (let second = 0; second < 9; second += 1) await advance(1_000);
+  assert.ok(phases().includes('nudged'), 'a reply that went silent again is watched again');
+  assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });

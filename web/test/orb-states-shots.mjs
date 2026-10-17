@@ -79,18 +79,33 @@ try {
 
   // The state lives on the mini stage (M3-R4: the stage is the orb, the pill is the chrome).
   const setState = (state) => page.locator('.mini-stage').evaluate((el, next) => el.setAttribute('data-mini-state', next), state);
-  const enlarge = (on) => page.locator('.mini-stage').evaluate((el, big) => {
-    el.style.width = big ? '300px' : '';
-    el.style.height = big ? '300px' : '';
-    el.style.flex = big ? '0 0 300px' : '';
-    el.style.borderRadius = big ? '150px' : '';
-    el.querySelector('canvas').style.cssText = big ? 'width:300px;height:300px' : '';
-  }, on);
+  // M3-R5: the orb is its own 300 px window, the orb and its rings only. The stylesheet
+  // below is that window; switching it on hides every piece of pill chrome (the wash and
+  // the five bars) and gives the stage the full 300 px, so a strip frame is about the orb.
+  // M3-R5: the orb is its own 300 px window. Content Security Policy forbids an injected
+  // <style>, so the window is built from element styles: the pill gives up its 64x26 box
+  // and its clipping, the stage becomes the 300 px surface and the canvas fills it. The
+  // 300 px frame is the canvas alone, so the pill's wash and its five bars cannot appear.
+  const enlarge = async (on) => {
+    await page.evaluate((big) => {
+      const pill = document.querySelector('.mini-pill');
+      const stage = document.querySelector('.mini-stage');
+      const canvas = stage.querySelector('canvas');
+      const level = document.querySelector('.mini-level');
+      pill.style.cssText = big ? 'width:300px;height:300px;min-height:300px;padding:0;gap:0;border:none;background:transparent;overflow:visible;justify-content:center' : '';
+      stage.style.cssText = big ? 'flex:0 0 300px;width:300px;height:300px;min-height:300px;border-radius:150px' : '';
+      canvas.style.cssText = big ? 'width:300px;height:300px' : '';
+      level.style.cssText = big ? 'display:none' : '';
+    }, on);
+    await page.waitForTimeout(180);   // the ResizeObserver has to redraw at the new size
+  };
   const capture = async (name, pill) => {
     const path = join(shots, `${name}.png`);
-    await page.locator(pill ? '.mini-pill' : '.mini-stage').screenshot({ path });
+    await page.locator(pill ? '.mini-pill' : '.mini-stage canvas').screenshot({ path });
     const size = await pngSize(path);
-    assert.ok(size.bytes > 200, `${path} is a real render (${size.bytes} bytes)`);
+    // A 300 px orb frame that is an empty box is the defect R5 reported, so the floor is
+    // a drawn orb rather than a blank window.
+    assert.ok(size.bytes > (pill ? 200 : 5000), `${path} is a real render (${size.bytes} bytes)`);
     assert.deepEqual({ width: size.width, height: size.height }, pill ? { width: 64, height: 26 } : { width: 300, height: 300 },
       `${path} is ${pill ? 'the pill' : 'the 300x300 orb'}`);
     written.push(`${name}=${size.width}x${size.height}/${size.bytes}B`);
@@ -102,10 +117,8 @@ try {
     await capture(`state-${state}-pill`, true);
     // The mini stage enlarged to 300x300: the orb and its rings, nothing else.
     await enlarge(true);
-    await page.waitForTimeout(160);
     await capture(`state-${state}-300`, false);
     await enlarge(false);
-    await page.waitForTimeout(80);
   }
 
   for (const [from, to] of TRANSITIONS) {
@@ -114,7 +127,6 @@ try {
     for (const enlarged of [false, true]) {
       if (enlarged) {
         await enlarge(true);
-        await page.waitForTimeout(160);
         await setState(from);
         await page.waitForTimeout(900);
       }
@@ -143,7 +155,6 @@ try {
       const settled = await (async () => {
         await page.waitForTimeout(450);
         const visual = await painted();
-        if (enlarged) await enlarge(false);
         return visual;
       })();
       if (HUES[from] !== HUES[to]) {

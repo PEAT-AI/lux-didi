@@ -111,12 +111,11 @@ export function miniModeButtonMarkup(native: boolean): string {
     : '';
 }
 
-/** M3: which visual a pill state shows. `connecting` and `error` are not visuals of
- *  their own: the pill is dim until there is something to say, and the CSS spinner
- *  still marks the connecting moment. */
+/** M3: which visual a state shows. M3-R5 gives the orb a visual for the connecting
+ *  moment; `error` stays on the dim cold orb. */
 export function visualState(state: MiniState): MiniVisualState {
   switch (state) {
-    case 'listening': case 'thinking': case 'tool': case 'speaking': return state;
+    case 'listening': case 'thinking': case 'tool': case 'speaking': case 'connecting': return state;
     // M3-R2: the owner's words for the two quiet states. Muted is hot-muted, because
     // the microphone is live and switched off; everything else is cold.
     case 'muted': return 'hot-muted';

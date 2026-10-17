@@ -575,11 +575,11 @@ struct RootView: View {
                 guard let self else { return }
                 updateLiveStatus(state: state)
                 model.publishBridgeLive()
-                hideMiniOrbWithoutLive(sessionExists: model.live != nil)
+                refreshMiniPill()
             }
             updateLiveStatus(state: conversation?.state ?? .idle)
             model.publishBridgeLive()
-            hideMiniOrbWithoutLive(sessionExists: conversation != nil)
+            refreshMiniPill()
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -845,15 +845,23 @@ struct RootView: View {
         case .hotMute: if model.live?.isMuted == false { model.handleBridgeCommand(.mute) }
         case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
         }
+        // M3-R5: muting takes the pill off the screen and unmuting brings it back.
+        refreshMiniPill()
     }
 
-    /// M3-R2: the last clause, kept true in one place. A session that goes away takes the
-    /// pill with it; a session that is still connecting keeps it, because that is the cold
-    /// state the same ruling asks for.
-    private func hideMiniOrbWithoutLive(sessionExists: Bool) {
-        guard miniPanel?.isVisible == true else { return }
-        guard !MiniOrbVisibility.pillBelongsToSession(sessionExists: sessionExists) else { return }
-        miniOrb.hideSurface()
+    /// M3-R5: the pill is the mic-live indicator, kept true in one place. It is on screen
+    /// only while the microphone is live and not muted; cold and hot-muted are the orb's
+    /// states, so the pill leaves the screen for them and comes back with the microphone.
+    private func refreshMiniPill() {
+        let shows = MiniOrbVisibility.pillBelongsToLive(capturing: model.live?.isCapturing == true,
+                                                        muted: model.live?.isMuted == true)
+        if shows {
+            guard coordinator.mode == .mini, !miniOrb.isVisible else { return }
+            miniOrb.showSurface()
+        } else {
+            guard miniOrb.isVisible else { return }
+            miniOrb.hideSurface()
+        }
     }
     private func hostMiniSurface() -> Bool { presentMiniPanel() }
     private func dismissMiniSurface() { miniOrb.hideSurface() }

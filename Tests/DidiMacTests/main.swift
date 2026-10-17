@@ -61,11 +61,12 @@ expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
-// M3-R2: the pill shows only while the microphone is live. A session that goes away
-// takes the pill with it; a session that is still connecting keeps it, and that is the
-// cold state the same ruling asks for.
-expect(MiniOrbVisibility.pillBelongsToSession(sessionExists: true), "a pill belongs to a session")
-expect(!MiniOrbVisibility.pillBelongsToSession(sessionExists: false), "no session, no pill")
+// M3-R5: two surfaces with two jobs. The pill is the mic-live indicator, so it is on
+// screen only while the microphone is live and switched on; cold and hot-muted belong to
+// the orb alone.
+expect(MiniOrbVisibility.pillBelongsToLive(capturing: true, muted: false), "a live microphone shows the pill")
+expect(!MiniOrbVisibility.pillBelongsToLive(capturing: true, muted: true), "hot-muted hides the pill")
+expect(!MiniOrbVisibility.pillBelongsToLive(capturing: false, muted: false), "no session, no pill")
 
 // MINI2: the single key. Right Command is Naya's key; Right Option belongs to
 // SuperWhisper and is never watched. A tap fires, a chord use and a long hold do

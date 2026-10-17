@@ -249,7 +249,9 @@ test('every pill state has one visual', () => {
   assert.equal(visualState('listening'), 'listening');
   assert.equal(visualState('muted'), 'hot-muted', 'M3-R2: muted is hot-muted, the microphone is live and off');
   assert.equal(visualState('tool'), 'tool');
-  for (const quiet of ['idle', 'error', 'connecting'] as MiniState[]) {
+  // M3-R5: the orb renders the connecting moment as its own visual; error stays cold.
+  assert.equal(visualState('connecting'), 'connecting');
+  for (const quiet of ['idle', 'error'] as MiniState[]) {
     assert.equal(visualState(quiet), 'cold', `${quiet} shows the cold state`);
   }
 });

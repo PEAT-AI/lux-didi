@@ -6,7 +6,7 @@ import {
   type MiniVisualState,
 } from '../src/orb-states.ts';
 
-const STATES: MiniVisualState[] = ['cold', 'listening', 'thinking', 'tool', 'speaking', 'hot-muted'];
+const STATES: MiniVisualState[] = ['cold', 'connecting', 'listening', 'thinking', 'tool', 'speaking', 'hot-muted'];
 const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
 
 /** One palette token's value, so the visuals are checked against the stylesheet itself. */
@@ -52,7 +52,7 @@ test('every state has one visual, and the colours are the mini palette tokens', 
   assert.ok(ORB_VISUALS.cold.grey > 0.9 && ORB_VISUALS['hot-muted'].grey === 1, 'both are grey');
   assert.equal(ORB_VISUALS.listening.followsMic, true, 'listening reacts to the owner');
   assert.equal(ORB_VISUALS.speaking.followsOutput, true, 'speaking reacts to Naya');
-  for (const state of ['cold', 'thinking', 'tool', 'hot-muted'] as MiniVisualState[]) {
+  for (const state of ['cold', 'connecting', 'thinking', 'tool', 'hot-muted'] as MiniVisualState[]) {
     assert.deepEqual([ORB_VISUALS[state].followsMic, ORB_VISUALS[state].followsOutput], [false, false],
       `${state} never reacts to a level`);
   }

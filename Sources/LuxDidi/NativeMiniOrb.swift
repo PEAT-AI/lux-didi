@@ -125,6 +125,13 @@ enum PresenceStep: String, Equatable {
     case live
 }
 
+/// M3-R2: the pill shows only while the microphone is live, so a floating pill always
+/// has a session behind it. The cold orb is then the connect step of a press or of a
+/// presentation that starts Live, never an idle pill with nothing running.
+enum MiniOrbVisibility {
+    static func pillBelongsToSession(sessionExists: Bool) -> Bool { sessionExists }
+}
+
 /// Borderless, floating, non-activating panel that hosts the compact orb route.
 /// A transparent overlay owns the whole surface: a drag moves the panel, a click
 /// that did not move asks the orb what the press means.

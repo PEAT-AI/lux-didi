@@ -510,7 +510,7 @@ struct RootView: View {
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
-        model.onMiniMode = { [weak self] in _ = self?.coordinator.presentMini() }
+        model.onMiniMode = { [weak self] in self?.showMiniOrb() }
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
@@ -570,12 +570,16 @@ struct RootView: View {
             }
             .sink { [weak self] level in self?.pushPillLevel(level) }
         liveObservation = model.$live.sink { [weak self] conversation in
-            self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
-                self?.updateLiveStatus(state: state)
-                self?.model.publishBridgeLive()
+            guard let self else { return }
+            liveStateObservation = conversation?.$state.sink { [weak self] state in
+                guard let self else { return }
+                updateLiveStatus(state: state)
+                model.publishBridgeLive()
+                hideMiniOrbWithoutLive(sessionExists: model.live != nil)
             }
-            self?.updateLiveStatus(state: conversation?.state ?? .idle)
-            self?.model.publishBridgeLive()
+            updateLiveStatus(state: conversation?.state ?? .idle)
+            model.publishBridgeLive()
+            hideMiniOrbWithoutLive(sessionExists: conversation != nil)
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -819,7 +823,12 @@ struct RootView: View {
     }
     /// The FULL window's mode button (#311), and the same path the web button
     /// takes through the bridge. Presentation only: Live keeps running.
-    @objc func showMiniOrb() { _ = coordinator.presentMini() }
+    @objc func showMiniOrb() {
+        // M3-R2: presenting the pill starts the session it belongs to, the same way the
+        // chord does, so the pill is never on screen with the microphone never live.
+        if model.live?.isCapturing != true { model.startLive() }
+        _ = coordinator.presentMini()
+    }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.
     private func orderOutFullWindow() {
@@ -838,6 +847,14 @@ struct RootView: View {
         }
     }
 
+    /// M3-R2: the last clause, kept true in one place. A session that goes away takes the
+    /// pill with it; a session that is still connecting keeps it, because that is the cold
+    /// state the same ruling asks for.
+    private func hideMiniOrbWithoutLive(sessionExists: Bool) {
+        guard miniPanel?.isVisible == true else { return }
+        guard !MiniOrbVisibility.pillBelongsToSession(sessionExists: sessionExists) else { return }
+        miniOrb.hideSurface()
+    }
     private func hostMiniSurface() -> Bool { presentMiniPanel() }
     private func dismissMiniSurface() { miniOrb.hideSurface() }
     private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }

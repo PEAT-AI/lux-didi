@@ -1287,12 +1287,6 @@ export class LiveSessionOwner {
           const view: ResearchProgressView = { researchId: progress.researchId, phase: progress.phase, sourcesDone: [...progress.sourcesDone], sourcesPending: [...progress.sourcesPending], elapsedMs: progress.elapsedMs };
           this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
         }
-        // RD: one text turn at the moment the lookup starts, so Naya can say she is checking instead of
-        // leaving the owner in silence. Source names only, never the question. Later beats stay on the
-        // journal channel: a second mid-call turn makes the model answer over its own pending tool call.
-        if (progress.phase === 'started' && !this.#settled(handle) && generation === handle.generation) {
-          try { handle.session.sendText({ text: `Research progress: nothing read yet; still checking ${progress.sourcesPending.join(', ')}. Say one short line about it while you wait, and no findings yet.` }); } catch { /* transport may have terminated */ }
-        }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
     });

@@ -54,6 +54,8 @@ export const RESEARCH = Object.freeze({
   progressEveryMs: 3_000,
   /** RD: a single source that outlives this is cut, so one slow connector never owns the whole turn. */
   sourceDeadlineMs: 4_000,
+  /** RD: a start call returns its answer, or its honest partial, inside this, so the owner hears a reply. */
+  answerWithinMs: 6_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -1058,16 +1060,21 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     for (const batch of batches) {
       const remainingMs = deadlineAt - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
-      const roundCut = new AbortController();
-      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), roundCut.signal]);
+      // RD: a start call answers inside answerWithinMs, so the owner hears a reply instead of waiting on
+      // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
+      const answerBy = call.action === 'start' && round === 1 ? Math.min(remainingMs, Math.max(1_000, started + RESEARCH.answerWithinMs - now())) : remainingMs;
+      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(answerBy)]);
       const latencies = new Map<CandidateKind, number>();
       const readStarted = new Set<CandidateKind>();
       const cutKinds = new Set<CandidateKind>();
-      // RD: the round hands the model an answer as soon as one source has something to say, and cuts
-      // the sources still reading instead of holding the turn open for the slowest connector.
+      // RD: the round hands the model an answer as soon as one source has something to say, and cuts the
+      // sources still reading instead of holding the turn open for the slowest connector. The winner is
+      // never abandoned: its own second hop (a mail body, a chat thread) still completes.
       let answered = false;
+      let winner: CandidateKind | undefined;
       let wake: () => void = () => {};
       const firstSufficient = new Promise<void>(resolve => { wake = resolve; });
+      const abandon = new Map<CandidateKind, AbortController>(batch.map(kind => [kind, new AbortController()]));
       const reads = batch.map(async kind => {
         const action = selection.actions.find(entry => entry.kind === kind);
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
@@ -1075,7 +1082,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         readStarted.add(kind);
         // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
         const cut = new AbortController();
-        const readSignal = AbortSignal.any([roundSignal, cut.signal]);
+        const readSignal = AbortSignal.any([roundSignal, cut.signal, abandon.get(kind)!.signal]);
         const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(RESEARCH.sourceDeadlineMs, deadlineAt - now())));
         // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
         // sent twice, so the connector is asked one question once.
@@ -1099,7 +1106,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         };
         const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(issued);
         // The first source with real text ends the wait: the rest are cut below, never awaited.
-        if (!answered && !cut.signal.aborted && run.questionClass !== 'cross_source' && results.some(result => result.ok && result.text.trim())) { answered = true; wake(); }
+        if (!answered && !cut.signal.aborted && results.some(result => result.ok && result.text.trim())) { answered = true; winner = kind; wake(); }
         // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
         // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
         const second: IntentSubCall[] = [];
@@ -1167,9 +1174,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       // RD: the round ends when the first sufficient source answers, and the readers still working are cut.
       const all = Promise.all(reads);
       await Promise.race([all, firstSufficient]);
-      if (answered) { for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind); roundCut.abort(); }
+      if (answered) {
+        // One settle turn of grace, so a source that answers in the same batch is credited rather than cut.
+        await Promise.race([all, new Promise<void>(resolve => setImmediate(resolve))]);
+        for (const kind of readStarted) if (kind !== winner && !latencies.has(kind)) { cutKinds.add(kind); abandon.get(kind)!.abort(); }
+        stopReason = 'answered';
+      }
       await all;
-      if (answered) stopReason = 'answered';
 
       for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) ? 'cut' : latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named

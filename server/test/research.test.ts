@@ -580,3 +580,29 @@ test('the turn returns as soon as the first sufficient source answers, without w
   assert.ok((reply['unchecked'] as string[]).includes('mail'), 'the source left behind is named, never silently dropped');
   assert.equal(h.logs[0]!.elapsedMs, 0, 'the answer was ready before the slow source could spend any deadline');
 });
+
+// Reviewer T1: the early-return winner keeps its own second hop and its source stays credited.
+test('the first sufficient source keeps its own second hop and the read stays answered', async () => {
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
+  const h = harness({ selector, execute: async subs => subs.map(call => call.name === 'gmail_list'
+    ? sub(call.name, 'a mail body', true, call.key)
+    : sub(call.name, 'the release is green [id ks1]', true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
+  assert.ok(h.executed.some(call => call.name === 'knowledge_read'), 'the winner opened the insight it found');
+  assert.equal(h.logs[0]!.sources.find(entry => entry.kind === 'knowledge')?.disposition, 'completed');
+  assert.equal(h.logs[0]!.status, 'answered', 'a read that answered is not a partial answer');
+  assert.ok((reply['findings'] as unknown[]).length > 0);
+});
+
+// Reviewer B5 replacement: the owner hears a reply inside six seconds because the call itself returns.
+test('a start call returns inside six seconds even when its first read never answers', async () => {
+  const clock = fakeClock();
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } });
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); }) });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  await settle();
+  clock.advance(RESEARCH.answerWithinMs); await settle();
+  const reply = await Promise.race([running, new Promise<null>(resolve => setImmediate(() => resolve(null)))]);
+  assert.notEqual(reply, null, 'the call came back instead of waiting for the read');
+  assert.ok(h.logs[0]!.elapsedMs <= RESEARCH.answerWithinMs + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
+});

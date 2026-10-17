@@ -47,6 +47,11 @@ Strict owner-only `live.json` in the existing `configDir` (the same directory as
 `profile.json` and the provider's credential slot file). It is loaded once at host startup; edits
 require an explicit restart. No dynamic watch and no automatic grant rebinding.
 
+A `live.json` that names no provider is the owner default: `provider: "openai"`, `modelId: "gpt-live-1"`,
+`voice: "marin"`. Naming `gemini` selects Gemini 3.8 Live with `models/...` ids and `gemini-primary`
+(OV1-R2). The owner changes the choice from the settings page or `config/cli.js select`; both write the
+same fields through `saveLiveSelection`, and the change applies when the service next starts.
+
 `provider` names the voice provider and selects both the adapter and the credential slot:
 `gemini` (Gemini 3.8 Live, `models/...` ids on `gemini-primary`) or `openai` (GPT-Live, `gpt-live-*`
 ids on `openai-primary`). `modelId` is validated by the selected provider's own pattern and

@@ -196,6 +196,7 @@ test('the research chat thread read uses the argument name the child declares, s
     }
     const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE });
     const text = 'projection' in result ? result.projection.text : '';
+    console.error('DBG ' + JSON.stringify({ args: call.args, state: result.state, text: text.slice(0, 120) }));
     return { key: call.key, name: call.name, ok: result.state === 'completed', text, originalCharacters: text.length, omittedCharacters: 0 };
   }));
   const deps: ResearchDeps = {

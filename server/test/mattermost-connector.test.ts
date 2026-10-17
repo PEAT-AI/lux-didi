@@ -205,7 +205,7 @@ test('the research chat thread read uses the argument name the child declares, s
   }));
   const deps: ResearchDeps = {
     now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-    selector: { select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
   };
   const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup' }, new AbortController().signal);
   assert.ok(dispatched.includes('mattermost_get_thread'), 'the thread follow-up runs');
@@ -250,7 +250,7 @@ test('a chat lookup settles unavailable at once when the mattermost connector is
       return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0 }));
     },
     emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-    selector: { select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
   };
   const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', lookups: [{ source: 'chat', query: 'standup' }] }, new AbortController().signal);
   assert.equal(reply['sources'] && (reply['sources'] as Record<string, string>)['chat'], 'unavailable');

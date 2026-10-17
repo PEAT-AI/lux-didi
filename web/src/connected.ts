@@ -247,9 +247,12 @@ export class ConnectedView {
     // read-only tool writes (target turn, item 6).
     const message = failed && !partial ? escape(runFailureWords(r.outcome, r.mayHaveBeenSent && wroteExternally(this.#toolNames(r)))) : '';
     const progress = partial ? `<p class="partial">${escape(partialWords(this.#unanswered(r)))}</p>${r.partialText ? answerMarkup(r.partialText) : ''}<button type="button" id="connected-retry" class="quiet">Try again</button>` : '';
+    // An in-flight split stream shows its provisional text before the answer is saved (release 3j), and a
+    // finished run that stopped early uses the partial family above (K4): both intents, one section.
+    const streaming = !failed && r.partialText ? `<p class="provisional"><strong>Provisional \u00b7 not a saved answer</strong><br>${escape(r.partialText)}</p>` : '';
     const cancel = r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : '';
-    const hidden = !message && !progress && !cancel;
-    return `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}"${hidden ? ' hidden' : ''}>${message}${progress}${cancel}${hidden ? '' : this.#usage(r)}</div>`;
+    const hidden = !message && !progress && !streaming && !cancel;
+    return `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}"${hidden ? ' hidden' : ''}>${message}${progress}${streaming}${cancel}${hidden ? '' : this.#usage(r)}</div>`;
   }
 
   /** The live chat_step events of this run only: a stale list never bleeds into the next turn. */

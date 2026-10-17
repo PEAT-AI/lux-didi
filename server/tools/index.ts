@@ -421,20 +421,20 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 journalRecord({ sessionId: context.runId, event: 'tool', tool: name, args: args as Record<string, unknown>, ms: Date.now() - startedAt,
                   outcome, resultChars: text.length, result: text });
               };
-              if (context.signal.aborted) return { status: 'unknown' };
+              if (context.signal.aborted) { journalTool('aborted', undefined); return { status: 'unknown' }; }
               // Independent dispatch guard, checked at call time and not at declaration time: a
               // connector whose current generation is not published and ready never reaches its
               // handler, even when a stale run snapshot still names one of its tools.
               const grant = registry.currentGrant(p.endpoint.id);
-              if (!grant || grant.generation !== p.generation || !grant.toolNames.includes(name)) return { status: 'failed' };
-              if (!declaration.validate(args)) return { status: 'failed' };
+              if (!grant || grant.generation !== p.generation || !grant.toolNames.includes(name)) { journalTool('denied', undefined); return { status: 'failed' }; }
+              if (!declaration.validate(args)) { journalTool('invalid_arguments', undefined); return { status: 'failed' }; }
               // Normalize at the boundary; the intent hash below stays over the model's original args.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);
-              if (declaration.normalize !== undefined && prepared === undefined) return { status: 'failed' };
+              if (declaration.normalize !== undefined && prepared === undefined) { journalTool('invalid_arguments', undefined); return { status: 'failed' }; }
               const callArgs = prepared === undefined ? args : prepared.args;
               const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
               if (context.signal.aborted) return { status: 'unknown' };
-              if (gate.state !== 'allowed') return { status: 'failed' };
+              if (gate.state !== 'allowed') { journalTool('denied', undefined); return { status: 'failed' }; }
               const call = store.transaction(tx => {
                 const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
                 if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');

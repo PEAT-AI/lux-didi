@@ -294,17 +294,18 @@ test('a chat tool loop journals the call at the tools layer', async t => {
         && !request.contents.some(content => content.parts.some(part => part.functionResponse !== undefined))) {
         return {
           ...result(request, 'complete', ''),
-          providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'synthetic question', limit: 3, include_sensitive: false }, id: randomUUID() } }] },
+          providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'synthetic question', limit: 3 }, id: randomUUID() } }] },
         };
       }
       return result(request, 'complete', 'Synthetic answer from evidence');
     },
   };
-  const f = openFixture(dir, toolModel, {}, undefined, toolsMigrations);
+  const f = openFixture(dir, toolModel, { now: Date.now }, undefined, toolsMigrations);
   const endpoint = { id: 'journal-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
   const sdk = new Server({ name: 'journal-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
-  const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
+  // The endpoint's own declaration, which the connector validates the call against.
+  const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false };
   sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: schema }] }) as never);
   sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: 'Synthetic knowledge result' }], structuredContent: { synthetic: true } }) as never);
   await sdk.connect(transport);
@@ -342,5 +343,6 @@ test('a chat tool loop journals the call at the tools layer', async t => {
   assert.equal(calls[0]!['tool'], 'search_knowledge');
   assert.equal(typeof calls[0]!['ms'], 'number');
   assert.equal(typeof calls[0]!['outcome'], 'string');
-  assert.deepEqual(calls[0]!['args'], { query: 'synthetic question', limit: 3, include_sensitive: false });
+  assert.deepEqual(calls[0]!['args'], { query: 'synthetic question', limit: 3 });
+  assert.equal(calls[0]!['outcome'], 'completed', 'the call was authorized and executed');
 });

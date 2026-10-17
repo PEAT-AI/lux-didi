@@ -2996,7 +2996,7 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.ok(phases().includes('nudged'), 'a reply that went silent again is watched again');
+  assert.deepEqual(phases(), ['armed', 'nudged'], 'a reply that went silent again is watched again');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });

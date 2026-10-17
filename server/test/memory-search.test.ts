@@ -53,7 +53,7 @@ test('ranking leads with the better match, then the newer record', () => {
     { kind: 'summary', text: 'a summary about the dentist appointment', at: 2_000 },
   ];
   const ranked = rankMemory(records, 'dentist release');
-  assert.deepEqual(ranked.map(record => record.at), [1_000, 2_000, 3_000], 'two matches lead, then one match by recency');
+  assert.deepEqual(ranked.map(record => record.at), [1_000, 3_000, 2_000], 'two matches lead, then one match each, newer first');
   assert.deepEqual(rankMemory(records, 'release', 1).map(record => record.at), [3_000], 'one match, newest first');
 });
 
@@ -73,7 +73,7 @@ test('a lookup reads ordinary conversation entries and never a private one', () 
     const read = h.store.transaction(tx => memoryLookup(tx as unknown as Transaction, 'dentist'));
     assert.equal(read.lines.length, 1, 'only the ordinary entry leaves the port');
     assert.match(read.lines[0]!, /dentist on Friday/);
-    assert.match(read.lines[0]!, /^2025-10-09 entry: /, 'a line carries the day and what it came from');
+    assert.match(read.lines[0]!, /^2026-10-01 entry: /, 'a line carries the day and what it came from');
     assert.equal(read.total, 1);
   } finally { cleanup(h); }
 });

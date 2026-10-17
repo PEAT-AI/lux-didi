@@ -686,5 +686,5 @@ test('K6: a start with no lookups keeps the selector path and its reply shape', 
   assert.ok(selections.length >= 1, 'the selector still chooses the sources');
   assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
   assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
-  assert.deepEqual((reply['findings'] as { source: string }[]).map(finding => finding.source), ['knowledge'], 'the selector-chosen read still answers');
+  assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
 });

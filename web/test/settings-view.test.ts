@@ -47,7 +47,7 @@ test('a failed summary shows Unavailable for the Live rows and leaves the connec
 test('a summary persona still shows when the status route fails', () => {
   const html = settingsMarkup({ statusUnavailable: true, summary, connections });
   assert.match(html, /Persona name<\/dt><dd>Naya/);
-  assert.match(html, /Conversation model<\/dt><dd><span class="settings-unavailable">Unavailable/);
+  assert.match(html, /Text chat and research model<\/dt><dd><span class="settings-unavailable">Unavailable/);
 });
 
 test('maps each connector state to its sentence and one-line next step', () => {

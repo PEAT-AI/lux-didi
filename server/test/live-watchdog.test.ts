@@ -38,7 +38,7 @@ class DeadlineClock {
 }
 
 interface Live {
-  owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[];
+  owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; liveSessionId: string;
   emit(event: FakeLiveVoiceEvent): Promise<void>; sendAudio(): void; advance(ms: number): Promise<void>;
 }
 
@@ -58,7 +58,7 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
-    if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge') receipts.push(record);
+    if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
@@ -66,7 +66,7 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
   await attachment.ready;
   return {
-    owner, fake, receipts,
+    owner, fake, receipts, liveSessionId: session.liveSessionId,
     emit: async event => { fake.emit(event); await flush(); },
     sendAudio: () => attachment.sendAudio({ pcm }),
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await flush(); },
@@ -75,7 +75,10 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
 
 const phases = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_watchdog').map(record => record.phase);
 const ownerTurnEnd = (live: Live): Promise<void> => live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
-const terminalCode = (live: Live): string | undefined => (live.owner.current()?.terminal?.outcome as { code?: string } | undefined)?.code;
+const terminalCode = (live: Live): string | undefined => {
+  const terminal = live.owner.get(live.liveSessionId).terminal;
+  return terminal !== null && 'code' in terminal ? terminal.code : undefined;
+};
 
 /** Drive the injected clock in bounded steps until the condition holds, never sleeping. */
 async function until(live: Live, condition: () => boolean, budgetMs = 60_000): Promise<void> {
@@ -92,9 +95,9 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_RECOVERY_MS + 2_000);
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered']);
   assert.equal(live.fake.sessionsOpened, 2, 'the recovery opened one fresh session');
-  assert.ok(live.fake.requests.at(-1)!.history.length > 0, 'the fresh session carries the journal seed');
-  assert.ok((live.owner.current()?.entries ?? []).some(entry => entry.kind === 'continuity' && entry.reason === 'model_mute'),
-    'the recovery carries reason model_mute');
+  assert.ok((live.fake.requests.at(-1)!.history ?? []).length > 0, 'the fresh session carries the journal seed');
+  assert.ok(live.receipts.some(record => record.event === 'live_recovery' && record.path === 'fresh_seeded' && record.reason === 'model_mute'),
+    'the recovery is the fresh seeded path with reason model_mute');
 });
 
 test('model output after the nudge disarms the watchdog', async t => {
@@ -120,7 +123,7 @@ test('a second mute inside the window settles the call honestly instead of loopi
   await ownerTurnEnd(live);
   await until(live, () => phases(live).includes('settled'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered', 'armed', 'nudged', 'settled']);
-  assert.equal(live.owner.current()?.terminal?.outcome.state, 'failed');
+  assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed', 'a second mute inside the window settles');
   assert.equal(terminalCode(live), 'model_unresponsive');
   assert.equal(live.fake.sessionsOpened, 2, 'a second mute inside the window opens no third session');
 });

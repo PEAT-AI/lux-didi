@@ -6,7 +6,7 @@ export type { Credentials, DataClass } from '../model/types.js';
 
 // The checked provider union: the one place a provider name is written. A new provider joins this array
 // with its adapter and factory case, never as a bare literal at a call site.
-export const liveVoiceProviders = ['gemini'] as const;
+export const liveVoiceProviders = ['gemini', 'openai'] as const;
 export type LiveVoiceProvider = (typeof liveVoiceProviders)[number];
 export function isLiveVoiceProvider(value: unknown): value is LiveVoiceProvider {
   return typeof value === 'string' && (liveVoiceProviders as readonly string[]).includes(value);
@@ -43,23 +43,13 @@ export interface LiveVoiceLimits {
   handshakeMs: number; idleMs: number; sessionMs: number; closeMs: number;
 }
 export type LiveSocketFactory = (destination: string, options: ClientOptions) => WebSocket;
-export interface GeminiLiveVoiceOptions {
+export interface LiveVoiceAdapterOptions {
   modelId: string; voice: string; keyReference: string; credentials: Credentials;
   route: LiveVoiceRoute; limits?: Partial<LiveVoiceLimits>; socketFactory?: LiveSocketFactory;
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
 export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 300_000, sessionMs: 3_600_000, closeMs: 1000 });
-// Google Live API automatic activity detection defaults for setup.realtimeInputConfig.automaticActivityDetection.
-// prefixPaddingMs keeps the first syllables, silenceDurationMs tolerates a mid-sentence thinking pause,
-// and the LOW end sensitivity stops a brief pause from ending the turn.
-// https://ai.google.dev/api/live (AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity)
-// prefixPaddingMs 700 (was 300): release 3a echo-analysis (Argon round 2, lux 89995) measured a brief
-// >= 300 ms non-lexical event (residual echo on loud prosody) cutting Naya off, so absorb a longer pre-roll.
-export const liveVoiceActivityDefaults = Object.freeze({
-  prefixPaddingMs: 700, silenceDurationMs: 800,
-  startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
-} as const);
 export interface LiveVoiceRequest {
   resumptionHandle?: string;
   opening?: 'user_first' | 'model_first';
@@ -80,7 +70,8 @@ export type LiveVoiceErrorCode =
   | 'closed' | 'cancelled' | 'deadline' | 'invalid_settings' | 'invalid_request' | 'route_denied'
   | 'credential_unavailable' | 'not_ready' | 'invalid_audio' | 'transport_error' | 'provider_error'
   | 'remote_closed' | 'provider_setup_rejected' | 'protocol_error' | 'unsupported_tool' | 'incoming_limit' | 'outgoing_limit'
-  | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
+  | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away'
+  | 'unsupported_provider';
 // Metadata of one upstream (host to provider) write drop, never audio, text or credentials.
 // closeCode is filled from the socket close event after the drop is detected, so it may be null until then.
 export interface LiveVoiceUpstreamDrop {
@@ -108,7 +99,7 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'modelTurnStarted' }
   | { type: 'toolCall'; calls: LiveToolCall[] }
   | { type: 'toolCallCancellation'; ids: string[] }
-  | { type: 'audio'; pcm: Uint8Array; mimeType: 'audio/pcm;rate=24000' }
+  | { type: 'audio'; pcm: Uint8Array; rate: number }
   | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
   | { type: 'modelText'; text: string; thought: boolean }
   | { type: 'generationComplete' | 'turnComplete' | 'interrupted' }

@@ -8,14 +8,15 @@ import {
   LiveError, type LiveAttachment, type LiveContext, type LiveFragmentPage,
   type LivePublicMarker, type LiveSessionSnapshot,
 } from '../live/index.js';
-import type { DataClass } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
+import { nativeActions } from '../tools/open.js';
 
 export interface LiveStatusPayload {
   service: 'live';
   status: 'unconfigured' | 'disabled' | 'error' | 'configured';
   code?: string;
-  provider?: 'gemini';
+  provider?: LiveVoiceProvider;
   model?: string;
   voice?: string;
   dataClasses?: string[];
@@ -23,8 +24,14 @@ export interface LiveStatusPayload {
   limits?: { sessionMs: number; idleMs: number };
 }
 
+/** The owner's persisted Live selection; it applies at the next start and never to a call in flight. */
+export interface LiveSelectionResult {
+  provider: LiveVoiceProvider; modelId: string; voice: string; appliesAt: 'next_start';
+}
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */
 export interface LiveService {
+  /** Persist a provider and voice choice into live.json. Absent when the service cannot write configuration. */
+  saveSelection?(input: { provider: unknown; voice?: unknown }): LiveSelectionResult;
   current(cursor?: number): import('../live/types.js').LivePageProjection;
   lookupAuthority(runId: string): import('../tools/types.js').LiveAuthority | null;
   readonly enabled: boolean;
@@ -49,6 +56,11 @@ const statusText: Record<number, string> = { 400: 'Bad Request', 401: 'Unauthori
 /** Map an owner or guard failure to a closed HTTP error. Never leaks prompt/key bytes. */
 export function liveServiceError(error: unknown): ServiceError {
   if (error instanceof ServiceError) return error;
+  // TRAIN3J-R3: a selected provider with no key slot fails loud at create time, named and never as Gemini.
+  const liveUnavailable = error as { name?: unknown; code?: unknown } | null;
+  if (liveUnavailable?.name === 'LiveUnavailable' && liveUnavailable.code === 'key_missing') {
+    return new ServiceError('key_missing', 'The selected provider has no key', 503);
+  }
   if (error instanceof ConnectorCompositionError) return new ServiceError('CONNECTOR_COMPOSITION_ERROR', 'Connector composition failed', 503);
   if (!(error instanceof LiveError)) return new ServiceError('INTERNAL_ERROR', 'Internal service error', 500);
   switch (error.code) {
@@ -83,6 +95,11 @@ function control(raw: string): (typeof controls)[number] | null {
   if (keys.length !== 1 || keys[0] !== 'type') return null;
   const type = (parsed as { type?: unknown }).type;
   return typeof type === 'string' && (controls as readonly string[]).includes(type) ? type as (typeof controls)[number] : null;
+}
+
+/** Parse one JSON frame without judging it; the native-action bus owns its own closed shape. */
+function parseFrame(raw: string): unknown {
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 export interface LiveUpgradeOptions {
@@ -158,8 +175,14 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
   }
 
   async function drive(ws: WebSocket, attachment: LiveAttachment): Promise<void> {
-    ws.on('error', () => { attachment.detach(); });
-    ws.on('close', () => { attachment.detach(); });
+    // One native-action sender per Live session; this socket is also the only path audio already uses.
+    const forgetActions = nativeActions.bind(attachment.liveSessionId, frame => {
+      if (ws.readyState !== ws.OPEN) return false;
+      ws.send(JSON.stringify(frame));
+      return true;
+    });
+    ws.on('error', () => { forgetActions(); attachment.detach(); });
+    ws.on('close', () => { forgetActions(); attachment.detach(); });
     ws.on('message', (data: RawData, isBinary: boolean) => {
       if (ws.readyState !== ws.OPEN) return;
       if (isBinary) {
@@ -169,7 +192,9 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
         try { attachment.sendAudio({ pcm }); } catch { ws.close(1002, 'not_ready'); }
         return;
       }
-      const type = control(data.toString());
+      const raw = data.toString();
+      if (raw.includes('"native_action_result"') && nativeActions.settle(attachment.liveSessionId, parseFrame(raw))) return;
+      const type = control(raw);
       if (type === null) { ws.close(1002, 'invalid_control'); return; }
       if (type === 'endAudioStream') { try { attachment.endAudioStream(); } catch { ws.close(1002, 'invalid_command'); } return; }
       attachment.close();

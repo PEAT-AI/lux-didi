@@ -110,7 +110,7 @@ test('gmail list reads the helper list header array and decodes entities in the 
       { name: 'Date', value: 'Mon, 1 Jan 2024 00:00:00 +0000' },
     ],
   }] });
-  assert.match(shaped.text, /- Q&A \| from: Dana <dana@example\.invalid> \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> & set/);
+  assert.match(shaped.text, /- Q&A \| from: Dana \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> & set/);
 });
 
 test('gmail list omits a field the source lacks instead of printing the word unknown', () => {
@@ -145,7 +145,7 @@ test('calendar events drop dial-in boilerplate', () => {
 test('a long gmail list excerpt trims to 300 characters and a single read to 1500', () => {
   const long = 'Sentence. '.repeat(200);
   const list = shapeGmailList({ messages: [{ headers: { Subject: 'S' }, snippet: long }] });
-  const snippet = list.text.split(' | ')[3]!.split('\n')[0]!;
+  const snippet = list.text.split(' | ').at(-1)!.replace(/ \[id [^\]]*\]$/, '').split('\n')[0]!;
   assert.equal(snippet.length <= GMAIL_LIST_EXCERPT_CHARS, true, 'a list excerpt stays within the excerpt bound');
   assert.equal(list.text.includes(long), false, 'an unbounded snippet never reaches the model');
   const read = shapeGmailRead({ headers: HEADERS, body: long });

@@ -61,11 +61,104 @@ expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
+// MINI2: the single key. Right Command is Naya's key; Right Option belongs to
+// SuperWhisper and is never watched. A tap fires, a chord use and a long hold do
+// not, and a repeated press is still one press.
+expect(RightCommandTapDetector.keyCode == 54 && RightCommandTapDetector.holdLimit == 0.3, "the single key is Right Command with a 300 ms hold limit")
+var singleKeyDetector = RightCommandTapDetector()
+expect(singleKeyDetector.handle(.rightCommandDown, at: 10) == false, "a Right Command press alone is not a tap")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 10.12), "a short Right Command tap fires")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 11) == false, "a release without a press never fires")
+_ = singleKeyDetector.handle(.rightCommandDown, at: 20)
+_ = singleKeyDetector.handle(.otherKeyDown, at: 20.05)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 20.1) == false, "Right Command in a chord (Cmd+C) never fires")
+_ = singleKeyDetector.handle(.rightCommandDown, at: 30)
+_ = singleKeyDetector.handle(.otherModifiers(held: true), at: 30.02)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 30.1) == false, "a second modifier in the press makes it a chord")
+
+// B2 regression: a modifier already held BEFORE Right Command is a chord too, so
+// Shift (or the owner's Right Option) plus a Right Command tap never fires.
+_ = singleKeyDetector.handle(.otherModifiers(held: true), at: 100)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 100.1)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 100.2) == false, "a modifier held before the press makes it a chord")
+_ = singleKeyDetector.handle(.otherModifiers(held: false), at: 101)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 102)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 102.05), "a plain tap after the modifier is released still fires")
+
+// B3 regression: with Left Command held the release is a release, so the next
+// standalone tap is not swallowed.
+_ = singleKeyDetector.handle(.otherModifiers(held: true), at: 110)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 110.1)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 110.2) == false, "Right Command released under Left Command never fires")
+_ = singleKeyDetector.handle(.otherModifiers(held: false), at: 110.5)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 111)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 111.05), "the release under Left Command does not swallow the next tap")
+
+// The decode itself: the device bits tell the two Command keys apart, which the
+// shared .maskCommand bit cannot.
+expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x10), "the Right Command device bit is a press")
+expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x100008) == false, "Left Command plus the generic command bit is not a Right Command press")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x20000), "Shift is another modifier")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100010) == false, "Right Command alone is not another modifier")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100008), "Left Command is another modifier")
+_ = singleKeyDetector.handle(.rightCommandDown, at: 40)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 40.31) == false, "a hold longer than 300 ms is not a tap")
+_ = singleKeyDetector.handle(.rightCommandDown, at: 50)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 50.1)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 50.2), "a repeated press is debounced into one tap")
+_ = singleKeyDetector.handle(.rightCommandDown, at: 60)
+_ = singleKeyDetector.handle(.otherKeyDown, at: 60.01)
+_ = singleKeyDetector.handle(.rightCommandUp, at: 60.02)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 61)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 61.05), "a tap after a chord fires again")
+_ = singleKeyDetector.handle(.otherKeyDown, at: 62)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 63) == false, "a chord before any press never fires")
+
+// B7 regression: the positive branch, asked once on the first interactive launch
+// and never again, proven through the prompt seam with no modal and no TCC.
+let positiveSuite = "didi.single-key.positive.\(UUID().uuidString)"
+let positiveDefaults = UserDefaults(suiteName: positiveSuite)!
+var prompts = 0
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: positiveDefaults, granted: false, prompt: { prompts += 1 })
+expect(prompts == 1 && positiveDefaults.bool(forKey: SingleKeyTrigger.askedKey), "the first interactive launch asks for the grant once")
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: positiveDefaults, granted: false, prompt: { prompts += 1 })
+expect(prompts == 1, "the grant is asked once, ever")
+let grantedSuite = "didi.single-key.granted.\(UUID().uuidString)"
+let grantedDefaults = UserDefaults(suiteName: grantedSuite)!
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: grantedDefaults, granted: true, prompt: { prompts += 1 })
+expect(prompts == 1, "a present grant is never asked for")
+positiveDefaults.removePersistentDomain(forName: positiveSuite)
+grantedDefaults.removePersistentDomain(forName: grantedSuite)
+
+// B6 regression: a tap the system disabled is re-armed, everything else is not.
+expect(RightCommandTapDetector.shouldReArm(.tapDisabledByTimeout), "a timed out tap is re-armed")
+expect(RightCommandTapDetector.shouldReArm(.tapDisabledByUserInput), "a user-disabled tap is re-armed")
+expect(RightCommandTapDetector.shouldReArm(.keyDown) == false && RightCommandTapDetector.shouldReArm(.flagsChanged) == false, "a key event is never a re-arm")
+
+// The grant is asked for once, on the first interactive launch only, so no
+// install, proof or smoke launch can open a permission prompt.
+let grantSuite = "didi.single-key.test.\(UUID().uuidString)"
+let grantDefaults = UserDefaults(suiteName: grantSuite)!
+for kind in [LaunchKind.installedProof, .selfCheck, .uiProof, .verification] {
+    SingleKeyTrigger.requestGrantIfNeeded(for: kind, defaults: grantDefaults)
+    expect(grantDefaults.bool(forKey: SingleKeyTrigger.askedKey) == false, "a \(kind) launch never asks for the single-key grant")
+}
+expect(SingleKeyTrigger.explanation.contains("\n") == false && SingleKeyTrigger.explanation.count < 300, "the grant explanation is one line")
+grantDefaults.removePersistentDomain(forName: grantSuite)
+
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
-expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 570, y: 300, width: 300, height: 300), "default mini orb frame is centered 300x300")
+// MINI2: the pill is 64x26, sits top-center just below the menu bar (the screens
+// are visible frames, so on a notched display the menu bar carries the notch).
+expect(MiniOrbFrameRestore.size == CGSize(width: 64, height: 26), "the pill is 64x26 pt")
+expect(MiniOrbPanelPolicy.cornerRadius == 13 && MiniOrbPanelPolicy.cornerRadius == MiniOrbFrameRestore.size.height / 2, "the capsule radius is half the pill height")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 688, y: 868, width: 64, height: 26), "default pill frame is top-center just below the menu bar")
+let notched = CGRect(x: 0, y: 0, width: 1728, height: 1083)
+let notchedPill = MiniOrbFrameRestore.resolve(nil, screens: [notched])
+expect(notchedPill == CGRect(x: 832, y: 1051, width: 64, height: 26), "default pill frame is top-center on a notched display")
+expect(notchedPill.maxY == notched.maxY - MiniOrbFrameRestore.topMargin, "the pill keeps one menu-bar margin, never inside the notch")
 let miniSaved = CGRect(x: 100, y: 120, width: 300, height: 300)
-expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == miniSaved, "mini orb frame is remembered")
-expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen]) != CGRect(x: 5000, y: 5000, width: 300, height: 300), "an off-screen mini frame is replaced")
+expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == CGRect(x: 100, y: 120, width: 64, height: 26), "a remembered pill position is kept at the pill size")
+expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen]) != CGRect(x: 5000, y: 5000, width: 300, height: 300), "an off-screen pill frame is replaced")
 // UI3A-R1: the activation policy per launch kind. The interactive, login-item and
 // install-relaunch kinds are regular apps (Dock tile, Cmd-Tab); the four
 // non-activating proof kinds stay accessory so a check never gains either.
@@ -151,9 +244,9 @@ expect(behavior.contains(.stationary) == false, "the mini panel moves with its S
 // UI3A: a remembered frame is clamped into a visible screen, on restore and after a
 // display disappears, never discarded and never resized.
 let offScreen = MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen])
-expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 300, height: 300), "an off-screen mini frame is clamped into a visible screen at its size")
+expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 64, height: 26), "an off-screen pill frame is clamped into a visible screen at the pill size")
 let halfOff = MiniOrbFrameRestore.resolve(CGRect(x: -120, y: 820, width: 300, height: 300), screens: [miniScreen])
-expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 300, height: 300), "a partly off-screen mini frame is clamped, not resized")
+expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 64, height: 26), "a partly off-screen pill frame is clamped, not resized")
 let goneDisplay = MiniOrbFrameRestore.resolve(CGRect(x: 1600, y: 100, width: 300, height: 300), screens: [miniScreen])
 expect(miniScreen.contains(goneDisplay), "a frame left on a removed display is clamped into the remaining screen")
 
@@ -224,12 +317,18 @@ expect(NativeConnectedSend.label == "Send to Naya", "connected action is separat
 expect(NativeConnectedSend.consentInstruction == "Enable connected chat in the conversation view.", "missing consent directs owner to shared conversation")
 
 var registeredKeys: [UInt32] = []
-let shortcutRegistration = LiveShortcutRegistration { _, id in
+var registeredModifiers: [Int] = []
+let shortcutRegistration = LiveShortcutRegistration { _, id, modifiers in
     registeredKeys.append(id)
+    registeredModifiers.append(modifiers)
     return id == 1 ? -9878 : 0
 }
-expect(registeredKeys == [1, 2, 3], "shortcut registrations are separate even when Start conflicts")
-expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered" && shortcutRegistration.windowStatus == "registered", "conflict does not hide independent mute registration")
+expect(registeredKeys == [1, 2, 3, 4], "shortcut registrations are separate even when Start conflicts")
+expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered" && shortcutRegistration.windowStatus == "registered" && shortcutRegistration.pillStatus == "registered", "conflict does not hide independent mute or pill registration")
+// MINI2: the pill is Control-Option-Space, a different mask from the window's
+// Control-Option-Shift-Space, so both keys can be live at once.
+expect(registeredModifiers[3] == ShortcutModifiers.pill && registeredModifiers[2] == ShortcutModifiers.window, "the pill chord carries its own modifier mask")
+expect(ShortcutModifiers.pill != ShortcutModifiers.window, "the pill chord is not the window chord")
 var shown = 0, started = 0, muted = 0, stopped = 0
 var active = false
 let actions = NativeSummonActions(show: { shown += 1 }, isCapturing: { active }, start: {

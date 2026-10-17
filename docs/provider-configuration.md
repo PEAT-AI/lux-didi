@@ -1,4 +1,4 @@
-# Explicit portable Gemini configuration
+# Explicit portable provider configuration
 
 The host passes an explicit trusted `configDir` and the current Store `ownerId`.
 Nothing reads HOME, environment credentials, HTTP fields, source secrets, user
@@ -150,13 +150,51 @@ node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-i
 bash scripts/check-provider-config.sh
 ```
 
-The legacy `init` CLI accepts those four required flags once and optional explicit
-`--binding-input` once (see bound provisioning below). No positional key, key
-argument, provider endpoint flag or variable-selection flag is accepted. It prints a constant success
-message or a finite safe error code, not input paths/source lines. The source is
-read bounded (64 KiB) inside the process; only literal `GEMINI_API_KEY` is
-extracted, never loaded/exported to the environment. No shell, child credential
+The legacy `init` CLI accepts those four required flags once, optional explicit
+`--binding-input` once (see bound provisioning below), and optional `--provider`
+once. No positional key, key argument, endpoint flag or variable-selection flag is
+accepted. `--provider` names the credential slot to seed and defaults to `gemini`:
+`gemini` reads literal `GEMINI_API_KEY` and writes `gemini-primary.json` plus the
+text `profile.json` exactly as before, while `openai` reads literal
+`OPENAI_API_KEY`, writes only `openai-primary.json`, and publishes no text profile
+because the conversation model stays Gemini. The source is read bounded (64 KiB)
+inside the process and only that slot's literal variable is extracted, never
+loaded/exported to the environment. It prints a constant success message or a
+finite safe error code, not input paths/source lines. No shell, child credential
 CLI, eval, source, command substitution, interpolation or execution is used.
+
+`init --provider openai --source-env <file>` also works against an **existing** config dir: it adds only
+the OpenAI slot (a new private file plus its reference) and never reads, rewrites or rotates the Gemini
+slot or `profile.json`. The Gemini path still requires a brand-new directory because it publishes the
+text profile. `--provider` defaults to `openai` (owner order, OV1-R2).
+
+`select` persists the same Live selection the settings page writes, through one shared function:
+
+```text
+node <compiled-root>/config/cli.js select --config-dir <existing-private-dir> --provider openai|gemini [--voice <id>]
+```
+
+It validates the provider against the slot table, refuses a provider whose key slot is empty
+(`file_missing`) instead of pointing at another provider's key, sets the model id from that provider's
+dialect, and leaves `limits`, `dataClasses` and the persona preferences untouched. The running service
+keeps the profile it loaded, so the choice applies when the service next starts and never to a call in
+flight.
+
+### Provider slots
+
+One slot table (`providerSlots` in `server/config/index.ts`) holds each provider's
+key reference, private file name, endpoint, api-version, source variable and
+model-id pattern:
+
+| provider | reference | private file | endpoint | api version | source variable | model ids |
+| --- | --- | --- | --- | --- | --- | --- |
+| `gemini` | `gemini-primary` | `gemini-primary.json` | `https://generativelanguage.googleapis.com` | `v1beta` | `GEMINI_API_KEY` | `models/...` |
+| `openai` | `openai-primary` | `openai-primary.json` | `https://api.openai.com/v1` | `v1` | `OPENAI_API_KEY` | `gpt-live-*` |
+
+A resolver reads only the slot it is asked for: an unknown reference fails
+`invalid_reference`, and a reference whose file is absent fails `file_missing`.
+There is no fallback from one provider's slot to another's key, and a binding
+receipt may never mix two providers' endpoint, api-version or reference.
 
 Supported source syntax: UTF-8, LF or CRLF, blank lines, full-line `#` comments,
 and one `NAME=literal` assignment per line (optional horizontal space around the

@@ -4,8 +4,9 @@ import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
+import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
+import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
@@ -44,6 +45,15 @@ const SEED_CHAR_LIMIT = 8_000;
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
 const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+// 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
+// that ended, or a model turn left open, owes a reply, and only a deadline on that debt recovers it. One nudge
+// at RESPONSE_WATCHDOG_NUDGE_MS, then the fresh-seeded recovery at RESPONSE_WATCHDOG_RECOVERY_MS after it.
+export const RESPONSE_WATCHDOG_NUDGE_MS = 8_000;
+export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
+/** At most one watchdog recovery per window; a second mute inside it ends the call honestly instead of looping. */
+export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
+/** 3j: idle is conversational silence, so only an owner speech signal or model output resets it, never a mic frame. */
+const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waitingForInput', 'modelTurnStarted', 'audio', 'modelText', 'outputTranscription', 'turnComplete', 'toolCall']);
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
@@ -68,6 +78,9 @@ interface ActiveSession {
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
   recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
   nudgeTimer?: ReturnType<JobTimer> | undefined; nudgeTurn: number; nudgeFiredTurn: number;
+  /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
+  watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
+  watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
@@ -715,8 +728,9 @@ export class LiveSessionOwner {
     const history = this.#jobHistory(liveSessionId, inputClass);
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note');
-    const declarations = modelFacing.length ? declarationsFor(modelFacing).declarations : [];
+    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || OPEN_TOOL_NAMES.has(tool.name));
+    // The port carries the original JSON schemas; each adapter builds its own provider dialect.
+    const declarations = modelFacing.map(tool => ({ name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters) }));
     const system = acceptedPrompt.system;
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
@@ -812,6 +826,8 @@ export class LiveSessionOwner {
    */
   #armDeadAir(handle: ActiveSession): void {
     if (this.#settled(handle)) return;
+    // 3j: the tool result is conversational activity, so the idle clock restarts here rather than on mic frames.
+    this.#armIdle(handle, this.#profile.limits.idleMs);
     this.#cancelNudge(handle);
     handle.nudgeTurn += 1;
     const turn = handle.nudgeTurn, generation = handle.generation;
@@ -823,6 +839,77 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
     }, DEAD_AIR_NUDGE_MS);
     handle.nudgeTimer.unref?.();
+  }
+
+  /**
+   * 3j: the response watchdog. A turn that owes a reply and delivers nothing is a stall even with a healthy
+   * socket, which is why no transport deadline sees it. Only neutral port events arm, refresh and clear it.
+   */
+  #armWatchdog(handle: ActiveSession): void {
+    if (this.#settled(handle) || handle.rebuilding) return;
+    // A tool call in flight owns the silence through the dead-air path: never two timers on one silence.
+    if (handle.pendingCallIds.size > 0) { this.#cancelWatchdog(handle); return; }
+    // One record per phase change: a streaming reply refreshes the clock on every chunk and must not write a
+    // receipt per chunk into the rotating host log.
+    const wasArmed = handle.watchdogPhase === 'armed';
+    handle.watchdogTimer?.cancel();
+    handle.watchdogSince ??= this.#now();
+    handle.watchdogPhase = 'armed';
+    if (!wasArmed) hostLogEvent({ event: 'live_watchdog', phase: 'armed', turnAgeMs: this.#now() - handle.watchdogSince, generation: handle.generation });
+    this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_NUDGE_MS, handle.generation, 'nudge');
+  }
+
+  #scheduleWatchdog(handle: ActiveSession, delayMs: number, generation: number, step: 'nudge' | 'recover'): void {
+    handle.watchdogTimer = this.#schedule(() => {
+      if (this.#settled(handle) || generation !== handle.generation) return;
+      if (handle.pendingCallIds.size > 0) return;
+      const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
+      if (step === 'nudge') {
+        if (handle.watchdogPhase === 'nudged') return;
+        try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
+        handle.watchdogPhase = 'nudged';
+        hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation });
+        this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
+        return;
+      }
+      void this.#watchdogRecover(handle, generation, turnAgeMs).catch(() => { /* recovery settles its own failures */ });
+    }, delayMs);
+    handle.watchdogTimer.unref?.();
+  }
+
+  #cancelWatchdog(handle: ActiveSession): void {
+    handle.watchdogTimer?.cancel(); handle.watchdogTimer = undefined;
+    handle.watchdogSince = undefined; handle.watchdogPhase = undefined;
+  }
+
+  /** One neutral event either leaves a turn owing a reply (arm), refreshes the silence clock (re-arm) or clears it. */
+  #watchdogEvent(handle: ActiveSession, event: LiveVoiceEvent): void {
+    if (this.#settled(handle) || handle.rebuilding) return;
+    const type = event.type;
+    if (type === 'turnComplete' || type === 'interrupted' || type === 'toolCall' || type === 'toolCallCancellation') { this.#cancelWatchdog(handle); return; }
+    // The owner's turn ended (a final transcription, or the provider's voice-activity end): a reply is owed.
+    if (type === 'inputTranscription') { if (event.finished === true) this.#armWatchdog(handle); return; }
+    if (type === 'waitingForInput') { if (event.value === false) this.#armWatchdog(handle); return; }
+    if (type === 'modelTurnStarted') { this.#armWatchdog(handle); return; }
+    if (type === 'audio' || type === 'outputTranscription' || type === 'modelText') {
+      // Output arrived, so the clock restarts; the turn stays watched only while it is still open.
+      if (handle.turnCompleteSeen) this.#cancelWatchdog(handle); else this.#armWatchdog(handle);
+    }
+  }
+
+  async #watchdogRecover(handle: ActiveSession, generation: number, turnAgeMs: number): Promise<void> {
+    if (this.#settled(handle) || generation !== handle.generation || handle.pendingCallIds.size > 0) return;
+    const previous = handle.watchdogRecoveredAt;
+    this.#cancelWatchdog(handle);
+    if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+      // A second mute inside the window would loop on the same broken provider: end the call honestly.
+      hostLogEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs, generation });
+      this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
+      return;
+    }
+    handle.watchdogRecoveredAt = this.#now();
+    hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
+    await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
@@ -921,7 +1008,7 @@ export class LiveSessionOwner {
    * fresh seeded setup; a failed resume falls through to one fresh seeded attempt. Each socket open counts
    * against the per-episode bound, backoff is 0/2/5 s, and the current session deadline does not move.
    */
-  async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined): Promise<boolean> {
+  async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
     const now = this.#now();
     if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) handle.recoveries = 0;
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
@@ -936,9 +1023,9 @@ export class LiveSessionOwner {
     const savedHandle = saved?.['resumption_handle'];
     const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
     const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
-    const reuse = this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
+    const reuse = !forceFresh && this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
     const closeCode = outcome?.upstream?.closeCode ?? null;
-    const reason = outcome?.code ?? null;
+    const reason = reasonOverride ?? outcome?.code ?? null;
     const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
     let opened = this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
     if (!opened && path === 'resume') {
@@ -959,7 +1046,7 @@ export class LiveSessionOwner {
     // A synchronous refusal (rare) retries after the next backoff rather than ending the call.
     await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);
     if (this.#settled(handle)) return false;
-    return this.#recoverFromDrop(handle, outcome);
+    return this.#recoverFromDrop(handle, outcome, forceFresh, reasonOverride);
   }
 
   /**
@@ -1009,7 +1096,7 @@ export class LiveSessionOwner {
     }
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    // 3j: a mic frame is not conversation. Idle measures silence, so frames keep flowing without resetting it.
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
   }
 
@@ -1083,6 +1170,9 @@ export class LiveSessionOwner {
     try {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
+        // 3j: the watchdog sees every port event before the per-type dispatch, because the arms sit on events
+        // this loop handles early (modelTurnStarted) and on ones it consumes later.
+        this.#watchdogEvent(handle, event);
         // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
         if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
         if (event.type === 'modelTurnStarted') {
@@ -1114,7 +1204,7 @@ export class LiveSessionOwner {
           handle.ready = true; handle.lastHealthyAt = this.#now();
           if (handle.rebuilding) { handle.rebuilding = false; this.#continuity(handle, 'resumed'); continue; }
         }
-        if (event.type !== 'ready' && event.type !== 'outcome') this.#armIdle(handle, this.#profile.limits.idleMs);
+        if (IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;

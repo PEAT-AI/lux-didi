@@ -1,6 +1,6 @@
 import './style.css';
 import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup, type MemoryListItem } from './memory-list';
-import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type MemorySummaryItem } from './api';
+import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type MemorySummaryItem, saveLiveSelection } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
@@ -271,14 +271,14 @@ function miniCaptionMarkup(): string {
 function paintMiniStage() {
   const stage = document.querySelector('.mini-stage');
   if (!stage) return;
-  const state = miniState(orbState(), liveActivity(live));
+  const state = miniState(orbState(), liveActivity(live), live?.muted === true);
   stage.setAttribute('data-mini-state', state);
   stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
 }
 function renderMini() {
   if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
   orb?.destroy(); orb = undefined;
-  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), miniCaptionMarkup());
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live), live?.muted === true), miniCaptionMarkup());
   const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
 }
@@ -288,8 +288,12 @@ function render() {
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
   orb?.destroy();orb=undefined;transcriptPin?.stop();transcriptPin=undefined;
-  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" style="--panel-left-w:${layout.leftWidth}px;--panel-right-w:${layout.rightWidth}px" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Naya home"><span class="brand-orb" aria-hidden="true"></span><span>naya<span class="brand-dot">.</span></span></a>${livePillMarkup()}${miniModeButtonMarkup(nativeBridge !== undefined)}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
-
+  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Naya home"><span class="brand-orb" aria-hidden="true"></span><span>naya<span class="brand-dot">.</span></span></a>${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
+  // The accepted CSP is style-src 'self', so the panel widths are applied through the CSSOM after the render
+  // instead of through an inline style attribute in the markup (TR-R2, #305).
+  const shellElement = root.querySelector<HTMLElement>('.app-shell');
+  shellElement?.style.setProperty('--panel-left-w', `${layout.leftWidth}px`);
+  shellElement?.style.setProperty('--panel-right-w', `${layout.rightWidth}px`);
   bind();
   bindScrollAnchors();
   connectedView.attach();
@@ -380,6 +384,7 @@ function bind() {
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
+  form('live-settings-form',()=>{const provider=(document.getElementById('live-provider') as HTMLSelectElement).value;const voice=(document.getElementById('live-voice') as HTMLInputElement).value.trim();const version=authorityVersion();void mutate(async(signal)=>{await saveLiveSelection({provider,voice},signal);if(version===authorityVersion()){notice='Saved. It applies when Lux Didi next starts.';render();}});});
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
   button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});

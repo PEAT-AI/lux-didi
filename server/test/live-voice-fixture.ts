@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { once } from 'node:events';
 import type { TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
-import type { GeminiLiveVoiceOptions, LiveVoiceRequest, LiveVoiceEvent, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceRequest, LiveVoiceEvent, LiveVoiceSession } from '../adapters/live-voice/index.js';
 
 export const CANARY = 'SYNTHETIC-KEY-URL-HANDLE-DO-NOT-PRINT-10226B';
 export const request = (): LiveVoiceRequest => ({
@@ -11,7 +11,7 @@ export const request = (): LiveVoiceRequest => ({
 export const control = (signal = new AbortController().signal) => ({ signal, deadlineMs: Date.now() + 5000 });
 // Silent PCM only: no microphone or playback is used by this fixture.
 export const pcm = new Uint8Array(8);
-export function options(overrides: Partial<GeminiLiveVoiceOptions> = {}): GeminiLiveVoiceOptions {
+export function options(overrides: Partial<LiveVoiceAdapterOptions> = {}): LiveVoiceAdapterOptions {
   return {
     modelId: 'models/explicit-live-test', voice: 'ExplicitVoice', keyReference: 'test-reference',
     route: { enabled: true, provider: 'gemini', modelId: 'models/explicit-live-test', dataClasses: ['ordinary'] },
@@ -72,7 +72,7 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
       attempts++; destination = url;
       const client = new WebSocket(`ws://127.0.0.1:${address.port}`, config);
       clients.push(client); return client;
-    }) satisfies NonNullable<GeminiLiveVoiceOptions['socketFactory']>,
+    }) satisfies NonNullable<LiveVoiceAdapterOptions['socketFactory']>,
     async frame(n: number): Promise<void> {
       if (frames.length >= n) return;
       await new Promise<void>(resolve => waiters.set(n, resolve));
@@ -94,7 +94,7 @@ export function collect(session: LiveVoiceSession) {
   const done = (async () => { for await (const event of session.events) events.push(event); })();
   return { events, done };
 }
-export async function ready(t: TestContext, overrides: Partial<GeminiLiveVoiceOptions> = {}, frameMode: FrameMode = 'binary') {
+export async function ready(t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}, frameMode: FrameMode = 'binary') {
   const f = await fixture(t, frameMode);
   const { GeminiLiveVoiceAdapter } = await import('../adapters/live-voice/index.js');
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, ...overrides })).open(request(), control());

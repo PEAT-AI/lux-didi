@@ -1,4 +1,4 @@
-export type ErrorCode = 'rate_limited' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'BAD_REQUEST' | 'NOT_FOUND' | 'METHOD_NOT_ALLOWED' | 'PAYLOAD_TOO_LARGE' | 'CONFLICT' | 'STALE_AUTHORITY' | 'DOMAIN_NOT_CONFIGURED' | 'MODEL_NOT_CONFIGURED' | 'CONNECTOR_COMPOSITION_ERROR' | 'INTERNAL_ERROR' | 'WRITER_LOCKED' | 'STORE_CLOSED' | 'TRANSACTION_EXPIRED' | 'CREDENTIAL_ADMISSION_FAILED';
+export type ErrorCode = 'rate_limited' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'BAD_REQUEST' | 'NOT_FOUND' | 'METHOD_NOT_ALLOWED' | 'PAYLOAD_TOO_LARGE' | 'CONFLICT' | 'STALE_AUTHORITY' | 'DOMAIN_NOT_CONFIGURED' | 'MODEL_NOT_CONFIGURED' | 'CONNECTOR_COMPOSITION_ERROR' | 'INTERNAL_ERROR' | 'WRITER_LOCKED' | 'STORE_CLOSED' | 'TRANSACTION_EXPIRED' | 'CREDENTIAL_ADMISSION_FAILED' | 'key_missing';
 export class ServiceError extends Error {
   constructor(public readonly code: ErrorCode, message: string, public readonly status = 400, public readonly details?: Record<string, unknown>) { super(message); this.name = 'ServiceError'; }
 }

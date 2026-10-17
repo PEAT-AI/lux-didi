@@ -69,16 +69,18 @@ test('the orb stage uses the Vicuna dark gradient and a visible presence glow', 
   assert.match(style, /\.orb-stage \.presence-glow\{width:420px;height:420px\}/);
 });
 
-test('the connected consent wall is a closed disclosure', () => {
+test('the connected consent stays inline above the composer, never inside a collapsed disclosure', () => {
   const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
-  assert.match(connected, /<details class="connected-chat"><summary><span>Connected text chat<\/span>/);
-  assert.match(connected, /id="connected-disclosure"|class="connected-disclosure"/);
-  assert.match(connected, /<\/details>/);
+  assert.match(connected, /<section class="connected-conversation" aria-label="Connected Naya conversation">/);
+  assert.match(connected, /\$\{grant \|\| this\.#consent \? '' : `<p class="connected-disclosure">/);
+  assert.doesNotMatch(connected, /connected-chat|Connected text chat/, 'the removed collapsed chat disclosure never returns');
 });
 
-test('typed text to Naya is an input under the voice card that posts to the live text endpoint', () => {
+test('typed text goes through the connected composer, Enter to send, not the removed Live text box', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  assert.match(main, /id="live-text-form"/);
-  assert.match(main, /id="live-text"/);
-  assert.ok(main.includes("request<{ sent: boolean }>('/live/text'"));
+  const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
+  assert.match(connected, /id="connected-draft"/);
+  assert.match(connected, /id="connected-send"/);
+  assert.match(connected, /addEventListener\('keydown', event => \{ if \(composerIntent\(event\) === 'send'\)/);
+  assert.doesNotMatch(main, /live-text-form|id="live-text"|\/live\/text/, 'the removed optional Live text surface never returns');
 });

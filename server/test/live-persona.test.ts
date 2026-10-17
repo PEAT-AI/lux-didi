@@ -12,6 +12,18 @@ import {
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
+/**
+ * K6, verbatim from the owner's brief: the tools section opens on the three knowledge layers, so she
+ * knows where his world lives from her instructions and not only from the tool names.
+ */
+const WHERE_HIS_WORLD_LIVES = `# Where his world lives
+You reach his world through research. Pick the layer where the answer most likely lives and name it in lookups:
+- memory: your own memory of your conversations with him: what he told you, what he asked you to remember, his commitments and dates. First stop for anything you two discussed before.
+- knowledge: his knowledge base: decisions, project status, technical notes, meeting transcripts, his ideas and personal projects, the record of his work sessions. First stop for how a project stands or what was decided.
+- company: the company knowledge base: Plantix as an organisation: who reports to whom, teams, roles, customers, partners, products, company numbers. First stop for questions about people and structure at work.
+- calendar for time and meetings, mail for what someone sent, chat for what someone wrote, replies for what is waiting on him.
+When a question spans layers, put all of them in one call: they run in parallel, and one call with the right two or three sources beats several calls in a row. Write each query for its source. If the likely layers come back empty, widen once to the next most likely layer, then answer with what you have and say what you checked.`;
+
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const BUDGET = TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
 
@@ -160,9 +172,15 @@ test('the target budget yields memory first and never drops the base, overlay or
 
 test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
   assert.match(NAYA_TOOLS, /^# Tools and how to use them\n\n/);
-  assert.match(NAYA_TOOLS, /You have two tools: research and remember_note\./);
+  // K6: the tools section opens on the three knowledge layers, exactly, so she knows where his
+  // world lives instead of reading it off tool names.
+  assert.ok(NAYA_TOOLS.includes(WHERE_HIS_WORLD_LIVES), 'the layer routing text is verbatim');
+  assert.ok(NAYA_TOOLS.indexOf(WHERE_HIS_WORLD_LIVES) < NAYA_TOOLS.indexOf('research returns the findings'),
+    'the layer routing text opens the tools section');
   // OC1 (#228): the open tools are declared to the model with one exact sentence.
-  assert.match(NAYA_TOOLS, /You can open a web page, a file in the owner's home folder, or an app when the owner asks\. Find the exact item first with research or knowledge, say what you are opening, then open it\./);
+  // K6-R1: the item comes from what research already returned. The 3j smoke showed four research
+  // calls in a row and never a spoken answer, so a second call is the failure to avoid.
+  assert.ok(NAYA_TOOLS.includes("You can open a web page, a file in the owner's home folder, or an app when the owner asks. Name the exact item from what research already returned; call research again only when nothing it returned fits. Say what you are opening, then open it."), 'the open-actions sentence names what research returned');
   // #263: a name after a colon reads as a tool name to the model. The retired routing targets must never
   // reappear, because the Live session declares only research and remember_note.
   for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {
@@ -170,10 +188,11 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   }
   // It names every configured source family the research tool reaches, instead of routing to a tool per
   // family. Mail is included because it was the incident's working case (R2 stage 1).
-  assert.match(NAYA_TOOLS, /his calendar and availability/);
-  assert.match(NAYA_TOOLS, /his mail/);
-  assert.match(NAYA_TOOLS, /the team chat/);
-  assert.match(NAYA_TOOLS, /his knowledge base of notes/);
+  assert.match(NAYA_TOOLS, /- memory: your own memory of your conversations with him/);
+  assert.match(NAYA_TOOLS, /- knowledge: his knowledge base: decisions, project status, technical notes/);
+  assert.match(NAYA_TOOLS, /- company: the company knowledge base: Plantix as an organisation/);
+  assert.match(NAYA_TOOLS, /- calendar for time and meetings, mail for what someone sent, chat for what someone wrote, replies for what is waiting on him\./);
+  assert.match(NAYA_TOOLS, /When a question spans layers, put all of them in one call: they run in parallel/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
   assert.match(NAYA_TOOLS, /at most a three to five word acknowledgement/);
   assert.match(NAYA_TOOLS, /There is no background work and no callback: never promise to check later, call back or keep an eye on something\./);

@@ -9,6 +9,7 @@ import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
+import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -1522,6 +1523,8 @@ export class LiveSessionOwner {
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle), selector: this.#research, execute,
+      // K6: her own memory is local, so the routed `memory` layer reads it in process and never goes out.
+      memory: query => this.#store.transaction(tx => memoryLookup(tx, query)),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.

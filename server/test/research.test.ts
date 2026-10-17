@@ -669,3 +669,22 @@ test('a cut source logs a disposition the host log admits and the whole run line
   assert.equal(line.sources.find(entry => entry.kind === 'mail')?.disposition, 'skipped');
   assert.ok(safeEvent(line) !== undefined, 'the cut run line survives the host log');
 });
+
+// K6: the routed path is additive. Without lookups the selector still chooses, and the reply keeps
+// exactly the shape it had, with no per-source status block.
+test('K6: a start with no lookups keeps the selector path and its reply shape', async () => {
+  const selections: string[] = [];
+  const h = harness({
+    selector: {
+      select: async () => {
+        selections.push('select');
+        return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'decisions' }], pUseful: { knowledge_search: 0.9 } } as SelectorOutput;
+      },
+    },
+  });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  assert.ok(selections.length >= 1, 'the selector still chooses the sources');
+  assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
+  assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
+  assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
+});

@@ -302,3 +302,12 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
   assert.equal(ownerProfile.lore.text.length, 13_969);
   assert.ok(Buffer.byteLength(ownerProfile.lore.text, 'utf8') > ownerProfile.lore.text.length);
 });
+
+// N3: the persona sentence must keep "nothing matched" and "cut short" apart, or a timed-out read is
+// voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
+test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
+  const { NAYA_TOOLS } = await import('../prompt/live-persona.js');
+  assert.ok(NAYA_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
+  assert.ok(NAYA_TOOLS.includes('A read cut short is said as cut short, so offer a narrower ask.'), 'a cut read is voiced as cut short');
+  assert.ok(NAYA_TOOLS.indexOf('A read cut short is said as cut short') > NAYA_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
+});

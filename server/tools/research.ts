@@ -1193,7 +1193,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       if (answerCut.signal.aborted && !answered) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
       if (cutKinds.size > 0) sawCut = true;
 
-      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
+      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) || !latencies.has(kind) ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named
       // unchecked, and the model can ask to continue instead of another round silently spending time.
       if (cutKinds.size > 0 && !answered) { stopReason = 'deadline'; break; }

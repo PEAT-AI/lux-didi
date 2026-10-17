@@ -104,10 +104,24 @@ export function liveStepLines(live: LiveCurrent | undefined): LiveStepLine[] {
   return [...byId.values()];
 }
 
-/** The step list dims once she has started answering: the owner hears the answer now, and the
- *  lines stay a few seconds only so the last look-up is still readable. */
+/** Whether the answer of the turn that owns these steps has started: the last entry of the turn that
+ *  is a tool call, a tool result or spoken text decides it. Sticky, so a poll that leaves `speaking`
+ *  never repaints the finished list at full opacity. */
+export function stepsAnswered(live: LiveCurrent | undefined): boolean {
+  const entries = live?.entries ?? [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind === 'outputTranscription') { if (entry.text) return true; continue; }
+    if (entry.kind === 'toolCall' || entry.kind === 'toolResult') return false;
+  }
+  return false;
+}
+
+/** The step list dims once she has started answering and stays dimmed for the rest of that answer:
+ *  the owner hears the answer now, and the lines stay a few seconds only so the last look-up is
+ *  still readable. */
 export function stepsFading(live: LiveCurrent | undefined): boolean {
-  return live?.state === 'speaking' && (live.steps ?? []).length > 0;
+  return (live?.steps ?? []).length > 0 && (live.state === 'speaking' || stepsAnswered(live));
 }
 
 /** The compact live step list under the orb. Empty when nothing is running. */

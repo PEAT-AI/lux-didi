@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
 import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
@@ -875,6 +875,23 @@ test('the step list dims once she starts answering, and carries nothing while no
   assert.doesNotMatch(stepListMarkup({ ...stepsOf(steps), state: 'thinking' }), /feed-steps-out/);
   assert.equal(stepListMarkup(undefined), '');
   assert.equal(stepListMarkup(stepsOf([])), '');
+});
+
+test('F1 the dimmed list stays dimmed once the answer has started, whatever the state says', () => {
+  const steps: LiveCurrent['steps'] = [{ callId: 'c1', stepId: 's1', source: 'chat', action: 'search', subject: 'release freeze', phase: 'end', resultCount: 13, ok: true }];
+  for (const state of ['speaking', 'listening', 'thinking', 'idle', 'ended'] as const) {
+    const live: LiveCurrent = { ...stepsOf(steps), state, entries: [{ seq: 2, kind: 'outputTranscription', text: 'Thirteen messages about the freeze.' }] };
+    assert.equal(stepsAnswered(live), true, state);
+    assert.equal(stepsFading(live), true, state);
+    assert.match(stepListMarkup(live), /feed-steps-out/, state);
+  }
+  // A new tool turn resets it: the answer of the previous turn does not dim the next read.
+  const fresh: LiveCurrent = { ...stepsOf(steps), state: 'thinking', entries: [
+    { seq: 2, kind: 'outputTranscription', text: 'Thirteen messages about the freeze.' },
+    { seq: 3, kind: 'toolCall', tool: { name: 'mattermost_search', status: 'called' } },
+  ] };
+  assert.equal(stepsAnswered(fresh), false);
+  assert.equal(stepsFading(fresh), false);
 });
 
 test('the mini orb renders no step lines, only its one caption', () => {

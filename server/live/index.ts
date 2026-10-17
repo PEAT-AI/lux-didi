@@ -299,7 +299,7 @@ function supportRatio(note: string, turn: string): number {
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
   // The note is the model's clean paraphrase; the owner's own words are only the support for it.
-  const noteText = String(args.text).replace(command, '').trim();
+  const noteText = String(args.text).replace(command, '').replace(/\s+/g, ' ').trim();
   const words = contentWords(noteText);
   const receipt = (result: JsonObject, support: number): JsonObject => {
     hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'), words: words.length, supportRatio: Math.round(support * 1000) / 1000 });

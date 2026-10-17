@@ -150,6 +150,8 @@ export interface ChatIntentOptions {
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
   /** The real capability identity of the covered source; the builder never invents one. */
   identity(toolName: string): { accountId: string; resourceId: string };
+  /** The owner reads this surface covers, so the declared descriptions match what is actually wired. */
+  ownerTools?: readonly ToolDefinition[];
   declarations?: readonly IntentDeclaration[];
 }
 

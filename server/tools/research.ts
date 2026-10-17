@@ -626,6 +626,11 @@ function creditableSources(kind: CandidateKind, results: readonly IntentSubResul
   return named.map(source => ({ source, results: results.filter(result => sourceKindOfKindName(result.name) === source) }));
 }
 
+/** The candidate kind that owns a source, so a `brief` part is shaped the way that source reads. */
+function shapeKindOf(source: SourceKind | null, fallback: CandidateKind): CandidateKind {
+  return CANDIDATES.find(candidate => candidate.source === source && candidate.requires === undefined)?.kind ?? fallback;
+}
+
 /** One read's identity: the same tool with the same arguments is the same read for this run. */
 function callSignature(call: IntentSubCall): string {
   return `${call.name}:${JSON.stringify(call.args)}`;
@@ -1069,7 +1074,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         // one is credited and delivered on its own instead of the whole batch going uncredited.
         const parts = creditableSources(kind, results);
         for (const [index, part] of parts.entries()) {
-          const block = shapeBlock(kind, part.results);
+          const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
           run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total });
           if (part.source === null) continue;
           if (part.results.some(result => result.ok && result.text.trim())) {

@@ -1185,6 +1185,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       }
       await all;
       answerTimer.cancel();
+      // The answer bound is a cut like any other: the read it stopped is named, and the turn ends partial.
+      if (answerCut.signal.aborted && !answered) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
 
       for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) ? 'cut' : latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named

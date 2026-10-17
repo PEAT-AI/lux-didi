@@ -9,12 +9,20 @@ import {
   capJournalText, configureDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
 } from '../host/journal.js';
 import { safeEvent } from '../host/log.js';
+import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { openMemoryFixture } from './memory-context-process.js';
+import { openFixture, result } from './chat-process.js';
+import { ChatService } from '../chat/index.js';
+import { composeMcpRuntime } from '../host/mcp.js';
+import { toolsMigrations } from '../tools/index.js';
+import type { LiveAuthority } from '../tools/types.js';
 import { fixture, options } from './live-voice-fixture.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile } from '../live/index.js';
 import { chatMigrations } from '../chat/index.js';
-import type { ModelRequest } from '../adapters/model/types.js';
+import type { ModelPort, ModelRequest } from '../adapters/model/types.js';
 
 // Synthetic fixtures only. This suite never touches the owner's own data directory: every journal
 // it writes lives under a fresh mkdtemp directory and the installed journal is reset afterwards.
@@ -270,4 +278,70 @@ test('a live session journals its instructions, provider ack, transcripts and it
   const end = lines.find(line => line['event'] === 'session_end')!;
   assert.equal(typeof end['code'], 'string');
   assert.equal(typeof end['by'], 'string');
+});
+
+test('a chat tool loop journals the call at the tools layer, not only in the writer', async t => {
+  const dir = tempDir(t);
+  resetDebugJournal();
+  configureDebugJournal(dir, true);
+  t.after(resetDebugJournal);
+  const work: (() => void)[] = [];
+  // One tool call, then the answer: the shape the chat tool loop drives through the tools owner.
+  const toolModel: ModelPort = {
+    generate: async (request: ModelRequest) => {
+      if (request.declarations?.some(declaration => declaration.name === 'search_knowledge')
+        && !request.contents.some(content => content.parts.some(part => part.functionResponse !== undefined))) {
+        return {
+          ...result(request, 'complete', ''),
+          providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'synthetic question', limit: 3, include_sensitive: false }, id: randomUUID() } }] },
+        };
+      }
+      return result(request, 'complete', 'Synthetic answer from evidence');
+    },
+  };
+  const f = openFixture(dir, toolModel, { schedule: task => work.push(task) }, undefined, toolsMigrations);
+  const endpoint = { id: 'journal-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
+  const sdk = new Server({ name: 'journal-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
+  const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
+  sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: schema }] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: 'Synthetic knowledge result' }], structuredContent: { synthetic: true } }) as never);
+  await sdk.connect(transport);
+  t.after(async () => { await transport.close(); await sdk.close(); });
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(input, init);
+    if (req.method === 'GET') return new Response(null, { status: 405 });
+    return transport.handleRequest(req);
+  });
+  writeFileSync(join(dir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads',
+    endpoints: [{ ...endpoint, connector: 'lux-knowledge', transport: 'streamable-http', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
+  }), { mode: 0o600 });
+  let authority: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const mcp = await composeMcpRuntime({
+    store: f.store, ownerId: f.store.assistantId, configDir: dir,
+    lookupAuthority: async (runId, signal) => authority?.(runId, signal) ?? null, log: () => {},
+  });
+  t.after(async () => { await mcp.close(); });
+  const chat = new ChatService({
+    ...f.config,
+    tools: { owner: mcp.owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: source => { authority = source; } },
+  });
+  chat.recover(f.recoveryContext);
+  t.after(() => chat.shutdown());
+  const session = f.createSession();
+  const run = chat.accept({ sessionId: session.id, text: 'Synthetic owner question', idempotencyKey: 'journal-tools' }, f.context);
+  const stream = chat.subscribe(run.runId, f.context);
+  const finished = (async () => { for await (const event of stream) { if (event.type === 'snapshot' && event.run.state === 'terminal') return; } })();
+  work.shift()!();
+  await finished;
+
+  const path = join(dir, 'debug', dayName(Date.now()), `chat-${run.runId}.jsonl`);
+  assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
+  const calls = records(path).filter(line => line['event'] === 'tool');
+  assert.equal(calls.length, 1, 'the tool call reaches the session journal from the tools layer');
+  assert.equal(calls[0]!['tool'], 'search_knowledge');
+  assert.equal(typeof calls[0]!['ms'], 'number');
+  assert.equal(typeof calls[0]!['outcome'], 'string');
+  assert.deepEqual(calls[0]!['args'], { query: 'synthetic question', limit: 3, include_sensitive: false });
 });

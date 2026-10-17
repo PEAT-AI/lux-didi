@@ -104,16 +104,18 @@ export function stepFinished(step: ChatStep): string {
   return count ? `${head}, ${count} ${count === 1 ? 'result' : 'results'}` : head;
 }
 
-/** The folded one-line summary of a finished batch: "Checked Mattermost, Mongoose and Calendar".
- * A shared verb is kept; a mixed batch reads as the neutral "Checked". */
+/** The folded one-line summary of a finished batch: "Checked Mattermost, Mongoose and calendar".
+ * A shared verb is kept; a mixed batch reads as the neutral "Checked". Connectors take their prose
+ * form here, the same words the partial-turn copy uses. */
 export function stepsSummary(steps: readonly ChatStep[]): string {
   const done = steps.filter(step => step.phase === 'end');
   const names: string[] = [];
-  for (const step of done) { const name = toolConnector(step.tool); if (!names.includes(name)) names.push(name); }
+  for (const step of done) { const name = connectorProse(toolConnector(step.tool)); if (!names.includes(name)) names.push(name); }
   if (!names.length) return '';
   const verbs = [...new Set(done.map(step => pastVerb(phraseFor(step.tool).verb)))];
   const verb = verbs.length === 1 ? verbs[0]! : 'Checked';
-  return names.length === 1 ? `${verb} ${names[0]}` : `${verb} ${joinAnd(names)}`;
+  const line = names.length === 1 ? `${verb} ${names[0]}` : `${verb} ${joinAnd(names)}`;
+  return line.charAt(0).toUpperCase() + line.slice(1);
 }
 
 /** A connector word fit for mid-sentence prose, so the partial-turn copy reads "before checking calendar". */

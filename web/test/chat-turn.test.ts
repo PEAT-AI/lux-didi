@@ -38,9 +38,9 @@ test('after the answer the steps fold into one summary line that expands to the 
     step({ stepId: 's2', tool: 'mongoose_search', phase: 'end', resultCount: 4 }),
     step({ stepId: 's3', tool: 'gcal_list', phase: 'end', resultCount: 2 }),
   ];
-  assert.equal(stepsSummary(steps), 'Checked Mattermost, Mongoose and Calendar');
+  assert.equal(stepsSummary(steps), 'Checked Mattermost, Mongoose and calendar');
   const folded = stepsMarkup(steps, true);
-  assert.match(folded, /^<details class="chat-steps-done"><summary>Checked Mattermost, Mongoose and Calendar<\/summary>/);
+  assert.match(folded, /^<details class="chat-steps-done"><summary>Checked Mattermost, Mongoose and calendar<\/summary>/);
   assert.match(folded, /Searched Mattermost, 13 results/);
   assert.match(folded, /Used Mongoose, 4 results/);
   assert.match(folded, /Checked your calendar, 2 results/);

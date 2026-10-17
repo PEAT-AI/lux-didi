@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 // Synthetic fixtures only: every record below is invented for this test and the reader is pointed
 // at a mkdtemp data directory, never at the owner's own journal.
 
-const script = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'naya-logs.mjs');
+// server/dist/test -> repository root, where scripts/ lives.
+const script = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'naya-logs.mjs');
 const START = '2026-10-17T12:00:00.000Z';
 
 function fixtures(t: { after: (fn: () => void) => void }): string {

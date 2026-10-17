@@ -223,7 +223,9 @@ test('a live session journals its instructions, provider ack, transcripts and it
     route: { enabled: true, provider: 'gemini', modelId: 'models/live-session-test', dataClasses: ['ordinary'] },
     prompt: { text: 'Synthetic live instructions', dataClass: 'ordinary' },
   });
-  const adapter = new GeminiLiveVoiceAdapter(options({ socketFactory: ws.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference }));
+  const adapter = new GeminiLiveVoiceAdapter(options({ socketFactory: ws.socketFactory, modelId: profile.liveModelId,
+    voice: profile.voice, keyReference: profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: ['ordinary'] } }));
   // Every timer is parked: the session's own deadlines never fire in this test.
   const schedule = (callback: () => void) => {
     work.push(callback);

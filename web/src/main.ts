@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type Memor
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -12,6 +12,7 @@ import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
+import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -21,16 +22,18 @@ let nativeBridge: Bridge | undefined;
 let nativeFake: { requestStart(): void; requestStop(): void } | undefined;
 let liveMachine = new LiveMachine(() => {});
 const root = document.querySelector<HTMLDivElement>('#app')!;
+const miniRoute = isMiniRoute(location.search);
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
 let theme: Theme = 'dark';
 let orb: Orb | undefined;
 let transcriptPin: { repin(): void; stop(): void } | undefined;
-// Ended sessions kept by the page (never the host): each collapses under a dated divider when a new
-// session starts, so the live feed is only the current session (spec 1.3 cause 1, page-side only).
+// Ended sessions kept by the page (never the host): each is reachable only from the collapsed
+// past-sessions panel, so the voice view itself is the current session alone (spec 1.3, UI3b).
 let earlierFeed: EarlierSession[] = [];
 let appliedOrbState: VoiceState | undefined;
+let appliedLiveState: NativeLiveState | undefined;
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
 let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair this browser' = 'Connecting';
@@ -71,7 +74,7 @@ function failure(err: unknown, mutation = false) {
   return mutation ? 'Could not confirm whether this was saved. Your draft is here. Reconnect and check before trying again.' : 'Didi can’t reach your service. Reconnect when you’re ready.';
 }
 function sourceMarkup(refs: Entry['sourceRefs']) { return refs.map(s => `<div class="source"><span>${e(s.label)}</span><small>${s.availability === 'missing' ? 'Source unavailable' : 'Source available'}${s.sourceTimestamp ? ` · ${e(datetime(s.sourceTimestamp))}` : ''}</small>${s.note ? `<p>${e(s.note)}</p>` : ''}</div>`).join(''); }
-function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Didi' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header>${entry.role === 'assistant' ? answerMarkup(entry.text) : `<p>${e(entry.text)}</p>`}${sourceMarkup(entry.sourceRefs)}${memoryDeleteControl(entry.id, !writable() || busy || connectedView.active)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
+function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Naya' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header>${entry.role === 'assistant' ? answerMarkup(entry.text) : `<p>${e(entry.text)}</p>`}${sourceMarkup(entry.sourceRefs)}${memoryDeleteControl(entry.id, !writable() || busy || connectedView.active)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
 function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
@@ -131,7 +134,7 @@ function orbStageMarkup(): string {
   return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions" id="orb-actions">${orbControlsMarkup()}</div></section>`;
 }
 function voiceBodyMarkup(): string {
-  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Back to live</button></section>`;
+  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -247,7 +250,8 @@ const scrollObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserve
 // Stick a transcript to the bottom only while the reader has not scrolled up. A scroll event (not a pixel
 // threshold) decides, and a ResizeObserver compensates when the composer grows or a chip expands.
 function bindScrollAnchors() {
-  const targets = [document.getElementById('connected-entries'), document.querySelector<HTMLElement>('.live-transcript')].filter((el): el is HTMLElement => !!el);
+  // The chat list only. The voice transcript has exactly one rule, the pin in autoscroll.ts (UI3b item 3).
+  const targets = [document.getElementById('connected-entries')].filter((el): el is HTMLElement => !!el);
   for (const el of targets) {
     if (!scrollAnchor.has(el)) {
       scrollAnchor.set(el, true);
@@ -257,7 +261,29 @@ function bindScrollAnchors() {
     scrollObserver?.observe(el);
   }
 }
+const miniGlow: MiniState[] = ['listening', 'thinking', 'speaking', 'tool'];
+/** The mini stage's caption: main's state line plus the one shared activity
+ * line, so a running tool stays readable in the orb (W15-R1) without a second
+ * renderer. */
+function miniCaptionMarkup(): string {
+  return orbStateLineMarkup() + activityMarkup(liveActivity(live));
+}
+function paintMiniStage() {
+  const stage = document.querySelector('.mini-stage');
+  if (!stage) return;
+  const state = miniState(orbState(), liveActivity(live));
+  stage.setAttribute('data-mini-state', state);
+  stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
+}
+function renderMini() {
+  if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
+  orb?.destroy(); orb = undefined;
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), miniCaptionMarkup());
+  const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
+  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
+}
 function render() {
+  if (miniRoute) { renderMini(); return; }
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
@@ -350,6 +376,7 @@ function bind() {
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
+  document.getElementById('mini-mode')?.addEventListener('click', () => nativeBridge?.send({ type: 'mini' }));
   const appearance = root.querySelector<HTMLSelectElement>('#appearance-theme');
   if(appearance) appearance.onchange=()=>{theme=appearance.value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);nativeBridge?.send({type:'theme',mode:theme});render();};
   bindLiveDisclosure();
@@ -472,12 +499,14 @@ async function pollLive(){
     const prior=livePoll;
     const next=await pollLiveView(prior,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));
     if(version!==authorityVersion()||livePoll!==prior)return;
-    // A session boundary: the ended session's rows stay, collapsed under their dated divider, so a new
-    // session starts fresh instead of inheriting the old feed (spec 1.3 cause 1, page-side only).
+    // A session boundary, and a projection that is itself finished, both become past sessions: the lane
+    // opens blank and the session stays reachable only from the closed panel (spec 1.3 cause 1, UI3b).
     if(prior.live&&next.live&&prior.live.since!==next.live.since){
       const block=earlierSession(prior.live);
       if(block&&!earlierFeed.some(entry=>entry.at===block.at))earlierFeed=[...earlierFeed,block];
     }
+    const ended=next.live?.pastSession?earlierSession(next.live):undefined;
+    if(ended&&!earlierFeed.some(entry=>entry.at===ended.at))earlierFeed=[...earlierFeed,ended];
     livePoll={...next,earlier:earlierFeed};live=livePoll.live;paintLive();
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
@@ -513,6 +542,10 @@ function paintNotices(){
   if(markup)lane.insertAdjacentHTML('afterbegin',markup);
 }
 function paintLive(){
+  // Every new Live session opens on a blank voice view (UI3b): the first `starting` frame drops the rows
+  // of the session before it, before the new session's own rows exist. Memory stays model-side.
+  if(startingReset(appliedLiveState,liveMachine.view.state)){livePoll={earlier:livePoll.earlier};live=undefined;openBySeg.clear();}
+  appliedLiveState=liveMachine.view.state;
   // A poll rewrites the state line, the wrapper notices, the jobs and the transcript in place, so the
   // orb canvas, the controls and the reader's scroll position all keep (spec 1.3 causes 2, 3 and 4).
   const pill=document.getElementById('live-pill'),pillMarkup=livePillMarkup();
@@ -523,7 +556,17 @@ function paintLive(){
   if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
   const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);
   if(jobs&&jobs.innerHTML!==jobMarkup)jobs.innerHTML=jobMarkup;
-  const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  const caption=document.querySelector('.orb-caption');const markup=miniRoute?miniCaptionMarkup():orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  // Earlier sessions are reachable only from the collapsed panel, so it tracks the boundary list in place.
+  const past=document.getElementById('past-sessions'),wanted=pastSessionsMarkup(livePoll.earlier??[]);
+  if(past&&!wanted)past.remove();
+  else if(!past&&wanted)document.getElementById('live-panel')?.insertAdjacentHTML('beforeend',wanted);
+  else {
+    // A row the owner opened stays open: the repaint compares the list with the rows it would write
+    // carrying the reader's open state, so an unchanged open session is never closed again (UI3b B1).
+    const rows=document.getElementById('past-session-list');
+    if(rows){const open=openSegments(rows.innerHTML),restored=restoreOpen(pastSessionListMarkup(livePoll.earlier??[]),open);if(rows.innerHTML!==restored)rows.innerHTML=restored;}
+  }
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);
   // The control reflects the projection: swap the actions in place and rebind, never tear the stage down.
@@ -531,6 +574,9 @@ function paintLive(){
   if(actions){const controls=orbControlsMarkup();if(actions.innerHTML!==controls){actions.innerHTML=controls;bindOrbControls();}}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
   if(liveMachine.view.state==='starting')transcriptPin?.repin();
+  // The mini stage repaints from the same projection as the full shell. It is
+  // the last step of paintLive, not of any other binder (UI3a merge).
+  if (miniRoute) paintMiniStage();
 }
 function bindOrbControls() {
   document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
@@ -543,16 +589,23 @@ function bindPill() {
   document.getElementById('pill-mute')?.addEventListener('click', () => liveMachine.toggleMute());
   document.getElementById('pill-unmute')?.addEventListener('click', () => liveMachine.toggleMute());
 }
+/** The rows the reader opened, by segment key, so a repaint never closes a detail under them (UI3b). */
+const openBySeg = new Map<string, string[]>();
 function renderTranscript(list: HTMLElement) {
   // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.
-  const segments = liveSegments(live, livePoll.earlier ?? []);
+  const segments = liveSegments(live);
   const children = [...list.children] as HTMLElement[];
+  for (const child of children) if (child.dataset.seg) openBySeg.set(child.dataset.seg, openSegments(child.outerHTML));
   if (children.length === segments.length && segments.every((segment, index) => children[index]!.dataset.seg === segment.key)) {
-    segments.forEach((segment, index) => { const child = children[index]!; if (child.outerHTML !== segment.html) child.outerHTML = segment.html; });
+    segments.forEach((segment, index) => {
+      const child = children[index]!;
+      const html = restoreOpen(segment.html, openBySeg.get(segment.key) ?? []);
+      if (child.outerHTML !== html) child.outerHTML = html;
+    });
     return;
   }
   const known = new Set(children.map(child => child.dataset.seg ?? ''));
-  list.innerHTML = segments.map(segment => segment.html).join('') || FEED_EMPTY;
+  list.innerHTML = segments.map(segment => restoreOpen(segment.html, openBySeg.get(segment.key) ?? [])).join('') || FEED_EMPTY;
   for (const child of [...list.children] as HTMLElement[]) if (!known.has(child.dataset.seg ?? '')) child.classList.add('entry-new');
 }
 function bindTranscript() {

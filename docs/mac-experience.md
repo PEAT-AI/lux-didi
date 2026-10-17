@@ -1,6 +1,7 @@
 # Mac companion experience
 
-The Mac menu-bar/hotkey shell hosts the service's one shared responsive web UI in
+Naya is a regular Mac app: a Dock tile with the Naya icon, a Cmd-Tab entry and a
+window that stays in front. It hosts the service's one shared responsive web UI in
 WKWebView. Swift no longer duplicates Conversation/Today/Memory business screens
 or owns a business store. A compact native Naya voice rail owns consent, lifecycle
 and Start, Mute and Stop. Note capture and connection details remain native but
@@ -9,10 +10,14 @@ start collapsed below the shared conversation page. See
 
 ## Lifecycle
 
-- Control–Option–Space toggles the window through the existing Carbon registration;
-  a registration failure is visible and the menu bar remains usable.
-- Escape hides and stops recording. Window close also hides, retains the agent,
-  editable draft and existing WKWebView. Neither hide/show rebuilds the page.
+- Control–Option–Space shows the mini orb from either surface and brings the full
+  window back from the orb, through the existing Carbon registration; a
+  registration failure is visible and the menu bar remains usable.
+- Cmd+W and the close button hide the window and keep the agent, editable draft
+  and existing WKWebView; during an active Live session they switch to the mini
+  orb instead and the session keeps running. A Dock click always brings the full
+  window back. Neither hide/show rebuilds the page.
+- Escape hides and stops recording.
 - Explicit Quit stops recording, attempts scoped page-session logout, unregisters
   the hotkey and exits. It does not promise crash-time revocation.
 - Service failure or WebContent termination becomes a native retry screen, not an
@@ -20,6 +25,24 @@ start collapsed below the shared conversation page. See
 - Native saved/failed/cancelled/unknown outcomes are distinct; uncertain saves keep
   stable idempotency identity. Retrying does not silently save an edited draft as
   a second entry.
+
+## Two presentation modes
+
+Exactly one surface is visible at a time; a presentation coordinator owns the mode
+and every entry point (Dock click, hotkey, orb click, the **mini** button in the
+full window, close) goes through it.
+
+- **FULL** is a standard window at the normal level that does not hide when the
+  app deactivates. Its header carries a **mini** button with the accessible label
+  "Show the mini orb".
+- **MINI** is a borderless non-activating floating panel that can become neither
+  key nor main, joins every Space, floats over full-screen apps, stays out of the
+  window cycle, and moves by its background. It shows listening, thinking and
+  talking only: no audio context, no microphone and no Live socket of its own. Its
+  frame is remembered and clamped into a visible screen on restore and after a
+  display change.
+- Live is never started, stopped or restarted by a mode switch, so the session id
+  survives every switch.
 
 ## Native permissions and effects
 

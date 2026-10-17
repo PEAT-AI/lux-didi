@@ -53,6 +53,12 @@ assert(!readdirSync(join(app, 'Contents')).includes('entitlements'), 'no entitle
 const plistPath = join(app, 'Contents/Info.plist');
 const plistValue = (key) => execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', plistPath], { encoding: 'utf8' }).trim();
 assert(plistValue('CFBundleExecutable') === 'LuxDidi', 'CFBundleExecutable must be LuxDidi');
+// UI3a: the Dock tile is the bundled icon, so the plist names it and the file is in place.
+assert(plistValue('CFBundleIconFile') === 'AppIcon.icns' || plistValue('CFBundleIconFile') === 'AppIcon', 'CFBundleIconFile must name AppIcon');
+const iconPath = join(app, 'Contents/Resources/AppIcon.icns');
+const iconInfo = lstatSync(iconPath);
+assert(iconInfo.isFile() && !iconInfo.isSymbolicLink() && iconInfo.size > 0, 'bundle must carry Contents/Resources/AppIcon.icns');
+assert(readFileSync(iconPath).subarray(0, 4).toString('latin1') === 'icns', 'the bundled icon must be an icns file');
 const nativePath = join(app, 'Contents/MacOS/LuxDidi');
 const nativeInfo = lstatSync(nativePath);
 assert(nativeInfo.isFile() && !nativeInfo.isSymbolicLink(), 'native executable must be a regular, non-symlink file');

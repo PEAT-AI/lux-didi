@@ -6,8 +6,7 @@
  * The pill carries no text at all: an orb and a 5-bar level meter.
  */
 import type { VoiceState } from './orb.ts';
-import { publishOrbVisual } from './orb.ts';
-import { breathe, createOrbStateMachine, type MiniVisualState, type OrbVisual } from './orb-states.ts';
+import { breathe, createOrbStateMachine, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
 import type { LiveActivity } from './live-view.ts';
 
 export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted' | 'connecting' | 'tool' | 'error';

@@ -53,6 +53,36 @@ export const ORB_VISUALS: Readonly<Record<MiniVisualState, OrbVisual>> = {
   'hot-muted': { state: 'hot-muted', hue: 216, glow: 0.12, amplitude: 0.5, opacity: 0.5, grey: 1, breatheMs: 6000, posture: 'quiet', followsMic: false, followsOutput: false },
 };
 
+/** M3: the mini route's state machine eases the numbers itself and hands them to the one
+ *  renderer through this store, so the pill needs no second renderer. The full window
+ *  publishes nothing and keeps its own posture and hue rules untouched. */
+export interface OrbVisualOverride {
+  hue?: number;
+  glow?: number;
+  amplitude?: number;
+  posture?: OrbPosture;
+}
+
+const published = new WeakMap<HTMLCanvasElement, OrbVisualOverride>();
+const refreshers = new WeakMap<HTMLCanvasElement, () => void>();
+
+/** Hand the renderer on this canvas the numbers to draw with. `undefined` clears them. */
+export function publishOrbVisual(canvas: HTMLCanvasElement, visual: OrbVisual | OrbVisualOverride | undefined): void {
+  if (visual) published.set(canvas, visual); else published.delete(canvas);
+  // A reduced-motion pill never runs the frame loop, so ask for the one still frame
+  // that shows the new colour.
+  refreshers.get(canvas)?.();
+}
+
+export function orbVisualOf(canvas: HTMLCanvasElement): OrbVisualOverride | undefined {
+  return published.get(canvas);
+}
+
+/** The renderer offers one still frame; the store calls it when the loop cannot. */
+export function registerOrbRenderer(canvas: HTMLCanvasElement, refresh: () => void): void {
+  refreshers.set(canvas, refresh);
+}
+
 /** Every change interpolates over half a second, inside the owner's 450 to 600 ms. */
 export const TRANSITION_MS = 500;
 /** Anything shorter than a quarter second is a flicker, not a state. */

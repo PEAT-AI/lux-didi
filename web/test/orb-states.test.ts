@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
-  createOrbStateMachine, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, TRANSITION_MS,
+  breathe, createOrbStateMachine, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, TRANSITION_MS,
   type MiniVisualState,
 } from '../src/orb-states.ts';
 
-const STATES: MiniVisualState[] = ['off', 'listening', 'thinking', 'tool', 'speaking', 'muted'];
+const STATES: MiniVisualState[] = ['cold', 'listening', 'thinking', 'tool', 'speaking', 'hot-muted'];
 const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
 
 /** One palette token's value, so the visuals are checked against the stylesheet itself. */
@@ -34,19 +34,23 @@ test('every state has one visual, and the colours are the mini palette tokens', 
   near('listening', 'mini-mark');          // the listening teal
   near('tool', 'mini-thinking-warm');      // the tool amber
   near('speaking', 'teal');
-  near('off', 'mini-stage-1');
+  near('cold', 'mini-stage-1');
   // Thinking sits between the listening teal and the tool amber: a shift toward amber
   // before the amber itself, which is the owner's word.
   const [teal, amber, thinking] = [ORB_VISUALS.listening.hue, ORB_VISUALS.tool.hue, ORB_VISUALS.thinking.hue];
   assert.ok(thinking < teal && thinking > amber, `thinking (${thinking}) is between ${teal} and ${amber}`);
-  // Off and muted share the quiet colour and differ by glow and amplitude, so muted
-  // reads as the same orb with the life taken out of it.
-  assert.equal(ORB_VISUALS.muted.hue, ORB_VISUALS.off.hue);
-  assert.ok(ORB_VISUALS.muted.amplitude < ORB_VISUALS.off.amplitude);
-  assert.deepEqual([ORB_VISUALS.off.posture, ORB_VISUALS.muted.posture], ['quiet', 'quiet'], 'a slow six second breathe');
+  // Cold and hot-muted share the quiet colour; hot-muted is the slightly more opaque
+  // grey, and cold breathes the slowest of every state.
+  assert.equal(ORB_VISUALS['hot-muted'].hue, ORB_VISUALS.cold.hue);
+  assert.ok(Math.abs(ORB_VISUALS.cold.opacity - 0.35) <= 0.02, `cold is about 35 percent, got ${ORB_VISUALS.cold.opacity}`);
+  assert.ok(ORB_VISUALS['hot-muted'].opacity > ORB_VISUALS.cold.opacity, 'hot-muted is slightly more opaque');
+  assert.ok(ORB_VISUALS.cold.breatheMs >= 9000, 'cold breathes very slowly');
+  assert.ok(ORB_VISUALS['hot-muted'].breatheMs < ORB_VISUALS.cold.breatheMs, 'hot-muted breathes faster than cold');
+  assert.deepEqual([ORB_VISUALS.cold.posture, ORB_VISUALS['hot-muted'].posture], ['quiet', 'quiet'], 'a slow breathe, not a swirl');
+  assert.ok(ORB_VISUALS.cold.grey > 0.9 && ORB_VISUALS['hot-muted'].grey === 1, 'both are grey');
   assert.equal(ORB_VISUALS.listening.followsMic, true, 'listening reacts to the owner');
   assert.equal(ORB_VISUALS.speaking.followsOutput, true, 'speaking reacts to Naya');
-  for (const state of ['off', 'thinking', 'tool', 'muted'] as MiniVisualState[]) {
+  for (const state of ['cold', 'thinking', 'tool', 'hot-muted'] as MiniVisualState[]) {
     assert.deepEqual([ORB_VISUALS[state].followsMic, ORB_VISUALS[state].followsOutput], [false, false],
       `${state} never reacts to a level`);
   }
@@ -64,40 +68,42 @@ test('the transition is 450 to 600 ms on an ease-in-out curve', () => {
 });
 
 test('a committed change eases colour, glow and amplitude, never jumps', () => {
-  const machine = createOrbStateMachine('off');
-  assert.equal(machine.visual(0).hue, ORB_VISUALS.off.hue);
+  const machine = createOrbStateMachine('cold');
+  assert.equal(machine.visual(0).hue, ORB_VISUALS.cold.hue);
   machine.request('listening', 0);
-  assert.equal(machine.visual(DEBOUNCE_MS - 1).hue, ORB_VISUALS.off.hue, 'nothing moves before the debounce');
-  assert.equal(machine.state(DEBOUNCE_MS), 'off');
+  assert.equal(machine.visual(DEBOUNCE_MS - 1).hue, ORB_VISUALS.cold.hue, 'nothing moves before the debounce');
+  assert.equal(machine.state(DEBOUNCE_MS), 'cold');
   // The debounce ends at 250 and the 500 ms ease starts there.
   const start = DEBOUNCE_MS;
   const at = (offset: number) => machine.visual(start + offset).hue;
-  assert.equal(at(0), ORB_VISUALS.off.hue, 'the ease starts where the old state was');
-  assert.equal(at(TRANSITION_MS / 2), (ORB_VISUALS.off.hue + ORB_VISUALS.listening.hue) / 2, 'half way at half time');
+  assert.equal(at(0), ORB_VISUALS.cold.hue, 'the ease starts where the old state was');
+  assert.equal(at(TRANSITION_MS / 2), (ORB_VISUALS.cold.hue + ORB_VISUALS.listening.hue) / 2, 'half way at half time');
   assert.equal(at(TRANSITION_MS), ORB_VISUALS.listening.hue, 'the ease lands exactly on the new state');
+  const glow = machine.visual(start + TRANSITION_MS / 2).glow;
+  assert.ok(glow > ORB_VISUALS.cold.glow && glow < ORB_VISUALS.listening.glow, 'glow eases too');
+  const amplitude = machine.visual(start + TRANSITION_MS / 2).amplitude;
+  assert.ok(amplitude > ORB_VISUALS.cold.amplitude && amplitude < ORB_VISUALS.listening.amplitude, 'amplitude eases too');
   const trail = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540].map(at);
-  // The hue travels from the off blue down to the listening teal, one way, no overshoot.
+  // The hue travels from the cold blue down to the listening teal, one way, no overshoot.
   for (let i = 1; i < trail.length; i += 1) assert.ok(trail[i]! <= trail[i - 1]!, 'one way, no overshoot');
   assert.equal(machine.state(start + TRANSITION_MS), 'listening');
-  const glow = machine.visual(start + TRANSITION_MS / 2).glow;
-  assert.ok(glow > ORB_VISUALS.off.glow && glow < ORB_VISUALS.listening.glow, 'glow eases too');
-  const amplitude = machine.visual(start + TRANSITION_MS / 2).amplitude;
-  assert.ok(amplitude > ORB_VISUALS.off.amplitude && amplitude < ORB_VISUALS.listening.amplitude, 'amplitude eases too');
 });
 
 test('a state that lasts under 250 ms is a flicker and never shows', () => {
-  const machine = createOrbStateMachine('off');
+  const machine = createOrbStateMachine('cold');
   machine.request('thinking', 1000);
-  machine.request('off', 1100);                       // back again inside the window
-  assert.equal(machine.visual(5000).state, 'off', 'a flicker leaves the state alone');
+  machine.request('cold', 1100);                       // back again inside the window
+  assert.equal(machine.state(5000), 'cold', 'a flicker leaves the state alone');
   machine.request('thinking', 6000);
   machine.request('tool', 6100);                      // replaced before it ever lasted
-  assert.equal(machine.visual(6100 + DEBOUNCE_MS - 1).state, 'off', 'the first candidate never commits');
-  assert.equal(machine.visual(6100 + DEBOUNCE_MS).state, 'tool', 'the state that lasts commits');
+  machine.visual(6100 + DEBOUNCE_MS - 1);
+  assert.equal(machine.state(6100 + DEBOUNCE_MS - 1), 'cold', 'the first candidate never commits');
+  machine.visual(6100 + DEBOUNCE_MS);
+  assert.equal(machine.state(6100 + DEBOUNCE_MS), 'tool', 'the state that lasts commits');
 });
 
 test('a new request mid-transition starts from the colour on screen', () => {
-  const machine = createOrbStateMachine('off');
+  const machine = createOrbStateMachine('cold');
   machine.request('listening', 0);
   const mid = DEBOUNCE_MS + TRANSITION_MS / 2;
   machine.visual(mid);
@@ -109,9 +115,16 @@ test('a new request mid-transition starts from the colour on screen', () => {
 });
 
 test('reduced motion keeps the colour change and drops the motion', () => {
-  const machine = createOrbStateMachine('off', { reducedMotion: true });
+  const machine = createOrbStateMachine('cold', { reducedMotion: true });
   machine.request('listening', 0);
   assert.equal(machine.visual(DEBOUNCE_MS).hue, ORB_VISUALS.listening.hue, 'the colour still changes');
-  assert.equal(machine.visual(DEBOUNCE_MS).state, 'listening');
+  assert.equal(machine.state(DEBOUNCE_MS), 'listening');
   assert.equal(machine.visual(DEBOUNCE_MS + TRANSITION_MS / 2).hue, ORB_VISUALS.listening.hue, 'and does not animate');
+});
+
+test('the opacity breathe is a slow sine on the clock', () => {
+  assert.equal(breathe(0.35, 9000, 0), 0.35, 'no breathe at zero');
+  assert.ok(breathe(0.35, 9000, 9000 / 4) > 0.35, 'a quarter period later it is fuller');
+  assert.ok(breathe(0.35, 9000, (9000 * 3) / 4) < 0.35, 'and then quieter');
+  assert.equal(breathe(1, 0, 1234), 1, 'a state without a breathe period holds its opacity');
 });

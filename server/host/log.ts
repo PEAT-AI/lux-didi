@@ -186,6 +186,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     }
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
   }
+  if (value.event === 'memory_note') {
+    // Closed shape: whether the note was saved, its code, the note's content word count and the share
+    // of those words one owner turn supported. Never the note text.
+    if (Object.keys(value).sort().join(',') !== ['event', 'remembered', 'code', 'words', 'supportRatio'].sort().join(',')) return;
+    if (typeof value.remembered !== 'boolean') return;
+    if (typeof value.code !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.code)) return;
+    if (!Number.isSafeInteger(value.words) || Number(value.words) < 0 || Number(value.words) > 10_000) return;
+    if (typeof value.supportRatio !== 'number' || !Number.isFinite(value.supportRatio) || value.supportRatio < 0 || value.supportRatio > 1) return;
+    return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supportRatio: value.supportRatio };
+  }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
     if (Object.keys(value).sort().join(',') !== ['event','code','error','kind','bytes','keys'].sort().join(',')) return;

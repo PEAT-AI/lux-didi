@@ -1535,7 +1535,9 @@ test('a tool batch resolving late still completes inline in the same turn', asyn
 });
 
 test('F2 the live tool steps retire when the turn completes, never into the next question', async t => {
-  const h = await harness(t, { tools: true });
+  let finish!: () => void;
+  const work = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: () => work });
   await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'step1', name: 'search_knowledge', args: { query: 'release freeze', limit: 1 } }] } });
   const waitFor = async (want: (steps: import('../live/types.js').LivePageProjection['steps']) => boolean): Promise<import('../live/types.js').LivePageProjection['steps']> => {
@@ -1550,6 +1552,7 @@ test('F2 the live tool steps retire when the turn completes, never into the next
   assert.equal(running![0]!.phase, 'start', 'the source being read is projected under the orb while it runs');
   assert.equal(running![0]!.callId, 'step1');
   assert.equal(running![0]!.subject, 'release freeze');
+  finish();
   await h.f.frame(2);
   const ended = await waitFor(steps => (steps ?? [])[0]?.phase === 'end');
   assert.equal(ended![0]!.ok, true);

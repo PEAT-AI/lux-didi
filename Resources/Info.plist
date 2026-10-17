@@ -3,6 +3,7 @@
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>LuxDidi</string>
 <key>CFBundleIdentifier</key><string>ai.peat.lux-didi</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleName</key><string>Lux Didi</string>
 <key>CFBundleDisplayName</key><string>Lux Didi</string>
 <key>CFBundlePackageType</key><string>APPL</string>

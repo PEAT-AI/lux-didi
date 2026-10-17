@@ -716,7 +716,12 @@ struct RootView: View {
         loginMenuItem?.isEnabled = loginAvailability != nil
     }
     @objc func startLiveFromMenu() { menuBridge.start() }
-    @objc func muteLiveFromMenu() { summonActions.mute() }
+    @objc func muteLiveFromMenu() {
+        summonActions.mute()
+        // M3-R5: the menu's mute is a presence change too, and a toggle of the mute is not
+        // a live state publication, so the pill's gate is re-asked here.
+        refreshMiniPill()
+    }
     @objc func stopLiveFromMenu() { menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
     @objc private func showGettingStarted() {

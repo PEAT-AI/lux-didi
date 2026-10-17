@@ -2915,16 +2915,18 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
 });
 
 test('a model turn start enters THINKING and every live_state change is written as it happens', async t => {
-  const lines: string[] = [];
-  t.mock.method(console, 'error', (...args: unknown[]) => {
-    if (typeof args[0] === 'string' && args[0].includes('live_state')) lines.push(args[0]);
-  });
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_state') receipts.push(record);
+  } });
+  t.after(() => detach());
   const fake = fakeLiveVoicePort();
   const h = await harness(t, { port: fake.port, language: 'en-IN' });
   const session = h.owner.create({ idempotencyKey: 'live-state-receipts', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
-  const states = () => lines.map(line => (JSON.parse(line) as { event: string; state: string }).state);
+  const states = () => receipts.map(record => String(record.state));
   const settle = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
   await settle();
   assert.deepEqual(states(), ['listening'], 'the opening state is written at the start, with no poll');

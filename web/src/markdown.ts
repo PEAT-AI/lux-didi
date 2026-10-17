@@ -263,7 +263,8 @@ export function evidenceRow(tool: ToolEvidence, block: { fields: string[]; snipp
     // does not carry is dropped, never shifted into the sender slot (F2).
     const fromIndex = parts.findIndex((part, index) => index > 0 && /^from:/i.test(part));
     const dateIndex = parts.findIndex((part, index) => index > 0 && /^date:/i.test(part));
-    const sender = fromIndex > 0 ? parts[fromIndex]!.replace(/^from:\s*/i, '') : '';
+    // A hit with no From still renders its sender slot, in words (K4-R2), never a stamp in its place.
+    const sender = fromIndex > 0 ? parts[fromIndex]!.replace(/^from:\s*/i, '') : 'unknown sender';
     const stamp = dateIndex > 0 ? parts[dateIndex]!.replace(/^date:\s*/i, '') : '';
     const leftover = parts.filter((_part, index) => index !== 0 && index !== fromIndex && index !== dateIndex);
     return { line: [sender, parts[0], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: clipWords(leftover.join(' ')) || snippet, at: stampOf(stamp) };

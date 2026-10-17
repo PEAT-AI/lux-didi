@@ -125,7 +125,7 @@ test('a stamp becomes relative words, and an unreadable stamp renders nothing at
 test('a mail row without a sender keeps the subject first and drops the stamp it cannot place (F2)', () => {
   const html = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
   assert.doesNotMatch(html, /2026-10-16T08:00:00Z/, 'a raw ISO stamp never reaches the owner');
-  assert.match(html, /chat-evidence-line">Deck · yesterday</, 'the subject leads and the stamp is read as words');
+  assert.match(html, /chat-evidence-line">unknown sender · Deck · yesterday</, 'the sender slot says so in words, and the stamp is relative');
   const both = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | from: Dana | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
   assert.match(both, /chat-evidence-line">Dana · Deck · yesterday</);
 });
@@ -180,7 +180,10 @@ function installTurnApi(turns: Record<string, { conversation: Record<string, unk
       const session = /^\/sessions\/([^/]+)$/.exec(path);
       if (session) return { entries: turns[session[1]!]!.entries };
       const run = /^\/chat\/([^/]+)$/.exec(path);
-      if (run) return turns[run[1]!]!.run;
+      if (run) {
+        const found = Object.values(turns).map(turn => turn.run).find(candidate => candidate.runId === run[1]);
+        if (found) return found;
+      }
       throw new Error(`Unexpected request ${path}`);
     },
     stream: async (_path: string, _signal: unknown, handler: (value: unknown) => void) => { onEvent = handler; },
@@ -198,17 +201,17 @@ function installTurnApi(turns: Record<string, { conversation: Record<string, unk
 
 const shapedBody = 'shaped-body-that-is-not-an-answer';
 const evidence: ToolEvidence[] = [{ name: 'mattermost_search', markdown: `- chan | alice | 2026-10-17T09:00:00Z | ${shapedBody}`, sources: [{ title: 'Mattermost: one', url: 'https://mm.example.org/p/1' }] }];
-const runOf = (over: Record<string, unknown>) => ({ runId: 'run-1', sessionId: 's1', state: 'terminal', outcome: 'complete', finalEntryId: null, finalText: null, partialText: '', mayHaveBeenSent: false, sequence: 0, memorySelection: null, toolEvidence: evidence, ...over });
-const conversationOf = () => ({ scope: 'conversation', sessionId: 's1', provider: 'p', model: 'm', state: 'active', revision: 1, permittedClasses: [], latestRunId: 'run-1' });
+const runOf = (over: Record<string, unknown>) => ({ runId: `run-${String(over.runId ?? '1')}`, sessionId: 's1', state: 'terminal', outcome: 'complete', finalEntryId: null, finalText: null, partialText: '', mayHaveBeenSent: false, sequence: 0, memorySelection: null, toolEvidence: evidence, ...over });
+const conversationOf = (runId: string) => ({ scope: 'conversation', sessionId: 's1', provider: 'p', model: 'm', state: 'active', revision: 1, permittedClasses: [], latestRunId: runId });
 const ownerSays = { id: 'e1', role: 'user' as const, text: 'what changed?' };
 
 test('the real view composes the turn: running steps, the answer with folded evidence, then the honest no-answer state (F1)', async () => {
   const ConnectedView = await loadView();
   const api = installTurnApi({
-    s1: { conversation: conversationOf(), entries: [ownerSays], run: runOf({}) },
-    s2: { conversation: conversationOf(), entries: [ownerSays], run: runOf({ state: 'accepted' }) },
-    s3: { conversation: conversationOf(), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf({ finalEntryId: 'e2' }) },
-    s4: { conversation: conversationOf(), entries: [ownerSays], run: runOf({ outcome: 'deadline', partialText: '' }) },
+    s1: { conversation: conversationOf('run-1'), entries: [ownerSays], run: runOf({ runId: '1' }) },
+    s2: { conversation: conversationOf('run-2'), entries: [ownerSays], run: runOf({ runId: '2', state: 'accepted' }) },
+    s3: { conversation: conversationOf('run-3'), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf({ runId: '3', finalEntryId: 'e2' }) },
+    s4: { conversation: conversationOf('run-4'), entries: [ownerSays], run: runOf({ runId: '4', outcome: 'deadline', partialText: '' }) },
   });
   try {
     const view = new ConnectedView(() => {});
@@ -221,8 +224,8 @@ test('the real view composes the turn: running steps, the answer with folded evi
     // A live run: one quiet line per step from the run's own events, nothing folded before the answer.
     await view.select('s2');
     await settle();
-    api.emit({ type: 'chat_step', runId: 'run-1', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
-    api.emit({ type: 'chat_step', runId: 'run-1', stepId: 'b', tool: 'gcal_list', phase: 'start' });
+    api.emit({ type: 'chat_step', runId: 'run-2', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
+    api.emit({ type: 'chat_step', runId: 'run-2', stepId: 'b', tool: 'gcal_list', phase: 'start' });
     await settle();
     view.attach();
     assert.match(api.panel.innerHTML, /Searched Mattermost, 13 results/);
@@ -232,7 +235,7 @@ test('the real view composes the turn: running steps, the answer with folded evi
     // A turn with an answer: steps summary, answer, evidence, sources, in that order.
     await view.select('s3');
     await settle();
-    api.emit({ type: 'chat_step', runId: 'run-1', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
+    api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
     await settle();
     view.attach();
     assert.match(api.panel.innerHTML, /<summary>Checked Mattermost<\/summary>/, 'the folded summary names the source');

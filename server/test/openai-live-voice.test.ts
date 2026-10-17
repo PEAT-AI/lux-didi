@@ -185,15 +185,17 @@ describe('openai gpt-live adapter', () => {
     await until(() => completions(opened.captured) === 1);
   });
 
-  test('a real two-word barge-in from split deltas flushes once and later audio still flows', async t => {
+  test('a split barge-in flushes once the server stops, and later audio still flows', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });
     await quiet();
-    assert.equal(interruptions(opened.captured), 0, 'the first half of one word is one word');
+    assert.equal(interruptions(opened.captured), 0, 'nothing is cut in the same breath as the first word');
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
     // Frames of the answer the owner just cut arrive inside the bounded post-flush window and are dropped; audio
     // flows again once the window has passed, and the drop never latches.
@@ -208,6 +210,8 @@ describe('openai gpt-live adapter', () => {
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 3);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'stop that' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 2);
   });
 
@@ -226,23 +230,63 @@ describe('openai gpt-live adapter', () => {
     assert.ok(safeEvent(receipt), 'the host log whitelist accepts the exact receipt shape');
   });
 
-  test('backchannels and a one-word stop never flush, and separate one-word episodes do not add up', async t => {
+  test('a backchannel over a stream the server keeps sending cuts nothing and loses no byte', async t => {
+    const logged = hostReceipts(t);
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
-    speak(opened.f);
+    speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
-    for (const delta of ['mm', 'mm-hm', '...']) {
-      opened.f.send({ type: 'session.input_transcript.delta', delta });
-      await quiet();
-      clock.advance(700);
-    }
-    for (const delta of ['stop', 'wait', 'no']) {
-      opened.f.send({ type: 'session.input_transcript.delta', delta });
-      await quiet();
-      clock.advance(700);
-    }
-    assert.equal(interruptions(opened.captured), 0, 'a deliberate one-word utterance does not cut the reply');
-    assert.equal(audioOf(opened.captured).length, 1);
+    const before = audioBytes(opened.captured);
+    // gpt-live-1 ignores a backchannel and keeps talking: its deltas never let 350 ms of quiet through, so the
+    // server has decided this is not an interruption and every byte still reaches the port (N1).
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm-hmm' });
+    for (let index = 0; index < 2; index += 1) { await quiet(); clock.advance(300); sendAudio(opened.f, 7_200); }
+    await quiet();
+    assert.equal(interruptions(opened.captured), 0, 'a backchannel never cuts her');
+    assert.equal(audioBytes(opened.captured) - before, 14_400 * 2, 'every byte of her answer is forwarded');
+    clock.advance(100);
+    await until(() => logged().some(entry => entry['event'] === 'gptlive_no_flush'));
+    const skipped = logged().filter(entry => entry['event'] === 'gptlive_no_flush');
+    assert.equal(skipped.length, 1, 'one receipt per episode, not one per word');
+    assert.deepEqual(skipped[0], { event: 'gptlive_no_flush', reason: 'server_continued', words: 1 });
+    assert.ok(safeEvent(skipped[0]), 'the host log whitelist accepts the no-flush receipt');
+  });
+
+  test('a one-word stop cuts her once the server has been quiet for 350 ms', async t => {
+    const logged = hostReceipts(t);
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'stop' });
+    await quiet();
+    clock.advance(349);
+    await quiet();
+    assert.equal(interruptions(opened.captured), 0, 'the server has not yielded before the gap');
+    clock.advance(1);
+    await until(() => interruptions(opened.captured) === 1);
+    const flush = logged().find(entry => entry['event'] === 'gptlive_flush');
+    assert.ok(flush, 'the flush reaches the host log');
+    assert.equal(flush['words'], 1, 'one word is enough: the server decided');
+    assert.equal(flush['yieldGapMs'], 350, 'the receipt carries the measured output gap');
+    assert.ok((flush['queuedMs'] as number) > 0, 'and what was cut');
+    assert.ok(safeEvent(flush), 'the host log whitelist accepts the flush receipt');
+  });
+
+  test('an answer the server has finished sending is cut 350 ms after the owner speaks', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 1);
+    // Long buffered answer, no delta for a second: the yield has already happened, the queue still holds speech.
+    clock.advance(1_000);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'wait' });
+    await quiet();
+    clock.advance(349);
+    await quiet();
+    assert.equal(interruptions(opened.captured), 0, 'one quiet millisecond short of the gap');
+    clock.advance(1);
+    await until(() => interruptions(opened.captured) === 1);
   });
 
   test('a short output pause under 2000 ms does not complete the turn', async t => {
@@ -337,19 +381,25 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(audioOf(opened.captured), [4_800], 'the first 100 ms of a slow stretch still plays');
   });
 
-  test('a barge-in during the head start discards the held audio', async t => {
+  test('a barge-in during the head start cuts the reply at the yield gap', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     sendAudio(opened.f, 4_800);
     await quiet();
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    // N1: the 300 ms head start of the stretch is released before the 350 ms yield gap, so 200 ms of her first
+    // syllable plays. That sliver is accepted: the server's yield, not the transcript, now decides the cut.
+    clock.advance(300);
+    await until(() => audioOf(opened.captured).length === 1);
+    assert.deepEqual(audioOf(opened.captured), [9_600], 'the head start had already begun to play');
+    clock.advance(50);
     await until(() => interruptions(opened.captured) === 1);
     await quiet();
-    assert.deepEqual(audioOf(opened.captured), [], 'the cut head start is never played');
     clock.advance(2_500);
     speak(opened.f);
-    await until(() => audioOf(opened.captured).length === 1);
-    assert.deepEqual(audioOf(opened.captured), [14_400], 'the next stretch starts a fresh head start');
+    await until(() => audioOf(opened.captured).length === 2);
+    assert.deepEqual(audioOf(opened.captured), [9_600, 14_400], 'the next stretch starts a fresh head start');
   });
 
   test('two parallel tool calls are answered one at a time and sent upstream once', async t => {
@@ -381,10 +431,12 @@ describe('openai gpt-live adapter', () => {
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
     // A separator-only fragment lands 600 ms into the 700 ms quiet window: it is journaled, but it is not a delta of
     // the episode, so the episode still ends on time and its post-flush receipt is not postponed.
-    clock.advance(600);
+    clock.advance(250);
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' ' });
     await until(() => opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === ' '));
     clock.advance(100);
@@ -395,8 +447,10 @@ describe('openai gpt-live adapter', () => {
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' ' });
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });
     await quiet();
-    assert.equal(interruptions(opened.captured), 1, 'one word after a whitespace fragment is still one word');
+    assert.equal(interruptions(opened.captured), 1, 'a word after a whitespace fragment starts a new episode and cuts nothing yet');
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 2);
   });
 
@@ -407,6 +461,8 @@ describe('openai gpt-live adapter', () => {
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
     clock.advance(700);
     await until(() => logged().some(entry => entry['event'] === 'gptlive_post_flush_audio_ms'));
@@ -432,6 +488,8 @@ describe('openai gpt-live adapter', () => {
     speak(first.f);
     await until(() => audioOf(first.captured).length === 1);
     first.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(first.captured) === 1);
     first.session.close();
     await first.session.done;
@@ -441,6 +499,8 @@ describe('openai gpt-live adapter', () => {
     speak(second.f);
     await until(() => audioOf(second.captured).length === 1);
     second.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(second.captured) === 1);
     assert.equal(interruptions(second.captured), 1);
     second.session.close();
@@ -531,6 +591,26 @@ describe('openai gpt-live adapter', () => {
     assert.equal(settled, false);
     session.close();
   });
+
+  test('an unread provider frame is counted and logged once per session', async t => {
+    const logged = hostReceipts(t);
+    const { f, session } = await ready(t);
+    // N1: a frame this adapter has no rule for may be the yield signal it does not read yet, so its name is kept.
+    f.send({ type: 'session.output_audio.started', event_id: 'event_1' });
+    f.send({ type: 'session.output_audio.started', event_id: 'event_2' });
+    f.send({ type: 'response.cancelled', event_id: 'event_3' });
+    await quiet();
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_unknown_frame'), [], 'nothing is logged mid-session');
+    session.close();
+    await session.done;
+    await quiet();
+    const unknown = logged().filter(entry => entry['event'] === 'gptlive_unknown_frame');
+    assert.deepEqual(unknown, [
+      { event: 'gptlive_unknown_frame', type: 'session.output_audio.started', count: 2 },
+      { event: 'gptlive_unknown_frame', type: 'response.cancelled', count: 1 },
+    ], 'one record per unread type, with its count');
+    for (const entry of unknown) assert.ok(safeEvent(entry), 'the host log whitelist accepts the frame receipt');
+  });
 });
 
 describe('openai gpt-live turn states', () => {
@@ -606,17 +686,20 @@ describe('openai gpt-live turn states', () => {
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking']);
   });
 
-  test('owner background speech over her own audio flips no state', async t => {
+  test('background speech while the server keeps talking flips no state and forwards every byte', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm' });
     await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
-    clock.advance(700);
+    // The server answers this background speech by carrying on, so no 350 ms gap ever opens and nothing is cut.
+    for (let index = 0; index < 2; index += 1) { clock.advance(300); sendAudio(opened.f, 7_200); }
+    clock.advance(100);
     await quiet();
     assert.equal(starts(opened.captured), 0, 'her audio is playing, so this is not a think time');
-    assert.equal(interruptions(opened.captured), 0, 'one word is not a barge-in');
+    assert.equal(interruptions(opened.captured), 0, 'the server talked over the background speech');
+    assert.equal(audioBytes(opened.captured), 192_000 + 14_400 * 2, 'every frame reached the port');
     assert.deepEqual(project(opened.captured.events), ['listening', 'speaking']);
   });
 
@@ -627,6 +710,8 @@ describe('openai gpt-live turn states', () => {
     speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
     const before = audioOf(opened.captured).length;
     // Every frame is delivered before the clock moves, so the arrival gap is read the way the adapter reads it.
@@ -643,12 +728,14 @@ describe('openai gpt-live turn states', () => {
     assert.ok(safeEvent(dropped[0]), 'the host log whitelist accepts the dropped-window receipt');
   });
 
-  test('a cut answer that resumes after a 400 ms gap plays at once', async t => {
+  test('a straggler after a yield flush is dropped until a 400 ms output gap', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await quiet();
+    clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
     const before = audioOf(opened.captured).length;
     sendAudio(opened.f, 7_200);

@@ -89,14 +89,19 @@ export function liveActivity(live: LiveCurrent | undefined): LiveActivity | unde
 /** A tool step as the voice view shows it: one line per source, its own state, its own phrase. */
 export interface LiveStepLine { key: string; text: string; done: boolean; failed: boolean }
 
-/** The steps of the turn in flight, one line per source, in the order the sources started. */
+/** The steps of the turn in flight, one line per source, in the order the sources started. An end
+ *  step replaces its own start line in place, so a poll can never show both. */
 export function liveStepLines(live: LiveCurrent | undefined): LiveStepLine[] {
-  return (live?.steps ?? []).map(step => ({
-    key: step.stepId,
-    text: stepPhrase(step),
-    done: step.phase === 'end' && step.ok !== false,
-    failed: step.phase === 'end' && step.ok === false,
-  }));
+  const byId = new Map<string, LiveStepLine>();
+  for (const step of live?.steps ?? []) {
+    byId.set(step.stepId, {
+      key: step.stepId,
+      text: stepPhrase(step),
+      done: step.phase === 'end' && step.ok !== false,
+      failed: step.phase === 'end' && step.ok === false,
+    });
+  }
+  return [...byId.values()];
 }
 
 /** The step list dims once she has started answering: the owner hears the answer now, and the

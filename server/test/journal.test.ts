@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
 import {
-  capJournalText, configureDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, journalRecord, resetDebugJournal,
+  capJournalText, configureDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
 } from '../host/journal.js';
 import { safeEvent } from '../host/log.js';
 import { openMemoryFixture } from './memory-context-process.js';
@@ -224,8 +224,13 @@ test('a live session journals its instructions, provider ack, transcripts and it
     prompt: { text: 'Synthetic live instructions', dataClass: 'ordinary' },
   });
   const adapter = new GeminiLiveVoiceAdapter(options({ socketFactory: ws.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference }));
+  // Every timer is parked: the session's own deadlines never fire in this test.
+  const schedule = (callback: () => void) => {
+    work.push(callback);
+    return { unref(): void { /* parked */ }, cancel(): void { /* parked */ } };
+  };
   const owner = createLiveSessionOwner({
-    store: f.store, profile, now: () => NOW, schedule: task => work.push(task),
+    store: f.store, profile, now: () => NOW, schedule,
     voice: { capabilities: adapter.capabilities, open: (request, control) => adapter.open(request, control) },
   });
   owner.recover();

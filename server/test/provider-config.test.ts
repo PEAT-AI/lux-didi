@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
-import { ConfigError, initializeProviderConfig, loadProviderConfig } from '../config/index.js';
+import { ConfigError, credentialsFor, initializeProviderConfig, loadProviderConfig } from '../config/index.js';
 import { validateOwner } from '../config/files.js';
 
 const synthetic = 'synthetic_NEVER_PRINT_739+abc=';
@@ -307,4 +307,47 @@ test('owner profile file bytes remain distinct from expanded UTF-16 owner sectio
   assert.ok(byteOversize.lore.text.length < 60_000);
   writeFileSync(path, JSON.stringify(byteOversize));
   assert.deepEqual(loadOwnerProfile({ path, ownerId: 'synthetic-owner' }), { status: 'error', code: 'too_large' });
+});
+
+test('init --provider openai seeds only the OpenAI slot from OPENAI_API_KEY', async t => {
+  const f = fixture(t);
+  writeFileSync(f.sourceEnvPath, `GEMINI_API_KEY=synthetic_NEVER_PRINT_739\nOPENAI_API_KEY=${synthetic}\n`, { mode: 0o600 });
+  const result = f.run(['--provider', 'openai']);
+  assert.equal(result.status, 0, 'the openai slot seeds cleanly');
+  assert.equal(result.stdout.includes(synthetic), false);
+  assert.equal(result.stderr.includes(synthetic), false);
+  // One slot file, named by its own reference, and no text profile borrowed from the Gemini path.
+  assert.equal(existsSync(join(f.configDir, 'openai-primary.json')), true);
+  assert.equal(existsSync(join(f.configDir, 'gemini-primary.json')), false);
+  assert.equal(existsSync(join(f.configDir, 'profile.json')), false);
+  assert.deepEqual(loadProviderConfig(f.options), { status: 'unconfigured' }, 'the text provider stays unconfigured');
+});
+
+test('init --provider openai without OPENAI_API_KEY fails closed and seeds nothing', async t => {
+  const f = fixture(t);
+  const result = f.run(['--provider', 'openai']);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout.includes(synthetic) || result.stderr.includes(synthetic), false);
+  assert.equal(existsSync(join(f.configDir, 'openai-primary.json')), false);
+});
+
+test('init --provider rejects an unknown provider before it writes anything', async t => {
+  const f = fixture(t);
+  const result = f.run(['--provider', 'not-a-provider']);
+  assert.notEqual(result.status, 0);
+  assert.equal(existsSync(f.configDir), false);
+});
+
+test('a credentials resolver reads only the slot it is asked for and never falls back', async t => {
+  const f = fixture(t);
+  f.setup();
+  assert.equal(f.load().status, 'ready');
+  // Only the Gemini slot exists: asking for the OpenAI reference must fail closed, never borrow that key.
+  await assert.rejects(credentialsFor(f.configDir).resolve('openai-primary'), { code: 'file_missing' });
+  assert.equal(await credentialsFor(f.configDir).resolve('gemini-primary'), synthetic);
+  await assert.rejects(credentialsFor(f.configDir).resolve('unknown-reference'), { code: 'invalid_reference' });
+  // With both slots present each reference resolves its own file.
+  writeFileSync(join(f.configDir, 'openai-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'openai-primary', key: 'openai_NEVER_PRINT_739' }), { mode: 0o600 });
+  assert.equal(await credentialsFor(f.configDir).resolve('openai-primary'), 'openai_NEVER_PRINT_739');
+  assert.equal(await credentialsFor(f.configDir).resolve('gemini-primary'), synthetic);
 });

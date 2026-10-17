@@ -80,10 +80,11 @@ function writeFailingStore(store: Store, marker: string): Store {
   return store;
 }
 
-function profileInput(limits?: Record<string, number>, model = MODEL) {
+function profileInput(limits?: Record<string, number>, model = MODEL, provider: 'gemini' | 'openai' = 'gemini') {
   return {
-    provider: 'gemini', liveModelId: model, voice: 'ExplicitVoice', keyReference: 'test-reference',
-    route: { enabled: true, provider: 'gemini', modelId: model, dataClasses: ['ordinary'] },
+    provider, liveModelId: model, voice: 'ExplicitVoice',
+    keyReference: provider === 'openai' ? 'openai-primary' : 'test-reference',
+    route: { enabled: true, provider, modelId: model, dataClasses: ['ordinary'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
     ...(limits ? { limits } : {}),
   };
@@ -108,6 +109,7 @@ async function harness(t: TestContext, overrides: {
   port?: LiveVoicePort;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
+  provider?: 'gemini' | 'openai';
   tools?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
@@ -131,7 +133,7 @@ async function harness(t: TestContext, overrides: {
   if (overrides.failingWrite) writeFailingStore(store, overrides.failingWrite);
   let clock = NOW;
   let memorySelections = 0;
-  const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model);
+  const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model, overrides.provider);
   const profile = validateLiveProfile({ ...initialProfile,
     ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
@@ -310,6 +312,25 @@ test('a test-only port with different capabilities drives the live session with 
   assert.deepEqual([...(chunk.value as { pcm: Uint8Array }).pcm], [1, 2, 3]);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
+});
+
+test('the host suite drives a port declared as gemini and as openai with no provider branch', async t => {
+  for (const provider of ['gemini', 'openai'] as const) {
+    const model = provider === 'openai' ? 'gpt-live-1' : MODEL;
+    const fake = fakeLiveVoicePort({ provider });
+    const h = await harness(t, { port: fake.port, provider, model });
+    const session = h.owner.create({ idempotencyKey: `provider-${provider}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    assert.equal(fake.port.capabilities.provider, provider, 'the port declares its own provider');
+    assert.equal(fake.sessionsOpened, 1, `the ${provider} port opened once`);
+    // The grant the host persists names the provider the profile carries, never a literal.
+    const grant = h.store.transaction(tx => tx.get('SELECT provider FROM live_grants WHERE live_session_id=?', [session.liveSessionId]));
+    assert.equal(grant?.['provider'], provider);
+    assert.equal(h.owner.current().state, 'listening');
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+  }
 });
 
 test('the host reuses a resumption handle only when the adapter declares the capability', async t => {

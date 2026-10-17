@@ -408,8 +408,8 @@ test('select writes the same persisted selection as the settings route and refus
   assert.deepEqual(saved['limits'], { sessionMs: 900000 }, 'limits and preferences survive the rewrite');
   // Direct call parity: the settings route and the CLI write identically.
   const direct = saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' });
-  assert.deepEqual(direct, { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin' });
+  assert.deepEqual(direct, { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin', accent: 'indian-strong' });
   // Gemini keeps its own voice list: Aoede is the one voice it serves, so any other pair is refused.
   const viaCli = saveLiveSelection({ configDir: f.configDir, provider: 'gemini', voice: 'Aoede' });
-  assert.deepEqual(viaCli, { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede' });
+  assert.deepEqual(viaCli, { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede', accent: 'indian-strong' });
 });

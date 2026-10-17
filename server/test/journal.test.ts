@@ -4,9 +4,9 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
-import { attachHostLogSink } from '../tools/host-events.js';
+import { attachHostLogSink, hostLogEvent } from '../tools/host-events.js';
 import {
-  capJournalText, configureDebugJournal, currentDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
+  capJournalText, configureDebugJournal, currentDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, journalRecord, resetDebugJournal,
 } from '../host/journal.js';
 import { safeEvent } from '../host/log.js';
 import { randomUUID } from 'node:crypto';
@@ -366,4 +366,27 @@ test('the journal defaults on when live.json is absent and the file can turn it 
   assert.equal(status.status, 'configured');
   assert.equal(status.status === 'configured' ? status.config.debugJournal : null, false);
   assert.equal(currentDebugJournal()?.enabled, false);
+});
+
+test('a disabled journal writes nothing and counts no failure', t => {
+  const dir = tempDir(t);
+  const journal = new DebugJournal(dir, { now: () => NOW, enabled: false });
+  journal.write({ kind: 'live', sessionId: 'live-synthetic-8', event: 'session_start', instructions: 'x' });
+  journal.write({ kind: 'live', sessionId: 'live-synthetic-8', event: 'transcript', speaker: 'owner', text: 'x' });
+  assert.equal(existsSync(join(dir, 'debug')), false, 'a disabled journal creates no directory');
+  assert.equal(journal.failures, 0, 'nothing is written, so nothing fails');
+});
+
+test('a native receipt the host already received lands in the current session journal', t => {
+  const dir = tempDir(t);
+  resetDebugJournal();
+  t.after(resetDebugJournal);
+  configureDebugJournal(dir, true);
+  journalRecord({ kind: 'live', sessionId: 'live-synthetic-9', event: 'session_start', instructions: 'x' });
+  hostLogEvent({ event: 'native_action', action: 'open_url', code: 'opened', detail: 'https' });
+  const lines = records(join(dir, 'debug', dayName(Date.now()), 'live-live-synthetic-9.jsonl'));
+  const native = lines.find(line => line['event'] === 'native')!;
+  assert.equal(native['name'], 'native_action');
+  assert.equal(native['action'], 'open_url');
+  assert.equal(native['code'], 'opened');
 });

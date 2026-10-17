@@ -55,10 +55,12 @@ export function miniAriaLabel(state: MiniState): string {
 
 export function miniMarkup(state: MiniState, _caption = ''): string {
   const bars = Array.from({ length: 5 }, (_, index) => `<i data-bar="${index + 1}"></i>`).join('');
-  return `<section class="mini-stage mini-pill" data-mini-state="${state}" aria-label="${miniAriaLabel(state)}">`
-    + `<div class="presence-glow" aria-hidden="true"></div>`
-    + `<canvas id="didi-orb" width="72" height="72" aria-hidden="true"></canvas>`
-    + `<div class="mini-level" aria-hidden="true">${bars}</div></section>`;
+  // M3-R4: the stage holds the orb and its rings only. The pill's wash and its level
+  // meter are pill chrome, so the stage can be looked at on its own.
+  return '<div class="mini-pill">'
+    + `<section class="mini-stage" data-mini-state="${state}" aria-label="${miniAriaLabel(state)}">`
+    + '<canvas id="didi-orb" width="72" height="72" aria-hidden="true"></canvas></section>'
+    + `<div class="mini-level" aria-hidden="true">${bars}</div></div>`;
 }
 
 /** Each bar's share of the stage height for one input level (0...1), so the
@@ -134,6 +136,17 @@ export function clickStep(state: MiniState): PresenceStep {
   return 'hot-mute';
 }
 
+/** The visual the loop last painted, so a strip can prove a transition moved the colour
+ *  without anyone opening an image. */
+let painted: OrbVisual | undefined;
+
+export interface PillVisualHost { didiOrbVisual?: () => OrbVisual | undefined }
+
+export function installMiniVisuals(host: PillVisualHost = globalThis as PillVisualHost): void {
+  host.didiOrbVisual = () => painted;
+}
+installMiniVisuals();
+
 /** The stage's state, or the cold state when there is no stage yet. */
 export function pillState(stage: Element | null | undefined): MiniState {
   const value = stage?.getAttribute('data-mini-state');
@@ -148,7 +161,7 @@ export interface PillClickHost { didiClickStep?: () => PresenceStep }
 export function installMiniClick(host: PillClickHost = globalThis as PillClickHost): void {
   host.didiClickStep = () => {
     if (typeof document === 'undefined') return 'connect';
-    return clickStep(pillState(document.querySelector('.mini-pill')));
+    return clickStep(pillState(document.querySelector('.mini-stage')));
   };
 }
 installMiniClick();
@@ -180,17 +193,22 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const step = () => {
     if (stopped) return;
     const at = now();
-    const stage = doc.querySelector('.mini-pill');
+    const stage = doc.querySelector('.mini-stage');
+    const pill = doc.querySelector('.mini-pill');
     machine.request(visualState(pillState(stage)), at);
     const visual = machine.visual(at);
+    painted = visual;
     const canvas = stage?.querySelector('canvas') as HTMLCanvasElement | null | undefined;
     if (canvas) (scope.publish ?? publishOrbVisual)(canvas, visual);
-    // The opacity and the grey are the state machine's numbers, painted as CSS variables
-    // so the stylesheet owns the drawing and the breath stays a pure function of the clock.
+    // The opacity, the grey and the wash are the state machine's numbers, painted as CSS
+    // variables so the stylesheet owns the drawing and the breath stays a pure function of
+    // the clock. The wash lives on the pill, outside the stage.
     const element = stage as HTMLElement | null | undefined;
     element?.style?.setProperty('--mini-orb-opacity', breathe(visual.opacity, visual.breatheMs, at).toFixed(3));
     element?.style?.setProperty('--mini-orb-grey', visual.grey.toFixed(3));
-    miniMeter(stage ?? null, visual.followsMic ? pillMic : 0);
+    element?.style?.setProperty('--mini-orb-bright', visual.bright.toFixed(3));
+    (pill as HTMLElement | null | undefined)?.style?.setProperty('--mini-wash', visual.glow.toFixed(3));
+    miniMeter(pill ?? null, visual.followsMic ? pillMic : 0);
     handle = frame?.(step);
   };
   handle = frame(step);

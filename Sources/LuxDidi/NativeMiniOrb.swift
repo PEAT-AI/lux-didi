@@ -189,13 +189,14 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     @objc private func screenParametersChanged() { restoreFrame(); rememberFrame() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
-    /// Ask the page which of the three steps this press means. A page that cannot
-    /// answer means no press: the orb never guesses an audio action.
+    /// Ask the page which of the three steps this press means. A page that is not ready
+    /// yet still gets a press that does something: connect is the step with nothing live,
+    /// and it never guesses a mute the owner did not ask for.
     private func press() {
         Task { [weak self] in
             guard let self else { return }
             let answer = try? await self.webView.evaluateJavaScript("window.didiClickStep ? window.didiClickStep() : null")
-            guard let raw = answer as? String, let step = PresenceStep(rawValue: raw) else { return }
+            let step = (answer as? String).flatMap(PresenceStep.init(rawValue:)) ?? .connect
             self.onStep(step)
         }
     }

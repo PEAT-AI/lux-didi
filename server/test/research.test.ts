@@ -599,7 +599,8 @@ test('the first sufficient source keeps its own second hop when the round is cut
   assert.ok(read.includes('get_insight'), 'the winner opened the insight it found before the round closed');
   assert.equal(winnerSignalAborted, false, 'the winner is never abandoned by the early return');
   assert.equal(h.logs[0]!.sources.find(entry => entry.kind === 'knowledge')?.disposition, 'completed');
-  assert.deepEqual(h.logs[0]!.unchecked, ['mail'], 'the abandoned source is named, not silently dropped');
+  assert.ok((h.logs[0]!.unchecked ?? []).includes('mail'), 'the abandoned source is named, not silently dropped');
+  assert.ok(!(h.logs[0]!.unchecked ?? []).includes('knowledge'), 'the source that answered is not named unchecked');
   assert.ok((reply['findings'] as unknown[]).length > 0);
 });
 

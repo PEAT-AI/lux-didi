@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, normalizeLookups, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, researchDeclaration, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchLookupLog, type ResearchRoutedLog, type SourceKind,
 } from '../tools/research.js';
@@ -257,16 +257,18 @@ const CALENDAR_EVENT = '- 2026-10-16T09:00:00+05:30, Standup, Room 1 | Primary [
 const CALENDAR_LIST = '- Work [work@example.com]\n- Home [home]\n- Family [family]';
 
 /** The calendar layer's real answer: one primary-calendar event read plus the calendar list. */
-function calendarExecute(clock: { value: number }, slowMs = 0): { execute: ResearchDeps['execute']; calls: () => IntentSubCall[][] } {
+function calendarExecute(clock: { value: number }, slowMs = 0): { execute: ResearchDeps['execute']; calls: () => IntentSubCall[][]; live: () => boolean[] } {
   const batches: IntentSubCall[][] = [];
-  const execute: ResearchDeps['execute'] = async (subs: readonly IntentSubCall[]) => {
+  const live: boolean[] = [];
+  const execute: ResearchDeps['execute'] = async (subs: readonly IntentSubCall[], signal: AbortSignal) => {
     batches.push(subs.map(call => ({ ...call })));
+    live.push(!signal.aborted);
     clock.value += slowMs;
     return subs.map(call => call.name === 'gcal_list'
       ? sub(call.name, CALENDAR_EVENT, true, call.key)
       : sub(call.name, CALENDAR_LIST, true, call.key));
   };
-  return { execute, calls: () => batches };
+  return { execute, calls: () => batches, live: () => live };
 }
 
 test('a routed calendar read is one bounded primary-calendar call that names what it did not read', async () => {
@@ -357,4 +359,48 @@ test('the per-lookup receipt carries source, outcome and ms and never a query', 
   assert.equal(receipt.source, 'knowledge');
   assert.equal(receipt.outcome, 'ok');
   assert.equal(JSON.stringify(receipt).includes('secret release plan'), false, 'never the query text');
+});
+
+// --- N3 review F1/F2: the calendar budget and the batch the router hands it -----------------------
+
+test('the batch bound grows with the lookup count for every source except the calendar', () => {
+  assert.equal(lookupBound('calendar', 1, 15_000), RESEARCH.routedCalendarDeadlineMs);
+  assert.equal(lookupBound('calendar', 2, 15_000), RESEARCH.routedCalendarDeadlineMs, 'two windows never double the calendar budget');
+  assert.ok(lookupBound('calendar', 2, 15_000) <= RESEARCH.startDeadlineMs / 2, 'and it stays well inside the start deadline');
+  assert.equal(lookupBound('knowledge', 1, 15_000), RESEARCH.sourceDeadlineMs);
+  assert.equal(lookupBound('knowledge', 2, 15_000), RESEARCH.sourceDeadlineMs * 2, 'a coalesced batch buys the time each lookup needs');
+  assert.equal(lookupBound('knowledge', 4, 9_000), 9_000, 'never past what the run has left');
+});
+
+test('the calendar read is handed a live signal and settles well inside the start deadline', async () => {
+  const clock = { value: 0 };
+  const calendar = calendarExecute(clock, 6_000);
+  const h = harness({ now: () => clock.value, execute: calendar.execute });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
+  }, new AbortController().signal);
+  assert.deepEqual(calendar.live(), [true], 'the batch was not already aborted when the read started');
+  assert.ok(RESEARCH.routedCalendarDeadlineMs < RESEARCH.startDeadlineMs, 'the bound itself is inside the run deadline');
+  const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
+  assert.ok(findings.some(finding => finding.source === 'calendar'), 'and the read answered');
+});
+
+test('two calendar windows share one calendar-list read and one budget, each reporting its own outcome', async () => {
+  const clock = { value: 0 };
+  const calendar = calendarExecute(clock);
+  const h = harness({ now: () => clock.value, execute: calendar.execute });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is on my calendar',
+    lookups: [{ source: 'calendar', query: 'today' }, { source: 'calendar', query: 'next week' }],
+  }, new AbortController().signal);
+  assert.equal(calendar.calls().length, 1, 'one execution for both windows');
+  const names = calendar.calls()[0]!.map(call => call.name);
+  assert.deepEqual(names, ['gcal_list', 'gcal_calendars', 'gcal_list'], 'the calendar list is dispatched once for both windows');
+  assert.deepEqual(h.lookups.map(event => event.source), ['calendar', 'calendar']);
+  assert.deepEqual(h.lookups.map(event => event.outcome), ['ok', 'ok']);
+  const windows = calendar.calls()[0]!.filter(call => call.name === 'gcal_list').map(call => call.args['timeMin']);
+  assert.equal(new Set(windows).size, 2, 'and each window is its own read');
+  assert.ok(lookupBound('calendar', 2, RESEARCH.startDeadlineMs) === RESEARCH.routedCalendarDeadlineMs, 'two windows get one read budget, never two');
+  const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
+  assert.ok(findings.some(finding => finding.source === 'calendar'), 'the calendar layer answers for both windows');
 });

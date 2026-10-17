@@ -1081,12 +1081,23 @@ interface RoutedOutcome {
 interface RoutedPlan { lookup: ResearchLookup; read: { source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
 
 /**
+ * N3: the wall-clock one coalesced batch may take. It grows with the number of lookups the batch
+ * carries, so coalescing never shrinks the time each lookup gets, except for the calendar: that read
+ * has its own budget which sits inside the start deadline, and multiplying it would put the calendar
+ * back on the deadline this change exists to keep it off. Never above what the run has left.
+ */
+export function lookupBound(source: SourceKind, lookups: number, remainingMs: number): number {
+  const perRead = source === 'calendar' ? RESEARCH.routedCalendarDeadlineMs : RESEARCH.sourceDeadlineMs;
+  const wanted = source === 'calendar' ? perRead : perRead * Math.max(1, lookups);
+  return Math.min(wanted, remainingMs);
+}
+
+/**
  * N3: one source, one execution. Same-source lookups of one call are coalesced into a single batch
  * carrying every query, because three knowledge searches issued at once contended for the same 4 s
- * and all three were aborted, while a lone one returned in 2.2 s. The budget is sized by the number of
- * lookups in the batch, so coalescing never shrinks the time each lookup gets. Each lookup still
- * settles on its own outcome from its own sub-results, so a cut or failed read never takes the others
- * down.
+ * and all three were aborted, while a lone one returned in 2.2 s. The budget is `lookupBound`, sized by
+ * the number of lookups in the batch. Each lookup still settles on its own outcome from its own
+ * sub-results, so a cut or failed read never takes the others down.
  */
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
@@ -1110,20 +1121,29 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
   if (remainingMs <= 0) return [...done, ...all('unavailable')];
   const subs: IntentSubCall[] = [];
-  const owner: number[] = [];
-  reads.forEach((plan, index) => { for (const sub of plan.read.subs) { subs.push(sub); owner.push(index); } });
+  const owned: number[][] = reads.map(() => []);
+  const seen = new Map<string, number>();
+  reads.forEach((plan, index) => {
+    for (const sub of plan.read.subs) {
+      // A sub two lookups would both issue (the calendar list serves every window) is dispatched once.
+      const signature = `${sub.name}:${JSON.stringify(sub.args)}`;
+      const existing = seen.get(signature);
+      if (existing !== undefined) { owned[index]!.push(existing); continue; }
+      subs.push(sub);
+      owned[index]!.push(subs.length - 1);
+      seen.set(signature, subs.length - 1);
+    }
+  });
   if (subs.length === 0) return [...done, ...all('unavailable')];
   run.ops += Math.max(1, subs.length);
-  const perRead = source === 'calendar' ? RESEARCH.routedCalendarDeadlineMs : RESEARCH.sourceDeadlineMs;
-  const bound = Math.min(perRead * Math.max(1, reads.length), remainingMs);
-  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(bound)]);
+  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(lookupBound(source, reads.length, remainingMs))]);
   let results: IntentSubResult[];
   try { results = await deps.execute(subs, signal); }
   catch { return [...done, ...all(signal.aborted ? 'timeout' : 'failed')]; }
   // The execute contract returns one result per sub, in order, so each lookup keeps its own lines.
   const cutShort = signal.aborted;
   reads.forEach((plan, index) => {
-    const own = results.filter((_result, position) => owner[position] === index);
+    const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
     const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : 'empty';
     done.push(settle(plan, outcome, block.lines, block.total));

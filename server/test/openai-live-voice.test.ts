@@ -629,11 +629,14 @@ describe('openai gpt-live turn states', () => {
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
     await until(() => interruptions(opened.captured) === 1);
     const before = audioOf(opened.captured).length;
-    for (let index = 0; index < 20; index += 1) { sendAudio(opened.f, 7_200); clock.advance(100); await quiet(); }
+    // Every frame is delivered before the clock moves, so the arrival gap is read the way the adapter reads it.
+    for (let index = 0; index < 20; index += 1) { sendAudio(opened.f, 7_200); await quiet(); clock.advance(100); }
     assert.equal(audioOf(opened.captured).length, before, 'the cut answer never replays inside the window');
     clock.advance(600);
     sendAudio(opened.f, 7_200);
-    await until(() => audioOf(opened.captured).length === before + 1);
+    await until(() => audioOf(opened.captured).length >= before + 1);
+    await quiet();
+    assert.equal(audioOf(opened.captured).length, before + 1, 'exactly one frame plays after the bound');
     const dropped = logged().filter(entry => entry['event'] === 'gptlive_post_flush_dropped_ms');
     assert.equal(dropped.length, 1, 'one receipt for the dropped window');
     assert.ok((dropped[0]!['ms'] as number) >= 2_000, 'the bound is what ended the drop');

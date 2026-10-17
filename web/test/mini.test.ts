@@ -70,12 +70,13 @@ test('the mini route opens no audio context, no microphone and no Live socket', 
   // transport, so the surface cannot open a session of its own.
   const touched: string[] = [];
   const globals = globalThis as unknown as Record<string, unknown>;
+  // navigator is a getter-only global here, so the microphone guard above (the
+  // source scan for getUserMedia and mediaDevices) is the one that covers it.
   const names = ['AudioContext', 'webkitAudioContext', 'WebSocket', 'EventSource', 'RTCPeerConnection'];
   const saved = names.map((name) => [name, globals[name]] as const);
   for (const name of names) {
     globals[name] = function Forbidden(this: unknown) { touched.push(name); throw new Error(`${name} must not be opened by the mini route`); };
   }
-  globals.navigator = { ...(globals.navigator as object | undefined), mediaDevices: { getUserMedia: () => { touched.push('getUserMedia'); throw new Error('no microphone on the mini route'); } } };
   try {
     miniMarkup(miniState('LISTENING', undefined), 'Listening');
     miniModeButtonMarkup(true);

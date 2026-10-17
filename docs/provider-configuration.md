@@ -76,6 +76,12 @@ decides provider behaviour.
 {"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
 ```
 
+An optional `accent` field on the same file selects the spoken accent the host composes into
+the instructions: `indian-strong` (the default when the field is absent), `indian-light`, or
+`voice-default` for the voice's own accent. Any other value is a typed `invalid_accent` error,
+which the settings route answers as a 400. It applies from the next session start, so saving
+one needs no restart.
+
 The owner supplies this file in the selected protected configuration directory.
 The installer creates no profile and leaves existing files untouched. The public
 Live baseline remains the Naya base plus its terminal language anchor. When an

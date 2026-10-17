@@ -205,7 +205,7 @@ test('the research chat thread read uses the argument name the child declares, s
   }));
   const deps: ResearchDeps = {
     now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
+    selector: { select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
   };
   const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup' }, new AbortController().signal);
   assert.ok(dispatched.includes('mattermost_get_thread'), 'the thread follow-up runs');
@@ -237,4 +237,23 @@ test('a connector that cannot start reports a typed spawn reason and the child e
 test('a dead connector classifies as a spawn failure, so its discovery is never retried', () => {
   assert.equal(mongooseFailureStage('connector-unavailable', 'child_exited'), 'spawn');
   assert.notEqual(mongooseFailureStage('connector-unavailable', 'child_exited'), 'first_call');
+});
+
+// #351: when the connector itself is down, a chat lookup is reported unreachable at once, instead of
+// paying a source deadline on reads that cannot reach it.
+test('a chat lookup settles unavailable at once when the mattermost connector is down', async () => {
+  const dispatched: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['chat'], unavailableNow: () => ['chat'],
+    execute: async subs => {
+      for (const call of subs) dispatched.push(call.name);
+      return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0 }));
+    },
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+    selector: { select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', lookups: [{ source: 'chat', query: 'standup' }] }, new AbortController().signal);
+  assert.equal(reply['sources'] && (reply['sources'] as Record<string, string>)['chat'], 'unavailable');
+  assert.match(String(reply['note']), /could not reach team chat/, 'the answer says chat is unreachable, never that it searched and found nothing');
+  assert.deepEqual(dispatched, [], 'no sub-call is dispatched to a connector that cannot answer');
 });

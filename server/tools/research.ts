@@ -598,6 +598,11 @@ export interface ResearchDeps {
   configured: readonly SourceKind[];
   /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
   configuredNow?: (() => readonly SourceKind[]) | undefined;
+  /**
+   * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
+   * once instead of spending its deadline on sub-calls that cannot reach a stopped connector.
+   */
+  unavailableNow?: (() => readonly SourceKind[]) | undefined;
   selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
@@ -1032,7 +1037,7 @@ interface RoutedOutcome {
 }
 
 /** One lookup, always resolving: a failed or unreachable source never takes its neighbours down. */
-async function routedOne(deps: ResearchDeps, run: RunState, lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome> {
+async function routedOne(deps: ResearchDeps, run: RunState, lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome> {
   const readContext = { question: context.question, configured: context.configured, run, now: context.now };
   const at = context.now();
   const read = routedRead(lookup, readContext);
@@ -1046,6 +1051,7 @@ async function routedOne(deps: ResearchDeps, run: RunState, lookup: ResearchLook
     } catch { return settle('failed'); }
   }
   if (!context.configured.includes(read.source)) return settle('unavailable');
+  if (context.unavailable.includes(read.source)) return settle('unavailable');
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
   if (remainingMs <= 0) return settle('unavailable');
   run.ops += Math.max(1, read.subs.length);
@@ -1061,11 +1067,11 @@ async function routedOne(deps: ResearchDeps, run: RunState, lookup: ResearchLook
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
-async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
+async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
-  const pending = lookups.map(lookup => routedOne(deps, run, lookup, { question, configured, signal, now }));
+  const pending = lookups.map(lookup => routedOne(deps, run, lookup, { question, configured, unavailable, signal, now }));
   const outcomes = await Promise.all(pending);
   for (const outcome of outcomes) {
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
@@ -1098,6 +1104,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
   const now = () => deps.now();
   const configured = (deps.configuredNow ?? (() => deps.configured))();
+  const unavailable = (deps.unavailableNow ?? (() => []))();
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const publishStep = deps.step ?? liveToolStep;
   const stepCallId = call.callId ?? '';
@@ -1123,7 +1130,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
-  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, signal, now, limit);
+  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, signal, now, limit);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];

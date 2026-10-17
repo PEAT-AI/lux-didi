@@ -2836,12 +2836,14 @@ test('live.json without a provider is OpenAI GPT-Live by default and fails close
   assert.equal(loaded.config.provider, 'openai');
   assert.equal(loaded.config.model, 'gpt-live-1');
   assert.equal(loaded.config.voice, 'marin');
-  // No OpenAI key slot: a named status, never a silent Gemini session.
+  // TRAIN3J-R3: no OpenAI key slot is a create-time failure, never a silent Gemini session, and the
+  // status stays local validation (configured without reading the secret).
   const missing = composeLive(h.store, configDir);
-  assert.equal(missing.status.status, 'error');
-  assert.equal(missing.status.code, 'key_missing');
+  assert.equal(missing.status.status, 'configured');
   assert.equal(missing.status.provider, 'openai');
-  assert.equal(missing.service.enabled, false);
+  assert.equal(missing.service.enabled, true);
+  assert.throws(() => missing.service.create('ordinary', 'ov1-openai-missing', context(h.store)),
+    (error: { code?: string }) => error.code === 'key_missing');
   // Gemini stays selectable, but only when live.json says so and its own slot holds the key.
   writePrivate(configDir, 'live.json', `${JSON.stringify({
     schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede',
@@ -2849,7 +2851,8 @@ test('live.json without a provider is OpenAI GPT-Live by default and fails close
     preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
   })}\n`);
   const geminiMissing = composeLive(h.store, configDir);
-  assert.equal(geminiMissing.status.status, 'error');
-  assert.equal(geminiMissing.status.code, 'key_missing');
+  assert.equal(geminiMissing.status.status, 'configured');
   assert.equal(geminiMissing.status.provider, 'gemini', 'the status names the selected provider');
+  assert.throws(() => geminiMissing.service.create('ordinary', 'ov1-gemini-missing', context(h.store)),
+    (error: { code?: string }) => error.code === 'key_missing');
 });

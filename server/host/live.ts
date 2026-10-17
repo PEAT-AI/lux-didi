@@ -54,7 +54,7 @@ class HostLiveService implements LiveService {
   readonly maxBufferedBytes: number;
   readonly profileIdentity: string;
   constructor(private readonly profile: LiveProfile, private readonly owner: LiveSessionOwner, private readonly store: Store,
-    private readonly configDir: string) {
+    private readonly configDir: string, private readonly keyPresent: boolean) {
     this.maxBufferedBytes = profile.limits.wsBufferedBytes;
     this.profileIdentity = liveProfileIdentity(profile);
   }
@@ -67,13 +67,16 @@ class HostLiveService implements LiveService {
       ...(input.voice !== undefined ? { voice: input.voice } : {}) });
     return { ...saved, appliesAt: 'next_start' };
   }
+  private requireKey(): void { if (!this.keyPresent) unavailable('key_missing'); }
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
+    this.requireKey();
     const created = this.owner.create({ inputClass, idempotencyKey }, context);
     this.supersedeOtherSessions(created.liveSessionId);
     return created;
   }
   pendingJobs() { return this.owner.pendingJobs(); }
   createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot {
+    this.requireKey();
     const created = this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}) }, context);
     this.supersedeOtherSessions(created.liveSessionId);
     return created;
@@ -128,12 +131,9 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };
   const credentials = testing?.credentials ?? credentialsFor(configDir);
-  // Fail closed, named, and never on a silent provider fallback: a selected provider whose key slot is empty
-  // or whose adapter does not exist yet reports its own status code instead of serving Gemini.
-  if (!testing?.credentials && !slotKeyPresent(configDir, profile.keyReference)) {
-    const missing: LiveStatusPayload = { ...status, status: 'error', code: 'key_missing' };
-    return { service: new UnconfiguredLive(missing), status: missing };
-  }
+  // TRAIN3J-R3: the key slot is a create-time gate, never a status one. Status stays local validation
+  // (configured without reading the secret); a session for a slot with no key fails loud, never as Gemini.
+  const keyPresent = testing?.credentials !== undefined || slotKeyPresent(configDir, profile.keyReference);
   const provider = testing?.researchSelector === undefined ? loadProviderConfig({ configDir, ownerId: store.assistantId }) : undefined;
   const researchSelector = testing?.researchSelector ?? (provider?.status === 'ready'
     ? createGeminiSelector(new GeminiAdapter({ modelId: provider.profile.modelId, keyReference: provider.profile.keyReference, credentials, route: provider.route }))
@@ -156,7 +156,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   }
   const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchSelector ? { research: researchSelector } : {}), ...(now ? { now } : {}) });
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
-  return { service: new HostLiveService(profile, owner, store, configDir), status };
+  return { service: new HostLiveService(profile, owner, store, configDir, keyPresent), status };
 }
 
 /** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */

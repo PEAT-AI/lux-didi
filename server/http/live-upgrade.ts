@@ -56,6 +56,11 @@ const statusText: Record<number, string> = { 400: 'Bad Request', 401: 'Unauthori
 /** Map an owner or guard failure to a closed HTTP error. Never leaks prompt/key bytes. */
 export function liveServiceError(error: unknown): ServiceError {
   if (error instanceof ServiceError) return error;
+  // TRAIN3J-R3: a selected provider with no key slot fails loud at create time, named and never as Gemini.
+  const liveUnavailable = error as { name?: unknown; code?: unknown } | null;
+  if (liveUnavailable?.name === 'LiveUnavailable' && liveUnavailable.code === 'key_missing') {
+    return new ServiceError('key_missing', 'The selected provider has no key', 503);
+  }
   if (error instanceof ConnectorCompositionError) return new ServiceError('CONNECTOR_COMPOSITION_ERROR', 'Connector composition failed', 503);
   if (!(error instanceof LiveError)) return new ServiceError('INTERNAL_ERROR', 'Internal service error', 500);
   switch (error.code) {

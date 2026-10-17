@@ -22,7 +22,11 @@ const EVENT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface JournalRecord {
-  /** Omitted by callers that reach the journal from the tool layer; resolved from the session registry. */
+  /**
+   * Omitted by callers that reach the journal from the tool layer: the kind is resolved from the
+   * session registry, which the session's own start record seeded. A record whose session is unknown
+   * is dropped, never guessed into a file that does not exist.
+   */
   kind?: JournalKind;
   sessionId: string;
   generation?: number;
@@ -95,13 +99,12 @@ export class DebugJournal {
     const generation = record.generation;
     if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 0)) return;
     const { kind, sessionId, event, ...rest } = record;
-    const key = `${kind}:${sessionId}`;
     const now = this.#now();
-    let state = this.#sessions.get(key);
+    let state = this.#sessions.get(sessionId);
     if (!state) {
       if (kind === undefined) return;
       state = { kind, base: now, instructions: false };
-      this.#sessions.set(key, state);
+      this.#sessions.set(sessionId, state);
     }
     // The composed instructions are the largest content block in the journal: once per session.
     if (event === 'session_start') {

@@ -183,6 +183,27 @@ export function singleKeyRow(state: SingleKeyState): string {
     + '<p class="settings-restart">Right Option belongs to SuperWhisper and is never used.</p>';
 }
 
+/**
+ * Council 2026-10-17, option C: Naya is always there in the orb, and "Always show
+ * Naya" is the only switch over it. The app owns the state and pushes it as
+ * `window.didiPresence`; a preview or a test reads the default (on).
+ */
+export interface PresenceState { alwaysShow: boolean; listening: boolean }
+
+export function presenceState(source: unknown = (globalThis as { didiPresence?: unknown }).didiPresence): PresenceState {
+  const row = record(source);
+  return { alwaysShow: row?.alwaysShow !== false, listening: row?.state === 'live' };
+}
+
+export function presenceRow(state: PresenceState): string {
+  const why = !state.alwaysShow
+    ? 'Off. Turn it back on in the Naya menu bar menu.'
+    : state.listening
+      ? 'On, and Naya is listening now: a Right Command tap mutes her.'
+      : 'On. Naya is there in the orb, quiet until a Right Command tap.';
+  return `<p><strong>Always show Naya</strong> ${escapeHtml(state.alwaysShow ? 'on' : 'off')}. ${escapeHtml(why)}</p>`;
+}
+
 export function settingsMarkup(input: SettingsInput): string {
   return `<section id="settings-summary" class="panel didi-settings" aria-label="Didi settings">
 <h2>Didi settings</h2>
@@ -197,6 +218,7 @@ ${connectedSection(input.connected)}
 <select id="appearance-theme" name="appearance-theme"><option value="dark"${input.theme === 'light' ? '' : ' selected'}>Dark</option><option value="light"${input.theme === 'light' ? ' selected' : ''}>Light</option></select>
 <p class="muted">Dark is the default. Your choice is saved on this device.</p></section>
 <section class="settings-section"><h3>Single key</h3>${singleKeyRow(singleKeyState())}</section>
+<section class="settings-section"><h3>Presence</h3>${presenceRow(presenceState())}</section>
 <section class="settings-section"><h3>Where these settings live</h3>
 <dl class="settings-files">${FILE_ROWS.map(([what, file]) => `<dt>${escapeHtml(what)}</dt><dd><code>${escapeHtml(file)}</code></dd>`).join('')}</dl>
 <p class="settings-restart">Changes to these files need a restart of Lux Didi. Only the Live voice provider can be changed here.</p></section>

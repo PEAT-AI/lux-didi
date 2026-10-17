@@ -11,8 +11,9 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
-# The new owner suite and the accepted Live adapter regression suite run together.
-node --test --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-session.test.js | tee "$work/test.log"
+# The new owner suite, the warm-context pre-assembly suite and the accepted Live adapter
+# regression suite run together.
+node --test --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-session.test.js dist/test/warm-context.test.js | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live session tests failed' >&2; exit 1; }
 # The canonical files inventory must publish the live production root, offline.

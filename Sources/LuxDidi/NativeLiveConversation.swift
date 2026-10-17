@@ -268,10 +268,15 @@ enum State: String, CaseIterable {
             self.appendLocalDiagnostic(fields)
         }
     }
-    func toggleMute() {
+    func toggleMute() { setMuted(!muted) }
+    /// The presence fence (council 2026-10-17, option C): the state machine names the
+    /// target, the fence advances before the caller reports the mute, and muting drops
+    /// the model speech already queued so silence is immediate.
+    func setMuted(_ value: Bool) {
         guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
-        guard muteTask == nil else { return }
-        muted.toggle(); device.setMuted(muted)
+        guard value != muted, muteTask == nil else { return }
+        muted = value; device.setMuted(muted)
+        if muted { device.cancelPlayback() }
         let epoch = device.captureEpoch, requestedMute = muted, token = generation
         muteTask = Task { [weak self, coordinator] in
             await coordinator.setCaptureMuted(requestedMute, epoch: epoch)

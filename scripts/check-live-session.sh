@@ -13,7 +13,7 @@ cd server
 npm run build
 # The new owner suite, the warm-context pre-assembly suite, the debug journal suites and the accepted
 # Live adapter regression suite run together.
-node --test --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-session.test.js dist/test/research-steps.test.js dist/test/journal.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js | tee "$work/test.log"
+node --test --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/research-steps.test.js dist/test/journal.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js | tee "$work/test.log"
 
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live session tests failed' >&2; exit 1; }

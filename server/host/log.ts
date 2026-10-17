@@ -254,6 +254,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
+  if (value.event === 'live_watchdog') {
+    // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
+    if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
+    if (!isSafeMember(value.phase, ['armed', 'nudged', 'recovered', 'settled'])) return;
+    if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
+    return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
+  }
   if (value.event === 'live_turn_script') {
     // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.
     if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'script', 'latinChars', 'devanagariChars', 'afterTool', 'interrupted'].sort().join(',')) return;

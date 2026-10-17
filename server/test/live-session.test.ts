@@ -11,6 +11,9 @@ import './intent-tools.test.js';
 import './research.test.js';
 // Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
 import './host-log.test.js';
+// Side-effect import: register the 3j response-watchdog suite in the declared live-session check,
+// the same way the host-log allowlist suite is registered here.
+import './live-watchdog.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -42,7 +45,7 @@ import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -2855,4 +2858,30 @@ test('live.json without a provider is OpenAI GPT-Live by default and fails close
   assert.equal(geminiMissing.status.provider, 'gemini', 'the status names the selected provider');
   assert.throws(() => geminiMissing.service.create('ordinary', 'ov1-gemini-missing', context(h.store)),
     (error: { code?: string }) => error.code === 'key_missing');
+});
+
+test('a tool call in flight owns the silence, so the response watchdog never fires over it', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, beforeTool: () => slow, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  await attached(h);
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog' || record.event === 'live_dead_air_nudge') receipts.push(record);
+  } });
+  t.after(detach);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'watchdog1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
+  scheduler.runDue(); await tick();
+  const fired = receipts.filter(record => record.event === 'live_watchdog' && record['phase'] !== 'armed').map(record => record['phase']);
+  assert.deepEqual(fired, [], 'a working tool is not silence: the watchdog never nudges or recovers over it');
+  assert.ok(!receipts.some(record => record.event === 'live_dead_air_nudge'), 'the tool has not returned, so even the dead-air nudge has not fired');
+  assert.equal(h.requests.length, 1, 'no recovery while the tool is in flight');
+  finish();
+  await h.f.frame(2);
+  assert.ok(h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'the tool response still reaches the provider');
+  assert.equal(h.requests.length, 1, 'a delivered tool response returns to the same session');
 });

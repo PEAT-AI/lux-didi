@@ -87,6 +87,10 @@ test('every item text passes through the one screening seam, which returns what 
   const first = parseImportFile(sampleText).items[0]!;
   const parsed = parseImportFile(JSON.stringify({ ...first, text: 'a screened synthetic note' }));
   assert.equal(parsed.items[0]!.text, 'a screened synthetic note', 'the stored text is the seam output');
+  // K1's redactor runs at this seam, so an imported note never stores a synthetic secret either.
+  const refusedSecret = screenImportText('password: synthetic-value-not-a-real-key');
+  assert.doesNotMatch(refusedSecret.text, /synthetic-value-not-a-real-key/, 'the seam redacts a keyed secret');
+  assert.match(refusedSecret.text, /\[redacted\]/);
 });
 
 test('dry run counts the sample, prints no text and writes nothing', t => {

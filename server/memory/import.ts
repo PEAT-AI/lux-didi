@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import type { Transaction } from '../contracts/storage.js';
+import { redactSecrets } from '../tools/redact.js';
 
 /** Idempotency scope of an imported note, and the standing-memory selector. */
 export const IMPORT_PROVIDER = 'import-history';
@@ -67,13 +68,13 @@ export interface ScreenedText {
 
 /**
  * The one content seam every imported note text passes through, and the only
- * place the import decides what may be stored. K1's secret redactor is pointed
- * at this function when it lands, so returning the screened text here is enough
- * for every import path to inherit it. Today the text is unchanged and the
- * classified detector refuses it.
+ * place the import decides what may be stored. K1's secret redactor runs here,
+ * so every import path inherits it, and the classified detector refuses a note
+ * the owner marked private or sensitive.
  */
 export function screenImportText(text: string): ScreenedText {
-  return classified.test(text.trim()) ? { text, refused: 'private_memory_unsupported' } : { text, refused: null };
+  const screened = redactSecrets(text);
+  return classified.test(screened.trim()) ? { text: screened, refused: 'private_memory_unsupported' } : { text: screened, refused: null };
 }
 const control = /[\u0000-\u001f\u007f]/;
 const dateShape = /^\d{4}-\d{2}-\d{2}$/;

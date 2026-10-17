@@ -170,6 +170,7 @@ function installTurnApi(turns: Record<string, { conversation: Record<string, unk
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => panel } });
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => '{}', setItem() {} } });
   let onEvent: ((value: unknown) => void) | undefined;
+  let releaseRun: (() => void) | undefined;
   (globalThis as unknown as { __turnApi: unknown }).__turnApi = {
     request: async (path: string) => {
       if (path === '/status') return { ownerProfile: { displayName: 'Lux Didi' } };
@@ -186,12 +187,18 @@ function installTurnApi(turns: Record<string, { conversation: Record<string, unk
       }
       throw new Error(`Unexpected request ${path}`);
     },
-    // A live stream stays open, as a real one does: the view keeps accepting step events while it runs.
-    stream: (_path: string, _signal: unknown, handler: (value: unknown) => void) => { onEvent = handler; return new Promise(() => {}); },
+    // The conversation stream opens at once; the run stream stays open, as a real one does, until the test
+    // finishes its turn, so the view keeps accepting step events while it runs.
+    stream: (path: string, _signal: unknown, handler: (value: unknown) => void, close?: () => void) => {
+      if (path.startsWith('/conversations/')) { close?.(); return Promise.resolve(); }
+      onEvent = handler;
+      return new Promise<void>(resolve => { releaseRun = () => { close?.(); resolve(); }; });
+    },
   };
   return {
     panel,
     emit(event: unknown) { assert.ok(onEvent, 'the view opened a run stream before its steps arrived'); onEvent(event); },
+    release() { releaseRun?.(); releaseRun = undefined; },
     restore() {
       if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else delete (globalThis as { document?: unknown }).document;
       if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage); else delete (globalThis as { localStorage?: unknown }).localStorage;
@@ -233,6 +240,7 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.match(api.panel.innerHTML, /Checking your calendar\.\.\./);
     assert.doesNotMatch(api.panel.innerHTML, /chat-steps-done/);
     assert.doesNotMatch(api.panel.innerHTML, /chat-evidence/, 'no evidence before the answer');
+    api.release();
     // A turn with an answer: steps summary, answer, evidence, sources, in that order.
     await view.select('s3');
     await settle();
@@ -253,5 +261,5 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.match(api.panel.innerHTML, /id="connected-retry"/);
     assert.doesNotMatch(api.panel.innerHTML, /may have been sent/i);
     assert.ok(!api.panel.innerHTML.includes(shapedBody));
-  } finally { api.restore(); }
+  } finally { api.release(); api.restore(); }
 });

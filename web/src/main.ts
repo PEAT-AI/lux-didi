@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type Memor
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -12,6 +12,7 @@ import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
+import { isMiniRoute, miniMarkup, miniState, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -21,6 +22,7 @@ let nativeBridge: Bridge | undefined;
 let nativeFake: { requestStart(): void; requestStop(): void } | undefined;
 let liveMachine = new LiveMachine(() => {});
 const root = document.querySelector<HTMLDivElement>('#app')!;
+const miniRoute = isMiniRoute(location.search);
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
@@ -257,7 +259,23 @@ function bindScrollAnchors() {
     scrollObserver?.observe(el);
   }
 }
+const miniGlow: MiniState[] = ['listening', 'thinking', 'speaking', 'tool'];
+function paintMiniStage() {
+  const stage = document.querySelector('.mini-stage');
+  if (!stage) return;
+  const state = miniState(orbState(), liveActivity(live));
+  stage.setAttribute('data-mini-state', state);
+  stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
+}
+function renderMini() {
+  if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
+  orb?.destroy(); orb = undefined;
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), orbCaptionMarkup());
+  const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
+  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
+}
 function render() {
+  if (miniRoute) { renderMini(); return; }
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
@@ -556,6 +574,7 @@ function bindTranscript() {
   const list = document.getElementById('transcript');
   const pill = document.getElementById('transcript-jump');
   if (list && pill) transcriptPin = attachPin(list, pill);
+  if(miniRoute)paintMiniStage();
 }
 onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;

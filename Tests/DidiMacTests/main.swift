@@ -36,6 +36,35 @@ do {
 } catch { print("PASS: unapproved service descriptor rejected") }
 expect(Presentation.canSend("  hello\n") && !Presentation.canSend(" \n"), "text input boundary")
 expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "accepted is not read")
+
+// W15 mini orb: show starts Live, the same chord hides and stops it, a click
+// expands to the full window and keeps Live running, and the frame is remembered.
+var liveStarted = 0, liveStopped = 0, presented = 0, dismissed = 0, expanded = 0
+var liveRunning = false
+let miniOrb = MiniOrbToggle(
+    startLive: { liveStarted += 1; liveRunning = true },
+    stopLive: { liveStopped += 1; liveRunning = false },
+    liveIsRunning: { liveRunning },
+    presentPanel: { presented += 1 },
+    dismissPanel: { dismissed += 1 },
+    expandToWindow: { expanded += 1 })
+expect(!miniOrb.isVisible, "mini orb starts hidden")
+miniOrb.toggle()
+expect(miniOrb.isVisible && liveStarted == 1 && presented == 1, "mini orb chord shows and starts Live")
+miniOrb.toggle()
+expect(!miniOrb.isVisible && liveStopped == 1 && dismissed == 1, "mini orb chord hides and stops Live")
+miniOrb.show()
+expect(liveStarted == 2 && presented == 2, "mini orb show starts Live once")
+miniOrb.expand()
+expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible, "mini orb click expands and keeps Live")
+miniOrb.show()
+expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
+
+let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 570, y: 300, width: 300, height: 300), "default mini orb frame is centered 300x300")
+let miniSaved = CGRect(x: 100, y: 120, width: 300, height: 300)
+expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == miniSaved, "mini orb frame is remembered")
+expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen]) != CGRect(x: 5000, y: 5000, width: 300, height: 300), "an off-screen mini frame is replaced")
 print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Tests/DidiMacTests/main.swift")
 
 let connectionRows = try JSONDecoder().decode([NativeLiveConnection].self, from: Data("[{\"id\":\"calendar\",\"state\":\"error\",\"reasonCode\":\"credential_missing\"}]".utf8))
@@ -107,8 +136,8 @@ let shortcutRegistration = LiveShortcutRegistration { _, id in
     registeredKeys.append(id)
     return id == 1 ? -9878 : 0
 }
-expect(registeredKeys == [1, 2], "shortcut registrations are separate even when Start conflicts")
-expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered", "conflict does not hide independent mute registration")
+expect(registeredKeys == [1, 2, 3], "shortcut registrations are separate even when Start conflicts")
+expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered" && shortcutRegistration.windowStatus == "registered", "conflict does not hide independent mute registration")
 var shown = 0, started = 0, muted = 0, stopped = 0
 var active = false
 let actions = NativeSummonActions(show: { shown += 1 }, isCapturing: { active }, start: {

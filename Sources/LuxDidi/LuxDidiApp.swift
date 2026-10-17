@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 import Carbon
 import Security
+import WebKit
 
 @MainActor final class AppModel: ObservableObject {
     @Published var draft = ""
@@ -59,6 +60,10 @@ import Security
     private var checkingLiveCalls = false
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
+    /// The one live page-session cookie, obtained once by `bootstrap()` and
+    /// handed to every page view (full window and mini orb) so a second view
+    /// never revokes the first session.
+    private(set) var pageCookie: HTTPCookie?
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
     @Published private(set) var sendingConnected = false
@@ -150,7 +155,9 @@ import Security
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
             bootstrapFailureCode = nil
             bootstrapFailureDiagnostic = nil
-            await shell.load(cookie: try await client.bootstrap())
+            let cookie = try await client.bootstrap()
+            pageCookie = cookie
+            await shell.load(cookie: cookie)
             await refreshLiveDetails(); error = nil
         } catch {
             bootstrapFailureCode = supervisor?.startupFailureCode ?? "bootstrap/" + ((error as? CompanionError).map { String(describing: $0) } ?? "platformFailure")
@@ -351,15 +358,27 @@ import Security
         }
     }
 
+    /// Repoint the native orb level feed at the orb that is actually on screen:
+    /// the mini panel while it shows, the full window otherwise. Only one orb
+    /// animates, so there is no duplicated level work.
+    func pointOrbLevelFeed(at web: WKWebView?) {
+        guard let device = live?.device else { return }
+        orbLevels?.stop()
+        orbLevels = web.map { NativeOrbLevelPublisher(device: device, web: $0) }
+        orbLevels?.start()
+    }
     func startDictation() {
         guard live?.isCapturing != true else { error = "Stop Live voice before starting dictation."; return }
         voice.start()
     }
-    func stopRecording(_ reason: String) {
-        stopLive()
+    func stopDictation(_ reason: String) {
         let wasRecording = voice.state.phase == .recording
         voice.stop(reason: reason)
         if wasRecording && !voice.state.transcript.isEmpty { draft = voice.state.transcript }
+    }
+    func stopRecording(_ reason: String) {
+        stopLive()
+        stopDictation(reason)
     }
     func logout() async {
         stopRecording("Logout")
@@ -410,6 +429,16 @@ struct RootView: View {
         stop: { [weak self] in self?.model.stopLive() })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
+    private var miniShell: CompanionWeb?
+    private var miniPanel: MiniOrbPanel?
+    private var miniCookie: HTTPCookie?
+    private lazy var miniOrb = MiniOrbToggle(
+        startLive: { [weak self] in self?.model.startLive() },
+        stopLive: { [weak self] in self?.model.stopLive() },
+        liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
+        presentPanel: { [weak self] in self?.presentMiniPanel() },
+        dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
+        expandToWindow: { [weak self] in self?.show() })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -471,20 +500,23 @@ struct RootView: View {
         loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
         menu.addItem(withTitle: "Show Didi", action: #selector(show), keyEquivalent: "")
+        menu.addItem(withTitle: "Show mini orb", action: #selector(toggleMiniOrb), keyEquivalent: "")
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
         menu.addItem(withTitle: NativeDiagnosticsAction.itemTitle, action: #selector(copyDiagnostics), keyEquivalent: "")
         menu.addItem(withTitle: "Quit Didi", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }; statusItem.menu = menu
-        hotkey.onToggle = { [weak self] in self?.toggle() }
+        hotkey.onToggle = { [weak self] in self?.toggleMiniOrb() }
         hotkeyCode = hotkey.register()
-        model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · registered" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
+        model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · mini orb" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
         liveShortcuts.onStart = { [weak self] in self?.startLiveFromMenu() }
         liveShortcuts.onMute = { [weak self] in self?.muteLiveFromMenu() }
+        liveShortcuts.onWindow = { [weak self] in self?.toggle() }
         liveShortcuts.register()
         menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Toggle Didi ⌃ ⌥ ⇧ Space: " + liveShortcuts.windowStatus, action: nil, keyEquivalent: "")
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
                 self?.updateLiveStatus(state: state)
@@ -604,6 +636,8 @@ struct RootView: View {
         }
         OwnedWindowReadiness.trace("app:present-after",
             ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow, "isActive": NSApp.isActive])
+        // The full window owns the visible orb while the mini panel is hidden.
+        if model.live != nil && !miniOrb.isVisible { model.pointOrbLevelFeed(at: model.shell?.webView) }
     }
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
@@ -694,8 +728,35 @@ struct RootView: View {
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")
     }
     func toggle() { window.isVisible ? hide() : show() }
-    func hide() { model.stopRecording("Didi hidden"); window.orderOut(nil) }
-    func escape() { hide() }
+    /// Hiding the window stops dictation but never Live; Live is stopped only by
+    /// an explicit action (menu, Ctrl-Opt-Shift-L, or hiding the mini orb).
+    func hide() { model.stopDictation("Didi hidden"); window.orderOut(nil) }
+    func escape() { if miniOrb.isVisible { miniOrb.hide() } else { hide() } }
+    @objc func toggleMiniOrb() { miniOrb.toggle() }
+    private func presentMiniPanel() {
+        guard let shell = miniShellForDisplay() else {
+            // No page to host: show the window so the connection state is visible.
+            show(); return
+        }
+        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] in self?.miniOrb.expand() }
+        miniPanel = panel
+        panel.orderFrontRegardless()
+        model.pointOrbLevelFeed(at: shell.webView)
+        if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {
+            miniCookie = cookie
+            Task { await shell.load(cookie: cookie) }
+        }
+    }
+    /// The mini view reuses the one live page session: same service origin, same
+    /// page cookie, never a second bootstrap (which would revoke the first view).
+    private func miniShellForDisplay() -> CompanionWeb? {
+        if let shell = miniShell, let origin = model.shell?.descriptor.origin, shell.descriptor.origin == origin { return shell }
+        guard let descriptor = model.shell?.descriptor ?? (try? ServiceDescriptor.configured()) else { return nil }
+        let shell = CompanionWeb(descriptor: descriptor, route: .mini)
+        miniShell = shell
+        miniPanel = nil
+        return shell
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

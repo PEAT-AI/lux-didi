@@ -4,9 +4,31 @@ import SwiftUI
 
 enum PageState: Equatable { case loading, ready, unavailable }
 
+/// One page session, two views: the full window at `/` and the compact orb at
+/// `/?view=mini`. A route owns its accepted URL, so the mini view never widens
+/// the full window's navigation policy.
+enum PageRoute {
+    case full, mini
+    func request(_ base: URL) -> URL {
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        components.path = "/"
+        components.queryItems = self == .mini ? [URLQueryItem(name: "view", value: "mini")] : nil
+        return components.url!
+    }
+    func approves(_ descriptor: ServiceDescriptor, _ url: URL?) -> Bool {
+        guard descriptor.allows(url), let url, let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        guard parts.path.isEmpty || parts.path == "/", parts.fragment == nil else { return false }
+        switch self {
+        case .full: return parts.query == nil
+        case .mini: return parts.query == "view=mini"
+        }
+    }
+}
+
 @MainActor final class CompanionWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let descriptor: ServiceDescriptor
     let bridge: NativeBridge?
+    private let route: PageRoute
     func focusConversation() {
         guard let window = webView.window else { return }
         window.makeKeyAndOrderFront(nil)
@@ -47,9 +69,10 @@ enum PageState: Equatable { case loading, ready, unavailable }
         print("COMPANION-WK \(line)")
         #endif
     }
-    init(descriptor: ServiceDescriptor, bridge: NativeBridge? = nil) {
+    init(descriptor: ServiceDescriptor, bridge: NativeBridge? = nil, route: PageRoute = .full) {
         self.descriptor = descriptor
         self.bridge = bridge
+        self.route = route
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController = WKUserContentController() // The `didi` handler is added below.
@@ -97,7 +120,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         await webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
         guard attempt == current, state == .loading else { return }
         trace("cookie-installed")
-        var request = URLRequest(url: descriptor.baseURL.appendingPathComponent("/"))
+        var request = URLRequest(url: route.request(descriptor.baseURL))
         request.cachePolicy = .reloadIgnoringLocalCacheData
         activeNavigation = webView.load(request)
         if activeNavigation == nil { fail("Service navigation could not start. Retry explicitly.") }
@@ -124,7 +147,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         switch decision {
         case .allow:
             allowed = action.sourceFrame.isMainFrame && action.request.httpMethod == "GET" &&
-                descriptor.page(action.request.url) && !action.shouldPerformDownload
+                route.approves(descriptor, action.request.url) && !action.shouldPerformDownload
         case .openExternal:
             // Only a user-activated link, never a programmatic navigation, reaches here.
             if action.sourceFrame.isMainFrame, let url = action.request.url { NSWorkspace.shared.open(url) }
@@ -139,7 +162,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         let http = response.response as? HTTPURLResponse
         if response.isForMainFrame { proofMainFrameHTTPStatus = http?.statusCode }
         trace("response-\(http?.statusCode ?? 0)")
-        let allowed = response.isForMainFrame && descriptor.page(response.response.url) && response.canShowMIMEType &&
+        let allowed = response.isForMainFrame && route.approves(descriptor, response.response.url) && response.canShowMIMEType &&
             response.response.mimeType == "text/html" && http?.statusCode == 200 &&
             http?.value(forHTTPHeaderField: "Content-Disposition") == nil
         if !allowed { deniedNavigations += 1; fail("Service page response refused. Reconnect explicitly.") }
@@ -161,9 +184,9 @@ enum PageState: Equatable { case loading, ready, unavailable }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         proofNavigationFinishes += 1
-        trace("did-finish-approved-\(approvedResponse)-page-\(descriptor.page(webView.url))")
+        trace("did-finish-approved-\(approvedResponse)-page-\(route.approves(descriptor, webView.url))")
         guard state == .loading, navigation === activeNavigation else { return }
-        guard approvedResponse, descriptor.page(webView.url) else {
+        guard approvedResponse, route.approves(descriptor, webView.url) else {
             // WebKit can finish an internal error document (e.g. a prohibited port)
             // without delivering an HTTP response. That is not a successful UI load.
             fail("Service did not deliver the approved page. Retry explicitly.")

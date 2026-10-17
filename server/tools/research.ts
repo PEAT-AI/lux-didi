@@ -371,7 +371,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query ?? 'in:inbox newer_than:2d', maxResults: RESEARCH.mailLines }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: config.query ?? 'after:yesterday', limit: RESEARCH.chatLines }, 'c0')];
-  if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { postId: id }, 'ct0')] : []; }
+  if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
     // The calendar read is the merged event read, not the calendar-name list: a brief that only
@@ -1065,7 +1065,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         }
         if (kind === 'chat_search') {
           const id = extractId('chat_search', primaryText);
-          if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { postId: id } });
+          if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { post_id: id } });
         }
         const freshSecond = second.filter(call => !run.calls.has(callSignature(call)));
         for (const call of freshSecond) run.calls.add(callSignature(call));

@@ -73,8 +73,34 @@ _ = singleKeyDetector.handle(.rightCommandDown, at: 20)
 _ = singleKeyDetector.handle(.otherKeyDown, at: 20.05)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 20.1) == false, "Right Command in a chord (Cmd+C) never fires")
 _ = singleKeyDetector.handle(.rightCommandDown, at: 30)
-_ = singleKeyDetector.handle(.otherFlagsChanged, at: 30.02)
+_ = singleKeyDetector.handle(.otherModifiers(held: true), at: 30.02)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 30.1) == false, "a second modifier in the press makes it a chord")
+
+// B2 regression: a modifier already held BEFORE Right Command is a chord too, so
+// Shift (or the owner's Right Option) plus a Right Command tap never fires.
+_ = singleKeyDetector.handle(.otherModifiers(held: true), at: 100)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 100.1)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 100.2) == false, "a modifier held before the press makes it a chord")
+_ = singleKeyDetector.handle(.otherModifiers(held: false), at: 101)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 102)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 102.05), "a plain tap after the modifier is released still fires")
+
+// B3 regression: with Left Command held the release is a release, so the next
+// standalone tap is not swallowed.
+_ = singleKeyDetector.handle(.otherModifiers(held: true), at: 110)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 110.1)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 110.2) == false, "Right Command released under Left Command never fires")
+_ = singleKeyDetector.handle(.otherModifiers(held: false), at: 110.5)
+_ = singleKeyDetector.handle(.rightCommandDown, at: 111)
+expect(singleKeyDetector.handle(.rightCommandUp, at: 111.05), "the release under Left Command does not swallow the next tap")
+
+// The decode itself: the device bits tell the two Command keys apart, which the
+// shared .maskCommand bit cannot.
+expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x10), "the Right Command device bit is a press")
+expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x100008) == false, "Left Command plus the generic command bit is not a Right Command press")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x20000), "Shift is another modifier")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100010) == false, "Right Command alone is not another modifier")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100008), "Left Command is another modifier")
 _ = singleKeyDetector.handle(.rightCommandDown, at: 40)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 40.31) == false, "a hold longer than 300 ms is not a tap")
 _ = singleKeyDetector.handle(.rightCommandDown, at: 50)
@@ -87,6 +113,27 @@ _ = singleKeyDetector.handle(.rightCommandDown, at: 61)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 61.05), "a tap after a chord fires again")
 _ = singleKeyDetector.handle(.otherKeyDown, at: 62)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 63) == false, "a chord before any press never fires")
+
+// B7 regression: the positive branch, asked once on the first interactive launch
+// and never again, proven through the prompt seam with no modal and no TCC.
+let positiveSuite = "didi.single-key.positive.\(UUID().uuidString)"
+let positiveDefaults = UserDefaults(suiteName: positiveSuite)!
+var prompts = 0
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: positiveDefaults, granted: false, prompt: { prompts += 1 })
+expect(prompts == 1 && positiveDefaults.bool(forKey: SingleKeyTrigger.askedKey), "the first interactive launch asks for the grant once")
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: positiveDefaults, granted: false, prompt: { prompts += 1 })
+expect(prompts == 1, "the grant is asked once, ever")
+let grantedSuite = "didi.single-key.granted.\(UUID().uuidString)"
+let grantedDefaults = UserDefaults(suiteName: grantedSuite)!
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: grantedDefaults, granted: true, prompt: { prompts += 1 })
+expect(prompts == 1, "a present grant is never asked for")
+positiveDefaults.removePersistentDomain(forName: positiveSuite)
+grantedDefaults.removePersistentDomain(forName: grantedSuite)
+
+// B6 regression: a tap the system disabled is re-armed, everything else is not.
+expect(RightCommandTapDetector.shouldReArm(.tapDisabledByTimeout), "a timed out tap is re-armed")
+expect(RightCommandTapDetector.shouldReArm(.tapDisabledByUserInput), "a user-disabled tap is re-armed")
+expect(RightCommandTapDetector.shouldReArm(.keyDown) == false && RightCommandTapDetector.shouldReArm(.flagsChanged) == false, "a key event is never a re-arm")
 
 // The grant is asked for once, on the first interactive launch only, so no
 // install, proof or smoke launch can open a permission prompt.

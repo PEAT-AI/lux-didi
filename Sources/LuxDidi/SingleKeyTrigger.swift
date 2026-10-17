@@ -9,11 +9,12 @@ import CoreGraphics
 enum SingleKeyEvent: Equatable {
     case rightCommandDown
     case rightCommandUp
-    /// Any other key went down while Right Command was held, so Right Command is
-    /// part of a chord and must never fire.
+    /// Any other key went down, which makes the press a chord.
     case otherKeyDown
-    /// Any other modifier changed, which makes the press a chord too.
-    case otherFlagsChanged
+    /// A modifier other than Right Command changed; `held` says whether one is
+    /// still down. A modifier held BEFORE the press is a chord too, so the
+    /// detector has to know the state and not only the change.
+    case otherModifiers(held: Bool)
 }
 
 /// MINI2, owner decision 10:45 IST: Right Command is Naya's single key. Right
@@ -28,9 +29,42 @@ struct RightCommandTapDetector {
     static let keyCode: UInt16 = 54
     /// A longer press is a hold, not a tap.
     static let holdLimit: TimeInterval = 0.3
+    /// `NX_DEVICERCMDKEYMASK`: the device bit that belongs to the RIGHT Command
+    /// key alone, which tells its press from its release while the other Command
+    /// key is down. `.maskCommand` alone cannot (review B3).
+    static let rightCommandDeviceMask: UInt64 = 0x10
+    /// `NX_DEVICELCMDKEYMASK`, the Left Command device bit.
+    static let leftCommandDeviceMask: UInt64 = 0x08
+    /// Shift, Control and Option.
+    static let otherModifierMasks: UInt64 = CGEventFlags.maskShift.rawValue
+        | CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue
+
+    /// The system turns a tap off after a timeout or on user input; the callback
+    /// must re-arm it or the key dies silently (review B6).
+    static func shouldReArm(_ type: CGEventType) -> Bool {
+        type == .tapDisabledByTimeout || type == .tapDisabledByUserInput
+    }
+
+    /// Whether the Right Command key itself is down, from its device bit.
+    static func rightCommandIsDown(flagsRawValue: UInt64) -> Bool {
+        flagsRawValue & rightCommandDeviceMask != 0
+    }
+
+    /// Whether a modifier other than Right Command is held: Shift, Control,
+    /// Option or Left Command. Right Command's own bits are excluded, because it
+    /// is the key being watched.
+    static func otherModifiersHeld(flagsRawValue: UInt64) -> Bool {
+        if flagsRawValue & otherModifierMasks != 0 { return true }
+        if flagsRawValue & leftCommandDeviceMask != 0 { return true }
+        // A command bit with no device bit at all is a modifier we cannot place,
+        // so treat it as another modifier rather than as our own key.
+        return flagsRawValue & CGEventFlags.maskCommand.rawValue != 0
+            && flagsRawValue & (leftCommandDeviceMask | rightCommandDeviceMask) == 0
+    }
 
     private var downAt: TimeInterval?
     private var chordUsed = false
+    private var otherModifierHeld = false
 
     /// Returns true on the release that completes a tap.
     mutating func handle(_ event: SingleKeyEvent, at time: TimeInterval) -> Bool {
@@ -40,10 +74,16 @@ struct RightCommandTapDetector {
             // repeated flag cannot fire twice.
             guard downAt == nil else { return false }
             downAt = time
-            chordUsed = false
+            // A modifier already held turns the press into a chord: Shift plus
+            // Right Command is not a tap (review B2).
+            chordUsed = otherModifierHeld
             return false
-        case .otherKeyDown, .otherFlagsChanged:
-            if downAt != nil { chordUsed = true }
+        case .otherKeyDown:
+            chordUsed = true
+            return false
+        case .otherModifiers(let held):
+            otherModifierHeld = held
+            if held { chordUsed = true }
             return false
         case .rightCommandUp:
             guard let start = downAt else { return false }
@@ -74,20 +114,24 @@ final class SingleKeyTrigger {
     private var source: CFRunLoopSource?
     private var detector = RightCommandTapDetector()
 
-    static var isEnabled: Bool {
+    nonisolated static var isEnabled: Bool {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
     /// The Accessibility (or Input Monitoring) grant the tap needs.
-    static var isGranted: Bool { AXIsProcessTrusted() }
+    nonisolated static var isGranted: Bool { AXIsProcessTrusted() }
 
     /// Asked once, on the first interactive launch, with a one-line explanation,
     /// and never by an install, proof, smoke or verification launch.
-    static func requestGrantIfNeeded(for kind: LaunchKind, defaults: UserDefaults = .standard) {
-        guard kind == .interactive, isEnabled, !isGranted, !defaults.bool(forKey: askedKey) else { return }
+    /// `granted` and `prompt` are seams, so the once-only branch is proven in the
+    /// seams without a modal alert or a TCC prompt (review B7).
+    static func requestGrantIfNeeded(for kind: LaunchKind, defaults: UserDefaults = .standard,
+                                     granted: Bool = SingleKeyTrigger.isGranted,
+                                     prompt: () -> Void = requestGrantNow) {
+        guard kind == .interactive, isEnabled, !granted, !defaults.bool(forKey: askedKey) else { return }
         defaults.set(true, forKey: askedKey)
-        requestGrantNow()
+        prompt()
     }
 
     /// The owner turning the key back on is a fresh ask, so the system prompt
@@ -121,6 +165,14 @@ final class SingleKeyTrigger {
         return true
     }
 
+    /// Re-arms the tap and drops any half-seen press, so a disabled tap resumes
+    /// without carrying a stale down time into the next tap (review B6).
+    func reEnable() {
+        guard let tap else { return }
+        detector = RightCommandTapDetector()
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
     func stop() {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
@@ -137,10 +189,17 @@ final class SingleKeyTrigger {
     }
 }
 
+
 /// A C callback, so it captures nothing: the event is decoded here and the
 /// decision runs on the main actor.
 private let singleKeyTapCallback: CGEventTapCallBack = { _, type, event, refcon in
     guard let refcon else { return Unmanaged.passUnretained(event) }
+    if RightCommandTapDetector.shouldReArm(type) {
+        DispatchQueue.main.async {
+            Unmanaged<SingleKeyTrigger>.fromOpaque(refcon).takeUnretainedValue().reEnable()
+        }
+        return nil
+    }
     let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
     let isRightCommand = keyCode == RightCommandTapDetector.keyCode
     let decoded: SingleKeyEvent
@@ -149,9 +208,13 @@ private let singleKeyTapCallback: CGEventTapCallBack = { _, type, event, refcon 
         guard !isRightCommand else { return Unmanaged.passUnretained(event) }
         decoded = .otherKeyDown
     case .flagsChanged where isRightCommand:
-        decoded = event.flags.contains(.maskCommand) ? .rightCommandDown : .rightCommandUp
+        // The generic command bit is set while either Command key is down, so the
+        // press/release comes from the device bit of the RIGHT Command key, never
+        // from .maskCommand (review B3).
+        decoded = RightCommandTapDetector.rightCommandIsDown(flagsRawValue: event.flags.rawValue)
+            ? .rightCommandDown : .rightCommandUp
     case .flagsChanged:
-        decoded = .otherFlagsChanged
+        decoded = .otherModifiers(held: RightCommandTapDetector.otherModifiersHeld(flagsRawValue: event.flags.rawValue))
     default:
         return Unmanaged.passUnretained(event)
     }

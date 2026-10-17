@@ -1,3 +1,7 @@
+import type { ChatStep } from './tool-phrases.ts';
+import { connectorProse, stepFinished, stepRunning, stepsSummary, toolConnector } from './tool-phrases.ts';
+import type { ToolEvidence } from './protocol.ts';
+
 // Minimal, dependency-free Markdown to safe HTML. Every model-supplied string is
 // escaped; only http: and https: links become anchors. No raw HTML passes through.
 const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -133,7 +137,8 @@ const TOOL_LABELS: readonly [RegExp, string][] = [
   [/^gmail_/, 'Gmail'],
   [/^gcal_/, 'Calendar'],
   [/^mattermost_/, 'Mattermost'],
-  [/^(search_knowledge|get_insight|knowledge_)/, 'Knowledge'],
+  [/^(search_knowledge|get_insight|knowledge_|lux_)/, 'Knowledge'],
+  [/^mongoose/, 'Mongoose'],
 ];
 export function toolLabel(name: string): string {
   for (const [pattern, label] of TOOL_LABELS) if (pattern.test(name)) return label;
@@ -165,13 +170,183 @@ export function chatEntryMarkup(role: 'user' | 'assistant', text: string): strin
  * persisted before the server-side strip. Kept local so the web bundle carries no server import. */
 const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g;
 
-export function renderToolEvidence(evidence: readonly import('./protocol.ts').ToolEvidence[]): string {
-  return evidence.slice(0, 16).map(tool => {
-    const label = toolLabel(tool.name);
-    const header = label ? `<header><strong>${escapeHtml(label)}</strong></header>` : '';
-    return `<article class="tool-evidence">${header}<div class="markdown">${renderMarkdown(tool.markdown.replace(MODEL_ONLY_NOTE, '').slice(0, 4096), TRANSCRIPT_MARKDOWN)}</div>${sourcesFooter(tool.sources)}</article>`;
-  }).join('');
+/** The source label for one piece of evidence: an owner-facing connector name, never a tool id. */
+function sourceLabel(name: string): string { return toolLabel(name) || toolConnector(name); }
+
+const ITEM_START = /^(?:[-*]\s|#{1,6}\s|\*\*)/;
+const OMITTED_LINE = /^\[(?:omitted:|[+-]\d+ chars)/;
+const RAW_ID = /\[(?:id|post) [^\]\s]*\]/g;
+// Emphasis only: `*` and backticks. An underscore is prose here (channel, branch and note names).
+const EMPHASIS = /[*`]{1,2}/g;
+const SNIPPET_CHARS = 120;
+
+/** One evidence row: the one-line shape the owner reads, its optional snippet, and its sort stamp. */
+export interface EvidenceRow { line: string; snippet: string; at: number }
+
+function clipWords(text: string): string {
+  const plain = String(text ?? '').replace(EMPHASIS, '').replace(/\s+/g, ' ').trim();
+  return plain.length > SNIPPET_CHARS ? `${plain.slice(0, SNIPPET_CHARS).trimEnd()}...` : plain;
 }
+
+/** The fields of one shaped line, with the bullet, the emphasis and every raw id removed. */
+function fields(line: string): string[] {
+  return line.replace(/^[-*#]+\s*/, '').replace(EMPHASIS, '').replace(RAW_ID, '').replace(/\s+/g, ' ').trim()
+    .split(/\s+\|\s+/).map(field => field.trim()).filter(Boolean);
+}
+
+/** Item blocks of shaped tool markdown: a bullet or a bold heading starts one, a following plain line is
+ * its snippet. The model-only omission notes are dropped, never shown. */
+function blocksOf(markdown: string): { fields: string[]; snippet: string }[] {
+  const blocks: { fields: string[]; snippet: string }[] = [];
+  for (const raw of String(markdown ?? '').replace(MODEL_ONLY_NOTE, '').split('\n')) {
+    const line = raw.trim();
+    if (!line || OMITTED_LINE.test(line)) continue;
+    if (ITEM_START.test(line) || !blocks.length) { blocks.push({ fields: fields(line), snippet: '' }); continue; }
+    const last = blocks[blocks.length - 1]!;
+    last.snippet = `${last.snippet} ${line}`.trim();
+  }
+  return blocks.slice(0, 12);
+}
+
+/** Epoch ms for a shaped stamp: ISO, epoch ms or epoch seconds. 0 when the source carries no usable time. */
+function stampOf(raw: string): number {
+  const value = String(raw ?? '').replace(/^date:\s*/i, '').trim();
+  if (!value) return 0;
+  if (/^\d{10,13}$/.test(value)) { const epoch = Number(value); return epoch < 1e12 ? epoch * 1000 : epoch; }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+const MONTH_DAY = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short' });
+const CLOCK = new Intl.DateTimeFormat('en', { hour: '2-digit', minute: '2-digit', hour12: false });
+const DAY_AND_CLOCK = new Intl.DateTimeFormat('en', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+
+/** A stamp as relative words. An unusable stamp renders nothing, so no ISO string reaches the owner. */
+export function relativeWords(raw: string, now = Date.now()): string {
+  const at = stampOf(raw);
+  if (!at) return '';
+  const seconds = Math.round((now - at) / 1000), ahead = seconds < 0, size = Math.abs(seconds);
+  if (size < 90) return ahead ? 'in a moment' : 'just now';
+  const minutes = Math.round(size / 60);
+  if (minutes < 60) return ahead ? `in ${minutes} min` : `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return ahead ? `in ${hours} h` : `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return ahead ? 'tomorrow' : 'yesterday';
+  if (days < 30) return ahead ? `in ${days} days` : `${days} days ago`;
+  return MONTH_DAY.format(at);
+}
+
+function midnight(value: number): number { const day = new Date(value); day.setHours(0, 0, 0, 0); return day.getTime(); }
+
+/** A calendar start as the owner reads it: "10:00" today, "tomorrow 10:00", else "Tue 3 Nov, 10:00". */
+export function eventWords(raw: string, now = Date.now()): string {
+  const at = stampOf(raw);
+  if (!at) return '';
+  const offset = Math.round((midnight(at) - midnight(now)) / 86_400_000);
+  if (offset === 0) return CLOCK.format(at);
+  if (offset === 1) return `tomorrow ${CLOCK.format(at)}`;
+  if (offset === -1) return `yesterday ${CLOCK.format(at)}`;
+  return DAY_AND_CLOCK.format(at).replace(',', '');
+}
+
+/** One block of shaped tool output as the shape its source deserves. No raw id, no ISO stamp, ever. */
+export function evidenceRow(tool: ToolEvidence, block: { fields: string[]; snippet: string }, now = Date.now()): EvidenceRow {
+  const parts = block.fields;
+  const snippet = clipWords(block.snippet);
+  if (/^mattermost_/.test(tool.name)) {
+    const stamp = parts[2] ?? '';
+    return { line: [parts[0], parts[1], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: snippet || clipWords(parts[3] ?? ''), at: stampOf(stamp) };
+  }
+  if (/^gmail_/.test(tool.name)) {
+    // The shaper omits a field the source lacks, so a role is recognised by its own prefix and a field it
+    // does not carry is dropped, never shifted into the sender slot (F2).
+    const fromIndex = parts.findIndex((part, index) => index > 0 && /^from:/i.test(part));
+    const dateIndex = parts.findIndex((part, index) => index > 0 && /^date:/i.test(part));
+    // A hit with no From still renders its sender slot, in words (K4-R2), never a stamp in its place.
+    const sender = fromIndex > 0 ? parts[fromIndex]!.replace(/^from:\s*/i, '') : 'unknown sender';
+    const stamp = dateIndex > 0 ? parts[dateIndex]!.replace(/^date:\s*/i, '') : '';
+    const leftover = parts.filter((_part, index) => index !== 0 && index !== fromIndex && index !== dateIndex);
+    return { line: [sender, parts[0], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: clipWords(leftover.join(' ')) || snippet, at: stampOf(stamp) };
+  }
+  if (/^gcal_/.test(tool.name)) {
+    const pieces = (parts[0] ?? '').split(',').map(piece => piece.trim());
+    return { line: [eventWords(pieces[0] ?? '', now), pieces[1]].filter(Boolean).join(' · '), snippet: clipWords(pieces.slice(2).join(', ')) || snippet, at: stampOf(pieces[0] ?? '') };
+  }
+  // Knowledge and Mongoose: the heading reads "title (type | date)".
+  const flat = parts.join(' | ');
+  const kind = /\(([^)]*)\)/.exec(flat)?.[1]?.trim() ?? '';
+  return { line: [clipWords(flat.replace(/\s*\([^)]*\)/, '')), clipWords(kind.split(' | ')[0] ?? '')].filter(Boolean).join(' · '), snippet, at: stampOf(kind.split(' | ')[1] ?? '') };
+}
+
+/** Evidence: per source, a compact list of the items the answer used, folded under the answer. Raw shaped
+ * tool output is never rendered here and never as the answer body (target turn, items 3 and 4). */
+export function evidenceMarkup(evidence: readonly ToolEvidence[], now = Date.now()): string {
+  const groups = new Map<string, EvidenceRow[]>();
+  for (const tool of evidence.slice(0, 8)) {
+    const rows = blocksOf(tool.markdown).map(block => evidenceRow(tool, block, now)).filter(row => row.line);
+    rows.sort((left, right) => right.at - left.at);
+    const label = sourceLabel(tool.name);
+    groups.set(label, (groups.get(label) ?? []).concat(rows));
+  }
+  const sections: string[] = [];
+  for (const [label, rows] of groups) {
+    const kept = rows.sort((left, right) => right.at - left.at).slice(0, 6);
+    if (!kept.length) continue;
+    const items = kept.map(row => `<li class="chat-evidence-item"><span class="chat-evidence-line">${escapeHtml(row.line)}</span>${row.snippet ? `<span class="chat-evidence-snippet">${escapeHtml(row.snippet)}</span>` : ''}</li>`).join('');
+    sections.push(`<section class="chat-evidence-source"><h4>${escapeHtml(label)}</h4><ul>${items}</ul></section>`);
+  }
+  if (!sections.length) return '';
+  return `<details class="chat-evidence"><summary>Evidence</summary>${sections.join('')}</details>`;
+}
+
+/** The one deduped row of source chips for an answer, capped at three plus "+N" (target turn, item 5). */
+export function sourcesMarkup(evidence: readonly ToolEvidence[], cap = 3): string {
+  const seen = new Set<string>();
+  const all: { title: string; url?: string }[] = [];
+  for (const tool of evidence) for (const source of tool.sources ?? []) {
+    const key = (source.url || source.title || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key); all.push(source);
+  }
+  if (!all.length) return '';
+  const chips = all.slice(0, cap).map(source => {
+    const label = escapeHtml((source.title || source.url || '').slice(0, 96));
+    const url = source.url?.slice(0, 2048);
+    return url && /^https?:\/\//i.test(url)
+      ? `<a class="answer-source" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      : `<span class="answer-source">${label}</span>`;
+  });
+  const rest = all.length - chips.length;
+  return `<div class="chat-sources"><span class="chat-sources-label">Sources</span>${chips.join('')}${rest > 0 ? `<span class="chat-sources-more">+${rest}</span>` : ''}</div>`;
+}
+
+/** While a run works: one quiet line per tool. Once the answer lands the same lines fold into a single
+ * summary line that expands to the per-tool lines (target turn, item 2). */
+export function stepsMarkup(steps: readonly ChatStep[], collapsed: boolean): string {
+  if (!steps.length) return '';
+  const lines = steps.map(step => {
+    const phase = step.phase === 'end' ? 'end' : 'start';
+    const text = phase === 'end' ? stepFinished(step) : stepRunning(step);
+    return `<li class="chat-step" data-phase="${phase}">${escapeHtml(text)}</li>`;
+  }).join('');
+  if (!collapsed) return `<ol class="chat-steps" role="status" aria-label="What Naya is doing">${lines}</ol>`;
+  const summary = stepsSummary(steps);
+  if (!summary) return '';
+  return `<details class="chat-steps-done"><summary>${escapeHtml(summary)}</summary><ol class="chat-steps">${lines}</ol></details>`;
+}
+
+/** Plain copy for a partial or timed-out turn, naming the sources that did not answer. */
+export function partialWords(pending: readonly string[]): string {
+  const names = [...new Set(pending.map(connectorProse))];
+  if (!names.length) return 'I ran out of time before finishing. Here is what I found.';
+  const list = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
+  return `I ran out of time before checking ${list}. Here is what I found.`;
+}
+
+/** The honest state for a run that finished with no answer: never the raw evidence as the body. */
+export const NO_ANSWER_WORDS = 'Naya did not save an answer for this turn. Ask again to get one.';
+
 
 /** Plain words for a failed run: what happened, and what the owner can do next. The raw outcome
  * code and the old "No saved answer: outcome_unknown" filler never reach the panel (M1). */

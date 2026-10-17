@@ -1,7 +1,7 @@
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { MattermostEvidence, MattermostResult, MattermostTool } from '../connectors/mattermost.js';
-import { MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
+import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
 import { sha256 } from './canonical.js';
 import { hostLogEvent } from './host-events.js';
 import { shapeMattermost, type ShapedSource } from './live-shape.js';
@@ -62,9 +62,32 @@ export function renderMattermostTool(tool: string, data: unknown): MattermostPro
   return shapeMattermost(tool, data);
 }
 
+/** One line per item, newest first: the reason, then channel, author, ISO time, the line and its permalink. */
+export function renderAttention(data: unknown): MattermostProjection {
+  const empty = (text: string, shape: string): MattermostProjection => ({ text, partial: false, originalCharacters: 0, omittedCharacters: 0, shape, itemCount: 0 });
+  if (!isRecord(data) || !Array.isArray(data['items'])) return empty('No attention digest.', 'unrecognised');
+  const after = typeof data['after'] === 'string' ? data['after'] : '';
+  const items = data['items'].filter(isRecord);
+  if (items.length === 0) return empty(`Nothing is waiting on a reply${after ? ` since ${after}` : ''}.`, 'empty');
+  const field = (item: Record<string, unknown>, name: string): string => (typeof item[name] === 'string' ? (item[name] as string) : '');
+  const lines = items.map(item => {
+    const body = [field(item, 'channel'), field(item, 'author'), field(item, 'time'), field(item, 'snippet')].filter(Boolean).join(' | ');
+    const permalink = field(item, 'permalink');
+    return `- [${field(item, 'reason')}] ${body}${permalink ? ` | ${permalink}` : ''}`;
+  });
+  const text = lines.join('\n');
+  return { text, partial: false, originalCharacters: text.length, omittedCharacters: 0, shape: 'items', itemCount: items.length };
+}
+
 export function projectMattermostResult(port: McpPort, evidence: ConnectorResult): { ok: true; projection: MattermostProjection } | { ok: false; reason: string } {
   if (evidence.state === 'refused' || evidence.state === 'unknown') return { ok: false, reason: evidence.reason };
   if (evidence.state !== 'completed') return { ok: false, reason: `tool-error: ${evidence.state}` };
+  // The attention digest is synthesized over several reads, so it renders from its decoded items.
+  if (evidence.tool === MATTERMOST_ATTENTION_TOOL) {
+    const projection = renderAttention(evidence.decodedResult);
+    hostLogEvent({ event: 'mattermost_shape', tool: evidence.tool, rawCharacters: 0, shapedCharacters: projection.text.length, itemCount: projection.itemCount ?? 0, shape: projection.shape ?? 'unknown' });
+    return { ok: true, projection };
+  }
   const payload = readMattermostPayload(port, evidence);
   if (!payload.ok) return { ok: false, reason: payload.reason };
   let data: unknown = payload.text;

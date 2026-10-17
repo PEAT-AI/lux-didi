@@ -12,11 +12,21 @@ if [ "${1:-}" = "--prepare" ]; then
   cd "$root"
   app="$artifacts/Lux Didi.app"
   start=$SECONDS
-  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/NativeNextSteps.swift Sources/LuxDidi/NativeGettingStarted.swift Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/NativeServiceRecovery.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeShortcuts.swift Sources/LuxDidi/NativeLoginItem.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift Sources/LuxDidi/NativeNotifications.swift Sources/LuxDidi/PendingRequestStore.swift Sources/LuxDidi/NativeConnectedSend.swift Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift Sources/LuxDidi/SingleKeyTrigger.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
+  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/NativeNextSteps.swift Sources/LuxDidi/NativeGettingStarted.swift Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/NativeServiceRecovery.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeShortcuts.swift Sources/LuxDidi/NativeLoginItem.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift Sources/LuxDidi/NativeNotifications.swift Sources/LuxDidi/PendingRequestStore.swift Sources/LuxDidi/NativeConnectedSend.swift Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift Sources/LuxDidi/SingleKeyTrigger.swift Sources/LuxDidi/NativePresence.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
   "$artifacts/seams"
   printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
   bash scripts/build-macos-app.sh "$app" --cache "$artifacts/cache"
   exit 0
+fi
+
+# Declared-check mode (P1-R3): a declared check calls this script with no arguments and no
+# prepared artifacts, so the script owns the same prepare phase and its tempdir itself and
+# removes it on success. A caller that already prepared keeps passing LUX_MAC_ARTIFACTS.
+if [ -z "${LUX_MAC_ARTIFACTS:-}" ]; then
+  owned=$(mktemp -d "${TMPDIR:-/tmp}/didi-mac-check.XXXXXX")
+  trap 'status=$?; if [ "$status" -eq 0 ]; then rm -rf "$owned"; else printf "FAILED ARTIFACTS: %s\n" "$owned" >&2; fi' EXIT
+  bash "$0" --prepare "$owned"
+  LUX_MAC_ARTIFACTS="$owned"
 fi
 
 # Leased run phase: native launches only, from the prepared absolute artifacts.

@@ -27,7 +27,7 @@ cp server/host/log.ts "$out/source/host/"
 cp server/http/routes.ts "$out/source/http/"
 cp server/config/files.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"
-cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts "$out/source/test/"
+cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts server/test/research-routed.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 # The staged declarations import ws and the MCP SDK types: resolve them from the one installed tree.
 ln -s "$deps" "$out/node_modules"
@@ -37,5 +37,5 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/adapters/model/*.ts "$out"/source/prompt/*.ts "$out"/source/tools/*.ts "$out"/source/test/*.ts
 test -f "$out/dist/test/prompt.test.js" # fresh mktemp output; no stale dist accepted
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" | tee "$out/results.tap"
+node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-routed.test.js" | tee "$out/results.tap"
 grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"

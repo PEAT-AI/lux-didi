@@ -1115,6 +1115,12 @@ struct NativeLiveInterruptionSample: Sendable {
     }
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }
+    /// Presence hot-mute (council-presence-1017): drop the queued model speech now. The muted
+    /// flag already refuses every new chunk, so this only stops what is scheduled.
+    func cancelPlayback() {
+        guard playbackQueue.playing || playbackQueue.scheduledFrames > 0 else { return }
+        flushOutput()
+    }
     private func flushOutput() {
         // Contract C1: a barge-in, a rebuild or a session end tears down the wait cue with the turn.
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)

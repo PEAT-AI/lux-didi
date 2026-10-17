@@ -288,8 +288,17 @@ test('CONNECTED actual adapter failure, empty, truncated, deadline and explicit 
     try {
       const c = await f.enroll(); const run = (await (await f.call('/chat', { sessionId: c.sessionId, text: 'Failure control.' })).json()).data;
       if (gate) { await gate.waiting; assert.equal((await f.call(`/chat/${run.runId}/cancel`, {})).status, 200); gate.release(); }
-      const result = (await final(f, run.runId)).run; assert.equal(result.outcome, outcome); assert.equal(result.finalText, null);
-      assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 1);
+      const result = (await final(f, run.runId)).run;
+      if (outcome === 'empty') {
+        // K3: an empty model answer is no longer the end of the turn. The run answers from what it gathered,
+        // here nothing, so it states that in one line instead of leaving the owner with no answer at all.
+        assert.equal(result.outcome, 'complete');
+        assert.equal(result.finalText, 'I could not search any source; found 0 items.');
+        assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 2);
+      } else {
+        assert.equal(result.outcome, outcome); assert.equal(result.finalText, null);
+        assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 1);
+      }
     } finally { gate?.release(); await f.close(); }
   }
 });

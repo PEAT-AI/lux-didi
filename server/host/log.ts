@@ -10,7 +10,7 @@ import { join } from 'node:path';
 const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
-const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory'];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
@@ -19,6 +19,9 @@ const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
+/** K6: the layers a routed research call may name, in the model's own words. */
+const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
+const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
@@ -40,6 +43,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
+  if (value.event === 'chat_timing') {
+    // Timing receipts: milliseconds and counts only, never text, never a tool argument or result.
+    const id = (v: unknown): v is string => typeof v === 'string' && /^[0-9A-Za-z][0-9A-Za-z-]{0,63}$/.test(v);
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
+    const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 900_000;
+    if (!id(value.runId) || !['answered', 'fenced'].includes(String(value.outcome))) return;
+    if (!Array.isArray(value.rounds) || value.rounds.length > 8 || !value.rounds.every(ms)) return;
+    if (!Array.isArray(value.tools) || value.tools.length > 32) return;
+    const tools: { tool: string; ok: boolean; ms: number }[] = [];
+    for (const entry of value.tools) {
+      const item = entry as Record<string, unknown>;
+      if (!token(item.tool) || typeof item.ok !== 'boolean' || !ms(item.ms)) return;
+      tools.push({ tool: item.tool, ok: item.ok, ms: item.ms });
+    }
+    if (!ms(value.fenceMs) || !ms(value.acquireMs) || !ms(value.answerMs)) return;
+    return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
+      tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
+  }
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.
     const allowed = ['action', 'code', 'detail', 'event'];
@@ -48,6 +69,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed'].includes(value.code)) return;
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
+  }
+  if (value.event === 'tool_redaction') {
+    // The receipt names the tool and the count of secrets, never the value.
+    if (Object.keys(value).sort().join(',') !== ['count', 'event', 'tool'].sort().join(',')) return;
+    if (!SAFE_TOKEN.test(String(value.tool)) || typeof value.count !== 'number' || !Number.isInteger(value.count) || value.count < 1 || value.count > 1_000_000) return;
+    return { event: 'tool_redaction', tool: value.tool, count: value.count };
+  }
+  if (value.event === 'debug_journal_error') {
+    // The journal's own receipt: the failing stage only, never a path, a line or a message.
+    if (Object.keys(value).sort().join(',') !== ['code', 'event'].sort().join(',')) return;
+    if (!isSafeMember(value.code, ['open', 'write', 'prune'])) return;
+    return { event: 'debug_journal_error', code: value.code };
   }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
@@ -367,6 +400,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.canContinue !== 'boolean') return;
     if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
     return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
+  }
+  if (value.event === 'research_routed') {
+    // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
+    const keys = ['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'];
+    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    if (!isSafeId(value.researchId) || !isSafeCount(value.lookups)) return;
+    if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
+    if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
+    if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
+    return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

@@ -8,7 +8,7 @@ import { LIVE_RESULT_CHARS, type ShapedResult } from './live-shape.js';
  * connector reads, combined into one capped digest. The old fine-grained tools stay internal to
  * the connectors and are never declared to the model.
  */
-export const INTENT_TOOL_NAMES = ['search', 'mail', 'calendar', 'chat', 'brief'] as const;
+export const INTENT_TOOL_NAMES = ['search', 'mail', 'calendar', 'chat', 'attention', 'brief'] as const;
 export type IntentToolName = (typeof INTENT_TOOL_NAMES)[number];
 const INTENT_SET: ReadonlySet<string> = new Set<string>(INTENT_TOOL_NAMES);
 export function isIntentTool(name: string): name is IntentToolName {
@@ -46,6 +46,7 @@ const ACCEPTED: Readonly<Record<IntentToolName, readonly string[]>> = {
   mail: ['query', 'id'],
   calendar: [],
   chat: ['query'],
+  attention: ['days', 'limit'],
   brief: [],
 };
 
@@ -60,6 +61,12 @@ export function validateIntent(name: IntentToolName, args: unknown): boolean {
     return hasId ? nonEmptyString(args['id']) : nonEmptyString(args['query']);
   }
   if (name === 'chat') return nonEmptyString(args['query']);
+  if (name === 'attention') {
+    const days = args['days'];
+    const limit = args['limit'];
+    if (days !== undefined && !(typeof days === 'number' && Number.isSafeInteger(days) && days >= 1 && days <= 30)) return false;
+    return limit === undefined || (typeof limit === 'number' && Number.isSafeInteger(limit) && limit >= 1 && limit <= 20);
+  }
   return true;
 }
 
@@ -98,6 +105,13 @@ export function intentDeclarations(): IntentDeclaration[] {
       validate: args => validateIntent('chat', args),
     },
     {
+      name: 'attention',
+      description: 'What needs a reply in the team chat: mentions of the owner, direct and group messages, and threads where the owner was mentioned or posted and the newest post is not theirs. One call, newest first, with channel, author, time, permalink and one line each.',
+      guidance: 'Use it for "do I need to reply", "anything new for me", "what did I miss". Optional {"days": 7}; the window is 7 days by default.',
+      parameters: { type: 'object', additionalProperties: false, properties: { days: { type: 'integer', minimum: 1, maximum: 30, description: 'Window in days; 7 by default.' }, limit: { type: 'integer', minimum: 1, maximum: 20 } } },
+      validate: args => validateIntent('attention', args),
+    },
+    {
       name: 'brief',
       description: 'One catch-up over everything at once: calendar, mail, team chat and open loops, gathered in parallel and returned as a single short digest.',
       guidance: 'Takes no parameters; use it for "catch me up" or "what did I miss".',
@@ -122,6 +136,9 @@ export const INTERNAL = {
   calendars: 'gcal_calendars',
   calendarList: 'gcal_list',
   chatSearch: 'mattermost_search',
+  chatAttention: 'mattermost_attention',
+  /** K6: the company knowledge base, read by the routed research path when the model names `company`. */
+  mongooseSearch: 'search_mongoose',
 } as const;
 
 function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSubCall[] {
@@ -135,6 +152,14 @@ function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSu
     return [call('0', INTERNAL.mailList, list)];
   }
   if (name === 'chat') return [call('0', INTERNAL.chatSearch, { query: stringOrEmpty(args['query']), limit: 5 })];
+  if (name === 'attention') {
+    const attentionArgs: JsonObject = {};
+    const days = integerOrEmpty(args['days']);
+    const limit = integerOrEmpty(args['limit']);
+    if (days !== undefined) attentionArgs['days'] = days;
+    if (limit !== undefined) attentionArgs['limit'] = limit;
+    return [call('0', INTERNAL.chatAttention, attentionArgs)];
+  }
   if (name === 'calendar') return [call('0', INTERNAL.calendars, { maxResults: 20 })];
   // brief fans out in parallel over every source at once.
   return [
@@ -165,6 +190,7 @@ function sourceLabel(name: string): string {
     case INTERNAL.calendarList: return 'calendar';
     case INTERNAL.mailList: return 'mail';
     case INTERNAL.chatSearch: return 'chat';
+    case INTERNAL.chatAttention: return 'chat';
     case INTERNAL.knowledgeSearch: return 'knowledge';
     default: return 'source';
   }

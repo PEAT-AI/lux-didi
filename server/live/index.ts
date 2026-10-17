@@ -9,12 +9,18 @@ import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
+import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
+import { WarmContextCache, chooseStartContext } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { capJournalText, journalRecord } from '../host/journal.js';
+
 import { hostLogEvent } from '../host/log.js';
+import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -59,6 +65,28 @@ const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
 
+/** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
+const LIVE_STEPS_MAX = 8;
+
+/** The source a direct tool reads, in the same vocabulary research uses, so one phrase table serves both. */
+const STEP_SOURCES: Record<string, string> = {
+  gmail: 'mail', gcal: 'calendar', mattermost: 'chat', mongoose: 'mongoose',
+  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web', research: 'knowledge',
+};
+
+function stepSourceOf(name: string): string {
+  const prefix = name.split('_')[0] ?? name;
+  return STEP_SOURCES[prefix] ?? prefix;
+}
+
+/** The action word a direct tool asks its source for. */
+function stepActionOf(name: string): string {
+  const suffix = name.split('_').slice(1).join('_');
+  if (/search|list|find/.test(suffix)) return 'search';
+  if (/note|remember|save/.test(suffix)) return 'save';
+  return 'read';
+}
+
 interface ActiveSession {
   inputFinal?: boolean;
   inputAt?: number;
@@ -89,6 +117,10 @@ interface ActiveSession {
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
+  /** The live tool steps of the turn in flight, oldest first; never journalled. */
+  liveSteps: LiveToolStepBody[];
+  /** How many items each call of this turn returned, so its end step counts items and not citations. */
+  liveStepItems: Map<string, number>;
   toolCalls: number;
   seenIds: Set<string>;
   thinking: boolean;
@@ -321,6 +353,29 @@ function jobRow(job: ToolJob): import('./types.js').PendingLiveJob {
   };
 }
 
+// Per-second audio counters. Numbers only: the journal never sees a sample. One bucket per second
+// per session, flushed on the next bucket so a stall shows as a second with no output.
+const audioBuckets = new WeakMap<ActiveSession, { second: number; input: number; output: number; silent: number }>();
+const audioTotals = new WeakMap<ActiveSession, number>();
+function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: number): void {
+  const now = Date.now(), second = Math.floor(now / 1000);
+  const bucket = audioBuckets.get(handle);
+  if (bucket === undefined) { audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: 0 }); return; }
+  if (bucket.second === second) {
+    if (channel === 'input') bucket.input += bytes; else bucket.output += bytes;
+    return;
+  }
+  journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio',
+    at: bucket.second, inputBytes: bucket.input, outputBytes: bucket.output });
+  if (bucket.output > 0) audioTotals.set(handle, (audioTotals.get(handle) ?? 0) + bucket.output);
+  // A stall marker needs a speaking second followed by three with no playback at all.
+  if (bucket.output === 0 && handle.speaking) bucket.silent += 1; else bucket.silent = 0;
+  if (bucket.silent === 3) {
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio_marker', marker: 'stall', silentSeconds: bucket.silent });
+  }
+  audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent });
+}
+
 export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: number): import('./types.js').PendingLiveJob[] {
   return jobs.filter(job => job.deferred
     && (job.deliverySessionId ?? job.originSessionId) === liveSessionId
@@ -341,6 +396,8 @@ export class LiveSessionOwner {
   readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   readonly #research: ResearchSelector | undefined;
+  /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
+  #warm: WarmContextCache;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -358,6 +415,7 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
+    this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
     this.#research = config.research;
@@ -451,25 +509,49 @@ export class LiveSessionOwner {
       const pickupJob = input.pickupJobId ? this.#jobs.pending(tx).find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
       const pickup = pickupJob ? { jobId: pickupJob.id, identity: identity({ state: pickupJob.state, result: pickupJob.result ?? null }) } : undefined;
-      let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
-      try { records = this.#memorySource?.(tx) ?? []; }
-      catch { throw new LiveError('memory_unavailable'); }
+      type MemoryRecords = ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
+      type Earlier = ReturnType<typeof buildEarlierConversationsSection>;
+      let records: MemoryRecords = [];
+      let earlier: Earlier = { section: '', selectedIds: [], omitted: [] };
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) });
+      // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
+      try { records = this.#memorySource?.(tx) ?? []; }
+      catch { throw new LiveError('memory_unavailable'); }
+      // P1-R1: one source of the earlier-conversation section. A warm assembly younger than ten
+      // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
+      // stale or absent one is assembled here, exactly as before, and adopted for the next start.
+      const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
+        let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
+        const start = chooseStartContext(this.#warm.take(), () => {
+          // The summaries fill what the other sections leave under the target, so measure it once.
+          basis = composeSession(undefined);
+          earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
+            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+          return { persona: configuredPrompt.system, memory: [] as readonly string[],
+            summary: earlier.section.length ? earlier.section : undefined,
+            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: undefined };
+        });
+        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
+        else this.#warm.adopt(start.sections);
+        // With no summary section the measured basis is the result, so a start composes once.
+        if (!earlier.section) return basis ?? composeSession(undefined);
+        return composeSession(earlier.section);
+      };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
-      let earlier: ReturnType<typeof buildEarlierConversationsSection>;
-      try {
-        // The summaries fill what the other sections leave under the target, so measure it first.
-        const basis = composeSession(undefined);
-        earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
-        composed = earlier.section ? composeSession(earlier.section) : basis;
-      }
+      try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      // The debug journal's session start: the composed instructions once, then the identity and sizes
+      // a debugging session needs. host.log keeps only the content-free sizes line above.
+      journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'session_start',
+        provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
+        instructionChars: composed.text.length, instructionSections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])),
+        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
@@ -554,7 +636,8 @@ export class LiveSessionOwner {
         else if (kind === 'researchProgress') { const p = JSON.parse(String(item.text)) as ResearchProgressView; entries.push({ seq, kind, progress: { researchId: p.researchId, phase: p.phase, sourcesDone: p.sourcesDone, sourcesPending: p.sourcesPending, elapsedMs: p.elapsedMs } }); }
         else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      const steps = handle !== undefined ? handle.liveSteps.map(step => ({ ...step })) : [];
+      return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, ...(steps.length ? { steps } : {}), cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
     this.#observeState(page.state);
     return page;
@@ -741,6 +824,8 @@ export class LiveSessionOwner {
     const deadlineAt = this.#now() + sessionMs;
     const callDeadlineAt = this.#now() + this.#profile.limits.callMaxMs;
     let session: LiveVoiceSession;
+    // The journal's provider clock: request time to the open call, response time to the ready ack.
+    const openedAt = Date.now();
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
       session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits });
@@ -756,7 +841,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -768,7 +853,11 @@ export class LiveSessionOwner {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
       catch (error) { handle.done.reject(error); }
     };
+    journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'provider_setup', stage: 'open',
+      requestMs: Date.now() - openedAt, requestChars: request.system.text.length, declarations: declarations.length });
     session.ready.then(() => {
+      journalRecord({ kind: 'live', sessionId: liveSessionId, generation: handle.generation, event: 'provider_setup', stage: 'ready',
+        responseMs: Date.now() - openedAt });
       if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
       const job = this.#jobs.forSession(liveSessionId);
@@ -781,7 +870,10 @@ export class LiveSessionOwner {
     // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
     // the owner call ceiling ends the call for time exactly as before. Neither is the other.
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
-    handle.callTimer = this.#schedule(() => { this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
+    handle.callTimer = this.#schedule(() => {
+      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'deadline',
+        name: 'call_ceiling', configuredMs: this.#profile.limits.callMaxMs });
+      this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
@@ -913,6 +1005,8 @@ export class LiveSessionOwner {
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'continuity', state: event,
+      ...(reason === undefined ? {} : { reason }) });
     const journalSequence = this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event, ...(reason ? { reason } : {}) }) }, 'continuity');
     if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return; }
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
@@ -942,6 +1036,8 @@ export class LiveSessionOwner {
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
   #sessionWindowEnded(handle: ActiveSession): void {
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'deadline',
+      name: 'provider_session', configuredMs: this.#profile.limits.sessionMs });
     if (this.#attended(handle)) { void this.#continueSession(handle); return; }
     this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
   }
@@ -1001,6 +1097,8 @@ export class LiveSessionOwner {
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
   #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'recovery', path,
+      attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
   }
 
   /**
@@ -1097,6 +1195,7 @@ export class LiveSessionOwner {
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     // 3j: a mic frame is not conversation. Idle measures silence, so frames keep flowing without resetting it.
+    countAudio(handle, 'input', pcm.byteLength);
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
   }
 
@@ -1167,6 +1266,7 @@ export class LiveSessionOwner {
     while (!this.#settled(handle)) {
     const session = handle.session, generation = handle.generation;
     let outcome: LiveVoiceOutcome | undefined;
+    let ownerTurnOpen = false;
     try {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
@@ -1176,6 +1276,7 @@ export class LiveSessionOwner {
         // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
         if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
         if (event.type === 'modelTurnStarted') {
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
@@ -1189,10 +1290,17 @@ export class LiveSessionOwner {
         if (event.type === 'goAway') {
           handle.goAwayUntil = this.#now() + event.timeLeftMs;
           hostLogEvent({ event: 'live_go_away', timeLeftMs: event.timeLeftMs });
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'deadline',
+            name: 'provider_go_away', configuredMs: event.timeLeftMs });
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
         }
         if (event.type === 'contextUsage') {
+          // The provider's own usage report, kept with the other numbers and never a payload.
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'context_usage',
+            totalTokens: event.totalTokens,
+            ...(event.promptTokens === undefined ? {} : { promptTokens: event.promptTokens }),
+            ...(event.responseTokens === undefined ? {} : { responseTokens: event.responseTokens }) });
           hostLogEvent({ event: 'live_context_usage', totalTokens: event.totalTokens, ...(event.promptTokens !== undefined ? { promptTokens: event.promptTokens } : {}), ...(event.responseTokens !== undefined ? { responseTokens: event.responseTokens } : {}) });
           continue;
         }
@@ -1209,6 +1317,7 @@ export class LiveSessionOwner {
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
+          this.#openSteps(handle, event.calls);
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
@@ -1239,6 +1348,10 @@ export class LiveSessionOwner {
           handle.thinking = false;
           handle.turnInterrupted = true;
           logTurnScript(handle);
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'interrupt',
+            sinceLastModelAudioMs: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'audio_marker', marker: 'drain',
+            outputBytes: audioTotals.get(handle) ?? 0 });
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -1246,9 +1359,15 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; logTurnScript(handle); }
+        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete' }); handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+          // The answer is done, so the turn's step lines retire here: a later question that reads nothing
+          // must not show the previous turn's sources as if they were running (review finding F2).
+          if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
+          logTurnScript(handle);
+        }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
+          countAudio(handle, 'output', event.pcm.byteLength);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
@@ -1261,11 +1380,26 @@ export class LiveSessionOwner {
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
+        // The journal keeps what was actually said, both sides, as each transcription finalises.
+        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
+          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'transcript',
+            speaker: event.type === 'inputTranscription' ? 'owner' : 'model', text: event.text, final: event.finished === true });
+        }
         if (event.type === 'inputTranscription') {
+          if (!ownerTurnOpen) {
+            ownerTurnOpen = true;
+            journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'owner' });
+          }
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
-          if (handle.inputFinal) handle.inputFinalAt = handle.inputAt;
+          if (handle.inputFinal) {
+            handle.inputFinalAt = handle.inputAt;
+            if (ownerTurnOpen) {
+              ownerTurnOpen = false;
+              journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'owner', reason: 'final' });
+            }
+          }
         }
         const kind = journalKind(event.type);
         if (kind === null) continue;
@@ -1280,13 +1414,21 @@ export class LiveSessionOwner {
         }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted) });
       }
-    } catch (error) { handle.persistFailure = error; }
+    } catch (error) {
+      handle.persistFailure = error;
+      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'provider_error',
+        message: error instanceof Error ? capJournalText(error.message) : 'unknown' });
+    }
     if (!handle.terminal) {
       // A session-deadline continuation opens a new session from the timer; the ended one is superseded.
       if (generation !== handle.generation) continue;
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
         outcome ??= await session.done.catch(() => undefined);
+        journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'provider_close',
+          status: outcome?.status ?? 'unknown', code: outcome?.code ?? 'unknown',
+          closeCode: outcome?.upstream?.closeCode ?? null, reason: outcome?.upstream?.errorKind ?? null,
+          recoverable: outcome?.recoverable === true });
         const failedRecovery = handle.rebuilding && !handle.ready;
         if (failedRecovery) handle.recoveries += 1;
         if (outcome?.recoverable || failedRecovery) {
@@ -1405,6 +1547,8 @@ export class LiveSessionOwner {
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle), selector: this.#research, execute,
+      // K6: her own memory is local, so the routed `memory` layer reads it in process and never goes out.
+      memory: query => this.#store.transaction(tx => memoryLookup(tx, query)),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -1414,6 +1558,8 @@ export class LiveSessionOwner {
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      // U-k3: each source's read opens and closes one line in the voice view while it runs.
+      step: step => { if (this.#settled(handle) || generation !== handle.generation) return; this.#recordStep(handle, step); },
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
@@ -1422,7 +1568,7 @@ export class LiveSessionOwner {
       let response: JsonObject;
       try {
         if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
-        response = await scheduler.call(call.args as unknown as ResearchCall, handle.abort.signal);
+        response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
       } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
       return { id: call.id, name: call.name, response };
     }));
@@ -1434,6 +1580,29 @@ export class LiveSessionOwner {
       projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });
     }
     return { responses, projections };
+  }
+
+  /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
+   *  A `research` call opens one line per source from inside the run instead. */
+  #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
+    handle.liveSteps = [];
+    handle.liveStepItems = new Map();
+    for (const call of calls) {
+      if (call.name === RESEARCH_TOOL_NAME) continue;
+      const subject = stepSubject(call.args);
+      const step = { callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name), ...(subject !== undefined ? { subject } : {}), phase: 'start' as const };
+      liveToolStep(step);
+      this.#recordStep(handle, step);
+    }
+  }
+
+  /** Keep one line per step: an end step replaces its own start line in place. */
+  #recordStep(handle: ActiveSession, step: LiveToolStepBody): void {
+    if (this.#settled(handle)) return;
+    const index = handle.liveSteps.findIndex(entry => entry.stepId === step.stepId);
+    if (index >= 0) { handle.liveSteps[index] = step; return; }
+    handle.liveSteps.push(step);
+    while (handle.liveSteps.length > LIVE_STEPS_MAX) handle.liveSteps.shift();
   }
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
@@ -1553,6 +1722,8 @@ export class LiveSessionOwner {
           const digest = unit.plan.combine(subResults);
           const ok = subResults.some(result => result.ok);
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
+          // The count the voice view shows is the items the source returned, never the citation count.
+          if (ok && digest.itemCount !== undefined) handle.liveStepItems.set(call.id, digest.itemCount);
           return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
@@ -1585,6 +1756,19 @@ export class LiveSessionOwner {
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
+      const call = event.calls[index]!;
+      if (call.name === RESEARCH_TOOL_NAME) continue;
+      const started = handle.callStartedAt.get(call.id);
+      // The count the source's own shape carried, never `sources.length`: those are citations, and a
+      // capped source undercounted against them (review finding F5). A shape with no item count stays
+      // uncounted rather than guessed, and the line reads "<source> answered".
+      const items = handle.liveStepItems.get(call.id);
+      this.#recordStep(handle, {
+        callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name),
+        phase: 'end', ok: projection.status === 'completed',
+        ...(items !== undefined ? { resultCount: items } : {}),
+        ...(started !== undefined ? { ms: Math.max(0, this.#now() - started) } : {}),
+      });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {
@@ -1628,6 +1812,9 @@ export class LiveSessionOwner {
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
+    // The journal's session end: the terminal code and who ended it, written before the row closes.
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'session_end',
+      code: 'code' in outcome ? outcome.code : outcome.state, by: consumerState, complete });
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;

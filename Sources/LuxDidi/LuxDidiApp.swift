@@ -315,6 +315,15 @@ import WebKit
         Task { await conversation?.stop() }
     }
 
+    // MARK: - Presence effects (council 2026-10-17, option C)
+    /// The one fence the presence machine drives: the same coordinator fence the app's
+    /// mic control has always used, now named by state instead of toggled.
+    func setPresenceCaptureMuted(_ muted: Bool) { live?.setMuted(muted) }
+    /// Queued model speech goes the instant the machine mutes.
+    func cancelPresencePlayback() { live?.device.cancelPlayback() }
+    /// The presence receipt: a `presence_state` record in the native log, never audio or text.
+    func appendPresenceReceipt(_ record: [String: Any]) { liveJournal.append(record) }
+
     // MARK: - Native bridge (BRIDGE.md)
 
     func bridgeHydrate() -> BridgeHydrate {
@@ -342,14 +351,17 @@ import WebKit
     /// #311: the FULL window's mode button is a presentation switch, so the model
     /// forwards it to the app and never touches Live or audio itself.
     var onMiniMode: (() -> Void)?
+    /// Council 2026-10-17: the app's mic control asks the presence machine, so the
+    /// button, Right Command and the orb click can never disagree.
+    var onPresenceMute: ((Bool) -> Void)?
 
     func handleBridgeCommand(_ message: BridgeInbound) {
         switch message {
         case .mini: onMiniMode?()
         case .start: startLive()
         case .stop: stopLive()
-        case .mute: if live?.isMuted == false { live?.toggleMute() }
-        case .unmute: if live?.isMuted == true { live?.toggleMute() }
+        case .mute: if live?.isMuted == false { onPresenceMute?(true) }
+        case .unmute: if live?.isMuted == true { onPresenceMute?(false) }
         case .openExternal(let url): shell?.openExternal(url)
         case .ready, .consentGranted, .theme, .unknown: break
         }
@@ -421,7 +433,7 @@ struct RootView: View {
     private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
         isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
         start: { [weak self] in self?.model.startLive() },
-        mute: { [weak self] in self?.model.live?.toggleMute() },
+        mute: { [weak self] in self?.presence.mute(.app) },
         stop: { [weak self] in self?.model.stopLive() })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
@@ -434,7 +446,22 @@ struct RootView: View {
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
         presentPanel: { [weak self] in self?.presentMiniThroughCoordinator() },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
-        expandToWindow: { [weak self] in self?.expandThroughCoordinator() })
+        expandToWindow: { [weak self] in self?.expandThroughCoordinator() },
+        present: { [weak self] posture in self?.applyPresenceSurface(PresenceSurfaceState.shown(posture)) })
+    /// Council 2026-10-17 (option C, `council-presence-1017.md`): one state machine
+    /// behind Right Command, a click on the mini orb and the app's mic control. The
+    /// coordinator's mute fence, the device's playback cancel and the provider's
+    /// input mute are effects of the same transitions.
+    private lazy var presence = NativePresence(effects: PresenceEffects(
+        openSession: { [weak self] in self?.model.startLive() },
+        cancelConnecting: { [weak self] in self?.model.stopLive() },
+        closeSession: { [weak self] in self?.model.stopLive() },
+        setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
+        cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
+        receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
+        surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) }))
+    private var presenceGraceTimer: Timer?
+    private var presenceMenuItem: NSMenuItem?
     /// MINI2: the Right Command tap toggles exactly like the chord. It stays off
     /// until the grant is present, and the settings view reads the state that
     /// `pushSingleKeyState` writes as `window.didiSingleKey`.
@@ -510,7 +537,10 @@ struct RootView: View {
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
-        model.onMiniMode = { [weak self] in _ = self?.coordinator.presentMini() }
+           model.onMiniMode = { [weak self] in self?.showMiniOrb() }
+           model.onPresenceMute = { [weak self] muted in
+               if muted { self?.presence.mute(.app) } else { self?.presence.unmute(.app) }
+           }
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
@@ -541,10 +571,15 @@ struct RootView: View {
         liveShortcuts.onWindow = { [weak self] in self?.toggle() }
         liveShortcuts.onPill = { [weak self] in self?.miniOrb.toggle() }
         liveShortcuts.register()
+        // Council 2026-10-17: "Always show Naya" is the only switch over the presence orb.
+        presenceMenuItem = menu.addItem(withTitle: "Always show Naya", action: #selector(toggleAlwaysShowNaya), keyEquivalent: "")
+        presenceMenuItem?.state = presence.alwaysShow ? .on : .off
+        // The orb is there from app start, grey and silent, and it never takes focus.
+        presence.setSurfaces()
         // MINI2: the single key is the same toggle as the chord. The grant is
         // asked for once, on the first interactive launch only, and the chord
         // works whether or not the key does.
-        singleKey.onTap = { [weak self] in self?.miniOrb.toggle() }
+        bindRightCommandTap(singleKey, to: presence)
         SingleKeyTrigger.requestGrantIfNeeded(for: launchKind)
         singleKey.start()
         pageReadyObservation = model.$shell
@@ -570,12 +605,16 @@ struct RootView: View {
             }
             .sink { [weak self] level in self?.pushPillLevel(level) }
         liveObservation = model.$live.sink { [weak self] conversation in
-            self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
-                self?.updateLiveStatus(state: state)
-                self?.model.publishBridgeLive()
+            guard let self else { return }
+            liveStateObservation = conversation?.$state.sink { [weak self] state in
+                guard let self else { return }
+                updateLiveStatus(state: state)
+                model.publishBridgeLive()
+                presenceTransitioned(state)
             }
-            self?.updateLiveStatus(state: conversation?.state ?? .idle)
-            self?.model.publishBridgeLive()
+            updateLiveStatus(state: conversation?.state ?? .idle)
+            model.publishBridgeLive()
+            presenceTransitioned(conversation?.state ?? .idle)
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -601,7 +640,12 @@ struct RootView: View {
             if event.keyCode == UInt16(kVK_Escape) { self?.escape(); return nil }; return event
         }
         terminationMonitor = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.model.stopRecording("Mac is going to sleep") }
+            Task { @MainActor in
+                // Council 2026-10-17: sleep is a hard teardown of the presence session,
+                // and wake never reconnects on its own.
+                self?.presence.sleep()
+                self?.model.stopRecording("Mac is going to sleep")
+            }
         }
         Task {
             if launchKind.presentsWindowAtLaunch { show() }
@@ -816,16 +860,75 @@ struct RootView: View {
     private func pushSingleKeyState() {
         model.bridge.sendJS?("window.didiSingleKey={\"enabled\":\(SingleKeyTrigger.isEnabled),"
             + "\"granted\":\(SingleKeyTrigger.isGranted)}")
+        pushPresenceState()
+    }
+    /// Council 2026-10-17 (option C): the host owns "Always show Naya" and the presence
+    /// state; the settings page owns the wording, exactly like the single key above.
+    private func pushPresenceState() {
+        let surface = PresenceSurfaceState.shown(presence.posture)
+        model.bridge.sendJS?("window.didiPresence={\"alwaysShow\":\(presence.alwaysShow),"
+            + "\"state\":\"\(presence.state.rawValue)\"," + "\"error\":\(surface.error)}")
+    }
+    /// Presence surfaces: the orb is there in every state, grey while Naya is silent, and
+    /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
+    private func applyPresenceSurface(_ surface: PresenceSurfaceState) {
+        if surface.visible { miniOrb.showSurface() } else { miniOrb.hideSurface() }
+        miniPanel?.alphaValue = surface.opacity
+        pushPresenceState()
+        schedulePresenceGrace()
+    }
+    /// One timer, taken from the machine's own monotonic deadline: the five minute
+    /// hot-muted drop, and nothing else. A state without a deadline cancels it.
+    private func schedulePresenceGrace() {
+        presenceGraceTimer?.invalidate(); presenceGraceTimer = nil
+        guard let deadline = presence.dropDeadline else { return }
+        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+        presenceGraceTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.presence.tick() }
+        }
+    }
+    @objc func toggleAlwaysShowNaya() {
+        presence.setAlwaysShow(!presence.alwaysShow)
+        presenceMenuItem?.state = presence.alwaysShow ? .on : .off
+        pushPresenceState()
+    }
+    /// Council 2026-10-17 (P1-R1): the two facts the presence machine cannot observe for
+    /// itself. Provider readiness is the guarded barrier that opens LIVE, and a failed
+    /// session is the fail-loud teardown. `.pausedForInput` keeps its existing meaning.
+    private func presenceTransitioned(_ state: NativeLiveConversation.State) {
+        switch state {
+        case .listening, .speaking: presence.ready()
+        case .failed: presence.fail()
+        case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        }
     }
     /// The FULL window's mode button (#311), and the same path the web button
     /// takes through the bridge. Presentation only: Live keeps running.
-    @objc func showMiniOrb() { _ = coordinator.presentMini() }
+    @objc func showMiniOrb() {
+        // M3-R2: presenting the pill starts the session it belongs to, the same way the
+        // chord does, so the pill is never on screen with the microphone never live.
+        if model.live?.isCapturing != true { model.startLive() }
+        _ = coordinator.presentMini()
+    }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.
     private func orderOutFullWindow() {
         model.stopDictation("Didi hidden")
         window?.orderOut(nil)
     }
+    /// M3-R2: the one native toggle behind the orb click and the Right Command tap.
+    /// P1 points both at `NativePresence.togglePresence`; until then the same three
+    /// steps run through the existing bridge commands, so this is a thin call and no
+    /// new audio code.
+    private func applyPresenceStep(_ step: PresenceStep) {
+        switch step {
+        case .connect: if model.live?.isCapturing != true { model.handleBridgeCommand(.start) }
+        case .hotMute: if model.live?.isMuted == false { model.handleBridgeCommand(.mute) }
+        case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
+        }
+        // M3-R5: muting takes the pill off the screen and unmuting brings it back.
+    }
+
     private func hostMiniSurface() -> Bool { presentMiniPanel() }
     private func dismissMiniSurface() { miniOrb.hideSurface() }
     private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }
@@ -836,7 +939,7 @@ struct RootView: View {
             // No page to host: the coordinator falls back to the FULL window.
             return false
         }
-        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] in self?.miniOrb.expand() }
+           let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] step in self?.applyPresenceStep(step) }
         miniPanel = panel
         panel.orderFrontRegardless()
         if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {

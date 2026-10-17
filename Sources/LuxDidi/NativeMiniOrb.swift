@@ -12,13 +12,23 @@ final class MiniOrbToggle {
     private let presentPanel: @MainActor () -> Void
     private let dismissPanel: @MainActor () -> Void
     private let expandToWindow: @MainActor () -> Void
+    private let present: @MainActor (PresencePosture) -> Void
     private(set) var isVisible = false
 
     init(startLive: @escaping @MainActor () -> Void, stopLive: @escaping @MainActor () -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool, presentPanel: @escaping @MainActor () -> Void,
-         dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void) {
+         dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void,
+         present: @escaping @MainActor (PresencePosture) -> Void = { _ in }) {
         self.startLive = startLive; self.stopLive = stopLive; self.liveIsRunning = liveIsRunning
         self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.expandToWindow = expandToWindow
+        self.present = present
+    }
+
+    /// Presence is the owner of the orb window (council 2026-10-17, option C): the
+    /// orb is there at app start and in every state, grey while Naya is silent, and
+    /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
+    func applyPresence(_ posture: PresencePosture) {
+        present(posture)
     }
 
     func toggle() { isVisible ? hide() : show() }
@@ -68,6 +78,35 @@ final class MiniOrbToggle {
 /// never lands under the menu bar, and on a notched display, where the menu bar
 /// covers the notch and its `safeAreaInsets.top`, never inside the camera
 /// housing either.
+/// What the presence surface looks like in one state, as plain values so the
+/// mapping is proven without AppKit. M3 owns the visuals themselves; these are the
+/// two facts the native window owns: whether it is there, and how transparent.
+struct PresenceSurfaceState: Equatable {
+    /// About 35 percent over grey and very slow in COLD, the owner's "almost transparent".
+    static let coldOpacity: CGFloat = 0.35
+    /// Present but not inviting while the session is only hot-muted.
+    static let hotMutedOpacity: CGFloat = 0.55
+    static let liveOpacity: CGFloat = 1
+
+    let visible: Bool
+    let opacity: CGFloat
+    /// The notch pill is the privacy indicator: live capture only.
+    let pill: Bool
+    /// A failed session left the orb in error until the next tap. M3 owns how it looks.
+    let error: Bool
+
+    static func shown(_ posture: PresencePosture) -> PresenceSurfaceState {
+        let opacity: CGFloat
+        switch posture.state {
+        case .cold, .connecting: opacity = coldOpacity
+        case .live: opacity = liveOpacity
+        case .hotMuted: opacity = hotMutedOpacity
+        }
+        return PresenceSurfaceState(visible: posture.alwaysShow, opacity: opacity,
+            pill: posture.state == .live, error: posture.failed)
+    }
+}
+
 enum MiniOrbFrameRestore {
     /// MINI2: the pill is 64x26 pt and its corner radius is half its height.
     static let size = CGSize(width: 64, height: 26)
@@ -115,17 +154,29 @@ enum MiniOrbPanelPolicy {
     static var cornerRadius: CGFloat { MiniOrbFrameRestore.size.height / 2 }
 }
 
+/// M3-R2: one press on the orb, three steps. The orb click and the Right Command tap
+/// are the same press, so both ask this one table and the app runs one toggle:
+/// nothing live connects, a live orb mutes the microphone hot, a hot muted orb
+/// brings the microphone back. The names match the page's own answer.
+enum PresenceStep: String, Equatable {
+    case connect
+    case hotMute = "hot-mute"
+    case live
+}
+
 /// Borderless, floating, non-activating panel that hosts the compact orb route.
 /// A transparent overlay owns the whole surface: a drag moves the panel, a click
-/// that did not move expands to the full window.
+/// that did not move asks the orb what the press means.
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
     private let frameKey: String
     private let overlay: MiniOrbHitView
 
-    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onExpand: @escaping @MainActor () -> Void) {
-        self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView()
+    private let onStep: @MainActor (PresenceStep) -> Void
+
+    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onStep: @escaping @MainActor (PresenceStep) -> Void) {
+        self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView(); self.onStep = onStep
         super.init(contentRect: NSRect(origin: .zero, size: MiniOrbFrameRestore.size),
                    styleMask: MiniOrbPanelPolicy.styleMask, backing: .buffered, defer: false)
         isFloatingPanel = true
@@ -136,7 +187,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         backgroundColor = .clear
         hasShadow = true
         hidesOnDeactivate = false
-        overlay.onExpand = onExpand
+        overlay.onClick = { [weak self] in self?.press() }
         let container = NSView()
         container.wantsLayer = true
         container.layer?.cornerRadius = MiniOrbPanelPolicy.cornerRadius
@@ -177,15 +228,32 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     @objc private func screenParametersChanged() { restoreFrame(); rememberFrame() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
+    /// Ask the page which of the three steps this press means. A page that is not ready
+    /// yet still gets a press that does something: connect is the step with nothing live,
+    /// and it never guesses a mute the owner did not ask for.
+    private func press() {
+        Task { [weak self] in
+            guard let self else { return }
+            let answer = try? await self.webView.evaluateJavaScript("window.didiClickStep ? window.didiClickStep() : null")
+            let step = (answer as? String).flatMap(PresenceStep.init(rawValue:)) ?? .connect
+            self.onStep(step)
+        }
+    }
+
     private func rememberFrame() { UserDefaults.standard.set(NSStringFromRect(frame), forKey: frameKey) }
 }
 
-/// Transparent drag-or-click surface above the web view. Deliberately captures
-/// every mouse event, so the orb is not an interactive control; there is no
-/// JavaScript-to-native handler.
+/// Transparent drag-or-click surface above the web view. It captures every mouse
+/// event, so the orb never takes focus; a press that did not drag is a press on
+/// the orb (M3-R2).
 @MainActor
 final class MiniOrbHitView: NSView {
-    var onExpand: (@MainActor () -> Void)?
+    var onClick: (@MainActor () -> Void)?
+
+    /// M3-R2: first mouse. The pill is a non-activating panel, so its first click
+    /// must reach the orb without activating the app or its window.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     private var downPoint: NSPoint?
     private var dragged = false
     override func mouseDown(with event: NSEvent) { downPoint = event.locationInWindow; dragged = false }
@@ -195,6 +263,6 @@ final class MiniOrbHitView: NSView {
         guard !dragged, let start = downPoint else { return }
         let end = event.locationInWindow
         guard hypot(end.x - start.x, end.y - start.y) < 4 else { return }
-        onExpand?()
+        onClick?()
     }
 }

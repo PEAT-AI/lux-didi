@@ -22,6 +22,16 @@ export const MATTERMOST_DEFAULTS = { limit: 12, maxLimit: 60, queryChars: 200 } 
 /** The one label a caller shows when the child has no usable session. Never an empty success. */
 export const MATTERMOST_AUTH_NEEDED = 'auth needed: run mattermost_login once';
 
+/** The connector's own view name: one synthesized digest over several child reads. */
+export const MATTERMOST_ATTENTION_TOOL = 'mattermost_attention';
+
+/** Attention window and read bounds; a caller may only narrow `days` and `limit`. */
+export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 4, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** General search looks back 90 days unless the caller names an older period. */
+const SEARCH_WINDOW_MS = 90 * DAY_MS;
+
 export interface MattermostConfig {
   endpointId: string;
   account: string;
@@ -36,11 +46,14 @@ export interface MattermostConfig {
   queryChars?: number;
 }
 
+/** A child tool read, or the connector's own synthesized digest over several reads. */
+export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTION_TOOL;
+
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
-  tool: MattermostTool;
+  tool: MattermostEvidenceTool;
   source: ResultScope;
   observedAt: number;
   coverage: CompletedResult['coverage'];
@@ -54,7 +67,21 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number }
+export interface QueryInput { query: string; limit?: number; after?: string; before?: string }
+export interface AttentionInput { days?: number; limit?: number }
+export type AttentionReason = 'mention' | 'dm' | 'thread';
+
+/** One item that may be waiting on the owner, with the reason it surfaced. */
+export interface AttentionItem {
+  reason: AttentionReason;
+  channel: string;
+  author: string;
+  time: string;
+  permalink: string;
+  snippet: string;
+}
+/** The digest the attention view renders: newest first, one line per item. */
+export interface MattermostAttention { after: string; items: AttentionItem[] }
 
 export interface MattermostReader {
   whoami(signal?: AbortSignal): Promise<MattermostResult>;
@@ -62,6 +89,7 @@ export interface MattermostReader {
   getThread(input: ThreadInput, signal?: AbortSignal): Promise<MattermostResult>;
   search(input: QueryInput, signal?: AbortSignal): Promise<MattermostResult>;
   listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult>;
+  attention(input: AttentionInput, signal?: AbortSignal): Promise<MattermostResult>;
 }
 
 export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig }
@@ -86,7 +114,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** One channel as the list_channels result describes it; the id is absent in some fixtures. */
-export interface MattermostChannel { id?: string; name?: string; displayName?: string }
+export interface MattermostChannel { id?: string; name?: string; displayName?: string; type?: string }
 
 /**
  * The reader's channel index: the list_channel result is stable for minutes, so one internal read
@@ -121,6 +149,7 @@ export function parseChannelList(parsed: unknown): MattermostChannel[] | undefin
     ...(typeof entry['name'] === 'string' ? { name: entry['name'] } : {}),
     ...(typeof entry['display_name'] === 'string' ? { displayName: entry['display_name'] }
       : typeof entry['displayName'] === 'string' ? { displayName: entry['displayName'] } : {}),
+    ...(typeof entry['type'] === 'string' ? { type: entry['type'] } : {}),
   }));
 }
 
@@ -143,6 +172,89 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   const prefix = channels.filter(channel => label(channel).toLowerCase().startsWith(lower[0] ?? ''));
   const closest = (prefix.length ? prefix : channels).map(label).filter(Boolean).slice(0, 5);
   return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
+}
+
+/** The text a completed child read carries inside its MCP content envelope. */
+function contentText(decoded: unknown): string | undefined {
+  const result = isRecord(decoded) && isRecord(decoded['result']) ? decoded['result'] : decoded;
+  const content = isRecord(result) ? result['content'] : undefined;
+  if (Array.isArray(content) && content.length > 0 && isRecord(content[0]) && typeof content[0]['text'] === 'string') return content[0]['text'] as string;
+  return typeof decoded === 'string' ? decoded : undefined;
+}
+
+/** The parsed JSON body of a completed child read; undefined when the child sent no JSON. */
+function contentJson(decoded: unknown): unknown {
+  const text = contentText(decoded);
+  if (text === undefined) return undefined;
+  try { return JSON.parse(text) as unknown; } catch { return undefined; }
+}
+
+function firstText(source: Record<string, unknown>, names: readonly string[]): string {
+  for (const name of names) {
+    const value = source[name];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  return '';
+}
+
+/** One post as the child describes it, carrying its own instant so every rule compares numbers. */
+interface ChildPost { id?: string; rootId?: string; channel: string; author: string; text: string; at: number; permalink: string }
+
+function childPost(raw: Record<string, unknown>): ChildPost | undefined {
+  const text = typeof raw['text'] === 'string' ? raw['text'] : typeof raw['message'] === 'string' ? raw['message'] : '';
+  const stamp = firstText(raw, ['time', 'timestamp', 'create_at']);
+  const parsed = stamp === '' ? Number.NaN : Date.parse(stamp);
+  const at = Number.isNaN(parsed) ? Number(stamp) : parsed;
+  if (text.trim() === '' || !Number.isFinite(at) || at <= 0) return undefined;
+  const id = firstText(raw, ['id', 'post_id']);
+  const rootId = firstText(raw, ['root_id', 'rootId']);
+  return {
+    ...(id !== '' ? { id } : {}),
+    ...(rootId !== '' ? { rootId } : {}),
+    channel: firstText(raw, ['channel', 'channel_name', 'channel_id']),
+    author: firstText(raw, ['author', 'author_name', 'user_name', 'username']),
+    text,
+    at,
+    permalink: firstText(raw, ['permalink', 'url']),
+  };
+}
+
+/** The post list of any shape a child read carries: a bare array, a `posts` list or map, or `items`. */
+function postsIn(decoded: unknown): Record<string, unknown>[] | undefined {
+  const data = contentJson(decoded);
+  if (Array.isArray(data)) return data.filter(isRecord);
+  if (!isRecord(data)) return undefined;
+  const list = data['posts'] ?? data['items'];
+  if (Array.isArray(list)) return list.filter(isRecord);
+  if (isRecord(list)) return Object.values(list).filter(isRecord);
+  return undefined;
+}
+
+interface Owner { id: string; username: string; displayName: string }
+
+function isOwnerPost(owner: Owner, author: string): boolean {
+  const value = author.trim().toLowerCase();
+  if (value === '') return false;
+  return value === owner.username.toLowerCase() || (owner.displayName !== '' && value === owner.displayName.toLowerCase());
+}
+
+/** A mention is the owner's handle marked with @, never a bare matching word. */
+function mentionsOwner(owner: Owner, text: string): boolean {
+  const name = owner.username.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  if (name === '') return false;
+  return new RegExp(`(?:^|[^\\w@])@${name}(?![\\w])`, 'iu').test(text);
+}
+
+/** A direct or group conversation: the child's type letter, or the two-account channel name. */
+function isDirectChannel(channel: MattermostChannel, owner: Owner): boolean {
+  if (channel.type === 'D' || channel.type === 'G') return true;
+  const parts = (channel.name ?? '').split('__');
+  return parts.length === 2 && owner.id !== '' && parts.includes(owner.id);
+}
+
+function snippetOf(text: string): string {
+  const line = text.replace(/\s+/gu, ' ').trim();
+  return line.length <= MATTERMOST_ATTENTION.snippet ? line : `${line.slice(0, MATTERMOST_ATTENTION.snippet - 1)}...`;
 }
 
 interface Settings {
@@ -244,6 +356,121 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     return 'channel' in resolved ? resolved.channel : { error: resolved.error };
   }
 
+  /** The owner identity: one whoami per process, dropped as soon as a read reports the session changed. */
+  let identity: { owner: Owner; evidence: MattermostEvidence } | undefined;
+
+  /** One internal read with its own preflight, so a composed digest never bypasses the grant. */
+  async function read(tool: MattermostTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: true; evidence: MattermostEvidence } | { ok: false; result: MattermostResult }> {
+    const denied = preflight(registry, settings, tool);
+    const evidence = denied === undefined ? await dispatch(tool, args, signal) : { state: 'refused' as const, reason: denied };
+    if (evidence.state === 'completed') return { ok: true, evidence };
+    // Any refused, failed or unknown read may mean the session changed, so the cached identity goes.
+    identity = undefined;
+    return { ok: false, result: evidence };
+  }
+
+  async function ownerIdentity(signal?: AbortSignal): Promise<{ ok: true; owner: Owner; evidence: MattermostEvidence } | { ok: false; result: MattermostResult }> {
+    if (identity) return { ok: true, ...identity };
+    const whoami = await read('mattermost_whoami', {}, signal);
+    if (!whoami.ok) return whoami;
+    const data = contentJson(whoami.evidence.decodedResult);
+    const username = isRecord(data) ? firstText(data, ['username', 'user_name']) : '';
+    if (!isRecord(data) || username === '') return { ok: false, result: { state: 'refused', reason: 'identity-unreadable' } };
+    identity = {
+      owner: { id: firstText(data, ['id', 'user_id']), username, displayName: firstText(data, ['display_name', 'displayName']) },
+      evidence: whoami.evidence,
+    };
+    return { ok: true, ...identity };
+  }
+
+  /** The search window: the last 90 days by default, forwarded only for arguments the child declares. */
+  function searchWindow(after: unknown, before: unknown): Record<string, string> | undefined {
+    const lower = after === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString() : boundedText(after);
+    if (lower === undefined) return undefined;
+    const window: Record<string, string> = { after: lower };
+    if (before !== undefined) {
+      const upper = boundedText(before);
+      if (upper === undefined) return undefined;
+      window['before'] = upper;
+    }
+    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_search');
+    const schema = definition?.inputSchema;
+    const declared = isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
+    for (const key of Object.keys(window)) if (!declared.includes(key)) delete window[key];
+    return window;
+  }
+
+  /** What needs a reply: mentions, direct and group messages, and threads whose newest post is not the owner's. */
+  async function attention(input: AttentionInput, signal?: AbortSignal): Promise<MattermostResult> {
+    const days = input.days === undefined ? MATTERMOST_ATTENTION.days : input.days;
+    if (!Number.isSafeInteger(days) || days < 1 || days > MATTERMOST_ATTENTION.maxDays) return { state: 'refused', reason: 'invalid-days' };
+    const limit = input.limit === undefined ? MATTERMOST_ATTENTION.limit : input.limit;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > settings.maxLimit) return { state: 'refused', reason: 'limit-out-of-budget' };
+    const who = await ownerIdentity(signal);
+    if (!who.ok) return who.result;
+    const cutoff = Date.now() - days * DAY_MS;
+    const scored: { item: AttentionItem; at: number }[] = [];
+    const seen = new Set<string>();
+    const push = (reason: AttentionReason, post: ChildPost): void => {
+      const item: AttentionItem = { reason, channel: post.channel, author: post.author, time: new Date(post.at).toISOString(), permalink: post.permalink, snippet: snippetOf(post.text) };
+      const key = `${item.time}|${item.author}|${item.snippet}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      scored.push({ item, at: post.at });
+    };
+    const threads = new Set<string>();
+    const threadCandidate = (post: ChildPost): void => {
+      const root = post.rootId ?? post.id;
+      if (root !== undefined) threads.add(root);
+    };
+    // Threads the owner wrote in anywhere: the child's own-author search seeds them whatever the
+    // channel, because a thread nobody mentioned the owner in never reaches the handle search.
+    const written = await read('mattermost_search', { query: `from:${who.owner.username}`, limit: settings.maxLimit }, signal);
+    if (!written.ok) return written.result;
+    for (const raw of postsIn(written.evidence.decodedResult) ?? []) {
+      const post = childPost(raw);
+      if (post !== undefined && post.at >= cutoff) threadCandidate(post);
+    }
+    // Mentions: the child's own handle search, with the window and the handle itself checked here.
+    const mentions = await read('mattermost_search', { query: `@${who.owner.username}`, limit: settings.maxLimit }, signal);
+    if (!mentions.ok) return mentions.result;
+    for (const raw of postsIn(mentions.evidence.decodedResult) ?? []) {
+      const post = childPost(raw);
+      if (post === undefined || post.at < cutoff) continue;
+      if (isOwnerPost(who.owner, post.author)) { threadCandidate(post); continue; }
+      if (!mentionsOwner(who.owner, post.text)) continue;
+      push('mention', post);
+      threadCandidate(post);
+    }
+    // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
+    const channels = await loadChannels(signal);
+    if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
+    for (const channel of channels.filter(entry => isDirectChannel(entry, who.owner)).slice(0, MATTERMOST_ATTENTION.maxDmChannels)) {
+      const reference = channel.name ?? channel.id;
+      if (reference === undefined) continue;
+      const history = await read('mattermost_get_channel_history', { channel: reference, limit: MATTERMOST_ATTENTION.historyLimit }, signal);
+      if (!history.ok) return history.result;
+      for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
+        const post = childPost(raw);
+        if (post === undefined || post.at < cutoff) continue;
+        if (!isOwnerPost(who.owner, post.author)) push('dm', post);
+        threadCandidate(post);
+      }
+    }
+    // Threads the owner started or joined: only a newest post from someone else awaits a reply.
+    for (const rootId of [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads)) {
+      const thread = await read('mattermost_get_thread', { post_id: rootId }, signal);
+      if (!thread.ok) continue;
+      const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(childPost).filter((post): post is ChildPost => post !== undefined);
+      const newest = posts.reduce<ChildPost | undefined>((latest, post) => (latest === undefined || post.at > latest.at ? post : latest), undefined);
+      if (newest === undefined || newest.at < cutoff || isOwnerPost(who.owner, newest.author)) continue;
+      push('thread', newest);
+    }
+    const items = scored.sort((left, right) => right.at - left.at).slice(0, limit).map(entry => entry.item);
+    // The digest stands on the identity read: its provenance is what the projection reports.
+    return { ...who.evidence, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items } satisfies MattermostAttention };
+  }
+
   return {
     async whoami(signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_whoami');
@@ -277,7 +504,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
       const bounded = limited(input.limit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      return dispatch('mattermost_search', { query, ...bounded }, signal);
+      const window = searchWindow(input.after, input.before);
+      if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
+      return dispatch('mattermost_search', { query, ...bounded, ...window }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');
@@ -286,5 +515,6 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       return dispatch('mattermost_list_channels', bounded, signal);
     },
+    attention,
   };
 }

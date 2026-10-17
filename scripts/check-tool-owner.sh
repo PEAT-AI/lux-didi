@@ -10,10 +10,12 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-tool-owner.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,adapters/model,adapters/mcp,adapters/live-voice}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,host,adapters/model,adapters/mcp,adapters/live-voice}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
+# server/tools imports the debug journal receipt: copy the module it compiles against.
+cp "$root/server/host/journal.ts" "$out/source/host/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
@@ -21,10 +23,11 @@ cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root/server/test/tool-owner.test.ts" "$out/source/test/"
 cp "$root/server/test/live-shape.test.ts" "$out/source/test/"
+cp "$root/server/test/redact.test.ts" "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts"
-node --test --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js"
+  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts"
+node --test --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js"

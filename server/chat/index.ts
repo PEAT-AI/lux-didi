@@ -3,19 +3,22 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
+import type { DataClass, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
+import { capJournalText, journalRecord } from '../host/journal.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
+import { hostLogEvent } from '../tools/host-events.js';
 import { canonicalJSON } from '../tools/canonical.js';
 import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } from '../tools/types.js';
 import type { ToolEvidence } from './types.js';
 import { assemble, chatAllowsToolClasses, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
+import { answerInstruction, chatToolRegistry, deterministicAnswer, notReachedLabels, type ChatCallRecord } from './tools.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatStepEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -164,23 +167,62 @@ export class ChatService implements ChatPort {
     })).slice(0, 16);
   }
 
-  async #generate(run: RunSnapshot, context: DomainContext, request: ModelRequest, registry: ToolDefinition[], control: ModelControl): Promise<Pick<ModelResult, 'status' | 'text'> & { dataClass: 'private' | 'sensitive' }> {
+  async #generate(run: RunSnapshot, context: DomainContext, request: ModelRequest, registry: ToolDefinition[], control: ModelControl): Promise<Pick<ModelResult, 'status' | 'text'> & {
+    dataClass: 'private' | 'sensitive'; partial?: true; notReached?: readonly string[] }> {
     const model = this.#config.model!;
     const tools = this.#config.tools;
     let dataClass: 'private' | 'sensitive' = 'private';
+    let roundCount = 0;
     const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
       if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
-      return model.generate(outgoing, outgoingControl);
+      const round = ++roundCount;
+      return model.generate(outgoing, outgoingControl).then(result => {
+        // One journal line per model round: the provider's own timings and its stop reason.
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'model_round', round,
+          requestMs: result.timings.firstTextMs ?? result.timings.totalMs, responseMs: result.timings.totalMs,
+          requestChars: outgoing.system.length, stopReason: result.status });
+        return result;
+      });
     };
     if (!tools) { const result = await generate(request, control); return { status: result.status, text: result.text, dataClass }; }
     const active = this.#toolAuthorities.get(run.runId)!;
     const host = { runId: run.runId, actorId: context.clientId, authorityEpoch: context.authorityEpoch,
       revision: active.authority.revision, grants: registry.map(t => ({ tool: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId })) };
-    const loop = await runTools({ model: { generate: async (next, nextControl) => {
+    const steps: ChatStepEvent[] = [];
+    const rounds: number[] = [];
+    const onStep = (event: ChatStepEvent) => { steps.push(event); this.#emit(run.runId, event); };
+    // The end event carries the result count, known only once the round's responses are shaped.
+    const finished: ChatCallRecord[] = [];
+    // `next.contents` is cumulative history, so only responses that have not been consumed are new.
+    let consumed = 0;
+    const release = (source: readonly number[]) => {
+      const counts = [...source];
+      while (finished.length) {
+        const record = finished.shift()!;
+        const resultCount = counts.shift() ?? 0;
+        onStep({ type: 'chat_step', runId: run.runId, stepId: record.stepId, tool: record.tool, phase: 'end',
+          label: record.label, ok: record.ok, ms: record.ms, resultCount });
+      }
+    };
+    const countOf = (response: JsonObject) => sourceCards({ text: response.text, markdown: response.markdown, sources: response.sources }).length;
+    const acquire = chatToolRegistry(registry, { runId: run.runId, onStep, onFinished: record => finished.push(record) });
+    const fence = new AbortController();
+    const signal = AbortSignal.any([control.signal, fence.signal]);
+    // One run budget: acquisition ends at the fence, the answer phase keeps the remainder.
+    const startedAt = this.#now();
+    const runBudget = Math.max(1, control.deadlineMs - startedAt);
+    const acquireMs = Math.min(70_000, Math.round(runBudget * 0.78));
+    // Headroom: the outer race arms its deadline timer first, so the answer must finish inside it.
+    const answerMs = Math.max(200, runBudget - acquireMs - 3_000);
+    const fenceTimer = setTimeout(() => fence.abort(), acquireMs);
+    const acquirePhase = async () => runTools({ model: { generate: async (next, nextControl) => {
       // Consent and route currency are checked before EVERY request, including evidence follow-ups.
       this.#checkPolicy(run.runId, run.sessionId, context);
       if (!this.lookupAuthority(run.runId) || next.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) throw new ContextFailure('unavailable');
       const toolEvidence = this.#toolEvidence(next);
+      const seen = next.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [countOf(part.functionResponse.response)] : []));
+      release(seen.slice(consumed));
+      consumed = seen.length;
       this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
         const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
@@ -188,24 +230,99 @@ export class ChatService implements ChatPort {
       });
       // runTools retains originals for validation; the canonical helper alone derives provider schemas.
       const declarations = next.declarations?.length === 0 ? [] : declarationsFor(registry).declarations;
-      return generate({ ...next, declarations }, nextControl);
-    } }, request, registry, host, control, maxSteps: 4,
+      const roundStarted = this.#now();
+      const answered = await generate({ ...next, declarations }, nextControl);
+      rounds.push(this.#now() - roundStarted);
+      return answered;
+      } }, request, registry: acquire, host, control: { ...control, signal }, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
       journal: tools.owner.journal, resultGate: tools.owner.resultGate });
+    // A fenced or throwing acquisition still answers from what it gathered.
+    let loop: LoopResult | undefined;
+    let failure: unknown;
+    try { loop = await acquirePhase(); }
+    catch (error) { failure = error; loop = undefined; }
+    finally { clearTimeout(fenceTimer); fence.abort(); }
+    // A refused run keeps its refusal: consent, route and the result gate still own the outcome.
+    if (failure instanceof ContextFailure) throw failure;
+    // The calls the fence cut are named before their end events are released.
+    const cutLabels = notReachedLabels(steps);
+    release([]);
     // The finite bound can stop after a tool result, before another model request.
     // Read its projection through the SAME canonical gate, never from raw journal JSON.
     if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
-      const final = await tools.owner.resultGate.authorize(host, loop.resultBindings ?? [], request.dataClasses, control.signal);
-      const toolEvidence = final.state === 'allowed' ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : [];
+      const final = await tools.owner.resultGate.authorize(host, loop?.resultBindings ?? [], request.dataClasses, control.signal);
+      // Only journaled bindings are re-gated here; host-answered composed reads keep the evidence the
+      // request seam already persisted, so a later empty projection never wipes it.
+      const toolEvidence = final.state === 'allowed' && final.results.length ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : null;
       this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
         const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
-        tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
+        if (toolEvidence) tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
       });
     }
-    return { status: loop.status === 'limit' ? 'truncated' : loop.status === 'uncertain' ? 'error' : loop.status, text: loop.text, dataClass };
+    const settled = loop;
+    if (settled !== undefined && settled.status === 'complete' && settled.text.trim().length > 0) {
+      this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'answered');
+      return { status: 'complete', text: settled.text, dataClass };
+    }
+    // A gate refusal or a provider error is not a cut run: it keeps its own outcome, never an invented answer.
+    if (settled !== undefined && (settled.status === 'denied' || settled.status === 'error')) {
+      return { status: settled.status, text: settled.text, dataClass };
+    }
+    if (settled !== undefined && settled.text.trim().length > 0 && settled.status !== 'limit'
+      && settled.status !== 'uncertain' && settled.status !== 'empty') {
+      return { status: settled.status, text: settled.text, dataClass };
+    }
+    // ANSWER: one tool-free call over the frozen evidence, then a deterministic answer if it fails.
+    // Nothing gathered during acquisition is discarded at the fence.
+    const evidence = this.#frozenEvidence(run);
+    const notReached = cutLabels;
+    let answer = '';
+    if (!control.signal.aborted) {
+      // The answer request passes the same check as every acquire request, evidence included.
+      this.#checkPolicy(run.runId, run.sessionId, context);
+      if (!this.lookupAuthority(run.runId) || request.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) {
+        throw new ContextFailure('unavailable');
+      }
+      const answerAbort = new AbortController();
+      const answerTimer = setTimeout(() => answerAbort.abort(), answerMs);
+      try {
+        const result = await generate({ ...request, declarations: [],
+          contents: [...request.contents, { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
+        { signal: AbortSignal.any([control.signal, answerAbort.signal]), deadlineMs: this.#now() + answerMs });
+        answer = result.text.trim();
+      } catch (error) {
+        if (error instanceof ContextFailure) throw error;
+        answer = '';
+      } finally { clearTimeout(answerTimer); }
+    }
+    this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'fenced');
+    return { status: 'complete', text: answer || deterministicAnswer(evidence, notReached), dataClass, partial: true, notReached };
   }
 
+  /** One bounded receipt per run: model and tool milliseconds and counts only, never text. */
+  #timing(run: RunSnapshot, rounds: readonly number[], steps: readonly ChatStepEvent[], fenceMs: number,
+    acquireMs: number, answerMs: number, outcome: 'answered' | 'fenced'): void {
+    hostLogEvent({ event: 'chat_timing', runId: run.runId, outcome, rounds: [...rounds],
+      tools: steps.filter(step => step.phase === 'end').map(step => ({ tool: step.tool, ok: step.ok === true, ms: step.ms ?? 0 })),
+      fenceMs, acquireMs, answerMs });
+  }
+  /** The evidence persisted before every model request: frozen at the fence, never re-read from a call. */
+  #frozenEvidence(run: RunSnapshot): { name: string; markdown: string }[] {
+    let stored: unknown[] = [];
+    try {
+      this.#config.store.transaction(tx => {
+        const row = tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId]);
+        const trace = row?.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
+        stored = Array.isArray(trace.toolEvidence) ? trace.toolEvidence : [];
+      });
+    } catch { return []; }
+    return stored.flatMap(item => {
+      const entry = item as Record<string, unknown>;
+      return typeof entry.name === 'string' && typeof entry.markdown === 'string' ? [{ name: entry.name, markdown: entry.markdown }] : [];
+    });
+  }
   #row(tx: Transaction, runId: string, context: DomainContext) {
     const row = tx.get('SELECT * FROM chat_runs WHERE run_id=? AND owner_assistant_id=?', [runId, context.assistantId]);
     if (!row) throw new ChatError('not_found');
@@ -491,7 +608,7 @@ export class ChatService implements ChatPort {
     if (listeners.size >= 32) throw new ChatError('unavailable');
     const subscription = new Subscription<ChatEvent>(this.#config.subscriberCapacity ?? 16, () => {
       listeners.delete(subscription); if (!listeners.size) this.#subscribers.delete(runId);
-    }, last => ({ type: 'resync_required', sequence: last.sequence, reason: 'backpressure' }));
+    }, last => ({ type: 'resync_required', sequence: 'sequence' in last ? last.sequence : 0, reason: 'backpressure' }));
     listeners.add(subscription); this.#subscribers.set(runId, listeners);
     subscription.push({ type: 'snapshot', sequence: run.sequence, run });
     if (run.state === 'terminal') subscription.close();
@@ -522,7 +639,8 @@ export class ChatService implements ChatPort {
     }
   }
   #publish(run: RunSnapshot) { this.#emit(run.runId, { type: 'snapshot', sequence: run.sequence, run }); }
-  #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private'): RunSnapshot {
+  #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private',
+    extras: { partial?: true; notReached?: readonly string[] } = {}): RunSnapshot {
     this.#authorize(context);
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
@@ -541,7 +659,7 @@ export class ChatService implements ChatPort {
       if (changed !== 1) throw new ChatError('epoch_mismatch');
       return this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])!, context);
     });
-    this.#publish(final); return final;
+    this.#emit(final.runId, { type: 'snapshot', sequence: final.sequence, run: final, ...extras }); return final;
   }
   #partial(run: RunSnapshot, context: DomainContext, text: string) {
     if (!text) return;
@@ -637,10 +755,18 @@ export class ChatService implements ChatPort {
       await new Promise<void>(resolve => setImmediate(resolve));
       if (controller.signal.aborted || this.get(run.runId, context).state !== 'dispatch_intent') return;
       this.#checkPolicy(run.runId, run.sessionId, context);
-      const duration = this.#config.deadlineMs ?? 60000;
+      // One run budget for both phases: acquisition is fenced well inside it so the answer lands.
+      const duration = this.#config.deadlineMs ?? 90000;
       const deadlineMs = this.#now() + duration;
       const deadline = new Promise<'deadline'>(resolve => { timeout = setTimeout(() => resolve('deadline'), duration); });
       if (!this.#config.model) throw new ContextFailure('unavailable');
+      // The debug journal: the composed instructions once per chat run, then what the owner said.
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_start',
+        provider: this.#config.route.provider, model: this.#config.route.model,
+        instructionChars: request.system.length, instructions: request.system });
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'transcript', speaker: 'owner',
+        text: request.contents.filter(content => content.role === 'user').slice(-1)
+          .flatMap(content => content.parts.flatMap(part => typeof part.text === 'string' ? [part.text] : [])).join('\n') });
       const generation = this.#generate(run, context, request, registry, { signal: controller.signal, deadlineMs,
         onEvent: event => { if (event.type === 'text') this.#partial(run, context, event.text); } });
       const aborted = new Promise<'aborted'>(resolve => {
@@ -648,13 +774,27 @@ export class ChatService implements ChatPort {
         else controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
       });
       const result = await Promise.race([generation, deadline, aborted]);
-      if (result === 'aborted') return;
-      if (result === 'deadline') { this.#finish(run, context, 'deadline'); controller.abort(); return; }
+      if (result === 'aborted') {
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_end', code: 'cancelled', by: 'owner' });
+        return;
+      }
+      if (result === 'deadline') {
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'deadline', name: 'chat_turn', configuredMs: duration });
+        journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_end', code: 'deadline', by: 'host' });
+        this.#finish(run, context, 'deadline'); controller.abort(); return;
+      }
       const outcome = this.#outcome(result);
-      try { this.#finish(run, context, outcome, result.text, result.dataClass); }
+
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'transcript', speaker: 'model', text: result.text });
+      journalRecord({ kind: 'chat', sessionId: run.runId, event: 'session_end', code: outcome, by: 'host' });
+      const extras = result.partial === true ? { partial: true as const, notReached: result.notReached ?? [] } : {};
+      try { this.#finish(run, context, outcome, result.text, result.dataClass, extras); }
       catch { this.#finish(run, context, 'persistence_failed', result.text); }
     } catch (error) {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';
+      journalRecord({ kind: 'chat', sessionId: accepted.runId, event: 'provider_error',
+        message: error instanceof Error ? capJournalText(error.message) : 'unknown' });
+      journalRecord({ kind: 'chat', sessionId: accepted.runId, event: 'session_end', code: outcome, by: 'host' });
       try { this.#finish(accepted, context, outcome); }
       catch { this.#emit(accepted.runId, { type: 'resync_required', sequence: accepted.sequence, reason: 'storage_unavailable' }); }
     } finally { if (timeout !== undefined) clearTimeout(timeout); this.#workers.delete(accepted.runId); }

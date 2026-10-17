@@ -200,7 +200,9 @@ try {
     await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
-    await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('You cancelled this request. Ask again when ready. Content may have been sent before it stopped.'));
+    await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('You cancelled this request. Ask again when ready.'));
+    // K4 item 6: this run only read, so the detached capture warning must not claim anything was sent.
+    assert.doesNotMatch(await page.locator('#connected-run').textContent(), /Content may have been sent/);
     assert.equal(await page.locator('#connected-entries .assistant').count(), 0);
     child.send('fail-next'); await page.locator('#connected-draft').fill('Show an honest controlled provider failure.'); await page.locator('#connected-send').click();
     await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('The model failed. Ask again.'));

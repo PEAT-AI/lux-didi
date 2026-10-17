@@ -5,12 +5,24 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
+  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
   LIVE_RECOVERY_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
+
+/**
+ * K6, verbatim from the owner's brief: the tools section opens on the three knowledge layers, so she
+ * knows where his world lives from her instructions and not only from the tool names.
+ */
+const WHERE_HIS_WORLD_LIVES = `# Where his world lives
+You reach his world through research. Pick the layer where the answer most likely lives and name it in lookups:
+- memory: your own memory of your conversations with him: what he told you, what he asked you to remember, his commitments and dates. First stop for anything you two discussed before.
+- knowledge: his knowledge base: decisions, project status, technical notes, meeting transcripts, his ideas and personal projects, the record of his work sessions. First stop for how a project stands or what was decided.
+- company: the company knowledge base: Plantix as an organisation: who reports to whom, teams, roles, customers, partners, products, company numbers. First stop for questions about people and structure at work.
+- calendar for time and meetings, mail for what someone sent, chat for what someone wrote, replies for what is waiting on him.
+When a question spans layers, put all of them in one call: they run in parallel, and one call with the right two or three sources beats several calls in a row. Write each query for its source. If the likely layers come back empty, widen once to the next most likely layer, then answer with what you have and say what you checked.`;
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const BUDGET = TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
@@ -160,9 +172,15 @@ test('the target budget yields memory first and never drops the base, overlay or
 
 test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
   assert.match(NAYA_TOOLS, /^# Tools and how to use them\n\n/);
-  assert.match(NAYA_TOOLS, /You have two tools: research and remember_note\./);
+  // K6: the tools section opens on the three knowledge layers, exactly, so she knows where his
+  // world lives instead of reading it off tool names.
+  assert.ok(NAYA_TOOLS.includes(WHERE_HIS_WORLD_LIVES), 'the layer routing text is verbatim');
+  assert.ok(NAYA_TOOLS.indexOf(WHERE_HIS_WORLD_LIVES) < NAYA_TOOLS.indexOf('research returns the findings'),
+    'the layer routing text opens the tools section');
   // OC1 (#228): the open tools are declared to the model with one exact sentence.
-  assert.match(NAYA_TOOLS, /You can open a web page, a file in the owner's home folder, or an app when the owner asks\. Find the exact item first with research or knowledge, say what you are opening, then open it\./);
+  // K6-R1: the item comes from what research already returned. The 3j smoke showed four research
+  // calls in a row and never a spoken answer, so a second call is the failure to avoid.
+  assert.ok(NAYA_TOOLS.includes("You can open a web page, a file in the owner's home folder, or an app when the owner asks. Name the exact item from what research already returned; call research again only when nothing it returned fits. Say what you are opening, then open it."), 'the open-actions sentence names what research returned');
   // #263: a name after a colon reads as a tool name to the model. The retired routing targets must never
   // reappear, because the Live session declares only research and remember_note.
   for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {
@@ -170,10 +188,11 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   }
   // It names every configured source family the research tool reaches, instead of routing to a tool per
   // family. Mail is included because it was the incident's working case (R2 stage 1).
-  assert.match(NAYA_TOOLS, /his calendar and availability/);
-  assert.match(NAYA_TOOLS, /his mail/);
-  assert.match(NAYA_TOOLS, /the team chat/);
-  assert.match(NAYA_TOOLS, /his knowledge base of notes/);
+  assert.match(NAYA_TOOLS, /- memory: your own memory of your conversations with him/);
+  assert.match(NAYA_TOOLS, /- knowledge: his knowledge base: decisions, project status, technical notes/);
+  assert.match(NAYA_TOOLS, /- company: the company knowledge base: Plantix as an organisation/);
+  assert.match(NAYA_TOOLS, /- calendar for time and meetings, mail for what someone sent, chat for what someone wrote, replies for what is waiting on him\./);
+  assert.match(NAYA_TOOLS, /When a question spans layers, put all of them in one call: they run in parallel/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
   assert.match(NAYA_TOOLS, /at most a three to five word acknowledgement/);
   assert.match(NAYA_TOOLS, /There is no background work and no callback: never promise to check later, call back or keep an eye on something\./);
@@ -555,4 +574,46 @@ test('the earlier-conversations budget is what the rest of the instruction leave
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
   assert.ok(composed.text.includes(NAYA_TOOLS), 'tools are never dropped for summaries');
   assert.equal(composed.earlierConversationsIncluded, true);
+});
+
+const standingRecord = (id: string, text: string, status: 'current' | 'dated' | 'open' = 'current') =>
+  ({ id, text, standing: { id, text, status, capturedAt: '2026-09-01' } });
+
+test('standing memory sits after owner lore and before # Memory, and never rides the uuid-ordered list', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ownerProfile: FIXTURE_OWNER,
+    records: [{ id: 'plain', text: 'Fixture plain note' }, standingRecord('standing-1', 'Fixture standing note')] });
+  const ids = composed.sections.map(section => section.id);
+  assert.ok(ids.indexOf('owner-lore') < ids.indexOf('standing-memory'), 'after owner lore');
+  assert.ok(ids.indexOf('standing-memory') < ids.indexOf('memory'), 'before # Memory');
+  assert.ok(composed.text.includes(STANDING_MEMORY_PREFACE));
+  const memorySection = composed.sections.find(section => section.id === 'memory')!;
+  const memoryText = composed.text.slice(composed.text.indexOf('# Memory'), composed.text.indexOf('# Memory') + memorySection.chars);
+  assert.ok(!memoryText.includes('Fixture standing note'), 'a standing note is not repeated in # Memory');
+  assert.ok(memoryText.includes('Fixture plain note'));
+  assert.equal(composed.sections.filter(section => section.id === 'standing-memory').length, 1);
+});
+
+test('the standing section keeps its own budget and reports each omission as budget', () => {
+  const note = (index: number) => standingRecord(`standing-${String(index).padStart(2, '0')}`, `Fixture standing note ${index} `.repeat(6), 'open');
+  const records = Array.from({ length: 12 }, (_, index) => note(index));
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
+  const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
+  assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
+  assert.ok(composed.selectedIds.length > 0 && composed.selectedIds.length < records.length, 'whole notes only, and some omitted');
+  assert.deepEqual(composed.selectedIds, records.slice(0, composed.selectedIds.length).map(record => record.id), 'kept in rank order');
+  assert.ok(composed.omitted.length > 0);
+  for (const omission of composed.omitted) assert.equal(omission.reason, 'budget');
+  assert.equal(composed.text, composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records }).text, 'deterministic');
+});
+
+test('# Memory keeps its own budget when a standing set is present', () => {
+  const records = [
+    standingRecord('standing-1', 'S'.repeat(MEMORY_SECTION_CHAR_LIMIT)),
+    { id: 'plain-1', text: 'Fixture ad hoc voice note' },
+  ];
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
+  const memory = composed.sections.find(section => section.id === 'memory')!;
+  assert.ok(memory.chars <= MEMORY_SECTION_CHAR_LIMIT);
+  assert.ok(composed.text.includes('Fixture ad hoc voice note'));
+  assert.ok(composed.sections.some(section => section.id === 'standing-memory'));
 });

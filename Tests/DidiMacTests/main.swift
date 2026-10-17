@@ -61,6 +61,25 @@ expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
+// M3-R12: this build has one mini surface, and nothing hides it on microphone state.
+// Presence owns its visibility and its opacity (cold 0.35, hot-muted 0.55, live 1.0), so the
+// surface stays on screen in cold and in hot-muted, and only an explicit hide or expand
+// takes it away.
+var miniPresence = "cold"
+var gateDismissals = 0
+var gatePresents = 0
+let surface = MiniOrbToggle(startLive: { miniPresence = "live" }, stopLive: { miniPresence = "cold" },
+                            liveIsRunning: { miniPresence == "live" },
+                            presentPanel: { gatePresents += 1 },
+                            dismissPanel: { gateDismissals += 1 },
+                            expandToWindow: {})
+surface.showSurface()
+expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
+miniPresence = "hot-muted"
+expect(surface.isVisible && gateDismissals == 0, "hot-muted leaves the surface on screen")
+miniPresence = "cold"
+expect(surface.isVisible && gateDismissals == 0, "cold leaves the surface on screen")
+
 // MINI2: the single key. Right Command is Naya's key; Right Option belongs to
 // SuperWhisper and is never watched. A tap fires, a chord use and a long hold do
 // not, and a repeated press is still one press.
@@ -113,6 +132,30 @@ _ = singleKeyDetector.handle(.rightCommandDown, at: 61)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 61.05), "a tap after a chord fires again")
 _ = singleKeyDetector.handle(.otherKeyDown, at: 62)
 expect(singleKeyDetector.handle(.rightCommandUp, at: 63) == false, "a chord before any press never fires")
+
+// P1-R1: the Right Command tap the detector fires is the one presence toggle, and Right
+// Option is SuperWhisper's: the detector has no case for it and never consumes an event.
+// The binding the app installs, not a copy: bindRightCommandTap is what LuxDidiApp calls.
+var presenceSurfaces: [PresenceState] = []
+let presence = NativePresence(effects: PresenceEffects(setCaptureMuted: { _ in },
+    surface: { posture in presenceSurfaces.append(posture.state) }))
+let wiredSingleKey = SingleKeyTrigger()
+bindRightCommandTap(wiredSingleKey, to: presence)
+expect(presence.state == .cold, "presence starts cold and silent")
+var presenceTap = RightCommandTapDetector()
+let presenceTapped = presenceTap.handle(.rightCommandDown, at: 200) == false
+    && presenceTap.handle(.rightCommandUp, at: 200.1)
+expect(presenceTapped, "a Right Command tap is the presence toggle")
+if presenceTapped { wiredSingleKey.onTap?() }
+expect(presence.state == .connecting, "the installed Right Command binding opens the presence session")
+expect(presenceSurfaces.last == .connecting, "the tap renders the presence surface")
+wiredSingleKey.onTap?()
+expect(presence.state == .cold, "a second tap while connecting returns to cold")
+var rightOptionTap = RightCommandTapDetector()
+expect(rightOptionTap.handle(.otherModifiers(held: true), at: 210) == false, "a Right Option press is never a tap")
+expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == false, "a key pressed under Right Option is a chord")
+expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x40) == false, "the Right Option device bit is never a Right Command press")
+expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x80040), "a Right Option press is another modifier, so a press under it is a chord")
 
 // B7 regression: the positive branch, asked once on the first interactive launch
 // and never again, proven through the prompt seam with no modal and no TCC.

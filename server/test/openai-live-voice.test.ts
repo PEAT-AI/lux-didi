@@ -792,6 +792,8 @@ describe('openai gpt-live turn states', () => {
       session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
       socket.deliver({ type: 'session.keepalive' });
       t.mock.timers.tick(2_000);
+      // Let the peer's pongs land before the next tick, exactly as a live socket would.
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
     assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'a lossy uplink is not a teardown');
     assert.equal(receipts().filter(record => record.event === 'live_stall').length, 0, 'and never writes a stall receipt');

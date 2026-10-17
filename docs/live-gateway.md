@@ -44,8 +44,17 @@ Live transcript fragment. HTTP preflight success alone does not prove attachment
 ## Configuration
 
 Strict owner-only `live.json` in the existing `configDir` (the same directory as the model
-`profile.json`/`gemini-primary.json`). It is loaded once at host startup; edits require an explicit
-restart. No dynamic watch and no automatic grant rebinding.
+`profile.json` and the provider's credential slot file). It is loaded once at host startup; edits
+require an explicit restart. No dynamic watch and no automatic grant rebinding.
+
+`provider` names the voice provider and selects both the adapter and the credential slot:
+`gemini` (Gemini 3.8 Live, `models/...` ids on `gemini-primary`) or `openai` (GPT-Live, `gpt-live-*`
+ids on `openai-primary`). `modelId` is validated by the selected provider's own pattern and
+`keyReference` must name that provider's slot, so a Gemini id can never be paired with an OpenAI key.
+The adapter factory selects on `provider`; a provider with no adapter yet fails loudly with
+`unsupported_provider` and never borrows another adapter. A missing key in the selected slot fails
+closed with `file_missing` and never falls back across slots. The Live status payload reports the
+provider the profile carries.
 
 ```json
 {

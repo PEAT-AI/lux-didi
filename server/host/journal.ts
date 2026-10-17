@@ -1,7 +1,7 @@
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { redactSecrets } from '../tools/redact.js';
-import { hostLogEvent } from '../tools/host-events.js';
+import { attachHostLogSink, hostLogEvent } from '../tools/host-events.js';
 
 // The private debug journal: one local JSONL file per session under <dataDir>/debug/<day>/.
 // It holds owner content (transcripts, instruction text, tool results), so it is owner-only:
@@ -62,11 +62,16 @@ export class DebugJournal {
   readonly #dataDir: string;
   readonly #now: () => number;
   readonly #enabled: boolean;
+  readonly #maxDays: number;
+  readonly #maxBytes: number;
   readonly #sessions = new Map<string, SessionState>();
   #day: string | undefined;
   #failures = 0;
+  #last: { kind: JournalKind; sessionId: string } | undefined;
 
-  constructor(dataDir: string, options: { now?: () => number; enabled?: boolean } = {}) {
+  constructor(dataDir: string, options: { now?: () => number; enabled?: boolean; maxDays?: number; maxBytes?: number } = {}) {
+    this.#maxDays = options.maxDays ?? JOURNAL_KEEP_DAYS;
+    this.#maxBytes = options.maxBytes ?? JOURNAL_MAX_BYTES;
     this.#dataDir = dataDir;
     this.#root = join(dataDir, 'debug');
     this.#now = options.now ?? Date.now;
@@ -111,7 +116,19 @@ export class DebugJournal {
       t: new Date(now).toISOString(), mono: now - state.base, kind: state.kind, sessionId,
       ...(generation === undefined ? {} : { generation }), event, ...redactSecrets(fields),
     }) + '\n';
+    this.#last = { kind: state.kind, sessionId };
     this.#append(dayOf(now), `${state.kind}-${sessionId}.jsonl`, line);
+  }
+
+  /**
+   * One native receipt, as the app already forwarded it to the host log, recorded against the session
+   * that was current when it arrived. Mute, presence and window events never leave the app, so those
+   * are read back from the OS log by the reader's own `native` command.
+   */
+  recordNative(raw: Record<string, unknown>): void {
+    if (!this.#enabled || this.#last === undefined) return;
+    const { event, ...fields } = raw;
+    this.write({ kind: this.#last.kind, sessionId: this.#last.sessionId, event: 'native', name: String(event), ...fields });
   }
 
   /** Keep 30 days and at most 2 GB by deleting whole day directories, oldest first. */
@@ -119,11 +136,11 @@ export class DebugJournal {
     if (!this.#enabled) return;
     try {
       const days = this.#days();
-      const cutoff = dayOf(this.#now() - JOURNAL_KEEP_DAYS * 86_400_000);
+      const cutoff = dayOf(this.#now() - this.#maxDays * 86_400_000);
       for (const day of days) if (day < cutoff) this.#removeDay(day);
       let total = this.#days().reduce((sum, day) => sum + this.#dayBytes(day), 0);
       for (const day of this.#days()) {
-        if (total <= JOURNAL_MAX_BYTES) break;
+        if (total <= this.#maxBytes) break;
         total -= this.#dayBytes(day);
         this.#removeDay(day);
       }
@@ -196,7 +213,23 @@ export function configureDebugJournal(dataDir: string, enabled: boolean, options
   // The profile reloads on every save; the installed journal keeps its session baselines.
   if (installed && installed.dataDir === dataDir && installed.enabled === enabled) return installed;
   installed = new DebugJournal(dataDir, { enabled, ...options });
+  attachNativeSink(installed);
   return installed;
+}
+
+const NATIVE_EVENT = /^native_[a-z]{1,32}$/;
+let detachNative: (() => void) | undefined;
+
+function attachNativeSink(journal: DebugJournal): void {
+  detachNative?.();
+  detachNative = attachHostLogSink({
+    event(raw) {
+      if (!raw || typeof raw !== 'object') return;
+      const record = raw as Record<string, unknown>;
+      if (typeof record['event'] !== 'string' || !NATIVE_EVENT.test(record['event'])) return;
+      journal.recordNative(record);
+    },
+  });
 }
 
 export function currentDebugJournal(): DebugJournal | undefined { return installed; }
@@ -205,4 +238,4 @@ export function currentDebugJournal(): DebugJournal | undefined { return install
 export function journalRecord(record: JournalRecord): void { installed?.write(record); }
 
 /** Test seam: drop the installed journal so a test never writes through the owner's own directory. */
-export function resetDebugJournal(): void { installed = undefined; }
+export function resetDebugJournal(): void { installed = undefined; detachNative?.(); detachNative = undefined; }

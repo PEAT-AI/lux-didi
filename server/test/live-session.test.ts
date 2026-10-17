@@ -2564,7 +2564,9 @@ test('a model turn that stops generating without turnComplete is logged open (#3
     h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
     await output.next();
     h.advance(1000); scheduler.runDue();
-    await attachment.done;
+    const terminal = await attachment.done;
+    assert.deepEqual(terminal.terminal, { state: 'failed', code: 'idle_timeout' }, 'the idle expiry ends the call');
+    for (let i = 0; i < 200 && !events.some(entry => entry.event === 'live_turn_open'); i++) await tick();
   } finally { detach(); }
   const open = events.find(entry => entry.event === 'live_turn_open');
   assert.ok(open, 'a turn that idles out without turnComplete is logged open');

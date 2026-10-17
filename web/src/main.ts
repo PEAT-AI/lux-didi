@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type Memor
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -260,6 +260,12 @@ function bindScrollAnchors() {
   }
 }
 const miniGlow: MiniState[] = ['listening', 'thinking', 'speaking', 'tool'];
+/** The mini stage's caption: main's state line plus the one shared activity
+ * line, so a running tool stays readable in the orb (W15-R1) without a second
+ * renderer. */
+function miniCaptionMarkup(): string {
+  return orbStateLineMarkup() + activityMarkup(liveActivity(live));
+}
 function paintMiniStage() {
   const stage = document.querySelector('.mini-stage');
   if (!stage) return;
@@ -270,7 +276,7 @@ function paintMiniStage() {
 function renderMini() {
   if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
   orb?.destroy(); orb = undefined;
-  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), orbCaptionMarkup());
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), miniCaptionMarkup());
   const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
 }
@@ -537,7 +543,7 @@ function paintLive(){
   if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
   const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);
   if(jobs&&jobs.innerHTML!==jobMarkup)jobs.innerHTML=jobMarkup;
-  const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  const caption=document.querySelector('.orb-caption');const markup=miniRoute?miniCaptionMarkup():orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);
   // The control reflects the projection: swap the actions in place and rebind, never tear the stage down.

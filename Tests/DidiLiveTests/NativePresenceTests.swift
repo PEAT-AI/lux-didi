@@ -36,7 +36,7 @@ import Foundation
             cancelPlayback: { record.calls.append("cancelPlayback") },
             providerInputMute: { muted in record.calls.append("inputMute:\(muted)") },
             receipt: { record.receipts.append($0) },
-            surface: { record.surfaces.append(($0, $1)) }))
+            surface: { posture in record.surfaces.append((posture.state, posture.alwaysShow)) }))
 
         // COLD at start, with the presence orb shown.
         try require(presence.state == .cold, "the machine starts cold")

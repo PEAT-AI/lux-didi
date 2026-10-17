@@ -19,6 +19,14 @@ enum PresenceTrigger: String, Equatable, Sendable {
     case hotkey, click, app, timer, sleep, error
 }
 
+/// Everything a surface needs to render one presence state: the state, the setting
+/// over the orb, and whether the last teardown failed loud, which is the error posture.
+struct PresencePosture: Equatable {
+    let state: PresenceState
+    let alwaysShow: Bool
+    let failed: Bool
+}
+
 /// The effects the machine drives. Every one is injected, so the transition test
 /// runs with no socket, no mic, no panel and an injected clock.
 struct PresenceEffects {
@@ -29,7 +37,7 @@ struct PresenceEffects {
     var cancelPlayback: @MainActor () -> Void = {}
     var providerInputMute: @MainActor (Bool) -> Void = { _ in }
     var receipt: @MainActor ([String: Any]) -> Void = { _ in }
-    var surface: @MainActor (PresenceState, Bool) -> Void = { _, _ in }
+    var surface: @MainActor (PresencePosture) -> Void = { _ in }
 }
 
 /// The presence machine, in the one place a state can change. `now` is monotonic
@@ -46,6 +54,8 @@ final class NativePresence {
     private(set) var mutedAt: TimeInterval?
     /// "Always show Naya": on by default, and the only switch over the presence orb.
     private(set) var alwaysShow = true
+    /// The last teardown failed loud, so the orb carries an error posture until the next connect.
+    private(set) var failed = false
     /// The trigger that opened CONNECTING, so the readiness receipt names the tap.
     private var connectingTrigger: PresenceTrigger?
 
@@ -61,6 +71,9 @@ final class NativePresence {
         guard state == .hotMuted, let mutedAt else { return nil }
         return mutedAt + Self.hotMutedGrace
     }
+
+    /// What the surfaces render now.
+    var posture: PresencePosture { PresencePosture(state: state, alwaysShow: alwaysShow, failed: failed) }
 
     /// The one tap path: Right Command, a click on the mini orb, the app's mic control.
     func toggle(_ trigger: PresenceTrigger) {
@@ -116,7 +129,8 @@ final class NativePresence {
     /// An audio route or engine failure while live fails loud: error posture, session closed,
     /// never a silent reconfiguration of another application's audio.
     func fail() {
-        guard state != .cold else { return }
+        failed = true
+        guard state != .cold else { effects.surface(posture); return }
         teardown(.error)
     }
 
@@ -124,13 +138,14 @@ final class NativePresence {
     func setAlwaysShow(_ value: Bool) {
         guard alwaysShow != value else { return }
         alwaysShow = value
-        effects.surface(state, alwaysShow)
+        effects.surface(posture)
     }
 
-    func setSurfaces() { effects.surface(state, alwaysShow) }
+    func setSurfaces() { effects.surface(posture) }
 
     private func connect(_ trigger: PresenceTrigger) {
         connectingTrigger = trigger
+        failed = false
         move(to: .connecting, trigger: trigger)
         // No capture, no buffering: the mic opens at `ready()`, not here.
         effects.openSession()
@@ -155,7 +170,7 @@ final class NativePresence {
         let from = state
         state = next
         effects.receipt(["event": "presence_state", "from": from.rawValue, "to": next.rawValue,
-                         "trigger": trigger.rawValue])
-        effects.surface(next, alwaysShow)
+                         "trigger": trigger.rawValue, "failed": failed])
+        effects.surface(posture)
     }
 }

@@ -12,13 +12,13 @@ final class MiniOrbToggle {
     private let presentPanel: @MainActor () -> Void
     private let dismissPanel: @MainActor () -> Void
     private let expandToWindow: @MainActor () -> Void
-    private let present: @MainActor (PresenceSurfaceState) -> Void
+    private let present: @MainActor (PresencePosture) -> Void
     private(set) var isVisible = false
 
     init(startLive: @escaping @MainActor () -> Void, stopLive: @escaping @MainActor () -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool, presentPanel: @escaping @MainActor () -> Void,
          dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void,
-         present: @escaping @MainActor (PresenceSurfaceState) -> Void = { _ in }) {
+         present: @escaping @MainActor (PresencePosture) -> Void = { _ in }) {
         self.startLive = startLive; self.stopLive = stopLive; self.liveIsRunning = liveIsRunning
         self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.expandToWindow = expandToWindow
         self.present = present
@@ -27,8 +27,8 @@ final class MiniOrbToggle {
     /// Presence is the owner of the orb window (council 2026-10-17, option C): the
     /// orb is there at app start and in every state, grey while Naya is silent, and
     /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
-    func applyPresence(_ state: PresenceState, alwaysShow: Bool) {
-        present(PresenceSurfaceState.shown(state, alwaysShow: alwaysShow))
+    func applyPresence(_ posture: PresencePosture) {
+        present(posture)
     }
 
     func toggle() { isVisible ? hide() : show() }
@@ -92,14 +92,18 @@ struct PresenceSurfaceState: Equatable {
     let opacity: CGFloat
     /// The notch pill is the privacy indicator: live capture only.
     let pill: Bool
+    /// A failed session left the orb in error until the next tap. M3 owns how it looks.
+    let error: Bool
 
-    static func shown(_ state: PresenceState, alwaysShow: Bool) -> PresenceSurfaceState {
-        switch state {
-        case .cold: return PresenceSurfaceState(visible: alwaysShow, opacity: coldOpacity, pill: false)
-        case .connecting: return PresenceSurfaceState(visible: alwaysShow, opacity: coldOpacity, pill: false)
-        case .live: return PresenceSurfaceState(visible: alwaysShow, opacity: liveOpacity, pill: true)
-        case .hotMuted: return PresenceSurfaceState(visible: alwaysShow, opacity: hotMutedOpacity, pill: false)
+    static func shown(_ posture: PresencePosture) -> PresenceSurfaceState {
+        let opacity: CGFloat
+        switch posture.state {
+        case .cold, .connecting: opacity = coldOpacity
+        case .live: opacity = liveOpacity
+        case .hotMuted: opacity = hotMutedOpacity
         }
+        return PresenceSurfaceState(visible: posture.alwaysShow, opacity: opacity,
+            pill: posture.state == .live, error: posture.failed)
     }
 }
 

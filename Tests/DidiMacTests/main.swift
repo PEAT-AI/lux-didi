@@ -122,7 +122,7 @@ let presenceTapped = presenceTap.handle(.rightCommandDown, at: 200) == false
 expect(presenceTapped, "a Right Command tap is the presence toggle")
 var presenceSurfaces: [PresenceState] = []
 let presence = NativePresence(effects: PresenceEffects(setCaptureMuted: { _ in },
-    surface: { state, _ in presenceSurfaces.append(state) }))
+    surface: { posture in presenceSurfaces.append(posture.state) }))
 expect(presence.state == .cold, "presence starts cold and silent")
 if presenceTapped { presence.toggle(.hotkey) }
 expect(presence.state == .connecting, "the Right Command tap opens the presence session")

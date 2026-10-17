@@ -447,7 +447,7 @@ struct RootView: View {
         presentPanel: { [weak self] in self?.presentMiniThroughCoordinator() },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
         expandToWindow: { [weak self] in self?.expandThroughCoordinator() },
-        present: { [weak self] state in self?.applyPresenceSurface(state) })
+        present: { [weak self] posture in self?.applyPresenceSurface(PresenceSurfaceState.shown(posture)) })
     /// Council 2026-10-17 (option C, `council-presence-1017.md`): one state machine
     /// behind Right Command, a click on the mini orb and the app's mic control. The
     /// coordinator's mute fence, the device's playback cancel and the provider's
@@ -459,7 +459,7 @@ struct RootView: View {
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
-        surface: { [weak self] state, alwaysShow in self?.miniOrb.applyPresence(state, alwaysShow: alwaysShow) }))
+        surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) }))
     private var presenceGraceTimer: Timer?
     private var presenceMenuItem: NSMenuItem?
     /// MINI2: the Right Command tap toggles exactly like the chord. It stays off
@@ -863,8 +863,9 @@ struct RootView: View {
     /// Council 2026-10-17 (option C): the host owns "Always show Naya" and the presence
     /// state; the settings page owns the wording, exactly like the single key above.
     private func pushPresenceState() {
+        let surface = PresenceSurfaceState.shown(presence.posture)
         model.bridge.sendJS?("window.didiPresence={\"alwaysShow\":\(presence.alwaysShow),"
-            + "\"state\":\"\(presence.state.rawValue)\"}")
+            + "\"state\":\"\(presence.state.rawValue)\"," + "\"error\":\(surface.error)}")
     }
     /// Presence surfaces: the orb is there in every state, grey while Naya is silent, and
     /// the notch pill is the live-only privacy indicator. Nothing here takes focus.

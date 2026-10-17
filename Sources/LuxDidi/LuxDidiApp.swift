@@ -435,6 +435,15 @@ struct RootView: View {
         presentPanel: { [weak self] in self?.presentMiniThroughCoordinator() },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
         expandToWindow: { [weak self] in self?.expandThroughCoordinator() })
+    /// MINI2: the Right Command tap toggles exactly like the chord. It stays off
+    /// until the grant is present, and the settings view reads the state that
+    /// `pushSingleKeyState` writes as `window.didiSingleKey`.
+    private lazy var singleKey = SingleKeyTrigger()
+    private var singleKeyMenuItem: NSMenuItem?
+    private var pageReadyObservation: AnyCancellable?
+    /// MINI2 review B5: the pill's level meter follows the microphone. The level
+    /// is read from the live device, never written to it.
+    private var pillLevelObservation: AnyCancellable?
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -516,6 +525,8 @@ struct RootView: View {
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
         menu.addItem(withTitle: "Show Naya", action: #selector(show), keyEquivalent: "")
         menu.addItem(withTitle: "Show mini orb", action: #selector(toggleMiniOrb), keyEquivalent: "")
+        singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
+        singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
@@ -528,10 +539,36 @@ struct RootView: View {
         liveShortcuts.onStart = { [weak self] in self?.startLiveFromMenu() }
         liveShortcuts.onMute = { [weak self] in self?.muteLiveFromMenu() }
         liveShortcuts.onWindow = { [weak self] in self?.toggle() }
+        liveShortcuts.onPill = { [weak self] in self?.miniOrb.toggle() }
         liveShortcuts.register()
+        // MINI2: the single key is the same toggle as the chord. The grant is
+        // asked for once, on the first interactive launch only, and the chord
+        // works whether or not the key does.
+        singleKey.onTap = { [weak self] in self?.miniOrb.toggle() }
+        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind)
+        singleKey.start()
+        pageReadyObservation = model.$shell
+            .compactMap { $0 }
+            .flatMap { shell in shell.$state.map { state in (shell: shell, state: state) } }
+            .sink { [weak self] pair in
+                guard pair.state == .ready, self?.model.shell === pair.shell else { return }
+                self?.pushSingleKeyState()
+            }
         menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Toggle Naya ⌃ ⌥ ⇧ Space: " + liveShortcuts.windowStatus, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Naya pill ⌃ ⌥ Space: " + liveShortcuts.pillStatus, action: nil, keyEquivalent: "")
+        // B5: the pill's five bars follow the live input level, throttled to about
+        // ten pushes a second so the page is not evaluated on the audio cadence.
+        pillLevelObservation = model.$live
+            .flatMap { conversation -> AnyPublisher<Double, Never> in
+                guard let conversation else { return Empty().eraseToAnyPublisher() }
+                return conversation.device.$inputLevel
+                    .map { Double($0) }
+                    .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
+                    .eraseToAnyPublisher()
+            }
+            .sink { [weak self] level in self?.pushPillLevel(level) }
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
                 self?.updateLiveStatus(state: state)
@@ -752,6 +789,33 @@ struct RootView: View {
     /// Ctrl-Opt-Space: the mini orb, and a second press brings the window back.
     @objc func toggleMiniOrb() {
         if coordinator.mode == .mini { _ = coordinator.presentFull(activating: launchKind.activates) } else { miniOrb.show() }
+    }
+    /// MINI2: the single key on or off. Turning it on asks for the grant again,
+    /// because the owner just said yes to the key.
+    @objc func toggleSingleKey() {
+        let enabled = !SingleKeyTrigger.isEnabled
+        SingleKeyTrigger.isEnabled = enabled
+        if enabled {
+            if !SingleKeyTrigger.isGranted { SingleKeyTrigger.requestGrantNow() }
+            singleKey.start()
+        } else {
+            singleKey.stop()
+        }
+        singleKeyMenuItem?.state = enabled ? .on : .off
+        pushSingleKeyState()
+    }
+    /// One level into the pill's own web view. Presentation only: the pill renders
+    /// the number and never opens audio.
+    private func pushPillLevel(_ level: Double) {
+        guard let web = miniPanel?.webView, level.isFinite else { return }
+        web.evaluateJavaScript("window.didiPillLevel && window.didiPillLevel(\(min(max(level, 0), 1)))",
+                               completionHandler: nil)
+    }
+    /// The settings view reads this at render time: the app owns the state and the
+    /// page owns the wording.
+    private func pushSingleKeyState() {
+        model.bridge.sendJS?("window.didiSingleKey={\"enabled\":\(SingleKeyTrigger.isEnabled),"
+            + "\"granted\":\(SingleKeyTrigger.isGranted)}")
     }
     /// The FULL window's mode button (#311), and the same path the web button
     /// takes through the bridge. Presentation only: Live keeps running.

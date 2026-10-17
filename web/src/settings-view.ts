@@ -142,6 +142,7 @@ ${connected.conversations.length ? `<label for="connected-history">Connected his
 }
 
 /**
+/**
  * The one writable setting: which voice provider and voice the next Live session uses. The choice is stored in
  * live.json, so it applies at the next start of the service and never interrupts a call in flight.
  */
@@ -162,6 +163,30 @@ function liveSwitch(summary: unknown, summaryUnavailable: boolean): string {
 <div class="button-row"><button type="submit">Save provider</button></div></form>`;
 }
 
+/**
+ * MINI2: the single key. The app owns the state, because only the app can watch a
+ * key, and pushes it to the page as `window.didiSingleKey`; a browser preview or
+ * a test has no push and reads the default (on, and inactive until a grant).
+ * Right Option is never part of this: it belongs to SuperWhisper.
+ */
+export interface SingleKeyState { enabled: boolean; granted: boolean }
+
+export function singleKeyState(source: unknown = (globalThis as { didiSingleKey?: unknown }).didiSingleKey): SingleKeyState {
+  const row = record(source);
+  return { enabled: row?.enabled !== false, granted: row?.granted === true };
+}
+
+export function singleKeyRow(state: SingleKeyState): string {
+  const why = !state.enabled
+    ? 'Off. Turn it back on in the Naya menu bar menu.'
+    : state.granted
+      ? 'Active: a tap starts and stops Naya exactly like Control Option Space.'
+      : 'Inactive: macOS has not granted Accessibility (or Input Monitoring) for this key. '
+        + 'Control Option Space still works, and the Naya menu bar menu asks for the grant again.';
+  return `<p><strong>Right Command tap</strong> ${escapeHtml(state.enabled ? 'on' : 'off')}. ${escapeHtml(why)}</p>`
+    + '<p class="settings-restart">Right Option belongs to SuperWhisper and is never used.</p>';
+}
+
 export function settingsMarkup(input: SettingsInput): string {
   return `<section id="settings-summary" class="panel didi-settings" aria-label="Didi settings">
 <h2>Didi settings</h2>
@@ -175,6 +200,7 @@ ${connectedSection(input.connected)}
 <label for="appearance-theme">Appearance</label>
 <select id="appearance-theme" name="appearance-theme"><option value="dark"${input.theme === 'light' ? '' : ' selected'}>Dark</option><option value="light"${input.theme === 'light' ? ' selected' : ''}>Light</option></select>
 <p class="muted">Dark is the default. Your choice is saved on this device.</p></section>
+<section class="settings-section"><h3>Single key</h3>${singleKeyRow(singleKeyState())}</section>
 <section class="settings-section"><h3>Where these settings live</h3>
 <dl class="settings-files">${FILE_ROWS.map(([what, file]) => `<dt>${escapeHtml(what)}</dt><dd><code>${escapeHtml(file)}</code></dd>`).join('')}</dl>
 <p class="settings-restart">Changes to these files need a restart of Lux Didi. Only the Live voice provider can be changed here.</p></section>

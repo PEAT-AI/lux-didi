@@ -1,95 +1,82 @@
-// W15 mini orb screenshots: the compact orb route at 300x300 in idle,
-// thinking-with-a-tool-line and speaking. Headless, synthetic fixture only.
+// MINI2: the pill, rendered in every state at 1x and at 2x.
+//
+// Headless, one browser slot, synthetic fixture only:
+//   lux-browser-slot run --priority worker --want 1 -- node web/test/mini-shots.mjs
+//
+// The shot directory defaults to the MINI2 evidence directory and can be moved
+// with DIDI_MINI_SHOTS. Nothing here opens an image: each file is verified by its
+// byte length and by the width and height in its PNG header, so the evidence is
+// the size of the render, not a look at it.
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { startFixture } from './fixture.mjs';
 
-const shots = process.env.DIDI_MINI_SHOTS;
-assert.ok(shots, 'caller owns the mini orb shot directory');
+const shots = process.env.DIDI_MINI_SHOTS
+  || '/Users/rob/.lux/reports/lux-didi-stability-1015/mini2-shots';
 await mkdir(shots, { recursive: true });
+
+/// A PNG's IHDR width and height, read from the file's own bytes.
+async function pngSize(path) {
+  const head = (await readFile(path)).subarray(0, 24);
+  assert.equal(head.subarray(1, 4).toString('latin1'), 'PNG', `${path} is a PNG`);
+  return { width: head.readUInt32BE(16), height: head.readUInt32BE(20), bytes: (await stat(path)).size };
+}
+
+const STATES = ['idle', 'listening', 'thinking', 'speaking', 'muted', 'connecting'];
 const fixture = await startFixture({ configured: false });
 let browser;
+const sizes = [];
 try {
-  browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  // Pair once on the full route; the same page cookie then serves the mini route.
-  await page.goto(fixture.url);
-  await page.getByLabel('One-time pairing code').fill('synthetic-only');
-  await page.getByRole('button', { name: 'Pair this browser', exact: true }).click();
-  // main's three-lane shell has no #connected-route; the header state is the
-  // signal that pairing finished and the same cookie can serve the mini route.
-  await page.locator('.app-shell').waitFor();
-  await page.locator('#connection-state', { hasText: 'Connected' }).waitFor();
-
-  const since = 'synthetic-mini-orb';
-  const openMini = async state => {
-    fixture.setLive(state);
-    await page.goto(`${fixture.url}/?view=mini`);
-    await page.locator('.mini-stage').waitFor();
-  };
-  await page.setViewportSize({ width: 300, height: 300 });
-
-  await openMini({ state: 'idle', since, entries: [], cursor: 0 });
-  // UI3A-R8: the orb and its rings fit inside the panel with even padding, and the
-  // caption stays below the orb inside the same panel.
-  const geometry = await page.evaluate(() => {
-    const box = element => {
-      const r = element.getBoundingClientRect();
-      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
-    };
-    const stage = document.querySelector('.mini-stage');
-    return { stage: box(stage), orb: box(stage.querySelector('canvas')),
-      glow: box(stage.querySelector('.presence-glow')),
-      caption: box(stage.querySelector('.orb-caption')) };
+  browser = await chromium.launch({
+    channel: 'chromium', headless: true,
+    args: ['--use-angle=metal', '--enable-gpu', '--enable-gpu-rasterization', '--ignore-gpu-blocklist'],
   });
-  const shorter = Math.min(geometry.stage.width, geometry.stage.height);
-  assert.ok(geometry.orb.width <= shorter * 0.86 + 0.5, `orb width ${geometry.orb.width} must be at most 0.86 of ${shorter}`);
-  assert.ok(geometry.orb.height <= shorter * 0.86 + 0.5, `orb height ${geometry.orb.height} must be at most 0.86 of ${shorter}`);
-  for (const part of ['orb', 'glow']) {
-    const b = geometry[part];
-    assert.ok(b.left >= geometry.stage.left - 0.5 && b.right <= geometry.stage.right + 0.5 &&
-      b.top >= geometry.stage.top - 0.5 && b.bottom <= geometry.stage.bottom + 0.5,
-      `${part} must fit inside the panel: ${JSON.stringify({ part: b, stage: geometry.stage })}`);
+  // The pill is 64x26 pt, so 1x is 64x26 px and 2x is 128x52 px.
+  for (const scale of [1, 2]) {
+    const page = await browser.newPage({ viewport: { width: 200, height: 120 }, deviceScaleFactor: scale });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(fixture.url);
+    await page.getByLabel('One-time pairing code').fill('synthetic-only');
+    await page.getByRole('button', { name: 'Pair this browser', exact: true }).click();
+    await page.locator('.app-shell').waitFor();
+    await page.locator('#connection-state', { hasText: 'Connected' }).waitFor();
+    fixture.setLive({ state: 'idle', since: 'synthetic-mini-pill', entries: [], cursor: 0 });
+    await page.goto(`${fixture.url}/?view=mini`);
+    await page.locator('.mini-pill').waitFor();
+    // One renderer: the built bundle's own orb canvas and level bars.
+    assert.equal(await page.locator('.mini-pill canvas#didi-orb').count(), 1, 'one orb renderer');
+    assert.equal(await page.locator('.mini-pill .mini-level i').count(), 5, 'five level bars');
+    // Machine-wide GPU rendering rule (harness owner, 10-17): the browser renders
+    // on Metal, never on a software path.
+    const renderer = await page.evaluate(() => {
+      const gl = document.createElement('canvas').getContext('webgl2')
+        || document.createElement('canvas').getContext('webgl');
+      const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : String(gl && gl.getParameter(gl.RENDERER));
+    });
+    assert.match(String(renderer), /Metal/i, `headless renderer must be Metal, got ${renderer}`);
+    const box = await page.locator('.mini-pill').boundingBox();
+    assert.ok(Math.abs(box.width - 64) <= 0.5 && Math.abs(box.height - 26) <= 0.5,
+      `the pill is 64x26 pt, got ${JSON.stringify(box)}`);
+    const radius = await page.locator('.mini-pill').evaluate(el => getComputedStyle(el).borderTopLeftRadius);
+    assert.equal(radius, '13px', 'the capsule radius is half the height');
+    for (const state of STATES) {
+      await page.locator('.mini-pill').evaluate((el, next) => el.setAttribute('data-mini-state', next), state);
+      const path = join(shots, `pill-${state}@${scale}x.png`);
+      await page.locator('.mini-pill').screenshot({ path });
+      const size = await pngSize(path);
+      assert.ok(size.bytes > 200, `${path} is a real render (${size.bytes} bytes)`);
+      assert.deepEqual({ width: size.width, height: size.height }, { width: 64 * scale, height: 26 * scale },
+        `${path} is the pill at ${scale}x`);
+      sizes.push(`${state}@${scale}x=${size.width}x${size.height}/${size.bytes}B`);
+    }
+    assert.deepEqual(errors, []);
+    await page.close();
   }
-  assert.ok(geometry.caption.top >= geometry.orb.bottom - 0.5,
-    `the caption sits below the orb: ${JSON.stringify({ caption: geometry.caption, orb: geometry.orb })}`);
-  assert.ok(geometry.caption.bottom <= geometry.stage.bottom + 0.5 && geometry.caption.left >= geometry.stage.left - 0.5 &&
-    geometry.caption.right <= geometry.stage.right + 0.5, 'the caption stays inside the panel');
-  assert.ok(Math.abs(geometry.orb.left - geometry.stage.left - (geometry.stage.right - geometry.orb.right)) < 1,
-    'the orb is horizontally even');
-  console.log('MINI-GEOMETRY ' + JSON.stringify(geometry));
-  await page.locator('.mini-stage[data-mini-state="idle"]').waitFor({ timeout: 15000 });
-  assert.equal(await page.locator('.sidebar, [data-tab], .voice-text').count(), 0, 'mini route has no full-window chrome');
-  await page.waitForTimeout(500);
-  await page.screenshot({ path: `${shots}/idle.png` });
-
-  await openMini({ state: 'thinking', since, cursor: 1, entries: [
-    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_list' } },
-  ] });
-  await page.locator('.mini-stage[data-mini-state="tool"]').waitFor({ timeout: 15000 });
-  assert.match(await page.locator('.activity-text').innerText(), /mail/i, 'the tool line shows the connector phrase');
-  await page.waitForTimeout(500);
-  console.log('MINI-ACTIVITY ' + JSON.stringify(await page.evaluate(() => {
-    const el = document.querySelector('.mini-stage .activity-text');
-    const stage = document.querySelector('.mini-stage');
-    const cs = getComputedStyle(el);
-    return { color: cs.color, opacity: cs.opacity, whiteSpace: cs.whiteSpace, textOverflow: cs.textOverflow, fontSize: cs.fontSize, lines: el.getClientRects().length, stageBg: getComputedStyle(stage).backgroundColor };
-  })));
-  await page.screenshot({ path: `${shots}/thinking-tool.png` });
-
-  await openMini({ state: 'speaking', since, cursor: 1, entries: [
-    { seq: 1, kind: 'outputTranscription', text: 'Hi there' },
-  ] });
-  await page.locator('.mini-stage[data-mini-state="speaking"]').waitFor({ timeout: 15000 });
-  assert.equal(await page.locator('.mini-stage canvas').count(), 1, 'one orb canvas');
-  await page.waitForTimeout(500);
-  await page.screenshot({ path: `${shots}/speaking.png` });
-
-  assert.deepEqual(errors, []);
-  console.log(`MINI-SHOTS PASS ${shots}/idle.png ${shots}/thinking-tool.png ${shots}/speaking.png`);
+  console.log(`MINI-SHOTS PASS ${shots} ${sizes.join(' ')}`);
 } finally {
   if (browser) await browser.close();
   await fixture.close();

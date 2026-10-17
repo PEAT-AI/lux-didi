@@ -340,7 +340,11 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   const path = join(dir, 'debug', dayName(Date.now()), `chat-${run.runId}.jsonl`);
   assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
   const calls = records(path).filter(line => line['event'] === 'tool');
-  if (calls.length !== 1) console.error(JSON.stringify({ probe: 'journal-dump', failures: currentDebugJournal()?.failures, lines: records(path) }));
+  if (calls.length !== 1) {
+    const files = readdirSync(join(dir, 'debug')).flatMap(dayNameDir => readdirSync(join(dir, 'debug', dayNameDir)).map(name => `${dayNameDir}/${name}`));
+    console.error(JSON.stringify({ probe: 'journal-dump', failures: currentDebugJournal()?.failures, root: currentDebugJournal()?.root, files,
+      lines: records(path), everywhere: files.flatMap(name => records(join(dir, 'debug', name)).map(record => record['event'])) }));
+  }
   assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer: ${JSON.stringify(records(path).map(line => line['event']))}`);
   assert.equal(calls[0]!['tool'], 'search_knowledge');
   assert.equal(typeof calls[0]!['ms'], 'number');

@@ -269,7 +269,7 @@ export function evidenceRow(tool: ToolEvidence, block: { fields: string[]; snipp
   // Knowledge and Mongoose: the heading reads "title (type | date)".
   const flat = parts.join(' | ');
   const kind = /\(([^)]*)\)/.exec(flat)?.[1]?.trim() ?? '';
-  return { line: [flat.replace(/\s*\([^)]*\)/, '').trim(), kind.split(' | ')[0]].filter(Boolean).join(' · '), snippet, at: stampOf(kind.split(' | ')[1] ?? '') };
+  return { line: [clipWords(flat.replace(/\s*\([^)]*\)/, '')), clipWords(kind.split(' | ')[0] ?? '')].filter(Boolean).join(' · '), snippet, at: stampOf(kind.split(' | ')[1] ?? '') };
 }
 
 /** Evidence: per source, a compact list of the items the answer used, folded under the answer. Raw shaped

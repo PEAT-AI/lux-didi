@@ -259,6 +259,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     // budget of its own: a read that runs until the caller aborts loses its whole result to the result
     // gate, so it stops short and reports the calendars it did not reach as unread.
     const stopAt = Date.now() + settings.calendarReadMs;
+    void stopAt;
     const listed = await dispatch('gcal_calendars', { maxResults: Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults) }, signal);
     if (listed.state !== 'completed') return listed;
     // The owner's primary calendar is always read first and awaited inside the sub-deadline; every other

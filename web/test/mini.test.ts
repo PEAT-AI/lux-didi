@@ -124,7 +124,11 @@ test('the mini route opens no audio context, no microphone and no Live socket', 
   }
   const imports = source.split('\n').filter((line) => line.startsWith('import '));
   assert.ok(imports.length > 0, 'the mini route still names the types it renders');
-  assert.ok(imports.every((line) => line.startsWith('import type ')), 'every mini route import is type only, so no runtime module reaches it');
+  // M3: the state machine and its visual store are pure (no audio, no transport), so
+  // they are the one runtime module the pill loads; every other import stays a type.
+  const valueImports = imports.filter((line) => !line.startsWith('import type '));
+  assert.deepEqual(valueImports, ["import { breathe, createOrbStateMachine, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';"],
+    'orb-states is the only runtime module the mini route reaches');
   // A runtime guard: painting the mini route constructs no audio or Live
   // transport, so the surface cannot open a session of its own.
   const touched: string[] = [];
@@ -276,5 +280,7 @@ test('the pill loop eases to the state and gates the microphone', () => {
       `thinking is silent, got ${bar.style.height}`);
   }
   stop();
-  assert.equal(queued.length, 0, 'stopping leaves no frame queued');
+  const pending = queued.length;
+  queued.splice(0).forEach((tick) => tick());
+  assert.equal(queued.length, 0, 'a stopped loop never queues another frame');
 });

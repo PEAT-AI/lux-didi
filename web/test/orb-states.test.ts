@@ -76,12 +76,13 @@ test('a committed change eases colour, glow and amplitude, never jumps', () => {
   // The debounce ends at 250 and the 500 ms ease starts there.
   const start = DEBOUNCE_MS;
   const at = (offset: number) => machine.visual(start + offset).hue;
+  const mid = machine.visual(start + TRANSITION_MS / 2);
   assert.equal(at(0), ORB_VISUALS.cold.hue, 'the ease starts where the old state was');
-  assert.equal(at(TRANSITION_MS / 2), (ORB_VISUALS.cold.hue + ORB_VISUALS.listening.hue) / 2, 'half way at half time');
+  assert.equal(mid.hue, (ORB_VISUALS.cold.hue + ORB_VISUALS.listening.hue) / 2, 'half way at half time');
   assert.equal(at(TRANSITION_MS), ORB_VISUALS.listening.hue, 'the ease lands exactly on the new state');
-  const glow = machine.visual(start + TRANSITION_MS / 2).glow;
+  const glow = mid.glow;
   assert.ok(glow > ORB_VISUALS.cold.glow && glow < ORB_VISUALS.listening.glow, 'glow eases too');
-  const amplitude = machine.visual(start + TRANSITION_MS / 2).amplitude;
+  const amplitude = mid.amplitude;
   assert.ok(amplitude > ORB_VISUALS.cold.amplitude && amplitude < ORB_VISUALS.listening.amplitude, 'amplitude eases too');
   const trail = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540].map(at);
   // The hue travels from the cold blue down to the listening teal, one way, no overshoot.

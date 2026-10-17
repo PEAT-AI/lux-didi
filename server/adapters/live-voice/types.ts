@@ -43,9 +43,19 @@ export interface LiveVoiceLimits {
   handshakeMs: number; idleMs: number; sessionMs: number; closeMs: number;
 }
 export type LiveSocketFactory = (destination: string, options: ClientOptions) => WebSocket;
+/**
+ * An adapter's own time source for its turn-taking windows (input episode quiet, presentation idle, the
+ * modelled playback queue), so a test can drive whole seconds without sleeping.
+ */
+export interface LiveVoiceClock {
+  now(): number;
+  setTimer(ms: number, fire: () => void): unknown;
+  clearTimer(handle: unknown): void;
+}
 export interface LiveVoiceAdapterOptions {
   modelId: string; voice: string; keyReference: string; credentials: Credentials;
   route: LiveVoiceRoute; limits?: Partial<LiveVoiceLimits>; socketFactory?: LiveSocketFactory;
+  clock?: LiveVoiceClock;
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }

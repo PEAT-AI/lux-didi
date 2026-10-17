@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_LANGUAGE_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import type { LiveVoiceAdapterOptions } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
+import { CANARY, collect, control, FakeClock, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 async function until(predicate: () => boolean): Promise<void> {
@@ -11,6 +11,16 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 const code = (expected: string) => (error: unknown) => error instanceof LiveVoiceError && error.code === expected;
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+type Captured = { events: LiveVoiceEvent[] };
+const audioOf = (captured: Captured) => captured.events.flatMap(event => (event.type === 'audio' ? [event.pcm.byteLength] : []));
+const audioBytes = (captured: Captured) => audioOf(captured).reduce((sum, bytes) => sum + bytes, 0);
+const interruptions = (captured: Captured) => captured.events.filter(event => event.type === 'interrupted').length;
+const completions = (captured: Captured) => captured.events.filter(event => event.type === 'turnComplete').length;
+/** Let every queued event reach the collector, so a "nothing was emitted" assertion is not a race. */
+const quiet = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
+const sendAudio = (f: { send: (value: unknown) => void }, samples: number) => f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(samples)) });
+/** 7200 samples at 16 kHz is 14400 bytes of 24 kHz s16 mono, exactly the 300 ms head start a stretch must fill. */
+const speak = (f: { send: (value: unknown) => void }, samples = 7_200) => sendAudio(f, samples);
 const tools = () => [{ name: 'research', description: 'Look something up', parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false } }];
 type Start = { type: string; session: Record<string, unknown> };
 
@@ -50,6 +60,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(instructions, openAiInstructions('Synthetic persona'));
     assert.ok(instructions.startsWith('Synthetic persona'), 'the shared persona is sent unchanged first');
     for (const section of [OPENAI_LANGUAGE_SECTION, OPENAI_TOOLS_SECTION, OPENAI_DELIVERY_SECTION]) assert.ok(instructions.includes(section), section);
+    for (const line of ['Do not treat a cough, music, or nearby conversation as a new request.', 'Keep listening while the owner pauses to think.']) assert.ok(instructions.includes(line), line);
     assert.deepEqual(start.session['audio'], { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: 'marin' } });
     const delegation = start.session['delegation'] as { type: string; responses: Record<string, unknown> };
     assert.equal(delegation.type, 'responses');
@@ -103,7 +114,7 @@ describe('openai gpt-live adapter', () => {
 
   test('provider audio passes through at 24 kHz and both transcripts map onto the union', async t => {
     const { f, session, captured } = await ready(t);
-    const pcm = pcm16(240);
+    const pcm = pcm16(7_200);
     f.send({ type: 'session.output_audio.delta', delta: b64(pcm) });
     f.send({ type: 'session.input_transcript.delta', delta: 'What is', start_ms: 1_000, end_ms: 1_200 });
     f.send({ type: 'session.output_transcript.delta', delta: 'Checking', start_ms: 1_200, end_ms: 1_400 });
@@ -131,7 +142,7 @@ describe('openai gpt-live adapter', () => {
     const call = captured.events.find(event => event.type === 'toolCall');
     assert.ok(call && call.type === 'toolCall');
     assert.deepEqual(call.calls, [{ id: 'call_1', name: 'research', args: { q: 'india weather' } }]);
-    assert.throws(() => session.sendToolResponse({ responses: [{ id: 'other', name: 'research', response: { ok: true } }] }), code('invalid_request'));
+    assert.throws(() => session.sendToolResponse({ responses: [{ id: 'other', name: 'research', response: { ok: true } }] }), code('protocol_error'));
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     await f.frame(3);
     assert.deepEqual(f.frames.slice(1), [
@@ -140,40 +151,277 @@ describe('openai gpt-live adapter', () => {
     ]);
   });
 
-  test('the documented end of a response derives turnComplete', async t => {
-    const { f, captured } = await ready(t);
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
-    await until(() => captured.events.some(event => event.type === 'turnComplete'));
-    assert.ok(captured.events.some(event => event.type === 'modelTurnStarted'));
-    assert.equal(captured.events.filter(event => event.type === 'turnComplete').length, 1);
+  test('the 3j reproduction: an input transcript never silences the rest of the session', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    // The one-word phantom of the field log: a silent mic produced it, and it used to latch the session muted.
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm' });
+    // Empty and whitespace-only deltas carry no word: they start no episode and never flush either (GL1-R1).
+    for (const delta of ['', '   ', '\n\t ']) opened.f.send({ type: 'session.input_transcript.delta', delta });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === '\n\t '));
+    const journaled = opened.captured.events.flatMap(event => (event.type === 'inputTranscription' ? [event.text] : []));
+    assert.deepEqual(journaled, ['mm', '   ', '\n\t '], 'a whitespace-only fragment is still journaled, an empty one is not');
+    for (let index = 0; index < 30; index += 1) speak(opened.f, 2_400);
+    await until(() => audioOf(opened.captured).length === 31);
+    assert.equal(audioBytes(opened.captured), (7_200 + 30 * 2_400) * 2, 'every valid output delta is forwarded');
+    assert.equal(interruptions(opened.captured), 0, 'one word is not a barge-in');
+    // No delegated response.created ever arrives here, which is the shape of a plain spoken reply.
+    clock.advance(2_000);
+    await quiet();
+    assert.equal(completions(opened.captured), 0, '1.3 s of playback is still queued');
+    clock.advance(1_400);
+    await until(() => completions(opened.captured) === 1);
   });
 
-  test('user speech during speech emits interrupted and drops the cut response audio by generation', async t => {
-    const { f, session, captured } = await ready(t);
+  test('a real two-word barge-in from split deltas flushes once and later audio still flows', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });
+    await quiet();
+    assert.equal(interruptions(opened.captured), 0, 'the first half of one word is one word');
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' on' });
+    await until(() => interruptions(opened.captured) === 1);
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 2);
+    assert.equal(audioBytes(opened.captured), (7_200 + 7_200) * 2, 'no frame dropping after the flush');
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' please' });
+    await quiet();
+    assert.equal(interruptions(opened.captured), 1, 'one flush per input episode');
+    clock.advance(700);
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 3);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'stop that' });
+    await until(() => interruptions(opened.captured) === 2);
+  });
+
+  test('the session logs the final instruction size and never the instruction text', async t => {
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+    try {
+      const f = await fixture(t);
+      const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+      t.after(() => session.close());
+    } finally { console.error = original; }
+    const receipt = logged.map(text => { try { return JSON.parse(text) as Record<string, unknown>; } catch { return undefined; } })
+      .find(entry => entry !== undefined && entry['event'] === 'openai_instructions_size');
+    assert.ok(receipt, 'the session start logs openai_instructions_size');
+    const instructions = openAiInstructions('Synthetic persona');
+    assert.equal(receipt['chars'], instructions.length);
+    assert.equal(receipt['bytes'], Buffer.byteLength(instructions));
+    assert.deepEqual(Object.keys(receipt).sort(), ['bytes', 'chars', 'event'], 'sizes only, never instruction text');
+  });
+
+  test('backchannels and a one-word stop never flush, and separate one-word episodes do not add up', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    for (const delta of ['mm', 'mm-hm', '...']) {
+      opened.f.send({ type: 'session.input_transcript.delta', delta });
+      await quiet();
+      clock.advance(700);
+    }
+    for (const delta of ['stop', 'wait', 'no']) {
+      opened.f.send({ type: 'session.input_transcript.delta', delta });
+      await quiet();
+      clock.advance(700);
+    }
+    assert.equal(interruptions(opened.captured), 0, 'a deliberate one-word utterance does not cut the reply');
+    assert.equal(audioOf(opened.captured).length, 1);
+  });
+
+  test('a short output pause under 2000 ms does not complete the turn', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(1_900);
+    await quiet();
+    assert.equal(completions(opened.captured), 0);
+    sendAudio(opened.f, 240);
+    await until(() => audioOf(opened.captured).length === 2);
+    clock.advance(1_900);
+    await quiet();
+    assert.equal(completions(opened.captured), 0, 'a stop for breath is not the end of the turn');
+  });
+
+  test('a long quiet pause completes the turn once, and later audio reopens it', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(2_000);
+    await until(() => completions(opened.captured) === 1);
+    clock.advance(10_000);
+    await quiet();
+    assert.equal(completions(opened.captured), 1, 'silence never completes twice');
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 2);
+    clock.advance(2_000);
+    await until(() => completions(opened.captured) === 2);
+  });
+
+  test('the server stopping while playback is still queued completes only after the queue drains', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(2_500);
+    await quiet();
+    assert.equal(completions(opened.captured), 0, 'the queue still holds 1.5 s of playback');
+    clock.advance(1_500);
+    await until(() => completions(opened.captured) === 1);
+  });
+
+  test('a tool turn: silence never completes it and response.done does not bypass queued playback', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(10_000);
+    await quiet();
+    assert.equal(completions(opened.captured), 0, 'a delegated response is outstanding');
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 2);
+    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
+    clock.advance(2_500);
+    await quiet();
+    assert.equal(completions(opened.captured), 0, 'four seconds of playback are still queued');
+    clock.advance(1_500);
+    await until(() => completions(opened.captured) === 1);
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 3);
+    clock.advance(2_000);
+    await until(() => completions(opened.captured) === 2);
+  });
+
+  test('a head start of 300 ms is held once, then audio passes through and loses no byte', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    for (let index = 0; index < 2; index += 1) sendAudio(opened.f, 2_400);
+    await quiet();
+    assert.deepEqual(audioOf(opened.captured), [], 'nothing is forwarded before 300 ms of audio');
+    sendAudio(opened.f, 2_400);
+    await until(() => audioOf(opened.captured).length === 1);
+    assert.deepEqual(audioOf(opened.captured), [14_400], 'the first 300 ms leaves as one event');
+    for (let index = 0; index < 3; index += 1) sendAudio(opened.f, 2_400);
+    await until(() => audioOf(opened.captured).length === 4);
+    assert.deepEqual(audioOf(opened.captured).slice(1), [4_800, 4_800, 4_800], 'then each delta passes through');
+    assert.equal(audioBytes(opened.captured), 6 * 4_800, 'the hold never drops a byte');
+  });
+
+  test('a head start that never fills is released by the 300 ms clock', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    sendAudio(opened.f, 2_400);
+    await quiet();
+    assert.deepEqual(audioOf(opened.captured), []);
+    clock.advance(300);
+    await until(() => audioOf(opened.captured).length === 1);
+    assert.deepEqual(audioOf(opened.captured), [4_800], 'the first 100 ms of a slow stretch still plays');
+  });
+
+  test('a barge-in during the head start discards the held audio', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    sendAudio(opened.f, 4_800);
+    await quiet();
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(opened.captured) === 1);
+    await quiet();
+    assert.deepEqual(audioOf(opened.captured), [], 'the cut head start is never played');
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    assert.deepEqual(audioOf(opened.captured), [14_400], 'the next stretch starts a fresh head start');
+  });
+
+  test('two parallel tool calls are answered one at a time and sent upstream once', async t => {
+    const clock = new FakeClock();
+    const { f, session, captured } = await ready(t, { clock });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'session.output_transcript.delta', delta: 'The forecast is', start_ms: 0, end_ms: 400 });
-    f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(48)) });
-    await until(() => captured.events.some(event => event.type === 'audio'));
-    assert.equal(captured.events.some(event => event.type === 'interrupted'), false);
-    f.send({ type: 'session.input_transcript.delta', delta: 'wait', start_ms: 400, end_ms: 600 });
-    f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(48)) });
-    await until(() => captured.events.some(event => event.type === 'interrupted'));
-    await tick(); await tick();
-    assert.equal(captured.events.filter(event => event.type === 'audio').length, 1, 'audio of the cut response is dropped');
-    // A new backend response belongs to the new generation and its audio flows again.
-    f.send({ type: 'response.event', delegation_id: 'item_2', event: { type: 'response.created', response: { id: 'resp_2' } } });
-    f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(48)) });
-    await until(() => captured.events.filter(event => event.type === 'audio').length === 2);
-    session.close();
+    for (const call of [{ id: 'call_1', name: 'research' }, { id: 'call_2', name: 'calendar' }]) {
+      f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
+        item: { type: 'function_call', call_id: call.id, name: call.name, arguments: '{}' } } });
+    }
+    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
+    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
+    await quiet();
+    assert.deepEqual(f.frames.slice(1), [], 'nothing goes upstream while a call of the turn is unanswered');
+    assert.throws(() => session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), code('protocol_error'));
+    session.sendToolResponse({ responses: [{ id: 'call_2', name: 'calendar', response: { ok: false } }] });
+    await f.frame(4);
+    assert.deepEqual(f.frames.slice(1), [
+      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
+      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
+      { type: 'response.create' },
+    ]);
+  });
+
+  test('a whitespace-only fragment starts no input episode and postpones no receipt', async t => {
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+    t.after(() => { console.error = original; });
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    const receipts = () => logged.flatMap(text => { try { return [JSON.parse(text) as Record<string, unknown>]; } catch { return []; } });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(opened.captured) === 1);
+    // A separator-only fragment lands 600 ms into the 700 ms quiet window: it is journaled, but it is not a delta of
+    // the episode, so the episode still ends on time and its post-flush receipt is not postponed.
+    clock.advance(600);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' ' });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === ' '));
+    clock.advance(100);
+    await until(() => receipts().some(entry => entry['event'] === 'gptlive_post_flush_audio_ms'));
+    assert.equal(interruptions(opened.captured), 1, 'the whitespace fragment adds no word and cannot flush');
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 2);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' ' });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });
+    await quiet();
+    assert.equal(interruptions(opened.captured), 1, 'one word after a whitespace fragment is still one word');
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' on' });
+    await until(() => interruptions(opened.captured) === 2);
+  });
+
+  test('a closed session leaks no turn-taking timer or latch into the next one', async t => {
+    const clock = new FakeClock();
+    const first = await ready(t, { clock });
+    speak(first.f);
+    await until(() => audioOf(first.captured).length === 1);
+    first.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(first.captured) === 1);
+    first.session.close();
+    await first.session.done;
+    await quiet();
+    assert.equal(clock.timers, 0, 'the episode and idle timers are cleared on close');
+    const second = await ready(t, { clock });
+    speak(second.f);
+    await until(() => audioOf(second.captured).length === 1);
+    second.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(second.captured) === 1);
+    assert.equal(interruptions(second.captured), 1);
+    second.session.close();
   });
 
   test('after a barge-in the finished tool result is recorded without another response.create', async t => {
-    const { f, session, captured } = await ready(t);
+    const clock = new FakeClock();
+    const { f, session, captured } = await ready(t, { clock });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
     f.send({ type: 'session.output_transcript.delta', delta: 'Checking', start_ms: 0, end_ms: 200 });
+    speak(f);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
       item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{}' } } });
+    await until(() => captured.events.some(event => event.type === 'audio'));
     f.send({ type: 'session.input_transcript.delta', delta: 'stop, something else', start_ms: 200, end_ms: 500 });
     await until(() => captured.events.some(event => event.type === 'interrupted') && captured.events.some(event => event.type === 'toolCall'));
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
@@ -243,7 +491,7 @@ describe('openai gpt-live adapter', () => {
   test('an unknown frame type is ignored rather than fatal', async t => {
     const { f, session, captured } = await ready(t);
     f.send({ type: 'session.commentary.appended', event_id: 'event_1' });
-    f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(8)) });
+    speak(f);
     await until(() => captured.events.some(event => event.type === 'audio'));
     let settled = false; void session.done.then(() => { settled = true; });
     await tick();

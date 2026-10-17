@@ -134,7 +134,7 @@ test('evidence ids reach mail_open and chat_thread', () => {
   const mail = candidateSubs('mail_open', { question: 'q', configured: ['mail'], evidence });
   assert.deepEqual(mail[0], { key: 'mo0', name: 'gmail_read', args: { id: 'm1' } });
   const chat = candidateSubs('chat_thread', { question: 'q', configured: ['chat'], evidence });
-  assert.deepEqual(chat[0], { key: 'ct0', name: 'mattermost_get_thread', args: { postId: 'p1' } });
+  assert.deepEqual(chat[0], { key: 'ct0', name: 'mattermost_get_thread', args: { post_id: 'p1' } });
 });
 
 test('a mail search id flows into a second read in the same run', async () => {

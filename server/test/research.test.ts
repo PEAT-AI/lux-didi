@@ -24,7 +24,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; ledger?: ResearchLedger; executeText?: string; replyLimit?: number } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -43,6 +43,7 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     logJoined: id => joined.push(id),
     ledger: opts.ledger ?? new ResearchLedger(),
     ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
+    ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
   };
   return { deps, progress, logs, subcalls, executed, joined };
@@ -427,4 +428,105 @@ test('knowledge findings rank first in the reply', async () => {
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string }[];
   assert.equal(findings[0]?.source, 'knowledge', 'the prime source leads the findings');
+});
+
+test('an empty-but-successful read is a search that matched nothing, never an unreachable source', async () => {
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'from:landlord invoice' }], pUseful: { mail_search: 1 } });
+  const h = harness({ selector, executeText: '' });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
+  assert.match(note, /I searched your mail for "invoice" and found nothing matching/, 'the model gets a line it can voice');
+  assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
+  assert.equal(reply['status'], 'answered', 'a search that matched nothing still answered the question');
+});
+
+test('an identical duplicate read in one run is executed once', async () => {
+  const twice = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:2d' }, { kind: 'mail_search', query: 'newer_than:2d' }], pUseful: { mail_search: 0.9 } });
+  const h = harness({ selector: twice, executeText: '' });
+  await runResearch(h.deps, { action: 'start', question: 'anything new in the mail' }, new AbortController().signal);
+  const mailReads = h.executed.filter(call => call.name === 'gmail_list');
+  assert.equal(mailReads.length, 1, 'the same mail read is issued once');
+});
+
+test('the brief fan-out is credited to every source it read and its findings reach the answer', async () => {
+  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
+  const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name,
+    call.name === 'gcal_list' ? MERGED_CALENDAR
+      : call.name === 'gmail_list' ? '- Invoice | Landlord | Mon | due soon [id m1]'
+        : call.name === 'mattermost_search' ? '**team**\nthe decision was recorded'
+          : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
+  const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
+  for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(sources.includes(source), `the brief read of ${source} is delivered to the answer`);
+  assert.deepEqual(reply['unchecked'], [], 'every configured source was credited, so none is unchecked');
+});
+
+interface FakeClock { now: () => number; schedule: (callback: () => void, delayMs: number) => { unref: () => void; cancel: () => void }; advance: (to: number) => void; pending: () => number }
+
+function fakeClock(): FakeClock {
+  let at = 0;
+  const timers: { due: number; callback: () => void; done: boolean }[] = [];
+  return {
+    now: () => at,
+    schedule: (callback, delayMs) => {
+      const entry = { due: at + delayMs, callback, done: false };
+      timers.push(entry);
+      return { unref: () => {}, cancel: () => { entry.done = true; } };
+    },
+    advance: to => {
+      at = to;
+      for (let guard = 0; guard < 20; guard++) {
+        const due = timers.filter(entry => !entry.done && entry.due <= at);
+        if (due.length === 0) return;
+        for (const entry of due) { entry.done = true; entry.callback(); }
+      }
+    },
+    pending: () => timers.filter(entry => !entry.done).length,
+  };
+}
+
+const settle = async (): Promise<void> => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+function maxGapMs(stamps: readonly number[]): number {
+  return stamps.slice(1).reduce((worst, stamp, index) => Math.max(worst, stamp - stamps[index]!), 0);
+}
+
+test('a long read still sends the model a progress line every three seconds, and none is left behind', async () => {
+  const clock = fakeClock();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = harness({ selector: knowledge, now: clock.now, schedule: clock.schedule, execute: async subs => { await gate; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  await settle();
+  clock.advance(3_000); await settle();
+  clock.advance(6_000); await settle();
+  release();
+  await running;
+  const stamps = h.progress.map(entry => entry.elapsedMs);
+  assert.ok(stamps.includes(3_000) && stamps.includes(6_000), `the model hears from the run while it reads: ${stamps.join(',')}`);
+  assert.ok(stamps.some(stamp => stamp <= 3_000), 'the first update lands within three seconds of the call');
+  assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
+  assert.equal(clock.pending(), 0, 'the heartbeat is stopped when the run ends');
+});
+
+test('when the selector deadline passes the fallback starts at once and the model already has an update', async () => {
+  const clock = fakeClock();
+  let abortSelector!: (error: Error) => void;
+  const selector: ResearchSelector = { select: () => new Promise<SelectorOutput>((_, reject) => { abortSelector = reject; }) };
+  const readAt: { tool: string; at: number }[] = [];
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  await settle();
+  clock.advance(3_000); await settle();
+  clock.advance(RESEARCH.selectorDeadlineMs); await settle();
+  abortSelector(new Error('aborted'));
+  await running;
+  assert.equal(h.logs[0]!.fallbackUsed, true, 'the deadline falls back to the fixed recipe');
+  const fallbackReads = readAt.filter(entry => entry.tool === 'gcal_list');
+  assert.ok(fallbackReads.length > 0, 'the fallback reads the calendar');
+  assert.ok(fallbackReads.every(entry => entry.at === RESEARCH.selectorDeadlineMs), `the fallback read starts the moment the selector gives up: ${JSON.stringify(readAt)}`);
+  const stamps = h.progress.map(entry => entry.elapsedMs);
+  assert.ok(stamps.some(stamp => stamp <= 3_000), 'a progress line inside three seconds of the call');
+  assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
 });

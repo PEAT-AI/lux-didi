@@ -9,7 +9,7 @@ import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
-import { providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
+import { micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
 import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, type MiniState } from './mini';
@@ -139,7 +139,7 @@ function orbStageMarkup(): string {
   return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions" id="orb-actions">${orbControlsMarkup()}</div></section>`;
 }
 function voiceBodyMarkup(): string {
-  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
+  return `${micModePromptMarkup(micModePromptShown())}${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -180,7 +180,8 @@ function memory() {
   const items: MemoryListItem[] = [...entries, ...memorySummaries.map(item => ({ id: item.id, text: item.summary ?? '', origin: 'conversation summary', capturedAt: item.endedAt ?? item.createdAt }))];
   return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(items, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
-function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, summary: liveSummary, summaryUnavailable: liveSummaryUnavailable, ...(liveSaved ? { saved: { provider: liveSaved.provider, voice: liveSaved.voice, appliesAt: liveSaved.appliesAt } } : {}), theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
+function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale,
+  ...(micMode ? { micMode: { preferred: micMode.preferred, active: micMode.active } } : {}), summary: liveSummary, summaryUnavailable: liveSummaryUnavailable, ...(liveSaved ? { saved: { provider: liveSaved.provider, voice: liveSaved.voice, appliesAt: liveSaved.appliesAt } } : {}), theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
   return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
@@ -234,6 +235,19 @@ function consentPopoverMarkup() {
   return `<div class="consent-scrim"></div><section class="consent-popover" role="dialog" aria-modal="true" aria-label="${e(LIVE_CONSENT.title)}"><h2>${e(LIVE_CONSENT.title)}</h2><p>${e(LIVE_CONSENT.body)}</p><div class="consent-actions"><button id="consent-dismiss" class="quiet">${e(LIVE_CONSENT.dismiss)}</button><button id="consent-allow" class="primary">${e(LIVE_CONSENT.allow)}</button></div></section>`;
 }
 // The stage controls: the new-session "+" in the voice stage top right.
+// #352: the Mac's Mic Mode. The native app reads it and decides whether the one line may show (once per
+// app version), so this only paints what it is told; the mini orb shows nothing.
+let micMode: { preferred: string; active: string; prompt: boolean } | undefined;
+let micModeDismissed = false;
+function micModePromptShown() { return micMode?.prompt === true && !micModeDismissed; }
+function applyMicMode(message: unknown) {
+  const next = micModeState(message);
+  if (!next) return;
+  if (next.prompt && !micMode?.prompt) micModeDismissed = false;
+  const changed = !micMode || micMode.preferred !== next.preferred || micMode.active !== next.active || micMode.prompt !== next.prompt || micModeDismissed;
+  micMode = next;
+  if (changed) render();
+}
 function voiceHeadMarkup() {
   return '<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>';
 }
@@ -398,6 +412,8 @@ function bind() {
   button('refresh-plan',()=>void loadTab()); button('reconnect',()=>void connect());button('reconnect-top',()=>void connect());
   button('logout',()=>void mutate(async()=>{await logout();}));
   button('cancel-request',()=>controller?.abort());
+  root.querySelectorAll<HTMLElement>('[data-mic-mode]').forEach(el=>el.onclick=()=>micModePicker(message=>nativeBridge?.send(message)));
+  button('mic-mode-dismiss',()=>{micModeDismissed=true;render();});
   document.getElementById('connected-remember')?.addEventListener('change',ev=>connectedView.setRemember((ev.target as HTMLInputElement).checked));
   bindConnectedHistory();
   bindLiveProviderSwitch();
@@ -663,7 +679,11 @@ liveMachine.on(() => {
   if (open !== appliedConsentOpen) { appliedConsentOpen = open; render(); return; }
   paintLive();
 });
-nativeBridge.onNative(message => liveMachine.receive(message));
+nativeBridge.onNative(message => {
+  applyMicMode(message);
+  // The Mic Mode message is the shell's; every other message, hydrate included, stays the Live machine's.
+  if ((message as { type?: unknown }).type !== 'micMode') liveMachine.receive(message);
+});
 nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });
 // A viewport flip only changes the narrow breakpoint; update the attribute in place so the orb canvas is never

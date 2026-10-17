@@ -202,8 +202,17 @@ const diagnosticCodes = {
   service: ['service_unreachable', 'unexpected_response', 'connection_refused', 'invalidIntent', 'statusMismatch', 'grantMismatch', 'invalidDestination', 'forbiddenHeader', 'invalidFrame', 'invalidAudio', 'queueOverflow', 'staleOperation', 'unavailable', 'conflict', 'transport', 'http', 'socketClosed'],
   audio: ['unsupportedFormat', 'allocationFailed', 'converterUnavailable', 'permissionDenied', 'permissionRestricted', 'voiceProcessingUnavailable', 'deviceUnavailable'],
 };
+// #352 (release 3o): the Mac's Mic Mode, which the native app reads and never sets. Two names, nothing else.
+const MIC_MODES = ['standard', 'wideSpectrum', 'voiceIsolation', 'unknown'];
 export function clientDiagnostic(body: Record<string, unknown>): Record<string, unknown> {
   const { event, failureClass, code, detail } = body;
+  if (event === 'mic_mode') {
+    if (Object.keys(body).some(key => !['event', 'preferred', 'active'].includes(key))
+      || !MIC_MODES.includes(String(body.preferred)) || !MIC_MODES.includes(String(body.active))) {
+      throw new ServiceError('BAD_REQUEST', 'Invalid client diagnostic');
+    }
+    return { event: 'mic_mode', preferred: body.preferred, active: body.active };
+  }
   if (event !== 'live_precreate_failed' || (failureClass !== 'audio' && failureClass !== 'service') || typeof code !== 'string' || !diagnosticCodes[failureClass].includes(code)
     || Object.keys(body).some(key => !['event', 'failureClass', 'code', 'detail'].includes(key))
     || ('detail' in body && (!['http', 'socketClosed'].includes(code) || !Number.isSafeInteger(detail)))) {

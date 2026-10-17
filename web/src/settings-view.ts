@@ -58,6 +58,8 @@ export interface SettingsInput {
   /** Envelope data from GET /api/v1/live/summary, when the browser could read it. */
   summary?: LiveSummary;
   summaryUnavailable?: boolean;
+  /** #352: the Mac's Mic Mode names from the bridge; absent in a plain browser. */
+  micMode?: MicModeState;
   /** The owner's saved Live choice, when this session saved one: it applies at the next start. */
   saved?: { provider: string; voice: string; accent?: string; appliesAt?: string };
   /** Connected-conversation settings owned by the chat surface: the stay-connected switch and saved conversations. */
@@ -254,12 +256,69 @@ export function presenceRow(state: PresenceState): string {
 
 }
 
+/**
+ * #352 (release 3o): the Mac's Mic Mode, as the native app reads it. An app cannot set it, so this is a
+ * read-only row and a button that opens the system picker; nothing here selects a mode.
+ */
+export interface MicModeState { preferred: string; active: string }
+
+const MIC_MODE_LABELS: Record<string, string> = {
+  standard: 'Standard',
+  wideSpectrum: 'Wide Spectrum',
+  voiceIsolation: 'Voice Isolation',
+  unknown: 'Unknown',
+};
+
+export function micModeLabel(mode: string | undefined): string { return MIC_MODE_LABELS[mode ?? ''] ?? 'Unknown'; }
+
+/** The one line's sentence, and the only message either control sends. */
+export const MIC_MODE_SENTENCE = 'Voice Isolation keeps other voices out. Turn it on';
+
+export interface MicModeMessage { type: 'showMicrophoneModes' }
+
+export function micModePromptMessage(): MicModeMessage { return { type: 'showMicrophoneModes' }; }
+
+/** The button's one action, kept where a test calls it without a window: it asks the native picker. */
+export function micModePicker(send: ((message: MicModeMessage) => void) | undefined): void { send?.(micModePromptMessage()); }
+
+/**
+ * The full app's one quiet line. The native app decides whether it may show at a LIVE start (once per app
+ * version), so this paints what it is told and never opens the picker by itself.
+ */
+export function micModePromptMarkup(prompt: boolean): string {
+  if (!prompt) return '';
+  return `<div class="mic-mode-prompt" role="status"><span>${escapeHtml(MIC_MODE_SENTENCE)}</span>`
+    + `<button type="button" id="mic-mode-turn-on" data-mic-mode="picker">Turn it on</button>`
+    + '<button type="button" id="mic-mode-dismiss" class="quiet" aria-label="Dismiss this line">Dismiss</button></div>';
+}
+
+/**
+ * The Mic Mode a native message carries: `micMode` at a change or a LIVE start, and inside `hydrate` on a
+ * reload (a reload never shows the line). Undefined for every other message, so a caller can pass them all.
+ */
+export function micModeState(message: unknown): { preferred: string; active: string; prompt: boolean } | undefined {
+  const envelope = message as { type?: unknown; micMode?: { preferred?: unknown; active?: unknown; prompt?: unknown } } | undefined;
+  if (!envelope || typeof envelope !== 'object') return undefined;
+  if (envelope.type !== 'micMode' && envelope.type !== 'hydrate') return undefined;
+  const mode = envelope.micMode;
+  if (!mode || typeof mode !== 'object') return undefined;
+  const preferred = typeof mode.preferred === 'string' ? mode.preferred : 'unknown';
+  const active = typeof mode.active === 'string' ? mode.active : 'unknown';
+  return { preferred, active, prompt: mode.prompt === true && active !== 'voiceIsolation' };
+}
+
+/** The read-only settings row: the active mode, and the same button as the line. */
+export function micModeRow(state: MicModeState | undefined): string {
+  return `<dt>Mic Mode</dt><dd>${escapeHtml(micModeLabel(state?.active))}. `
+    + '<button type="button" id="mic-mode-open" class="quiet" data-mic-mode="picker">Open the Mic Mode picker</button></dd>';
+}
+
 export function settingsMarkup(input: SettingsInput): string {
   return `<section id="settings-summary" class="panel didi-settings" aria-label="Didi settings">
 <h2>Didi settings</h2>
 <p class="muted">Summary of what this Didi is running with. Only the Live voice provider below can be changed here; everything else is read-only.</p>
 <dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true, input.saved)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
-<dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
+<dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd>${micModeRow(input.micMode)}</dl>
 <section class="settings-section">${connectorsSection(input.connections, input.connectionsUnavailable === true)}</section>
 ${connectedSection(input.connected)}
 <section class="settings-section"><h3>Live voice provider</h3>${liveSwitch(input.summary, input.summaryUnavailable === true, input.saved)}</section>

@@ -37,6 +37,14 @@ import WebKit
     let voice = NativeVoice()
     let bridge = NativeBridge()
     var bridgeTheme: BridgeTheme = .dark
+    // MARK: - Mic Mode (#352, release 3o)
+    /// The Mac's Mic Mode as last read. Read and observed only: nothing here writes an audio setting,
+    /// selects a mode or touches the gear.
+    private(set) lazy var micMode = SystemMicMode.read()
+    private var micModePrompt = MicModePrompt()
+    private lazy var micModeObserver = MicModeObserver { [weak self] reading in
+        Task { @MainActor in self?.micModeChanged(reading) }
+    }
     var trafficLightsMaxX: () -> Double = { 0 }
     @Published private(set) var live: NativeLiveConversation?
     private var orbLevels: NativeOrbLevelPublisher?
@@ -299,6 +307,7 @@ import WebKit
     func startLive(pickupJobID: String? = nil) {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
         if live?.isCapturing == false { liveAuthorityOwner.clear() }
+        micModeReceiptAtLiveStart()
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
@@ -324,12 +333,53 @@ import WebKit
     /// The presence receipt: a `presence_state` record in the native log, never audio or text.
     func appendPresenceReceipt(_ record: [String: Any]) { liveJournal.append(record) }
 
+    // MARK: - Mic Mode (#352)
+    /// The observer's wiring. KVO over the two class properties, and nothing else.
+    func startMicModeWatching() { micModeObserver.start() }
+
+    /// Every change: the native log gets the names, and the full app repaints its read-only row and line.
+    func micModeChanged(_ reading: MicModeReading) {
+        micMode = reading
+        micModePrompt.modeChanged(reading)
+        liveJournal.append(reading.record)
+        bridge.pushMicMode(BridgeMicMode(reading, prompt: false))
+        forwardMicModeReceipt(reading)
+    }
+
+    /// Every LIVE start: the receipt in the native log and in host.log, plus at most one quiet line for the
+    /// full app. It reads the mode; it never selects one.
+    func micModeReceiptAtLiveStart() {
+        let reading = SystemMicMode.read()
+        micMode = reading
+        let prompt = micModePrompt.liveStart(reading, version: appVersion)
+        liveJournal.append(reading.record)
+        bridge.pushMicMode(BridgeMicMode(reading, prompt: prompt))
+        forwardMicModeReceipt(reading)
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    }
+
+    /// The receipt's one hop to the host, so host.log says what the Mac's Mic Mode was. Names only, best
+    /// effort: a diagnostic never changes what the owner hears.
+    private func forwardMicModeReceipt(_ reading: MicModeReading) {
+        guard let client, let body = try? JSONSerialization.data(withJSONObject: reading.record, options: [.sortedKeys]) else { return }
+        let authority = client.authenticatedRequestBuilder()
+        guard var request = try? authority.request(authority.origin.appendingPathComponent("api/v1/diagnostics/client"), nil) else { return }
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        Task { _ = try? await URLSession.shared.data(for: request) }
+    }
+
     // MARK: - Native bridge (BRIDGE.md)
 
     func bridgeHydrate() -> BridgeHydrate {
         BridgeHydrate(consent: bridge.consent.granted, mic: Self.bridgeMic(voice.microphone),
                       live: bridgeLiveState(), route: bridgeRoute(), theme: bridgeTheme.rawValue,
-                      lastSessionEndedAt: nil, trafficLightsMaxX: trafficLightsMaxX())
+                      lastSessionEndedAt: nil, trafficLightsMaxX: trafficLightsMaxX(),
+                      micMode: BridgeMicMode(micMode, prompt: false))
     }
 
     func bridgeLiveState() -> BridgeLiveState {
@@ -363,6 +413,7 @@ import WebKit
         case .mute: if live?.isMuted == false { onPresenceMute?(true) }
         case .unmute: if live?.isMuted == true { onPresenceMute?(false) }
         case .openExternal(let url): shell?.openExternal(url)
+        case .showMicrophoneModes: SystemMicMode.showPicker()
         case .ready, .consentGranted, .theme, .unknown: break
         }
     }
@@ -537,6 +588,8 @@ struct RootView: View {
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
+        // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
+        model.startMicModeWatching()
            model.onMiniMode = { [weak self] in self?.showMiniOrb() }
            model.onPresenceMute = { [weak self] muted in
                if muted { self?.presence.mute(.app) } else { self?.presence.unmute(.app) }

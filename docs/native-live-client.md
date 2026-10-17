@@ -130,9 +130,13 @@ continues to report `status: "configured"`.
 During rebuilding the bar and status item show **Reconnecting**, without error
 styling. The duplex audio device stays open, captured input is dropped and queued
 model output is flushed. Resumption returns to listening, or muted if the owner
-was muted, without creating another session. A terminal `resume_failed` stops the
-device and displays **Naya's connection could not be resumed. Start Live again.**
-Only an explicit Start can open another session.
+was muted, without creating another session. When the resumed setup itself fails,
+the server opens one fresh seeded session that carries the conversation so far and
+continues, so the client stays in rebuilding and returns to listening as usual; no
+client action is needed. Only after the bounded recovery attempts always fail does
+the server settle `resume_failed`, which stops the device and displays **Naya's
+connection could not be resumed. Start Live again.** Only an explicit Start can open
+another session.
 ### Best-effort pre-CREATE diagnostic
 
 A typed pre-CREATE failure still presents the same sentence and appends the same

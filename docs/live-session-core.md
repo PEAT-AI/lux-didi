@@ -90,8 +90,9 @@ store.close();
   PCM, thoughts, `modelText`, resumption handles and raw errors never persist.
 - Count and byte limits end the session with a durable `journal_limit` terminal record,
   preserving every committed fragment. The effective `live.json` profile may override
-  `limits.sessionMs` and `limits.idleMs`; omitted limits use the core defaults of
-  15 minutes per session and 1 minute idle. Installation supplies no timer profile.
+  `limits.sessionMs`, `limits.idleMs` and the total call ceiling `limits.callMaxMs`
+  (default four hours); omitted limits use the core defaults. Installation supplies
+  no timer profile.
 - Audio goes to a single bounded consumer channel; an undrained consumer terminates visibly.
 - A failed store write aborts the adapter and never fabricates a durable outcome.
 
@@ -151,12 +152,21 @@ The replacement uses the original accepted prompt, memory provenance and admitte
 tool declarations without re-running selection or authority resolution. Pending
 tool calls receive `tool_call_lost_on_resume` results; no old call response is sent
 on the replacement connection. Queued PCM and speech captured during rebuilding
-are dropped, not replayed. At most two recovery attempts are admitted, each with
-setup bounded by the goAway time remaining or ten seconds and the remaining
-session and idle budget. The original session deadline never moves. A missing
-handle, exhausted budget, third loss or failed resumed setup ends once through
-the normal settlement path with `resume_failed`. Session and idle timeouts are
-final, never recovery triggers.
+are dropped, not replayed. When a resume is impossible or fails (no usable handle,
+a refused or thrown resumed setup, the tool-call reuse limit) the owner makes one
+fresh seeded attempt (no handle) whose history is this session's journal
+transcriptions (owner and model, in order, bounded to 8000 characters by dropping
+the oldest turns whole) and whose opening input is the fixed pickup line instead of
+the fresh-call greeting. The recovery bound is per episode (R1-R1): three
+consecutive failed recoveries end the call, a recovered connection healthy for
+60 s resets the count, and backoff between consecutive attempts is 0/2/5 s. Each
+attempt opens a new socket, inside the goAway window or ten seconds, within the
+remaining session and idle budget, and the current session deadline does not move.
+Only after the bound, an exhausted budget or a missing setup does the session
+settle `resume_failed`. A provider session that reaches its own `sessionMs`
+deadline while the owner is still in the call continues through the same fresh
+seeded path in a new window; the total call ceiling `callMaxMs` (default four
+hours) and the idle timeout are the only timeouts that end a call.
 
 A barge-in during a pending tool batch is signalled by `serverContent.interrupted`, never
 by `toolCallCancellation` (wire-38, `wire-38-report.md`). The batch keeps running and its

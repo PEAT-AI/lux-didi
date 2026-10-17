@@ -113,3 +113,30 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120 };
+test('live_recovery keeps a closed metadata-only shape', () => {
+  assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
+  assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...RECOVERY, path: 'carrier_pigeon' }), undefined, 'an unknown path is refused');
+  assert.equal(safeEvent({ ...RECOVERY, closeCode: 70000 }), undefined, 'an out-of-range close code is refused');
+  assert.equal(safeEvent({ ...RECOVERY, seedChars: -1 }), undefined, 'a negative seed size is refused');
+});
+test('live_go_away and live_upstream_queue keep counts only', () => {
+  assert.deepEqual(safeEvent({ event: 'live_go_away', timeLeftMs: 30000 }), { event: 'live_go_away', timeLeftMs: 30000 });
+  assert.equal(safeEvent({ event: 'live_go_away', timeLeftMs: -1 }), undefined, 'a negative deadline is refused');
+  assert.deepEqual(safeEvent({ event: 'live_upstream_queue', bufferedBytes: 70000 }), { event: 'live_upstream_queue', bufferedBytes: 70000 });
+  assert.equal(safeEvent({ event: 'live_upstream_queue', bufferedBytes: 'x' }), undefined, 'a non-integer depth is refused');
+});
+test('live_context_usage and live_dead_air_nudge carry numbers only', () => {
+  assert.deepEqual(safeEvent({ event: 'live_context_usage', totalTokens: 15 }), { event: 'live_context_usage', totalTokens: 15 });
+  assert.deepEqual(safeEvent({ event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 }), { event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 });
+  assert.equal(safeEvent({ event: 'live_context_usage', totalTokens: 15, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.deepEqual(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: 8000 }), { event: 'live_dead_air_nudge', elapsedMs: 8000 });
+  assert.equal(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: -1 }), undefined, 'a negative elapsed is refused');
+});
+test('live_turn_open carries the silence duration only (#303)', () => {
+  assert.deepEqual(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42 }), { event: 'live_turn_open', msSinceLastModelAudio: 42 });
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: null }), undefined, 'a null duration is refused');
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42, text: 'x' }), undefined, 'an extra key fails closed');
+});

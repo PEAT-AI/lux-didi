@@ -130,7 +130,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Launch visibility, single-instance guard and drag-band geometry run without a window.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/NativeBridge.swift \
+  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/NativeBridge.swift Sources/LuxDidi/NativeMicMode.swift \
   Tests/DidiLiveTests/LaunchVisibilityTests.swift -o "$work/launch-visibility-tests"
 "$work/launch-visibility-tests"
 # Compile the actual app source surface without launching audio or installing an app.

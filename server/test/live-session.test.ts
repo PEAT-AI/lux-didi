@@ -2927,20 +2927,26 @@ test('a model turn start enters THINKING and every live_state change is written 
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
   const states = () => receipts.map(record => String(record.state));
+  const transitions = () => receipts.map(record => `${record.from === undefined ? '-' : String(record.from)}>${String(record.state)}@${String(record.cause)}`);
   const settle = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
   await settle();
-  assert.deepEqual(states(), ['listening'], 'the opening state is written at the start, with no poll');
+  assert.deepEqual(transitions(), ['->listening@created'], 'the opening state is written at the start, with no poll');
   fake.emit({ type: 'inputTranscription', text: 'plan my week', finished: true });
   fake.emit({ type: 'modelTurnStarted' });
   await settle();
-  assert.deepEqual(states(), ['listening', 'thinking'], 'a generation start is the think time');
+  assert.deepEqual(transitions(), ['->listening@created', 'listening>thinking@model_turn_start'], 'a generation start is the think time');
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   await settle();
   fake.emit({ type: 'turnComplete' });
   await settle();
-  assert.deepEqual(states(), ['listening', 'thinking', 'speaking', 'listening'], 'each change is written once, when it happens');
+  assert.deepEqual(transitions(),
+    ['->listening@created', 'listening>thinking@model_turn_start', 'thinking>speaking@audio', 'speaking>listening@turn_complete'],
+    'each change is written once, when it happens, with the state it came from and why');
+  for (const record of receipts) assert.ok(safeEvent(record), 'the host log whitelist accepts the exact transition shape');
   assert.equal(h.owner.get(session.liveSessionId).consumerState, 'attached', 'the owner is still attached and listening');
   attachment.close();
+  await settle();
+  assert.deepEqual(transitions().slice(-1), ['listening>ended@settle'], 'the end is written without a poll too');
 });
 
 test('an owner turn that ends arms the watchdog, and the next turn arms it again', async t => {

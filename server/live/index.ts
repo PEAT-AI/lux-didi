@@ -19,7 +19,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { capJournalText, journalRecord } from '../host/journal.js';
 
-import { hostLogEvent } from '../host/log.js';
+import { hostLogEvent, LIVE_STATE_CAUSES } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -47,6 +47,8 @@ const RECOVERY_MAX_CONSECUTIVE = 3;
 const RECOVERY_HEALTHY_MS = 60_000;
 const RECOVERY_BACKOFF_MS = [0, 2_000, 5_000] as const;
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
+/** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
+type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
 const SEED_CHAR_LIMIT = 8_000;
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
@@ -136,6 +138,8 @@ interface ActiveSession {
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
   lastModelAudioAt?: number;
   turnCompleteSeen: boolean;
+  /** The last live state this session projected, which is the `from` of its next transition receipt. */
+  liveState?: LivePageProjection['state'];
   liveSessionId: string;
   session: LiveVoiceSession;
   abort: AbortController;
@@ -641,16 +645,18 @@ export class LiveSessionOwner {
       const steps = handle !== undefined ? handle.liveSteps.map(step => ({ ...step })) : [];
       return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, ...(steps.length ? { steps } : {}), cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
-    this.#observeState(page.state);
+    this.#observeState(handle, page.state, 'poll');
     return page;
   }
 
   /** One metadata-only host record per projected state change, so the orb timeline is reconstructable
    *  from host.log even though audio is never journalled (F7). */
-  #observeState(state: LivePageProjection['state']): void {
-    if (state === this.#lastProjectedState) return;
+  #observeState(handle: ActiveSession | undefined, state: LivePageProjection['state'], cause: LiveStateCause): void {
+    const from = handle ? handle.liveState : this.#lastProjectedState;
+    if (state === from) return;
+    if (handle) handle.liveState = state;
     this.#lastProjectedState = state;
-    hostLogEvent({ event: 'live_state', state, at: this.#now() });
+    hostLogEvent({ event: 'live_state', state, ...(from === undefined ? {} : { from }), cause, at: this.#now() });
   }
 
   /** The live state of an open session, the same derivation the web page reads. */
@@ -659,8 +665,8 @@ export class LiveSessionOwner {
   }
 
   /** Every transition is written when it happens, not only when a web page polls for it. */
-  #noteState(handle: ActiveSession): void {
-    this.#observeState(this.#handleState(handle));
+  #noteState(handle: ActiveSession, cause: LiveStateCause): void {
+    this.#observeState(handle, this.#handleState(handle), cause);
   }
 
   get(liveSessionId: string): LiveSessionSnapshot {
@@ -878,7 +884,7 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
-    this.#noteState(handle);
+    this.#noteState(handle, 'created');
     void handle.done.promise.catch(() => {});
     // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
     // the owner call ceiling ends the call for time exactly as before. Neither is the other.
@@ -1078,6 +1084,7 @@ export class LiveSessionOwner {
   #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null): boolean {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    this.#noteState(handle, 'rebuild');
     handle.lastRecoveryPath = path;
     this.#cancelNudge(handle);
     handle.thinking = false; handle.speaking = false;
@@ -1303,7 +1310,7 @@ export class LiveSessionOwner {
           // synthesizes one when the owner's episode ends, and this is what puts the orb in THINKING.
           if (!handle.speaking) handle.thinking = true;
           handle.turnCompleteSeen = false;
-          this.#noteState(handle);
+          this.#noteState(handle, 'model_turn_start');
           continue;
         }
         if (event.type === 'resumptionHandle') {
@@ -1333,7 +1340,7 @@ export class LiveSessionOwner {
         }
         if (event.type === 'ready') {
           handle.ready = true; handle.lastHealthyAt = this.#now();
-          if (handle.rebuilding) { handle.rebuilding = false; this.#continuity(handle, 'resumed'); continue; }
+          if (handle.rebuilding) { handle.rebuilding = false; this.#noteState(handle, 'rebuild'); this.#continuity(handle, 'resumed'); continue; }
         }
         if (IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
@@ -1348,7 +1355,7 @@ export class LiveSessionOwner {
             if (responses.length) { this.#armDeadAir(handle); handle.awaitingDelegated = true; }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
             handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
-            this.#noteState(handle);
+            this.#noteState(handle, 'tool');
           }); continue;
         }
         if (event.type === 'toolCallCancellation') {
@@ -1362,7 +1369,7 @@ export class LiveSessionOwner {
             handle.pendingCallIds.delete(id);
           }
           handle.thinking = handle.pendingCallIds.size > 0;
-          this.#noteState(handle);
+          this.#noteState(handle, 'tool');
           continue;
         }
         if (event.type === 'interrupted') {
@@ -1372,7 +1379,7 @@ export class LiveSessionOwner {
           // THINKING stuck (F4).
           handle.thinking = false;
           handle.awaitingDelegated = false;
-          this.#noteState(handle);
+          this.#noteState(handle, 'interrupted');
           handle.turnInterrupted = true;
           logTurnScript(handle);
           journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'interrupt',
@@ -1391,13 +1398,13 @@ export class LiveSessionOwner {
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           logTurnScript(handle);
-          this.#noteState(handle);
+          this.#noteState(handle, 'turn_complete');
         }
-        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; this.#noteState(handle); }
+        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; this.#noteState(handle, event.value ? 'silence' : 'input'); }
         if (event.type === 'audio') {
           countAudio(handle, 'output', event.pcm.byteLength);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
-          this.#noteState(handle);
+          this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
             if (handle.inputFinalAt !== undefined) {
@@ -1814,7 +1821,7 @@ export class LiveSessionOwner {
     // A tool result keeps thinking until the model's first output audio or an explicit wait for input,
     // so the orb never flashes LISTENING between the tool and her speech (F1).
     handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
-    this.#noteState(handle);
+    this.#noteState(handle, 'tool');
   }
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
@@ -1867,6 +1874,9 @@ export class LiveSessionOwner {
       handle.resolveDone();
       return;
     }
+    // The terminal projection is written as it happens: a session that ends with no web poll open still leaves
+    // its last transition in host.log (GL2-R1).
+    this.#observeState(handle, 'ended', 'settle');
     // The terminal fact is durable before it is emitted; committed markers stay queued on overflow.
     // Distillation is scheduled here, never awaited: close returns immediately.
     this.#onSessionTerminal?.(handle.liveSessionId);

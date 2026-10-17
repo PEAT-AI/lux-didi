@@ -114,8 +114,14 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Bridge contract proofs run without a window or audio device.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/NativeBridge.swift Tests/DidiLiveTests/NativeBridgeTests.swift -o "$work/native-bridge-tests"
+  Sources/LuxDidi/NativeBridge.swift Sources/LuxDidi/NativeMicMode.swift \
+  Tests/DidiLiveTests/NativeBridgeTests.swift -o "$work/native-bridge-tests"
 "$work/native-bridge-tests"
+# The Mic Mode names, the receipt shape and the once-per-version prompt (#352) run on injected values.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -target "$target" \
+  Sources/LuxDidi/NativeMicMode.swift Tests/DidiLiveTests/NativeMicModeTests.swift -o "$work/native-mic-mode-tests"
+"$work/native-mic-mode-tests"
 # Native open allowlist, symlink escape, app resolution and the rate limit run with an injected opener.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
@@ -124,7 +130,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Launch visibility, single-instance guard and drag-band geometry run without a window.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/NativeBridge.swift \
+  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/NativeBridge.swift Sources/LuxDidi/NativeMicMode.swift \
   Tests/DidiLiveTests/LaunchVisibilityTests.swift -o "$work/launch-visibility-tests"
 "$work/launch-visibility-tests"
 # Compile the actual app source surface without launching audio or installing an app.

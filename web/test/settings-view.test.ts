@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { connectorState, limitMinutes, settingsMarkup } from '../src/settings-view.ts';
+import {
+  connectorState, limitMinutes, micModeLabel, micModePicker, micModePromptMarkup, micModeRow, micModeState,
+  settingsMarkup, MIC_MODE_SENTENCE, type MicModeMessage,
+} from '../src/settings-view.ts';
 
 const status = {
   ownerProfile: { status: 'default', displayName: 'Naya' },
@@ -194,4 +197,39 @@ test('PV1: a saved accent that differs from the running one shows a pending noti
   const running = { ...summary, provider: 'gemini', voice: 'Aoede', accent: 'indian-light' };
   const same = settingsMarkup({ status, summary: running, saved: { provider: 'gemini', voice: 'Aoede', accent: 'indian-light', appliesAt: 'next_start' } });
   assert.doesNotMatch(same, /Saved: /, 'the same selection is not a pending change');
+});
+
+test('#352: the one line appears only when native says so, once, and its button asks for the picker', () => {
+  assert.equal(micModePromptMarkup(false), '', 'nothing at all when the bridge withholds it');
+  const html = micModePromptMarkup(true);
+  assert.equal(html.split(MIC_MODE_SENTENCE).length - 1, 1, 'the sentence appears exactly once');
+  assert.equal(html.split('data-mic-mode="picker"').length - 1, 1, 'one button, not two');
+  assert.match(html, /id="mic-mode-dismiss"/, 'the line is dismissible');
+  const sent: MicModeMessage[] = [];
+  micModePicker(message => sent.push(message));
+  assert.deepEqual(sent, [{ type: 'showMicrophoneModes' }], 'the button sends the bridge picker request');
+  micModePicker(undefined);
+});
+
+test('#352: the settings row is read-only and carries the same button', () => {
+  assert.equal(micModeLabel('voiceIsolation'), 'Voice Isolation');
+  assert.equal(micModeLabel(undefined), 'Unknown');
+  const row = micModeRow({ preferred: 'wideSpectrum', active: 'wideSpectrum' });
+  assert.match(row, /<dt>Mic Mode<\/dt><dd>Wide Spectrum\./);
+  assert.match(row, /data-mic-mode="picker"/);
+  assert.doesNotMatch(row, /<select|<input/, 'no control here changes a mode');
+  const html = settingsMarkup({ status, summary, micMode: { preferred: 'standard', active: 'voiceIsolation' } });
+  assert.match(html, /<dt>Mic Mode<\/dt><dd>Voice Isolation\./);
+  assert.match(settingsMarkup({ status, summary }), /<dt>Mic Mode<\/dt><dd>Unknown\./);
+});
+
+test('#352: only the native mic mode messages carry a mode, and Voice Isolation never prompts', () => {
+  assert.equal(micModeState({ type: 'liveState', state: 'idle' }), undefined);
+  assert.equal(micModeState(undefined), undefined);
+  assert.deepEqual(micModeState({ type: 'micMode', preferred: 'standard', active: 'standard', prompt: true }),
+    { preferred: 'standard', active: 'standard', prompt: true });
+  assert.deepEqual(micModeState({ type: 'hydrate', micMode: { preferred: 'standard', active: 'voiceIsolation' } }),
+    { preferred: 'standard', active: 'voiceIsolation', prompt: false }, 'a reload never prompts');
+  assert.deepEqual(micModeState({ type: 'micMode', preferred: 'voiceIsolation', active: 'voiceIsolation', prompt: true }),
+    { preferred: 'voiceIsolation', active: 'voiceIsolation', prompt: false }, 'Voice Isolation is never prompted');
 });

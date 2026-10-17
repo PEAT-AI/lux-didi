@@ -29,10 +29,20 @@ export interface HydrateMessage {
   route: Route | null;
   theme: ThemeMode;
   lastSessionEndedAt: string | null;
+  /** #352: the read-only Mic Mode row; a reload never shows the line. */
+  micMode?: Omit<MicModeMessage, 'type'> | null;
 }
 
 export interface LiveStateMessage extends NativeLiveProjection {
   type: 'liveState';
+}
+
+/** #352: the Mac's Mic Mode. Read-only names, and whether the full app may show its one quiet line. */
+export interface MicModeMessage {
+  type: 'micMode';
+  preferred: string;
+  active: string;
+  prompt: boolean;
 }
 
 export interface RequestMessage {
@@ -52,6 +62,7 @@ export interface LevelsMessage {
 export type NativeToWeb =
   | HydrateMessage
   | LiveStateMessage
+  | MicModeMessage
   | RequestMessage
   | RouteMessage
   | LevelsMessage;
@@ -64,12 +75,14 @@ export type WebToNative =
   | { type: 'unmute' }
   | { type: 'consentGranted' }
   | { type: 'mini' }
+  | { type: 'showMicrophoneModes' }
   | { type: 'theme'; mode: ThemeMode }
   | { type: 'openExternal'; url: string };
 
 const INBOUND_TYPES: ReadonlySet<string> = new Set([
   'hydrate',
   'liveState',
+  'micMode',
   'requestStart',
   'requestStop',
   'route',

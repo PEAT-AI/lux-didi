@@ -552,6 +552,29 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   assert.equal(terminal.journal.complete, true);
 });
 
+// 3o: the app let go at 19:23:49Z and the host kept the model speaking to a detached client for 62 s.
+test('a consumer detached for five seconds ends the session cleanly and keeps its journal', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => detachSink());
+  // Only the detach countdown is under test: the idle, session and call ceilings stay far away.
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session, attachment } = await attached(h);
+  attachment.detach();
+  h.advance(4_999); scheduler.runDue();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a detach on its own is not an end');
+  h.advance(1); scheduler.runDue();
+  const terminal = await attachment.done;
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_gone' });
+  assert.equal(terminal.journal.complete, true, 'the journal is kept');
+  assert.ok(terminal.journal.events > 0, 'and it still holds what was said');
+  const gone = receipts.filter(record => record.event === 'consumer_gone_end');
+  assert.equal(gone.length, 1, 'one receipt for the end');
+  assert.equal(gone[0]!['detachedMs'], 5_000);
+  assert.ok(safeEvent(gone[0]), 'the host log whitelist accepts the end receipt');
+});
+
 test('excluded transport facts and raw secrets never persist; Domain and CHAT stay untouched', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);

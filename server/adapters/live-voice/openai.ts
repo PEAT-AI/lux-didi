@@ -25,6 +25,11 @@ import { hostLogEvent } from '../../tools/host-events.js';
 const ENDPOINT = 'wss://api.openai.com/v1/live/sessions';
 /** Delegation backend pinned by the docs ("Start with gpt-6-luna", guides/live-delegation). */
 export const OPENAI_DELEGATION_MODEL = 'gpt-6-luna';
+/** Delegation probe 2026-10-18 (delegation-probe-1018.md): both fields are accepted by delegation.responses on
+ *  gpt-live-1, and the final answer arrives 1.6 to 2.3 s sooner per tool turn than the default. `effort: none` is
+ *  unreliable and `parallel_tool_calls: false` is the slowest, so the pair below is the pinned shape. */
+const DELEGATION_PARALLEL_TOOL_CALLS = true;
+const DELEGATION_REASONING_EFFORT = 'low';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
 /** `nira` is the documented Hindi voice (guides/live-conversations voice table), which the persona forbids. */
@@ -44,10 +49,14 @@ const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
 const PING_INTERVAL_MS = 5_000;
 const PING_MISSED_LIMIT = 2;
-const STALL_QUEUE_BYTES = 128 * 1024;
-const STALL_DRAIN_FLOOR_BYTES = 64 * 1024;
-const STALL_QUIET_MS = 2_000;
-const STALL_DRAIN_QUIET_MS = 5_000;
+/** Stall on liveness (3o): no inbound provider frame of any type and no pong for this long ends the transport.
+ *  Upload backlog never does; a slow uplink keeps sending frames while the mic queue is shed (UPLINK_SHED_BYTES). */
+const STALL_SILENCE_MS = 8_000;
+/** Mic shedding (3o): above this much buffered upload the oldest queued mic frames go, so the model hears the
+ *  newest speech instead of a backlog of seconds. Measured on the lossy-uplink session (peak 275,222 B). */
+const UPLINK_SHED_BYTES = 48 * 1024;
+/** The shed receipt is bounded to one host.log record per window (3o). */
+const UPLINK_SHED_RECEIPT_MS = 10_000;
 const QUEUE_LOG_BYTES = 64 * 1024;
 const QUEUE_LOG_INTERVAL_MS = 1_000;
 /** Turn taking: the owner's input episode ends after this much quiet on the input transcript. */
@@ -68,9 +77,10 @@ const POST_FLUSH_DROP_LIMIT_MS = 2_500;
 const SERVER_YIELD_GAP_MS = 350;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
-/** Head start at the start of a speaking stretch: 300 ms of audio held back so the native 80 ms jitter buffer
- *  never underruns while the server sends at about real time. */
-const HEAD_START_MS = 300;
+/** Standing cushion (3o): 400 ms of audio held back at the start of a stretch and again after every drain, so the
+ *  native 80 ms jitter buffer never underruns while the server sends at about real time. Measured on the 163
+ *  underruns of session 82ab994a: a 400 ms cushion covers 162 of them (300 ms leaves 6). */
+const HEAD_START_MS = 400;
 const HEAD_START_BYTES = HEAD_START_MS * OUTPUT_PCM_BYTES_PER_MS;
 /** The production clock: the adapter's own windows go through it so a test can drive them without sleeping. */
 const REAL_CLOCK: LiveVoiceClock = {
@@ -194,7 +204,8 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
         instructions,
         audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: settings.voice } },
         ...(seed.items.length ? { input: seed.items } : {}),
-        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto' } },
+        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
+          parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT } } },
       },
     });
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes
@@ -244,9 +255,15 @@ class Session implements LiveVoiceSession {
   private recoverable = false;
   private readonly startedAt = Date.now();
   private upstreamDrop: LiveVoiceUpstreamDrop | undefined;
-  private stalledSince: number | undefined;
-  private queueStalledSince: number | undefined;
-  private lastDrainAt = Date.now();
+  private lastInboundAt = Date.now();
+  /** Mic frames queued behind a backed-up socket, oldest first: shed from the front (3o). */
+  private micPending: { frame: string; bytes: number }[] = [];
+  private micPendingBytes = 0;
+  private shedBytes = 0;
+  private shedPeak = 0;
+  private shedReportedAt: number | undefined;
+  /** Head starts re-armed after a drain in the current turn (3o receipt `playback_rearm`). */
+  private playbackRearms = 0;
   private awaitingPong = false;
   private missedPongs = 0;
   private pingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -397,6 +414,7 @@ class Session implements LiveVoiceSession {
       if (this.terminal || socket !== this.socket) return;
       if (socket.readyState !== WebSocket.OPEN) return;
       try { socket.ping(); } catch { return; }
+      this.watchUpstreamStall(socket);
       if (this.awaitingPong) {
         this.missedPongs += 1;
         if (this.missedPongs >= PING_MISSED_LIMIT) { this.dropUpstream('no_pong', socket); return; }
@@ -406,7 +424,7 @@ class Session implements LiveVoiceSession {
     }, PING_INTERVAL_MS);
     this.timers.add(this.pingTimer);
   }
-  private readonly onPong = () => { this.awaitingPong = false; this.missedPongs = 0; };
+  private readonly onPong = () => { this.awaitingPong = false; this.missedPongs = 0; this.lastInboundAt = Date.now(); };
   private readonly onError = (error: Error) => {
     if (this.terminal) return;
     const code = object(error) ? error.code : undefined;
@@ -435,17 +453,14 @@ class Session implements LiveVoiceSession {
     if (this.terminal || socket !== this.socket) return;
     const now = Date.now();
     const buffered = socket.bufferedAmount;
-    const half = Math.max(1, Math.floor(this.settings.limits.maxBufferedBytes / 2));
-    const drop = (errorKind: string) => queueMicrotask(() => { if (socket === this.socket) this.dropUpstream(errorKind, socket); });
-    if (buffered > half) {
-      if (this.stalledSince === undefined) this.stalledSince = now;
-      else if (now - this.stalledSince >= this.settings.limits.upstreamStallMs) { drop('stalled'); return; }
-    } else this.stalledSince = undefined;
-    if (buffered > STALL_QUEUE_BYTES) {
-      if (this.queueStalledSince === undefined) this.queueStalledSince = now;
-      else if (now - this.queueStalledSince >= STALL_QUIET_MS) { drop('queue_stalled'); return; }
-    } else this.queueStalledSince = undefined;
-    if (buffered > STALL_DRAIN_FLOOR_BYTES && now - this.lastDrainAt >= STALL_DRAIN_QUIET_MS) { drop('no_drain'); return; }
+    // Liveness, never the upload queue: a lossy uplink keeps inbound frames and pongs flowing while the mic
+    // history is shed, so only real silence ends the transport. Both the writes and the ping tick call this.
+    const silentMs = now - this.lastInboundAt;
+    if (silentMs >= STALL_SILENCE_MS) {
+      hostLogEvent({ event: 'live_stall', silentMs });
+      queueMicrotask(() => { if (socket === this.socket) this.dropUpstream('stalled', socket); });
+      return;
+    }
     if (buffered > QUEUE_LOG_BYTES && (this.lastQueueLogAt === undefined || now - this.lastQueueLogAt >= QUEUE_LOG_INTERVAL_MS)) {
       this.lastQueueLogAt = now;
       this.emit({ type: 'upstreamQueue', bufferedBytes: buffered });
@@ -462,7 +477,7 @@ class Session implements LiveVoiceSession {
     try { message = JSON.parse(text); }
     catch { this.finish('protocol_error'); return; }
     if (!object(message) || typeof message.type !== 'string') { this.finish('protocol_error'); return; }
-    this.lastDrainAt = Date.now();
+    this.lastInboundAt = Date.now();
     // Every provider frame is untrusted: a shape refusal becomes a typed outcome, never an uncaught throw.
     try { this.dispatch(message); } catch { this.finish('protocol_error'); }
   };
@@ -536,10 +551,13 @@ class Session implements LiveVoiceSession {
     }
     this.audioSinceCompletion = true;
     this.silenceSent = false;
-    if (!this.stretchOpen) {
-      // Head start: the first audio of a speaking stretch is held so the 80 ms native jitter buffer starts full.
+    // Standing cushion: the hold is armed at the first audio of a stretch and re-armed whenever the modelled native
+    // queue has drained, because after any dry the 80 ms native prebuffer is below one 100 ms delta.
+    const drained = this.stretchOpen && !this.holding && now >= this.playbackUntil;
+    if (!this.stretchOpen || drained) {
       this.stretchOpen = true;
       this.holding = true;
+      if (drained) this.playbackRearms += 1;
       this.headStartTimer = this.clock.setTimer(HEAD_START_MS, () => { this.headStartTimer = undefined; this.releaseHeadStart(); });
     }
     if (this.holding) {
@@ -757,6 +775,8 @@ class Session implements LiveVoiceSession {
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
     hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true });
+    hostLogEvent({ event: 'playback_rearm', count: this.playbackRearms });
+    this.playbackRearms = 0;
     this.touch();
   }
 
@@ -895,7 +915,7 @@ class Session implements LiveVoiceSession {
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
-          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; }
+          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(); }
         }
         if (error && this.checkpoint()) {
           if (pcmBytes && this.isReady) this.dropUpstream('write_error', socket); else this.onError(error);
@@ -903,7 +923,6 @@ class Session implements LiveVoiceSession {
       });
       if (pcmBytes) {
         this.diagnostic.localWriteEnqueuedCalls++; this.diagnostic.localWriteEnqueuedPCMBytes += pcmBytes;
-        this.watchUpstreamStall(socket);
       }
       this.touch(); return !this.terminal;
     } catch (error) {
@@ -959,7 +978,38 @@ class Session implements LiveVoiceSession {
     const overhead = Buffer.byteLength(JSON.stringify({ type: 'session.input_audio.append', audio: '' }));
     if (Math.ceil(pcm.byteLength / 3) * 4 + overhead > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); fail('outgoing_limit'); }
     const frame = JSON.stringify({ type: 'session.input_audio.append', audio: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64') });
-    if (!this.write(frame, pcm.byteLength)) fail(this.terminal?.code ?? 'not_ready');
+    this.micPending.push({ frame, bytes: pcm.byteLength });
+    this.micPendingBytes += Buffer.byteLength(frame);
+    if (!this.flushMic()) fail(this.terminal?.code ?? 'not_ready');
+  }
+
+  /**
+   * Send what the uplink can take and shed the rest from the front (3o). The capture path never waits: the queue
+   * is bounded by UPLINK_SHED_BYTES plus one frame, and the oldest frames go first so the newest speech wins.
+   */
+  private flushMic(): boolean {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) { this.micPending = []; this.micPendingBytes = 0; return !this.terminal; }
+    while (this.micPending.length > 1 && socket.bufferedAmount + this.micPendingBytes > UPLINK_SHED_BYTES) {
+      const shed = this.micPending.shift()!;
+      this.micPendingBytes -= Buffer.byteLength(shed.frame);
+      this.shedBytes += Buffer.byteLength(shed.frame);
+    }
+    while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
+      const next = this.micPending.shift()!;
+      this.micPendingBytes -= Buffer.byteLength(next.frame);
+      if (!this.write(next.frame, next.bytes)) return false;
+    }
+    this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
+    // Every mic frame is a liveness observation, including a frame this uplink could not take.
+    this.watchUpstreamStall(socket);
+    const now = Date.now();
+    if (this.shedBytes && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
+      this.shedReportedAt = now;
+      hostLogEvent({ event: 'uplink_shed', bytes: this.shedBytes, bufferedPeak: this.shedPeak });
+      this.shedBytes = 0; this.shedPeak = 0;
+    }
+    return !this.terminal;
   }
 
   sendText(input: { text: string }): void {

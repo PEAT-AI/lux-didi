@@ -76,3 +76,20 @@ test('rolling minute allows thirty diagnostics, rejects the next and expires wit
     f.advance(); assert.equal((await f.post(audio)).status, 204); assert.equal(f.lines().length, 31);
   } finally { await f.close(); }
 });
+
+test('#352: a mic mode receipt carries the two names and refuses anything else', async () => {
+  const f = await fixture();
+  try {
+    const receipt = { event: 'mic_mode', preferred: 'voiceIsolation', active: 'standard' };
+    const accepted = await f.post(receipt);
+    assert.equal(accepted.status, 204); assert.equal(await accepted.text(), '');
+    for (const refused of [
+      { event: 'mic_mode', preferred: 'loud', active: 'standard' },
+      { event: 'mic_mode', preferred: 'standard', active: 'standard', text: 'owner speech' },
+      { event: 'mic_mode', preferred: 'standard' },
+    ]) assert.equal((await f.post(refused)).status, 400, `refused ${JSON.stringify(refused)}`);
+    const diagnostics = f.lines().filter(line => line.event === 'client_diagnostic');
+    assert.equal(diagnostics.length, 1);
+    assert.deepEqual(diagnostics[0].diagnostic, receipt);
+  } finally { await f.close(); }
+});

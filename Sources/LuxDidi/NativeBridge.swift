@@ -12,6 +12,8 @@ enum BridgeOutbound: Equatable {
     case levels(input: [Double], output: [Double])
     case requestStart
     case requestStop
+    /// #352: the Mac's Mic Mode names, and whether the full app may show its one quiet line now.
+    case micMode(BridgeMicMode)
 
     var jsonObject: [String: Any] {
         switch self {
@@ -21,6 +23,7 @@ enum BridgeOutbound: Equatable {
         case .levels(let input, let output): return ["type": "levels", "input": input, "output": output]
         case .requestStart: return ["type": "requestStart"]
         case .requestStop: return ["type": "requestStop"]
+        case .micMode(let micMode): return ["type": "micMode"].merging(micMode.jsonObject) { _, new in new }
         }
     }
 
@@ -38,6 +41,8 @@ struct BridgeHydrate: Equatable {
     var theme: String
     var lastSessionEndedAt: String?
     var trafficLightsMaxX: Double
+    /// #352: the Mic Mode names a fresh page shows in the read-only settings row; never a prompt.
+    var micMode: BridgeMicMode?
 
     static let empty = BridgeHydrate(consent: false, mic: "undetermined", live: BridgeLiveState(state: "idle", error: nil, reason: nil),
                                      route: nil, theme: BridgeTheme.dark.rawValue, lastSessionEndedAt: nil, trafficLightsMaxX: 0)
@@ -52,6 +57,7 @@ struct BridgeHydrate: Equatable {
         ]
         object["route"] = route?.jsonObject ?? NSNull()
         object["lastSessionEndedAt"] = lastSessionEndedAt ?? NSNull()
+        object["micMode"] = micMode?.jsonObject ?? NSNull()
         return object
     }
 }
@@ -66,6 +72,21 @@ struct BridgeLiveState: Equatable {
         if let error { object["error"] = error }
         if let reason { object["reason"] = reason }
         return object
+    }
+}
+
+/// #352: names only. The full app draws one quiet line from `prompt`; the mini orb draws nothing.
+struct BridgeMicMode: Equatable {
+    var preferred: String
+    var active: String
+    var prompt: Bool
+
+    var jsonObject: [String: Any] { ["preferred": preferred, "active": active, "prompt": prompt] }
+
+    init(_ reading: MicModeReading, prompt: Bool) {
+        self.preferred = reading.preferred.rawValue
+        self.active = reading.active.rawValue
+        self.prompt = prompt
     }
 }
 
@@ -116,6 +137,9 @@ enum BridgeInbound: Equatable {
     /// #311: the FULL window's mode button asks for the mini orb. A presentation
     /// command only: it starts and stops no audio and no session.
     case mini
+    /// #352: the one line and the settings row ask for the system's Mic Mode picker. A request to show
+    /// the system UI only: it selects no mode and touches no audio.
+    case showMicrophoneModes
     case theme(String)
     case openExternal(String)
     case unknown(String)
@@ -139,6 +163,7 @@ enum BridgeInbound: Equatable {
         case "unmute": return .unmute
         case "consentGranted": return .consentGranted
         case "mini": return .mini
+        case "showMicrophoneModes": return .showMicrophoneModes
         case "theme": return .theme(object?["mode"] as? String ?? "")
         case "openExternal": return .openExternal(object?["url"] as? String ?? "")
         default: return .unknown(type)
@@ -276,7 +301,7 @@ struct LevelBatcher {
             onCommand?(message)
         case .unknown(let name):
             logUnknown(name)
-        case .start, .stop, .mute, .unmute, .openExternal, .mini:
+        case .start, .stop, .mute, .unmute, .openExternal, .mini, .showMicrophoneModes:
             onCommand?(message)
         }
     }
@@ -308,6 +333,7 @@ struct LevelBatcher {
 
     func pushLiveState(_ state: BridgeLiveState) { send(.liveState(state)) }
     func pushRoute(_ route: BridgeRoute) { send(.route(route)) }
+    func pushMicMode(_ micMode: BridgeMicMode) { send(.micMode(micMode)) }
 
     private func emit(_ message: BridgeOutbound) {
         sendJS?("window.didiNative&&window.didiNative.receive(\(message.jsonString))")

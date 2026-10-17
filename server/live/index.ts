@@ -4,7 +4,7 @@ import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
+import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
@@ -33,6 +33,8 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
+/** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
+const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
 
@@ -249,6 +251,22 @@ export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transacti
   return { liveSessionRetainsUntilRebuild: false, publish: () => {} };
 }
 
+/** The feed's job rows (UI3b): only the current session's, and never a delivered row past its
+ * one day outbox expiry. A job belongs to the session that picked it up, else the one that started it. */
+function jobRow(job: ToolJob): import('./types.js').PendingLiveJob {
+  return {
+    id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
+    markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
+  };
+}
+
+export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: number): import('./types.js').PendingLiveJob[] {
+  return jobs.filter(job => job.deferred
+    && (job.deliverySessionId ?? job.originSessionId) === liveSessionId
+    && !(job.delivered && job.createdAt + JOB_EXPIRY_MS <= now))
+    .map(jobRow);
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
@@ -423,11 +441,14 @@ export class LiveSessionOwner {
     return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
   }
 
+  /** The feed's own job rows: this session's jobs only. A completed job keeps its card until the
+   * outbox row expires a day later; after that the row is stale data and never a current line. */
+  #feedJobs(tx: Transaction, liveSessionId: string): import('./types.js').PendingLiveJob[] {
+    return feedJobs(this.#jobs.list(tx), liveSessionId, this.#now());
+  }
+
   #jobProjection(pendingOnly: boolean): import('./types.js').PendingLiveJob[] {
-    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
-      id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
-      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
-    }));
+    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(jobRow);
   }
 
   pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
@@ -443,9 +464,11 @@ export class LiveSessionOwner {
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
-    const jobs = this.#jobProjection(false);
     const page: LivePageProjection = this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      // A fresh origin or session restart opens on a blank voice view: an idle page carries no job rows,
+      // and a live page carries only the rows of its own session (UI3b).
+      const jobs = row ? this.#feedJobs(tx, String(row.live_session_id)) : [];
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);

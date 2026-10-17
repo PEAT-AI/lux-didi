@@ -753,7 +753,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
             // N2 provider guard: the intent gate accepts any provider the host can report (OpenAI included) and
             // the host's own status still pins the value, so a second provider is never refused as a literal.
-            for provider in ["openai", "gemini"] {
+            for (provider, expected) in [("openai", LiveClientState.failed(.statusMismatch)),
+                                          ("not-a-provider", LiveClientState.failed(.invalidIntent))] {
                 let altHTTP = TestHTTP(fixture); let altSockets = CountedSockets(fixture)
                 let alt = LiveSessionCoordinator(http: altHTTP, sockets: altSockets, sink: SilentSink())
                 let other = LiveBeginIntent(origin: URL(string: fixture.origin)!, assistantID: fixture.assistantId,
@@ -761,12 +762,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                                             model: frozen.model, voice: frozen.voice,
                                             profileIdentity: fixture.profileIdentity, inputClass: "ordinary")
                 await alt.begin(other)
-                if provider == "gemini" {
-                    try require(await alt.state != .failed(.invalidIntent), "gemini intent accepted by the provider gate")
-                } else {
-                    // A provider the host did not report is caught by the status pin, never by a literal check.
-                    try require(await alt.state == .failed(.statusMismatch), "openai intent passes the gate, host status pins it")
-                }
+                // openai passes the provider gate and is caught by the host status pin; an unknown name is
+                // refused by the gate itself. Neither reaches a real socket.
+                try require(await alt.state == expected, "provider gate \(provider) state")
                 try require(await altSockets.attempts == 0, "provider gate mismatch zero attach")
                 await alt.stop(); await altHTTP.finish()
             }

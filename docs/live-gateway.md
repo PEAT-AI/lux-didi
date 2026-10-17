@@ -104,6 +104,37 @@ there is no `await` and no user callback gap, so a malformed handshake never con
 a provider. An optional `x-didi-live-profile` header is a nonsecret staleness pin compared against the
 stored grant and the current owner identity, never authority.
 
+## Providers
+
+The host speaks to one provider-neutral port (`server/adapters/live-voice/types.ts`); each provider is
+one adapter, chosen by the route provider and never by a call-site literal. The provider, model and voice
+are frozen per session, so a setting change applies at the next session start.
+
+| provider | adapter | transport | input | output | resumption |
+| --- | --- | --- | --- | --- | --- |
+| `gemini` | `gemini.ts` | Gemini Live WebSocket | 16 kHz PCM16 | 24 kHz PCM16 | handle |
+| `openai` | `openai.ts` | GPT-Live WebSocket | 16 kHz PCM16, upsampled to 24 kHz in the adapter | 24 kHz PCM16 | none |
+
+### GPT-Live (`gpt-live-1`)
+
+- Endpoint `wss://api.openai.com/v1/live/sessions`, no query parameters, `Authorization: Bearer` from the
+  resolved `openai-primary` credential. The key never appears in the URL, a log line or an event.
+- Start barrier: socket open, one `session.start` (instructions, voice, `audio.format` at 24 kHz, the seeded
+  `input`, and `delegation.responses`), then wait for `session.started`; audio is refused before that.
+- Tools are the port's own JSON schemas, passed unchanged into `delegation.responses.tools` as function
+  tools; a delegated call arrives as a nested `response.output_item.done` and is answered with
+  `function_call_output` carrying its `call_id`, then `response.create`.
+- The voice layer publishes no speech-start and no spoken-response-end event, so the adapter derives
+  `interrupted` from the first input transcript delta of a user turn that overlaps assistant speech (its
+  audio is then dropped by a generation counter) and `turnComplete` from the nested `response.done`.
+- Voice default `marin`; the Hindi voice `nira` is refused. The wrapper around the unchanged shared persona
+  adds exactly three sections: Language, Tools and Delivery.
+- No resumption: a drop, or `session.closed` with reason `expired`, uses the host's fresh-seeded path.
+- Protocol details were checked against developers.openai.com on 2026-10-17 (guides `live-conversations`,
+  `live-delegation`, `live-migration`, `voice-websockets`, and the `gpt-live-1` model page).
+- `scripts/probe-gpt-live.mjs` opens one real session, sends three seconds of synthetic speech and prints
+  event names and timings only. It is not part of any check and is run once by the operator.
+
 ## Wire
 
 Server → client, one ordered stream: binary PCM16LE mono 24k audio, interleaved with text JSON markers

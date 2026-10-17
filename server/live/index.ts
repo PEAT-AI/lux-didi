@@ -4,7 +4,7 @@ import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
+import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
@@ -12,12 +12,12 @@ import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { headVoiceBlock, voiceAnchor, canonicalSpeechLanguage, effectiveLanguageCode } from '../prompt/live-persona.js';
+import { headVoiceBlock, voiceAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -29,10 +29,23 @@ import {
   type LiveTerminalOutcome,
 } from './types.js';
 
-const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
+const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, in your own words, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
+// Release 3g-c recovery policy (R1-R1). Stalls come in episodes, so the bound is per episode: a session
+// that stayed healthy for RECOVERY_HEALTHY_MS resets the consecutive-failure count, and the call ends
+// only after RECOVERY_MAX_CONSECUTIVE failed recoveries in a row. Backoff between consecutive attempts.
+const RECOVERY_MAX_CONSECUTIVE = 3;
+const RECOVERY_HEALTHY_MS = 60_000;
+const RECOVERY_BACKOFF_MS = [0, 2_000, 5_000] as const;
+/** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
+const SEED_CHAR_LIMIT = 8_000;
+/** After a tool response, this much dead air with no model output earns one neutral continuation input. */
+const DEAD_AIR_NUDGE_MS = 8_000;
+const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+/** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
+const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
 
@@ -43,12 +56,19 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  /** Spoken output script codes of the current turn, counted and then reported as counts only. */
+  turnLatin: number; turnDevanagari: number; turnChars: number;
+  /** Whether this turn followed tool work and whether the owner cut it off. */
+  turnAfterTool: boolean; turnInterrupted: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
-  request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
-  sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
+  request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; callDeadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
+  /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
+  recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
+  nudgeTimer?: ReturnType<JobTimer> | undefined; nudgeTurn: number; nudgeFiredTurn: number;
+  sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
   researchLedger: ResearchLedger;
@@ -111,6 +131,32 @@ type SummaryHooks = {
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
+
+/**
+ * The script of what the model actually spoke this turn, counted from the output transcript.
+ * Counters only: live_turn_script reports buckets and code-point counts, never any spoken text.
+ */
+function countTurnScript(handle: ActiveSession, text: string): void {
+  for (const character of text) {
+    if (/\s/u.test(character)) continue;
+    handle.turnChars += 1;
+    if (/[\u0900-\u097F]/u.test(character)) handle.turnDevanagari += 1;
+    else if (/[A-Za-z]/u.test(character)) handle.turnLatin += 1;
+  }
+}
+
+function resetTurnScript(handle: ActiveSession): void {
+  handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
+  handle.turnAfterTool = false; handle.turnInterrupted = false;
+}
+
+/** One metadata-only record per turn. A turn with no spoken output reports nothing. */
+function logTurnScript(handle: ActiveSession): void {
+  if (handle.turnChars === 0) { resetTurnScript(handle); return; }
+  const script = handle.turnLatin > 0 && handle.turnDevanagari > 0 ? 'mixed' : handle.turnDevanagari > 0 ? 'devanagari' : 'latin';
+  hostLogEvent({ event: 'live_turn_script', liveSessionId: handle.liveSessionId, script, latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, afterTool: handle.turnAfterTool, interrupted: handle.turnInterrupted });
+  resetTurnScript(handle);
+}
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
 // once, marked after_barge_in so the UI can show why the answer may not match the pending turn.
@@ -173,7 +219,8 @@ class OutputChannel {
 }
 
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?,;:]+$/, '').trim();
-const command = /^(?:naya\s*,?\s+)?remember\b(?:\s+that\b)?\s*:?\s*/i;
+// A leading request phrase is scaffolding, not the note: the qualifier test and the stored text both read past it.
+const command = /^(?:naya\s*,?\s+)?(?:(?:please\s+)?remember\b(?:\s+that\b)?|(?:please\s+)?note\s+that\b|(?:please\s+)?keep\s+in\s+mind\b(?:\s+that\b)?)[\s:,]*/i;
 const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensitive)\b)/i;
 
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
@@ -181,18 +228,21 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // A bounded journal window, assembled into owner turns, not provider/model arguments.
   const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC LIMIT 64", [liveSessionId]).reverse();
   const turns: { seq: number; text: string }[] = [];
-  let pending = '';
+  let pending = '', pendingSeq = 0;
   for (const row of rows) {
-    pending += String(row.text ?? '');
-    if (Number(row.finished) === 1) { turns.push({ seq: Number(row.journal_id), text: pending }); pending = ''; }
+    pending += String(row.text ?? ''); pendingSeq = Number(row.journal_id);
+    if (Number(row.finished) === 1) { turns.push({ seq: pendingSeq, text: pending }); pending = ''; }
   }
-  const turn = turns.reverse().find(turn => command.test(turn.text.trim().replace(/\s+/g, ' ')));
-  if (!turn) return { remembered: false, code: 'owner_transcript_not_final' };
+  // The model's tool call is the intent: the latest partial turn is owner speech too, because the
+  // provider may never set the finished flag before the call arrives.
+  if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
+  const pointer = normalized(args.text);
+  if (!pointer) return { remembered: false, code: 'owner_text_mismatch' };
+  const turn = [...turns].reverse().find(candidate => normalized(candidate.text).includes(pointer));
+  if (!turn) return { remembered: false, code: turns.length ? 'owner_text_mismatch' : 'owner_transcript_not_final' };
   const utterance = turn.text.trim();
   const payload = utterance.replace(command, '').trim();
   if (classified.test(payload)) return { remembered: false, code: 'private_memory_unsupported' };
-  const pointer = normalized(args.text), ownerText = normalized(payload);
-  if (!pointer || !ownerText || !ownerText.includes(pointer)) return { remembered: false, code: 'owner_text_mismatch' };
   const externalId = `${liveSessionId}:${turn.seq}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
   if (existing) return { remembered: false, code: 'already_remembered', entryId: existing };
@@ -247,6 +297,22 @@ export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transacti
   if (owner) return owner.redactDeletedMemory(tx, entryId);
   scrubMemorySnapshots(tx, entryId);
   return { liveSessionRetainsUntilRebuild: false, publish: () => {} };
+}
+
+/** The feed's job rows (UI3b): only the current session's, and never a delivered row past its
+ * one day outbox expiry. A job belongs to the session that picked it up, else the one that started it. */
+function jobRow(job: ToolJob): import('./types.js').PendingLiveJob {
+  return {
+    id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
+    markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
+  };
+}
+
+export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: number): import('./types.js').PendingLiveJob[] {
+  return jobs.filter(job => job.deferred
+    && (job.deliverySessionId ?? job.originSessionId) === liveSessionId
+    && !(job.delivered && job.createdAt + JOB_EXPIRY_MS <= now))
+    .map(jobRow);
 }
 
 export class LiveSessionOwner {
@@ -375,20 +441,26 @@ export class LiveSessionOwner {
       let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
-      const earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone });
-      let composed: ReturnType<typeof composeLiveSessionInstruction>;
-      try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-        ...(earlier.section ? { earlierConversations: earlier.section } : {}),
+        ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
-        ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
+        ...(pickup ? { pickupNote: pickupInstruction } : {}) });
+      let composed: ReturnType<typeof composeLiveSessionInstruction>;
+      let earlier: ReturnType<typeof buildEarlierConversationsSection>;
+      try {
+        // The summaries fill what the other sections leave under the target, so measure it first.
+        const basis = composeSession(undefined);
+        earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+        composed = earlier.section ? composeSession(earlier.section) : basis;
+      }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
-      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length });
+      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
@@ -423,11 +495,14 @@ export class LiveSessionOwner {
     return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
   }
 
+  /** The feed's own job rows: this session's jobs only. A completed job keeps its card until the
+   * outbox row expires a day later; after that the row is stale data and never a current line. */
+  #feedJobs(tx: Transaction, liveSessionId: string): import('./types.js').PendingLiveJob[] {
+    return feedJobs(this.#jobs.list(tx), liveSessionId, this.#now());
+  }
+
   #jobProjection(pendingOnly: boolean): import('./types.js').PendingLiveJob[] {
-    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
-      id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
-      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
-    }));
+    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(jobRow);
   }
 
   pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
@@ -443,9 +518,11 @@ export class LiveSessionOwner {
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
-    const jobs = this.#jobProjection(false);
     const page: LivePageProjection = this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      // A fresh origin or session restart opens on a blank voice view: an idle page carries no job rows,
+      // and a live page carries only the rows of its own session (UI3b).
+      const jobs = row ? this.#feedJobs(tx, String(row.live_session_id)) : [];
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
@@ -631,7 +708,7 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => this.#active.get(id)?.inputFinal ? rememberOwnerNote(tx, id, args, this.#now()) : { remembered: false, code: 'owner_transcript_not_final' }).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
@@ -645,8 +722,10 @@ export class LiveSessionOwner {
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
-    const deadlineMs = Date.now() + this.#profile.limits.sessionMs;
-    const deadlineAt = this.#now() + this.#profile.limits.sessionMs;
+    const sessionMs = Math.min(this.#profile.limits.sessionMs, this.#profile.limits.callMaxMs);
+    const deadlineMs = Date.now() + sessionMs;
+    const deadlineAt = this.#now() + sessionMs;
+    const callDeadlineAt = this.#now() + this.#profile.limits.callMaxMs;
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
@@ -658,11 +737,12 @@ export class LiveSessionOwner {
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
-      deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
+      deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
+      recoveries: 0, nudgeTurn: 0, nudgeFiredTurn: 0,
+      sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined,
+      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -684,7 +764,10 @@ export class LiveSessionOwner {
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
-    handle.sessionTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null), this.#profile.limits.sessionMs);
+    // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
+    // the owner call ceiling ends the call for time exactly as before. Neither is the other.
+    handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
+    handle.callTimer = this.#schedule(() => { this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
@@ -710,7 +793,36 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
-    handle.idleTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null), remainingMs);
+    handle.idleTimer = this.#schedule(() => {
+      // #303: an idle expiry after model audio had streamed, with no turnComplete ever seen, is the shape the
+      // 3h-a witness stalled in: the greeting played, then the provider went silent without ending its turn.
+      // Record the silence since the last model audio so the next such stall is distinguishable from a
+      // turnComplete the adapter failed to map.
+      if (handle.lastModelAudioAt !== undefined && !handle.turnCompleteSeen) hostLogEvent({ event: 'live_turn_open',
+        msSinceLastModelAudio: this.#now() - handle.lastModelAudioAt });
+      this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null);
+    }, remainingMs);
+  }
+
+  #cancelNudge(handle: ActiveSession): void { handle.nudgeTimer?.cancel(); handle.nudgeTimer = undefined; }
+
+  /**
+   * Class B (R1-R1): after a tool response is sent, dead air earns ONE neutral continuation input per tool
+   * turn, and only if no model output or owner input arrives first. The nudge is a fixed host constant.
+   */
+  #armDeadAir(handle: ActiveSession): void {
+    if (this.#settled(handle)) return;
+    this.#cancelNudge(handle);
+    handle.nudgeTurn += 1;
+    const turn = handle.nudgeTurn, generation = handle.generation;
+    handle.nudgeTimer = this.#schedule(() => {
+      if (this.#settled(handle) || generation !== handle.generation) return;
+      if (handle.nudgeFiredTurn === turn) return;
+      handle.nudgeFiredTurn = turn;
+      try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
+      hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
+    }, DEAD_AIR_NUDGE_MS);
+    handle.nudgeTimer.unref?.();
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
@@ -719,19 +831,55 @@ export class LiveSessionOwner {
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
   }
 
-  #rebuild(handle: ActiveSession, reason: string): boolean {
-    const remaining = handle.deadlineAt - this.#now(), idle = handle.idleAt - this.#now();
-    const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - this.#now());
-    const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
-    const savedHandle = saved?.['resumption_handle'];
-    const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
-    const reuse = this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT;
-    if (handle.attempts >= 2 || (!reuse && !hasHandle) || remaining <= 0 || idle <= 0 || window <= 0) {
-      this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
-      return false;
+  /** Build the seeded history for a fresh recovery from this session's journal, bounded to SEED_CHAR_LIMIT. */
+  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
+    const rows = this.#store.transaction(tx => tx.all(
+      "SELECT kind,text,finished FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') AND text IS NOT NULL ORDER BY journal_id",
+      [liveSessionId]));
+    const turns: { role: 'user' | 'model'; text: string }[] = [];
+    let role: 'user' | 'model' | undefined; let pending = '';
+    const flush = () => { if (role !== undefined && pending.trim().length) turns.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
+    for (const row of rows) {
+      const next: 'user' | 'model' = String(row['kind']) === 'inputTranscription' ? 'user' : 'model';
+      if (role !== undefined && role !== next) flush();
+      role = next; pending += String(row['text'] ?? '');
+      if (Number(row['finished']) === 1) flush();
     }
-    if (!reuse) hostLogEvent({ event: 'live_resumption_fresh', toolCalls: handle.toolCalls });
+    flush();
+    // Newest kept: drop whole oldest turns until the seed fits, then cap to the adapter's turn ceiling.
+    let start = 0; let chars = turns.reduce((sum, turn) => sum + turn.text.length, 0);
+    while (start < turns.length && chars > SEED_CHAR_LIMIT) { chars -= turns[start]!.text.length; start += 1; }
+    const kept = turns.slice(start).slice(-128).map(turn => ({ role: turn.role, text: turn.text, dataClass: inputClass }));
+    return { turns: kept, chars };
+  }
+
+  /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
+  #sessionWindowEnded(handle: ActiveSession): void {
+    if (this.#attended(handle)) { void this.#continueSession(handle); return; }
+    this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
+  }
+
+  /** Only an attended call takes another provider window; a caller who already left never holds one open. */
+  #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
+
+  #isSessionDeadline(outcome: LiveVoiceOutcome | undefined): boolean {
+    return outcome !== undefined && (outcome.code === 'session_timeout' || outcome.code === 'deadline');
+  }
+
+  #delay(ms: number): Promise<void> {
+    return new Promise<void>(resolve => { const timer = this.#schedule(() => resolve(), Math.max(1, Math.ceil(ms))); (timer as { unref?: () => void }).unref?.(); });
+  }
+
+  /**
+   * Open one recovery socket. `resume` reuses the saved handle; `fresh_seeded` opens a fresh setup whose
+   * history is the journal seed and whose opening input is the pickup line. Returns false only on a
+   * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
+   */
+  #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null): boolean {
+    handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    handle.lastRecoveryPath = path;
+    this.#cancelNudge(handle);
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
     handle.consumer.dropAudio();
@@ -744,21 +892,95 @@ export class LiveSessionOwner {
       this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
     }
     handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.bargeInCallIds.clear();
-    this.#continuity(handle, 'rebuilding', reason);
+    this.#continuity(handle, 'rebuilding', reason ?? undefined);
     if (this.#settled(handle)) return false;
+    handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
+    const request = path === 'fresh_seeded'
+      ? { ...structuredClone(handle.request), history: seed.turns, openingText: LIVE_RECOVERY_PICKUP }
+      : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
     try {
-      handle.session = this.#voice.open({ ...structuredClone(handle.request), ...(reuse ? { resumptionHandle: savedHandle } : {}) }, {
+      handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
       });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
-      return true;
-    } catch {
-      this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
-      return false;
+    } catch { return false; }
+    handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
+    return true;
+  }
+
+  /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
+  #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
+    hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
+  }
+
+  /**
+   * Recover from a dropped connection (R1-R1): reuse the saved handle when it is reusable, else open a
+   * fresh seeded setup; a failed resume falls through to one fresh seeded attempt. Each socket open counts
+   * against the per-episode bound, backoff is 0/2/5 s, and the current session deadline does not move.
+   */
+  async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined): Promise<boolean> {
+    const now = this.#now();
+    if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) handle.recoveries = 0;
+    if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    const remaining = handle.deadlineAt - now, idle = handle.idleAt - now;
+    const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - now);
+    if (remaining <= 0 || idle <= 0 || window <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    const backoff = RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!;
+    if (backoff > 0) await this.#delay(backoff);
+    if (this.#settled(handle)) return false;
+    const failedResume = handle.lastRecoveryPath === 'resume';
+    const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
+    const savedHandle = saved?.['resumption_handle'];
+    const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
+    const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
+    const reuse = this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
+    const closeCode = outcome?.upstream?.closeCode ?? null;
+    const reason = outcome?.code ?? null;
+    const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
+    let opened = this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
+    if (!opened && path === 'resume') {
+      this.#logRecovery(handle, 'resume', 'open_failed', closeCode, reason, seed);
+      handle.recoveries += 1;
+      if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+      opened = this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, reason);
     }
+    if (opened) {
+      // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
+      if (failedResume) this.#store.transaction(tx => tx.run('UPDATE live_sessions SET resumption_handle=NULL WHERE live_session_id=?', [handle.liveSessionId]));
+      this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
+      return true;
+    }
+    handle.recoveries += 1;
+    this.#logRecovery(handle, path, 'open_failed', closeCode, reason, seed);
+    if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    // A synchronous refusal (rare) retries after the next backoff rather than ending the call.
+    await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);
+    if (this.#settled(handle)) return false;
+    return this.#recoverFromDrop(handle, outcome);
+  }
+
+  /**
+   * A provider session that reaches its own deadline is a planned continuation, not a failure: open a fresh
+   * seeded setup in a new provider window, bounded by the total call ceiling. Only the ceiling ends the call.
+   */
+  async #continueSession(handle: ActiveSession): Promise<boolean> {
+    if (this.#settled(handle) || handle.terminal) return false;
+    const now = this.#now();
+    const callRemaining = handle.callDeadlineAt - now;
+    if (callRemaining <= 0) { this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); return false; }
+    const idle = handle.idleAt - now;
+    if (idle <= 0) { this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null); return false; }
+    const remaining = Math.min(this.#profile.limits.sessionMs, callRemaining);
+    const window = Math.min(10_000, Math.max(1, remaining));
+    const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
+    handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded';
+    const opened = this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline');
+    if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    this.#logRecovery(handle, 'fresh_seeded', 'session_deadline', null, 'session_timeout', seed);
+    return true;
   }
 
   /** Send operator-typed text into the newest active session as a user turn (W5-R4 item 2). */
@@ -861,7 +1083,10 @@ export class LiveSessionOwner {
     try {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
+        // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
+        if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
         if (event.type === 'modelTurnStarted') {
+          resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
           handle.turnCompleteSeen = false;
@@ -873,22 +1098,32 @@ export class LiveSessionOwner {
         }
         if (event.type === 'goAway') {
           handle.goAwayUntil = this.#now() + event.timeLeftMs;
+          hostLogEvent({ event: 'live_go_away', timeLeftMs: event.timeLeftMs });
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
         }
-        if (event.type === 'ready' && handle.rebuilding) {
-          handle.rebuilding = false; handle.ready = true;
-          this.#continuity(handle, 'resumed');
+        if (event.type === 'contextUsage') {
+          hostLogEvent({ event: 'live_context_usage', totalTokens: event.totalTokens, ...(event.promptTokens !== undefined ? { promptTokens: event.promptTokens } : {}), ...(event.responseTokens !== undefined ? { responseTokens: event.responseTokens } : {}) });
           continue;
+        }
+        if (event.type === 'upstreamQueue') {
+          hostLogEvent({ event: 'live_upstream_queue', bufferedBytes: event.bufferedBytes });
+          continue;
+        }
+        if (event.type === 'ready') {
+          handle.ready = true; handle.lastHealthyAt = this.#now();
+          if (handle.rebuilding) { handle.rebuilding = false; this.#continuity(handle, 'resumed'); continue; }
         }
         if (event.type !== 'ready' && event.type !== 'outcome') this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
-          for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); }
+          handle.turnAfterTool = true;
+          for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
+            if (responses.length) this.#armDeadAir(handle);
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
             handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
           }); continue;
@@ -912,6 +1147,8 @@ export class LiveSessionOwner {
           // A barge-in abandons any awaited output, and a tool that never resolves must not leave
           // THINKING stuck (F4).
           handle.thinking = false;
+          handle.turnInterrupted = true;
+          logTurnScript(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -919,7 +1156,7 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; }
+        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; logTurnScript(handle); }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
@@ -933,6 +1170,7 @@ export class LiveSessionOwner {
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
+        if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
@@ -954,16 +1192,23 @@ export class LiveSessionOwner {
       }
     } catch (error) { handle.persistFailure = error; }
     if (!handle.terminal) {
+      // A session-deadline continuation opens a new session from the timer; the ended one is superseded.
+      if (generation !== handle.generation) continue;
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
         outcome ??= await session.done.catch(() => undefined);
-        if (outcome?.recoverable) {
-          const rebuilt = this.#rebuild(handle, outcome.code);
-          if (outcome.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
+        const failedRecovery = handle.rebuilding && !handle.ready;
+        if (failedRecovery) handle.recoveries += 1;
+        if (outcome?.recoverable || failedRecovery) {
+          const rebuilt = await this.#recoverFromDrop(handle, outcome);
+          if (outcome?.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
           if (rebuilt) continue;
+        } else if (this.#isSessionDeadline(outcome) && this.#attended(handle)) {
+          // A provider session deadline continues in a new window; only the call ceiling or idle ends a call.
+          if (await this.#continueSession(handle)) continue;
         }
         if (handle.terminal) break;
-        if (outcome) this.#settle(handle, { state: outcome.status, code: handle.rebuilding && outcome.code !== 'session_timeout' && outcome.code !== 'idle_timeout' && outcome.code !== 'deadline' || outcome.recoverable ? 'resume_failed' : outcome.code === 'deadline' ? 'session_timeout' : outcome.code }, outcome.status === 'closed', 'ended', null);
+        if (outcome) this.#settle(handle, { state: outcome.status, code: outcome.code === 'deadline' ? 'session_timeout' : outcome.code }, outcome.status === 'closed', 'ended', null);
         else this.#settle(handle, { state: 'outcome_unknown' }, false, 'ended', null);
       }
     }
@@ -1128,7 +1373,9 @@ export class LiveSessionOwner {
         if (this.#settled(handle) || generation !== handle.generation) return;
         responses = outcome.responses;
         projections = outcome.projections;
-        hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: event.calls.length, toolLatencyMs: [], toolResponseWhileGenerating: handle.speaking });
+        const latency: { tool: string; ms: number }[] = [];
+        for (const call of event.calls) { const started = handle.callStartedAt.get(call.id); if (started !== undefined) latency.push({ tool: call.name, ms: Math.max(0, this.#now() - started) }); handle.callStartedAt.delete(call.id); }
+        hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: event.calls.length, toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
       } else {
       // One model call fans out to one or more internal reads; a plain call maps to itself. An intent
       // is deliberately never cached: its sub-reads change per query or per minute.
@@ -1254,6 +1501,7 @@ export class LiveSessionOwner {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
+          this.#armDeadAir(handle);
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
@@ -1293,7 +1541,7 @@ export class LiveSessionOwner {
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
-    handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
+    handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
     let journalSequence: number;
     try {

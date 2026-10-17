@@ -12,6 +12,8 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
+import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
+import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
@@ -179,4 +181,33 @@ test('channel resolution maps id, name and display name, and names the closest m
   const ambiguous = resolveChannelReference('Town Square', [{ name: 'a', displayName: 'Town Square' }, { name: 'b', displayName: 'Town Square' }]);
   assert.equal('error' in ambiguous && ambiguous.error.startsWith('channel-ambiguous: Town Square matches '), true);
   assert.deepEqual(parseChannelList({ result: { content: [{ type: 'text', text: JSON.stringify({ channels }) }] } }), channels);
+});
+
+test('the research chat thread read uses the argument name the child declares, so the thread body reaches the answer', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  await approve(f.adapter, f.registry);
+  const dispatched: string[] = [];
+  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
+    dispatched.push(call.name);
+    if (call.name !== 'mattermost_get_thread') {
+      const text = '**team** [post abcdef1234567890abcdefghij]\nstandup thread started';
+      return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+    }
+    const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE });
+    // Shape the read the way the host does before it reaches the model.
+    const projected = result.state === 'completed'
+      ? projectMattermostResult(f.adapter, { decodedResult: result.decodedResult, state: 'completed', tool: call.name, source: result.source, observedAt: Date.now(), coverage: result.coverage, projection: result.projection, response: result.payload })
+      : { ok: false as const, reason: result.state };
+    const text = projected.ok ? projected.projection.text : '';
+    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
+  }));
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'chat_search', query: 'standup' }], pUseful: { chat_search: 1 } }) },
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup' }, new AbortController().signal);
+  assert.ok(dispatched.includes('mattermost_get_thread'), 'the thread follow-up runs');
+  const findings = reply['findings'] as { text?: string }[];
+  assert.ok(JSON.stringify(findings).includes('Standup at ten'), 'the thread body reaches the answer, never an empty failure');
 });

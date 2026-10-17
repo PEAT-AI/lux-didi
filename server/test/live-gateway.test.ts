@@ -365,8 +365,8 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
 });
 
 test('a settled session delivers the typed terminal and closes 1000 while a late mic frame arrives', async t => {
-  // The session budget is not reset by client audio, so it settles while the microphone keeps sending frames.
-  const h = await harness(t, { config: configJson(true, { limits: { sessionMs: 200, idleMs: 5000, handshakeMs: 1000, closeMs: 50 } }) });
+  // The call ceiling is not reset by client audio, so it settles while the microphone keeps sending frames.
+  const h = await harness(t, { config: configJson(true, { limits: { sessionMs: 200, callMaxMs: 200, idleMs: 5000, handshakeMs: 1000, closeMs: 50 } }) });
   const created = await createBody(h, 'late-mic');
   const id = created.body.data.liveSessionId;
   const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });

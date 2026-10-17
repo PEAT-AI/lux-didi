@@ -25,7 +25,7 @@ const wireContext = (result: ReturnType<typeof compilePrompt>) => 'Untrusted sou
 test('public template is content-versioned; sections/order/hashes are deterministic', () => {
   const a = compilePrompt(input()); const b = compilePrompt(input());
   assert.deepEqual(a, b);
-  assert.match(PUBLIC_PERSONA, /^You are Didi, a personal AI assistant\./);
+  assert.match(PUBLIC_PERSONA, /^You are Naya, a personal AI assistant\./);
   assert.match(PUBLIC_PERSONA, /Scale depth to the question: quick requests get quick answers, substantive questions get the reasoning, the tradeoffs and a pointed counterquestion where it helps\./);
   assert.ok(!/Keep spoken answers brief/.test(PUBLIC_PERSONA), 'the written-vs-spoken brevity rule is gone');
   assert.ok(a.system.includes(PUBLIC_PERSONA));
@@ -260,12 +260,12 @@ test('the owner chat persona is the shared character and text surface, not the D
   const withProfile = compilePrompt({ ...base, ownerProfile: syntheticOwner } as CompileInput);
   assert.ok(withProfile.system.includes(NAYA_CHARACTER), 'the owner chat prompt carries the shared character');
   assert.ok(withProfile.system.includes(NAYA_TEXT_SURFACE), 'the owner chat prompt carries the text surface');
-  assert.equal(withProfile.system.includes('You are Didi'), false, 'the Didi persona is gone for an owner profile');
+  assert.equal(withProfile.system.includes(PUBLIC_PERSONA), false, 'the public persona is not injected for an owner profile');
   assert.equal(withProfile.system.includes('"humor"'), false, 'the preferences payload drops humor');
   assert.equal(withProfile.system.includes('"verbosity"'), false, 'the preferences payload drops verbosity');
   const noProfile = compilePrompt(base);
-  assert.ok(noProfile.system.includes(PUBLIC_PERSONA), 'the no-profile chat keeps the Didi persona');
-  assert.match(noProfile.system, /You are Didi/);
+  assert.ok(noProfile.system.includes(PUBLIC_PERSONA), 'the no-profile chat keeps the public persona');
+  assert.match(noProfile.system, /You are Naya/);
 });
 
 test('prior turns reach the model as plain role turns, never as JSON envelope strings', () => {

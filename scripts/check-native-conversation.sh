@@ -22,5 +22,10 @@ node --test --test-reporter=tap --test-timeout=20000 \
   server/dist/test/chat.test.js | tee "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
+# Mini orb web route unit test: orb-only markup and the one glance state.
+status=0
+node --test --test-reporter=tap --test-timeout=15000 web/test/mini.test.ts | tee "$log" || status=$?
+grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected mini orb tests' >&2; exit 1; }
+if [ "$status" -ne 0 ]; then exit "$status"; fi
 # Real GPU browser admission: a held slot is reported by the helper, never read as a pass.
 lux-browser-slot run --priority worker --want 1 --wait 1800 -- node web/test/native-conversation.spec.ts

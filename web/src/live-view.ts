@@ -1,6 +1,6 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
-import { escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
+import { decodeEntities, escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
 import { levelPeak, playbackPeak } from './orb-level.ts';
@@ -146,6 +146,12 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
   }
   flush();
   return lines;
+}
+
+/** The first frame of a new Live session: the voice view drops whatever the session before it painted,
+ * so a start (or a reconnect into `starting`) always opens blank (UI3b, N2). */
+export function startingReset(previous: string | undefined, state: string): boolean {
+  return state === 'starting' && previous !== 'starting';
 }
 
 export interface LivePollState { live?: LiveCurrent; lastSuccess?: Date; stale?: boolean; earlier?: EarlierSession[] }
@@ -304,16 +310,13 @@ export function sessionItems(live: LiveCurrent | undefined): LiveSegment[] {
   return items;
 }
 
-export function liveSegments(live: LiveCurrent | undefined, earlier: EarlierSession[] = []): LiveSegment[] {
+export function liveSegments(live: LiveCurrent | undefined): LiveSegment[] {
   const segments: LiveSegment[] = [];
-  for (const past of earlier) segments.push({ key: `earlier:${past.at}`, html: past.html });
   const items = sessionItems(live);
-  // A terminal newest session is not the live feed: its items collapse under their dated divider, so a
-  // new session starts fresh instead of inheriting the ended one (spec 1.3 cause 1, page-side only).
-  if (live?.pastSession && items.length) {
+  // The voice view is the current session alone (UI3b): a finished or not-yet-started session shows the
+  // one calm line, and every earlier session lives in the collapsed past-sessions panel instead.
+  if (live?.pastSession) {
     segments.push({ key: 'empty', html: FEED_EMPTY });
-    const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
-    segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${sessionSummaryMarkup(live, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
   } else if (items.length) {
     if (live?.since) segments.push({ key: 'divider:session', html: `<div class="feed-divider" data-seg="divider:session" role="separator">${escapeHtml(sessionDividerText(live.since))}</div>` });
     segments.push(...items);
@@ -330,6 +333,30 @@ export function earlierSession(previous: LiveCurrent | undefined): EarlierSessio
   if (!items.length) return undefined;
   const at = sessionDividerText(previous.pastSession?.endedAt ?? previous.since);
   return { at, html: `<details class="feed-session" data-seg="earlier:${at}"><summary class="feed-divider">${sessionSummaryMarkup(previous, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` };
+}
+
+/** The past-sessions panel: closed by default, and the only place an earlier session is reachable. */
+export function pastSessionsMarkup(earlier: EarlierSession[] = []): string {
+  if (!earlier.length) return '';
+  return `<details class="feed-sessions" id="past-sessions"><summary class="feed-sessions-summary">Past sessions</summary><div class="feed-session-list" id="past-session-list">${pastSessionListMarkup(earlier)}</div></details>`;
+}
+export function pastSessionListMarkup(earlier: EarlierSession[] = []): string {
+  return earlier.map(past => past.html).join('');
+}
+
+/** The `data-seg` of every detail row a segment renders open, so a repaint keeps the reader's choice. */
+export function openSegments(html: string): string[] {
+  return [...html.matchAll(/<details\b[^>]*>/g)].filter(tag => /\sopen(?:[\s>=])/.test(tag[0]))
+    .map(tag => /data-seg="([^"]+)"/.exec(tag[0])?.[1]).filter((key): key is string => Boolean(key));
+}
+/** Re-open the rows the reader had open, by `data-seg`, after a repaint replaced the segment markup. */
+export function restoreOpen(html: string, open: readonly string[]): string {
+  if (!open.length) return html;
+  return [...html.matchAll(/<details\b[^>]*>/g)].reduce((out, tag) => {
+    const key = /data-seg="([^"]+)"/.exec(tag[0])?.[1];
+    if (!key || !open.includes(key) || /\sopen(?:[\s>=])/.test(tag[0])) return out;
+    return out.replace(tag[0], tag[0].replace(/>$/, ' open>'));
+  }, html);
 }
 
 /** A job's raw state word shown as a plain human sentence; the enum token never reaches the panel. */
@@ -357,19 +384,34 @@ export function liveNoticesMarkup(live: LiveCurrent | undefined, poll: LivePollS
 
 /** The background job results, kept in their own container so a poll repaints them in place. */
 export function liveJobsMarkup(live: LiveCurrent | undefined): string {
-  return (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${escapeHtml(jobStateLabel(job.state))}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
+  // One clean line per result (UI3b): the answer gist as a chip. The evidence behind it is never a
+  // stack of raw bullets in the voice view; the model already holds the detail in context.
+  return (live?.jobs ?? []).map(job => {
+    const gist = jobGist(job.markdown);
+    return `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${escapeHtml(jobStateLabel(job.state))}${gist ? `<span class="live-job-gist">${escapeHtml(gist)}</span>` : ''}</p>${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`;
+  }).join('');
+}
+
+/** The one visible line of a job result: the first sentence of its first line, decoded and stripped of
+ * markdown markers, so a stored evidence list can never stack up in the voice view. */
+export function jobGist(markdown: string): string {
+  const first = decodeEntities(String(markdown ?? ''))
+    .replace(/^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]?)/gm, '')
+    .split('\n').map(line => line.replace(/[*_`]/g, '').trim()).find(line => line.length > 0) ?? '';
+  return turnHeadline(first).replace(/\s+/g, ' ').slice(0, 200);
 }
 
 /** The idle feed: one calm invitation, reused by the wrapper and the in-place transcript painter. */
 export const FEED_EMPTY = '<p class="feed-empty transcript-placeholder muted" data-seg="empty">Ask me anything<br><span>Start with the mic or \u2318\u21e7Space</span></p>';
 
 export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
-  const flow = liveSegments(live, poll.earlier).map(segment => segment.html);
+  const flow = liveSegments(live).map(segment => segment.html);
   const body = flow.join('') || FEED_EMPTY;
   return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
     <div class="feed-notices" id="feed-notices">${liveNoticesMarkup(live, poll)}</div>
     <div class="feed live-turns">${body}</div>
     <div class="feed-jobs" id="feed-jobs">${liveJobsMarkup(live)}</div>
+    ${pastSessionsMarkup(poll.earlier)}
   </section>`;
 }
 

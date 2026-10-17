@@ -5,6 +5,20 @@ export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, character => HTML_ESCAPES[character]!);
 }
 
+const NAMED_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+/** Stored feed text can arrive HTML-encoded (an older build wrote it that way). Decoding here, before
+ * escaping, means the owner reads the words and never the entity names (UI3b). One pass only: a decoded
+ * ampersand is never re-read as the start of another entity. */
+export function decodeEntities(value: string): string {
+  return String(value ?? '').replace(/&(?:#(\d{1,7})|#x([0-9a-fA-F]{1,6})|([a-zA-Z]{2,8}));/g, (whole, dec: string, hex: string, name: string) => {
+    if (dec || hex) {
+      const code = dec ? Number(dec) : parseInt(hex!, 16);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED_ENTITIES[name.toLowerCase()] ?? whole;
+  });
+}
+
 const LINK = /\[([^\]]*)\]\(([^)\s]+)\)/g;
 const FENCE = /^```/;
 const HEADING = /^(#{1,3})\s+(.*)$/;

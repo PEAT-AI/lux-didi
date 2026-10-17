@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
-const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'];
+const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
 
 const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
 
@@ -112,4 +112,53 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'unknown_tool' })?.errorCode, 'unknown_tool');
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
+});
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120 };
+test('live_recovery keeps a closed metadata-only shape', () => {
+  assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
+  assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...RECOVERY, path: 'carrier_pigeon' }), undefined, 'an unknown path is refused');
+  assert.equal(safeEvent({ ...RECOVERY, closeCode: 70000 }), undefined, 'an out-of-range close code is refused');
+  assert.equal(safeEvent({ ...RECOVERY, seedChars: -1 }), undefined, 'a negative seed size is refused');
+});
+test('live_go_away and live_upstream_queue keep counts only', () => {
+  assert.deepEqual(safeEvent({ event: 'live_go_away', timeLeftMs: 30000 }), { event: 'live_go_away', timeLeftMs: 30000 });
+  assert.equal(safeEvent({ event: 'live_go_away', timeLeftMs: -1 }), undefined, 'a negative deadline is refused');
+  assert.deepEqual(safeEvent({ event: 'live_upstream_queue', bufferedBytes: 70000 }), { event: 'live_upstream_queue', bufferedBytes: 70000 });
+  assert.equal(safeEvent({ event: 'live_upstream_queue', bufferedBytes: 'x' }), undefined, 'a non-integer depth is refused');
+});
+test('live_context_usage and live_dead_air_nudge carry numbers only', () => {
+  assert.deepEqual(safeEvent({ event: 'live_context_usage', totalTokens: 15 }), { event: 'live_context_usage', totalTokens: 15 });
+  assert.deepEqual(safeEvent({ event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 }), { event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 });
+  assert.equal(safeEvent({ event: 'live_context_usage', totalTokens: 15, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.deepEqual(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: 8000 }), { event: 'live_dead_air_nudge', elapsedMs: 8000 });
+  assert.equal(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: -1 }), undefined, 'a negative elapsed is refused');
+});
+test('live_turn_open carries the silence duration only (#303)', () => {
+  assert.deepEqual(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42 }), { event: 'live_turn_open', msSinceLastModelAudio: 42 });
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: null }), undefined, 'a null duration is refused');
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42, text: 'x' }), undefined, 'an extra key fails closed');
+});
+
+test('live_turn_script is a closed enum of script buckets with character counts only', () => {
+  const UUID = '11111111-1111-4111-8111-111111111111';
+  const turn = { event: 'live_turn_script', liveSessionId: UUID, script: 'mixed', latinChars: 40, devanagariChars: 3, afterTool: true, interrupted: false };
+  assert.deepEqual(safeEvent(turn), turn);
+  assert.equal(safeEvent({ ...turn, script: 'cyrillic' }), undefined, 'only the three script buckets exist');
+  assert.equal(safeEvent({ ...turn, text: 'SYNTHETIC-SPOKEN-TEXT' }), undefined, 'any key that could carry text fails closed');
+  assert.equal(safeEvent({ ...turn, latinChars: 1.5 }), undefined, 'a non-integer count is refused');
+  assert.equal(safeEvent({ ...turn, afterTool: 'yes' }), undefined, 'the flags are booleans');
+  assert.equal(safeEvent({ ...turn, liveSessionId: 'not-a-session' }), undefined, 'a foreign id is refused');
+});
+
+test('conversation_summary_injection keeps counts and a size, never ids or text', () => {
+  const injection = { event: 'conversation_summary_injection', injected: 12, omitted: 8, chars: 3_400 };
+  assert.deepEqual(safeEvent(injection), injection);
+  assert.equal(safeEvent({ event: 'conversation_summary_injection', injected: 12, omitted: 8 }), undefined, 'a partial shape fails closed');
+  assert.equal(safeEvent({ ...injection, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...injection, text: 'owner words' }), undefined, 'never the summary text');
+  assert.equal(safeEvent({ ...injection, ids: ['a'] }), undefined, 'never summary ids');
+  assert.equal(safeEvent({ ...injection, injected: 1.5 }), undefined, 'a non-integer count is refused');
+  assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });

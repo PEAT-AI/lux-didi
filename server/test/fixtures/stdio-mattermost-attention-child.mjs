@@ -34,15 +34,21 @@ const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'Robert Peat', now 
 const threadOpenReply = post('threadOpenReply', 'direct-dana', 'Dana', now - 30 * 60 * 1000, 'done, they line up', 'thread-open-reply', 'threadOpenRoot');
 const threadDoneRoot = post('threadDoneRoot', 'direct-dana', 'Robert Peat', now - 6 * HOUR, 'ok to ship?', 'thread-done-root');
 const threadDoneReply = post('threadDoneReply', 'direct-dana', 'Robert Peat', now - 4 * HOUR, 'shipped it', 'thread-done-reply', 'threadDoneRoot');
+// A public channel thread: the owner opened it, Dana answered last. Nothing mentions the owner,
+// so only a read seeded by the owner's own posts can find it.
+const publicThreadRoot = post('publicThreadRoot', 'team-release', 'Robert Peat', now - 7 * HOUR, 'who owns the 3k dock retest?', 'public-thread-root');
+const publicThreadReply = post('publicThreadReply', 'team-release', 'Dana', now - 20 * 60 * 1000, 'I can take it tomorrow morning', 'public-thread-reply', 'publicThreadRoot');
 
 // Deliberately unsorted: the connector owns the order it shows.
 const mentions = [mentionOld, mentionRecent];
+const ownerPosts = [dmOwner, threadOpenRoot, threadDoneRoot, threadDoneReply, publicThreadRoot];
 const history = {
   'direct-dana': [dmOwner, threadDoneRoot, dmDana, threadDoneReply, threadOpenRoot],
 };
 const threads = {
   threadOpenRoot: [threadOpenRoot, threadOpenReply],
   threadDoneRoot: [threadDoneRoot, threadDoneReply],
+  publicThreadRoot: [publicThreadRoot, publicThreadReply],
 };
 
 const SEARCH = mode === 'no-window'
@@ -81,7 +87,10 @@ server.setRequestHandler('tools/call', (request) => {
     const posts = threads[args.post_id];
     return text({ posts: posts ?? (typeof args.post_id === 'string' ? [{ ...dmDana, id: args.post_id }] : []) });
   }
-  if (name === 'mattermost_search') return text({ posts: within(mentions) });
+  if (name === 'mattermost_search') {
+    const query = typeof args.query === 'string' ? args.query : '';
+    return text({ posts: within(query.startsWith('from:') ? ownerPosts : mentions) });
+  }
   return { isError: true, content: [{ type: 'text', text: `unsupported tool ${name}` }] };
 });
 await server.connect(new StdioServerTransport());

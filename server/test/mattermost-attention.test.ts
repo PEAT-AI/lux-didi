@@ -62,6 +62,7 @@ test('the attention view lists mentions, direct messages and open threads newest
   const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
   const view = digest(await r.attention({}));
   assert.deepEqual(summaries(view.items), [
+    'thread Dana I can take it tomorrow morning',
     'thread Dana done, they line up',
     'dm Dana sent you the deck for review',
     'mention Dana @robert can you confirm the 3k release?',
@@ -72,6 +73,18 @@ test('the attention view lists mentions, direct messages and open threads newest
   assert.equal(mention.permalink, 'https://chat.example/m/mention-recent');
   assert.match(mention.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   assert.ok(Date.parse(view.after) < Date.now() - 6 * DAY, 'the digest reports the window it applied');
+});
+
+test('a public channel thread the owner opened is seeded from the owner\'s own posts', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  const view = digest(await r.attention({}));
+  const publicThread = view.items.find(item => item.snippet === 'I can take it tomorrow morning');
+  assert.ok(publicThread, 'a thread nobody mentioned the owner in still surfaces');
+  assert.equal(publicThread.reason, 'thread');
+  assert.equal(publicThread.channel, 'team-release', 'a channel the owner never wrote a mention in');
+  assert.ok(f.calls().some(call => call.name === 'mattermost_search' && String(call.arguments['query']).startsWith('from:')), 'seeded by the owner\'s own posts, not by a mention');
 });
 
 test('the window is enforced against the post time, not the child result order', async t => {
@@ -92,7 +105,7 @@ test('a thread whose newest post is the owner does not await a reply', async t =
   const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
   const view = digest(await r.attention({}));
   const threads = view.items.filter(item => item.reason === 'thread');
-  assert.deepEqual(threads.map(item => item.snippet), ['done, they line up']);
+  assert.deepEqual(threads.map(item => item.snippet), ['I can take it tomorrow morning', 'done, they line up']);
   assert.ok(f.calls().some(call => call.name === 'mattermost_get_thread' && call.arguments['post_id'] === 'threadDoneRoot'), 'the answered thread is read and then dropped');
   assert.ok(!threads.some(item => item.snippet === 'shipped it'), 'the owner was the newest poster there');
 });
@@ -127,9 +140,10 @@ test('the attention view projects one line per item with its permalink', async t
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
   const lines = projected.projection.text.split('\n');
-  assert.equal(lines.length, 3);
-  assert.match(lines[0] ?? '', /^- \[thread\] direct-dana \| Dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| done, they line up \| https:\/\/chat\.example\/m\/thread-open-reply$/u);
-  assert.equal(projected.projection.itemCount, 3);
+  assert.equal(lines.length, 4);
+  assert.match(lines[0] ?? '', /^- \[thread\] team-release \| Dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| I can take it tomorrow morning \| https:\/\/chat\.example\/m\/public-thread-reply$/u);
+  assert.match(lines[1] ?? '', /^- \[thread\] direct-dana \| Dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| done, they line up \| https:\/\/chat\.example\/m\/thread-open-reply$/u);
+  assert.equal(projected.projection.itemCount, 4);
 });
 
 test('an empty digest says so instead of returning nothing', () => {

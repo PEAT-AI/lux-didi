@@ -2,15 +2,13 @@ import { runToolCalls } from '../../tools/declarations.js';
 import { isDeepStrictEqual } from 'node:util';
 import { controlled, Interrupted } from './control.js';
 import { modelCalls } from './gemini.js';
-import type { Authority, Content, HostContext, JsonObject, LoopResult, ModelControl, ModelPort, ModelRequest, Part, ToolCallJournal, ToolDefinition, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef } from './types.js';
+import type { Authority, Content, HostContext, LoopResult, ModelControl, ModelPort, ModelRequest, Part, ToolCallJournal, ToolDefinition, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef } from './types.js';
 
 export interface LoopOptions {
   model: ModelPort; request: ModelRequest; registry: ToolDefinition[];
   host: HostContext; authority: Authority; maxSteps: number; control: ModelControl;
   journal: ToolCallJournal; resultGate: ToolResultGate;
   carriedResults?: readonly ToolResultBinding[];
-  /** Answers a call before journaling, exactly as the Live host loop does for composed read tools. */
-  intercept?: (call: { id?: string; name: string; args: JsonObject }) => Promise<JsonObject | undefined>;
 }
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
@@ -37,12 +35,10 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
     typeof options.journal.fail !== 'function' || !options.resultGate || typeof options.resultGate.authorize !== 'function') {
     return end('denied', 'tool_result_denied');
   }
-  // Responses a host-side interceptor answered are covered by that interceptor, not by the journal.
-  const hostAnswered = new Set<string>();
   for (;;) {
     // Cover every response once, with no extra, duplicate or mispositioned binding.
     const coveredResponses = contents.flatMap((content, contentIndex) => content.parts.flatMap((part, partIndex) =>
-      part.functionResponse && !hostAnswered.has(`${contentIndex}:${partIndex}`) ? [{ contentIndex, partIndex, response: part.functionResponse }] : []));
+      part.functionResponse ? [{ contentIndex, partIndex, response: part.functionResponse }] : []));
     if (coveredResponses.length > bindings.length) return end('denied', 'tool_continuation_unbound');
     if (coveredResponses.length !== bindings.length || bindings.some((binding, i) => {
       const response = coveredResponses.find(r => r.contentIndex === binding.contentIndex && r.partIndex === binding.partIndex)?.response;
@@ -97,24 +93,12 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
     if (calls.length > 16) return end('limit', 'tool_calls_per_step_limit');
     contents.push(structuredClone(result.providerContent));
     const responses: Part[] = [];
-    // Composed read tools are answered before journaling, so no single-scope intent row is needed.
-    const answered = options.intercept ? await Promise.all(calls.map(call => options.intercept!(call))) : [];
-    const journaled = calls.filter((_call, index) => answered[index] === undefined);
-    const batch = journaled.length ? await runToolCalls(options, journaled, { registry, host, authority: options.authority, control: options.control,
-      step: steps, contentIndex: contents.length, seenIds, baseClasses: request.dataClasses }) : undefined;
-    if (batch) {
-      tools.push(...batch.tools);
-      for (const binding of batch.bindings) { bindings.push(binding); fresh.add(binding); }
-      if (batch.error) return end(batch.error.status, batch.error.reason);
-    }
-    const journaledResponses = batch ? [...batch.responses] : [];
-    for (const [index, call] of calls.entries()) {
-      const response = answered[index];
-      const next = response === undefined ? journaledResponses.shift() : { functionResponse: { name: call.name, response, ...(call.id !== undefined ? { id: call.id } : {}) } };
-      if (response !== undefined) hostAnswered.add(`${contents.length}:${index}`);
-      if (!next) return end('error', 'tool_result_denied');
-      responses.push(next);
-    }
+    const batch = await runToolCalls(options, calls, { registry, host, authority: options.authority, control: options.control,
+      step: steps, contentIndex: contents.length, seenIds, baseClasses: request.dataClasses });
+    tools.push(...batch.tools);
+    for (const binding of batch.bindings) { bindings.push(binding); fresh.add(binding); }
+    if (batch.error) return end(batch.error.status, batch.error.reason);
+    responses.push(...batch.responses);
     contents.push({ role: 'user', parts: responses });
   }
 }

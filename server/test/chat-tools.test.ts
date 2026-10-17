@@ -32,7 +32,6 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const requests: ModelRequest[] = [];
   const responseEntities: string[] = [];
   let ask = true;
-  let askIntent = false;
   // Fence fixtures: hang the connector after N dispatches, and fail the tool-free answer call.
   let hangAfter: number | null = null;
   let failAnswer = false;
@@ -43,9 +42,6 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (askIntent && request.declarations?.some(d => d.name === 'search') && !request.contents.some(c => c.parts.some(p => p.functionResponse))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: 'search', args: { query: 'which emails arrived' }, id: randomUUID() } }] } };
-    }
     if (ask && request.declarations?.some(d => d.name === 'search_knowledge') && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
       return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
@@ -114,7 +110,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     return { run: finished, events };
   };
   return { ...f, chat, owner, registry, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
-    slowCalls: (after = 0) => { hangAfter = after; }, askIntent: () => { askIntent = true; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
+    slowCalls: (after = 0) => { hangAfter = after; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
@@ -162,9 +158,9 @@ test('revoked provider consent prevents any model request', async t => {
 
 test('new approval never joins a frozen conversation but is admitted to a new one', async t => {
   const f = await fixture(t); const first = f.session(); await f.turn(first);
-  assert.deepEqual(f.admission(first).map(d => d.name), ['search_knowledge', 'search', 'mail', 'calendar', 'chat', 'brief']);
+  assert.deepEqual(f.admission(first).map(d => d.name), ['search_knowledge']);
   await f.approveY(); f.noCalls(); await f.turn(first);
-  assert.deepEqual(f.admission(first).map(d => d.name), ['search_knowledge', 'search', 'mail', 'calendar', 'chat', 'brief']);
+  assert.deepEqual(f.admission(first).map(d => d.name), ['search_knowledge']);
   const second = f.session(); await f.turn(second);
   assert.ok(f.admission(second).some(d => d.name === 'get_insight'));
 });
@@ -446,11 +442,3 @@ test('the evidence gathered before the fence is answered from even when the answ
 
 
 
-test('one chat intent call executes the plan and the chat still answers', async t => {
-  const f = await fixture(t); f.askIntent();
-  const { run } = await f.turnEvents(f.session());
-  assert.equal(f.executions() > 0, true, 'the composed read actually reached the connector');
-  assert.equal(run.outcome, 'complete', 'the chat still answered');
-  assert.notEqual(run.finalEntryId, null);
-  assert.match(JSON.stringify(run.toolEvidence), /ACCEPTED/, 'the shaped digest is the owner evidence');
-});

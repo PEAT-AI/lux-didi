@@ -55,21 +55,11 @@ Every `end` event carries `resultCount`: the number of result cards the tool's r
 same `sourceCards` projection the owner evidence uses. A call that failed, was cut by the fence, or
 whose response was refused by the result gate carries `0`.
 
-## Intent surface (composition only, not yet declared)
+## Intent wiring is not in this wagon
 
-`chatIntentTools` in `server/chat/tools.ts` composes the same five coarse intent declarations the Live
-session declares (`INTENT_TOOL_NAMES`) from the shared `planIntent`, `intentResponse` and
-`IntentDeclaration` helpers, runs each plan phase through a caller-supplied sub runner, and completes
-one shaped digest under the intent's own journaled call, so one model call both searches and shapes.
-
-It is not yet added to the chat declaration set. One instrumented run of the wired declaration ends the
-run at status `error` with zero connector executions, and the root cause is outside this change's files:
-the tools owner journals every call under exactly one connection scope, so a tool whose account and
-resource belong to no connection cannot be journaled (`server/tools/index.ts:148`,
-`if (matches.length !== 1) throw Error('intent_scope_mismatch')`, reached from
-`journal.intent` inside `runToolCalls`). The Live session never hits this because it answers intent calls
-in a host-side loop outside `runToolCalls` (`server/live/index.ts:1382`). Declaring the chat intent tools
-therefore needs an owner-level synthetic scope for intent tools, or pre-journal interception in
-`server/adapters/model/loop.ts`; both are outside this wagon's file scope. The builder's contract (five
-names, one digest per call, fail closed when no intent is journaled) is covered by
-`server/test/chat-tools.test.ts`.
+Text chat declares exactly the raw connector tools it declared at `c70a41c`; there is no intent tool
+and no host-side interception in the loop. K3-R7 keeps that work out of this wagon: a composed read
+cannot be journaled under one connection scope (`server/tools/index.ts:147-148`,
+`intent_scope_mismatch`) and `ToolsOwner.complete` needs a journaled intent
+(`server/tools/index.ts:345-352`), so the routed-research seam is the better place for it. Follow-up:
+issue #337.

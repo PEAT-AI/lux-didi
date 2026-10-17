@@ -6,8 +6,7 @@ import { ServiceError } from '../contracts/errors.js';
 import type { DataClass, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
-import { authorizeToolBatch, declarationsFor, runToolCalls } from '../tools/declarations.js';
-import { intentDeclarations, intentResponse, isIntentTool, planIntent } from '../tools/intent.js';
+import { declarationsFor } from '../tools/declarations.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
 import { hostLogEvent } from '../tools/host-events.js';
@@ -17,10 +16,8 @@ import type { ToolEvidence } from './types.js';
 import { assemble, chatAllowsToolClasses, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
 import { answerInstruction, chatToolRegistry, deterministicAnswer, notReachedLabels, type ChatCallRecord } from './tools.js';
-/** One materialized owner read inside a composed intent call. */
-export interface ChatSubResult { name: string; ok: boolean; response: JsonObject; dataClasses?: readonly DataClass[] }
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatStepEvent, type ChatPort, type ChatToolsComposition, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatStepEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -85,7 +82,6 @@ export class ChatService implements ChatPort {
   readonly #config: ChatConfig;
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
-  readonly #subSteps = new Map<string, number>();
   readonly #toolAuthorities = new Map<string, { context: DomainContext; authority: LiveAuthority; policyMatches: boolean }>();
   readonly #admissionLogged = new Set<string>();
   readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
@@ -149,14 +145,7 @@ export class ChatService implements ChatPort {
       const ownerTools = definitionsInTransaction(tools.owner, run.runId, tx).filter(t => t.effect === 'read' && t.name !== 'remember_note');
       // The same coarse intent tools the Live session declares. Their calls are answered before
       // journaling (see the loop intercept), so no compose call needs a single-connection scope.
-      // Declared only: every intent call is answered by the loop intercept, never by this execute.
-      const intents = intentDeclarations().map(declaration => ({
-        name: declaration.name, description: declaration.description, guidance: declaration.guidance,
-        parameters: declaration.parameters, validate: declaration.validate, effect: 'read' as const,
-        accountId: 'gateway:chat-intent', resourceId: declaration.name,
-        execute: async () => ({ status: 'failed' as const, code: 'handler_outcome' as const }),
-      }));
-      const registry = [...ownerTools, ...intents];
+      const registry = ownerTools;
       if (!frozen && registry.length) tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)',
         [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()),
           policyIdentity, canonicalJSON(registry.map(t => ({ name: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId }))), canonicalJSON(connectionIds)]);
@@ -241,8 +230,7 @@ export class ChatService implements ChatPort {
       return answered;
       } }, request, registry: acquire, host, control: { ...control, signal }, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
-      journal: tools.owner.journal, resultGate: tools.owner.resultGate,
-      intercept: (call) => this.#answerIntent(call, tools.owner, registry, run, context, signal) });
+      journal: tools.owner.journal, resultGate: tools.owner.resultGate });
     // A fenced or throwing acquisition still answers from what it gathered.
     let loop: LoopResult | undefined;
     let failure: unknown;
@@ -313,40 +301,6 @@ export class ChatService implements ChatPort {
     hostLogEvent({ event: 'chat_timing', runId: run.runId, outcome, rounds: [...rounds],
       tools: steps.filter(step => step.phase === 'end').map(step => ({ tool: step.tool, ok: step.ok === true, ms: step.ms ?? 0 })),
       fenceMs, acquireMs, answerMs });
-  }
-  /** The owner reads, journaled and gated exactly as a direct call: the composed read fans out here. */
-  async #runSubReads(owner: ChatToolsComposition['owner'], registry: readonly ToolDefinition[], run: RunSnapshot,
-    context: DomainContext, calls: readonly { name: string; args: JsonObject }[], signal: AbortSignal): Promise<ChatSubResult[]> {
-    const active = this.#toolAuthorities.get(run.runId);
-    if (!active || !calls.length) return [];
-    const step = 1000 + (this.#subSteps.get(run.runId) ?? 0);
-    this.#subSteps.set(run.runId, (this.#subSteps.get(run.runId) ?? 0) + 1);
-    const host = { runId: run.runId, actorId: context.clientId, authorityEpoch: context.authorityEpoch,
-      revision: active.authority.revision, grants: registry.map(t => ({ tool: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId })) };
-    const control = { signal, deadlineMs: this.#now() + 15_000 };
-    const batch = await runToolCalls({ journal: owner.journal, resultGate: owner.resultGate }, calls,
-      { registry, host, authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null }, control, step,
-        contentIndex: 0, seenIds: new Set<string>(), baseClasses: [] });
-    if (batch.error) return [];
-    const authorized = await authorizeToolBatch({ resultGate: owner.resultGate }, batch, { host, control, baseClasses: [] });
-    return authorized.accepted.map(entry => ({ name: entry.binding.name, ok: true, response: entry.response, ...(entry.dataClasses ? { dataClasses: entry.dataClasses } : {}) }));
-  }
-  /** One composed read, answered before journaling exactly as the Live host loop answers it. */
-  async #answerIntent(call: { name: string; args: JsonObject }, owner: ChatToolsComposition['owner'],
-    ownerTools: readonly ToolDefinition[], run: RunSnapshot, context: DomainContext, signal: AbortSignal): Promise<JsonObject | undefined> {
-    if (!isIntentTool(call.name)) return undefined;
-    let plan: ReturnType<typeof planIntent>;
-    try { plan = planIntent(call.name, call.args); } catch { return undefined; }
-    const results = await this.#runSubReads(owner, ownerTools, run, context,
-      plan.calls.map(entry => ({ name: entry.name, args: entry.args })), signal);
-    const shaped = plan.calls.map((entry, index) => {
-      const result = results[index];
-      const ok = result !== undefined && result.name === entry.name && result.ok;
-      const text = ok ? (typeof result.response.text === 'string' ? result.response.text : '') : '';
-      return { key: String(index), name: entry.name, ok, text, originalCharacters: text.length, omittedCharacters: 0, ...(ok ? {} : { code: 'connector_error' }) };
-    });
-    // The digest is what the model sees: one shaped answer for the whole intent, no discovery rounds.
-    return intentResponse(plan.combine(shaped), call.name);
   }
   /** The evidence persisted before every model request: frozen at the fence, never re-read from a call. */
   #frozenEvidence(run: RunSnapshot): { name: string; markdown: string }[] {

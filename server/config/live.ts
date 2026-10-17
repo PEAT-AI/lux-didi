@@ -4,14 +4,13 @@ import { isLiveVoiceProvider, type DataClass, type LiveVoiceProvider } from '../
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
-import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
+import { ConfigError, fail, parseJson, readPrivate, safeError, validateRoot } from './files.js';
 import { configureDebugJournal } from '../host/journal.js';
 import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
 const liveLimit = 16 * 1024;
 const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences', 'limits'];
-const preferenceKeys = ['dataClass', 'language', 'register', 'humor', 'verbosity'];
 // The debug journal is a host setting that lives beside the prompt preferences: owner content
 // stays on this computer, on by default. It is stripped before the prompt preferences validate.
 const journalKey = 'debugJournal';
@@ -103,11 +102,15 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const model = modelId(provider, input['modelId'] ?? slot.defaultLiveModelId);
     const chosenVoice = input['voice'] === undefined ? slot.defaultVoice : voice(input['voice']);
     const dataClasses = classList(input['dataClasses']);
-    const declared = fields(input['preferences'], [...preferenceKeys, journalKey], 'invalid_profile');
-    const debugJournal = declared[journalKey] === undefined ? true : declared[journalKey] === true;
-    const promptPreferences: Record<string, unknown> = { ...declared, schemaVersion: 1, ownerId: options.ownerId };
-    delete promptPreferences[journalKey];
-    const preferences = validatePreferences(promptPreferences, options.ownerId);
+    // One host setting rides beside the prompt preferences, which keep their own exact key set.
+    const declared = input['preferences'];
+    if (!declared || typeof declared !== 'object' || Array.isArray(declared)) fail('invalid_profile');
+    const declaredKeys = { ...(declared as Record<string, unknown>) };
+    const journalValue = declaredKeys[journalKey];
+    if (journalValue !== undefined && typeof journalValue !== 'boolean') fail('invalid_profile');
+    const debugJournal = journalValue !== false;
+    delete declaredKeys[journalKey];
+    const preferences = validatePreferences({ ...declaredKeys, schemaVersion: 1, ownerId: options.ownerId }, options.ownerId);
     const config: LiveConfiguredProfile = Object.freeze({
       provider, preferences, model, voice: chosenVoice, dataClasses, debugJournal,
       profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),

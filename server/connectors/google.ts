@@ -19,6 +19,13 @@ export type GoogleFamily = 'gmail' | 'calendar';
 /** Bounded argument defaults; a caller may only narrow them. */
 export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 5, maxListResults: 50, readBodyChars: 4000 } as const;
 
+/**
+ * How long one merged calendar window read may spend. It is one remote call per visible calendar and the
+ * calendar backend serializes those calls (measured 1.7-6 s each), so the read stops here and reports the
+ * calendars it did not reach as unread instead of running until the caller aborts and losing the result.
+ */
+export const GOOGLE_CALENDAR_READ_MS = 40_000;
+
 export interface GoogleConfig {
   endpointId: string;
   account: string;
@@ -32,6 +39,11 @@ export interface GoogleConfig {
   maxListResults?: number;
   /** Bound on a gmail_read plain-text body in characters. Defaults 4000. */
   readBodyChars?: number;
+  /**
+   * Wall-clock bound on one merged calendar window read, which is one serialized remote call per
+   * visible calendar. Defaults 40000 and never above it; the calendars not reached are reported unread.
+   */
+  calendarReadMs?: number;
 }
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
@@ -107,7 +119,7 @@ function requirePositiveSafeInteger(value: unknown): number {
 
 interface Settings {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
-  family: GoogleFamily; maxListResults: number; readBodyChars: number;
+  family: GoogleFamily; maxListResults: number; readBodyChars: number; calendarReadMs: number;
 }
 
 /** A family the config names must be a real one; an unknown family is a config fault, never a silent default. */
@@ -147,6 +159,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     family: family.family,
     maxListResults: Math.min(positive(config.maxListResults, GOOGLE_DEFAULTS.maxListResults), GOOGLE_DEFAULTS.maxListResults),
     readBodyChars: positive(config.readBodyChars, GOOGLE_DEFAULTS.readBodyChars),
+    calendarReadMs: Math.min(positive(config.calendarReadMs, GOOGLE_CALENDAR_READ_MS), GOOGLE_CALENDAR_READ_MS),
   };
   if (settings.readBodyChars > GOOGLE_DEFAULTS.readBodyChars) throw new Error('invalid-connector-config');
 
@@ -242,6 +255,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
    * event deduplicated by id and each event tagged with its calendar name.
    */
   async function gcalWindow(baseArgs: Record<string, unknown>, explicit: readonly string[] | undefined, signal?: AbortSignal): Promise<GoogleResult> {
+    // The merged read is one serialized remote call per visible calendar, so it carries a wall-clock
+    // budget of its own: a read that runs until the caller aborts loses its whole result to the result
+    // gate, so it stops short and reports the calendars it did not reach as unread.
+    const stopAt = Date.now() + settings.calendarReadMs;
     const listed = await dispatch('gcal_calendars', { maxResults: Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults) }, signal);
     if (listed.state !== 'completed') return listed;
     // The owner's primary calendar is always read first and awaited inside the sub-deadline; every other
@@ -260,11 +277,11 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     };
     const primaryOnly = explicit === undefined && selected.length > 0 && calendars[0]?.primary === true;
     // 1. The primary calendar, awaited on its own so it never loses the race to the deadline.
-    if (primaryOnly && signal?.aborted !== true) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
+    if (primaryOnly && signal?.aborted !== true && Date.now() < stopAt) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
     // 2. Every remaining calendar, concurrently, cut short by the caller's deadline.
     let next = primaryOnly ? 1 : 0;
     const worker = async (): Promise<void> => {
-      while (next < selected.length && signal?.aborted !== true) {
+      while (next < selected.length && signal?.aborted !== true && Date.now() < stopAt) {
         const index = next++;
         record(index, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal));
       }
@@ -273,6 +290,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     await Promise.race([
       Promise.all(Array.from({ length: width }, worker)),
       new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }),
+      new Promise<void>(resolve => { const left = stopAt - Date.now(); if (left <= 0) resolve(); else setTimeout(resolve, left).unref(); }),
     ]);
     // A credentialed or failed read must stay visible: never an empty success.
     if (out.every(entry => entry === undefined) && (failure ?? refusal) !== undefined) return (failure ?? refusal)!;

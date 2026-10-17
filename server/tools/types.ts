@@ -1,4 +1,5 @@
 import type { RememberNotePort } from './remember.js';
+import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -22,7 +23,7 @@ export interface ConnectionPolicy {
 }
 export interface RunAcceptance {
   ownerId: string; actorId: string; runId: string; authorityEpoch: string; revision: number;
-  route: { identity: string; provider: 'gemini'; modelId: string; allowedClasses: readonly DataClass[] };
+  route: { identity: string; provider: LiveVoiceProvider; modelId: string; allowedClasses: readonly DataClass[] };
   allowedClasses: readonly DataClass[]; connectionIds: readonly string[];
 }
 export interface LiveAuthority extends RunAcceptance { acceptedRunHash: string }

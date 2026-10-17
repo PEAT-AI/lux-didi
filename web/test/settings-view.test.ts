@@ -128,3 +128,43 @@ test('connected history marks the active conversation selected and only that one
   assert.match(html, /<option value="S2" >/);
   assert.match(html, /<option value="S1" selected>/);
 });
+
+test('the Live provider switch offers OpenAI first, keeps Gemini selectable and states when it applies', () => {
+  const html = settingsMarkup({ summary: { ...summary, provider: 'gemini' } });
+  const options = [...html.matchAll(/<option value="([a-z]+)"[^>]*>([^<]+)<\/option>/g)]
+    .filter(match => ['openai', 'gemini'].includes(match[1]!));
+  assert.deepEqual(options.map(match => match[1]), ['openai', 'gemini'], 'OpenAI leads, Gemini stays selectable');
+  assert.deepEqual(options.map(match => match[2]), ['OpenAI GPT-Live', 'Gemini 3.8 Live']);
+  assert.equal(options.filter(match => match[0].includes('selected')).length, 1, 'exactly one provider is selected');
+  assert.ok(options[1]![0].includes('selected'), 'the current provider is the selected one');
+  assert.ok(html.includes('id="live-settings-form"'), 'the switch is a form the page can submit');
+  assert.ok(html.includes('name="provider"') && html.includes('name="voice"'));
+  assert.ok(html.includes('applies when Lux Didi next starts'), 'the page states when the choice applies');
+  assert.ok(html.includes('<dt>Live provider</dt><dd>Gemini 3.8 Live</dd>'), 'the active provider is named');
+});
+
+test('a live.json that names no provider shows the OpenAI default and never interpolates a raw value', () => {
+  const html = settingsMarkup({ summary: { ...summary, provider: null, voice: null } });
+  assert.ok(html.includes('<dt>Live provider</dt><dd><span class="settings-unavailable">Unavailable</span></dd>'));
+  const selected = /<option value="openai" selected>/.test(html);
+  assert.equal(selected, true, 'the first switch option is the owner default');
+  const hostile = settingsMarkup({ summary: { ...summary, provider: '<script>alert(1)</script>', voice: '"><img src=x>' } });
+  assert.equal(hostile.includes('<script>alert(1)</script>'), false);
+  assert.equal(hostile.includes('<img src=x>'), false);
+});
+
+test('the OpenAI voice list is the gpt-live-1 table in its own order, marin first, with no Realtime voice', () => {
+  const html = settingsMarkup({ summary: { ...summary, provider: 'openai', voice: 'marin' } });
+  const list = html.slice(html.indexOf('<datalist id="live-voices">'), html.indexOf('</datalist>'));
+  const voices = [...list.matchAll(/<option value="([a-z]+)"><\/option>/g)].map(match => match[1]!);
+  // OV1-R6: exactly this order; cedar is a Realtime voice and nira never appears.
+  assert.deepEqual(voices, ['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder']);
+  assert.equal(voices[0], 'marin', 'marin is the default and comes first');
+  assert.equal(voices.includes('cedar'), false);
+  assert.equal(voices.includes('nira'), false);
+  assert.equal(html.includes('"marin" selected') || html.includes('value="marin"'), true);
+  // Gemini keeps its own list.
+  const gemini = settingsMarkup({ summary: { ...summary, provider: 'gemini', voice: 'Aoede' } });
+  const geminiList = gemini.slice(gemini.indexOf('<datalist'), gemini.indexOf('</datalist>'));
+  assert.deepEqual([...geminiList.matchAll(/<option value="([A-Za-z]+)"><\/option>/g)].map(match => match[1]), ['Aoede']);
+});

@@ -55,6 +55,15 @@ async function openPanel(id) {
   await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
   assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
 }
+// #282 keeps side panels two-state at every width, so a panel opened for a shot is closed again before the
+// narrow pass: the launch state is the open chat alone, and an open 240 px rail plus the 360 px chat lane does
+// not fit a 375 px viewport.
+async function closePanel(id) {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') === 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="collapsed"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'false', `${id} panel toggled closed`);
+}
 try {
   await start();
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -69,19 +78,20 @@ try {
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer }, null, 2));
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
-    // V3 (#264): no turns yet, so the Voice lane is its orb stage: the real orb at 55 percent of the
-    // stage height (clamped 120 to 200 px), centred, and the stage holds the top third of the lane.
+    // FE1-R1: the orb is the hero. Spec 2.1 pins the orb area at about 300 px at 1440x900 (34 to 44
+    // percent of the voice lane), the caption and the controls stack under it, and the stage sizes to its
+    // content. The V3 (#264) top-third stage and 55 percent orb are replaced by that sizing.
     await page.locator('#orb-stage').waitFor();
     await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('#orb-stage'); return !!o && !!s && s.getBoundingClientRect().height > 0 && o.getBoundingClientRect().height > 0; });
     const measured = await page.evaluate(() => { const or = document.querySelector('#didi-orb').getBoundingClientRect(), sr = document.querySelector('#orb-stage').getBoundingClientRect(), lr = document.querySelector('#lane-voice').getBoundingClientRect(); return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height }, lane: { height: lr.height } }; });
     const desktopOrb = measured.orb, stage = measured.stage;
-    const expectedStage = Math.min(380, Math.max(240, measured.lane.height * 0.33));
-    assert.ok(Math.abs(stage.height - expectedStage) <= 2, `stage height ${stage.height} is not the top third of the ${measured.lane.height} px lane (${expectedStage.toFixed(1)})`);
-    assert.ok(Math.abs(desktopOrb.height - expectedStage * 0.55) <= 3, `orb diameter ${desktopOrb.height} is not 55 percent of the ${stage.height} px stage (${(expectedStage * 0.55).toFixed(1)})`);
+    const heroBand = [270, 330];
+    assert.ok(desktopOrb.width >= heroBand[0] && desktopOrb.width <= heroBand[1] && desktopOrb.height >= heroBand[0] && desktopOrb.height <= heroBand[1], `the orb renders the hero diameter (${desktopOrb.width}x${desktopOrb.height}, band ${heroBand[0]}-${heroBand[1]})`);
     assert.ok(await page.locator('#didi-orb').isVisible(), 'the desktop stage orb canvas is visible');
-    assert.ok(Math.abs(desktopOrb.height - stage.height * 0.55) <= 2, 'the orb diameter is 55 percent of the stage height');
     assert.equal(Math.round(desktopOrb.width), Math.round(desktopOrb.height), 'the orb canvas is square');
     assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'the orb canvas is horizontally centred in the stage');
+    assert.ok(desktopOrb.y >= stage.y && desktopOrb.y + desktopOrb.height <= stage.y + stage.height, 'the stage contains the whole orb');
+    assert.ok(stage.height <= measured.lane.height, `the stage (${stage.height} px) never grows past the ${measured.lane.height} px voice lane`);
     assert.equal(await page.locator('.voice-state').first().innerText(), 'Live is off', 'the header state is the one source of truth');
     assert.equal(await page.locator('.live-state').count(), 0, 'no second Live state surface');
   });
@@ -127,6 +137,9 @@ try {
     await page.locator('[data-tab="Settings"]').click();
     await page.locator('#connected-history').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });
+    await page.locator('#sheet-close').click();
+    await page.locator('#sheet').waitFor({ state: 'detached' });
+    await closePanel('left');
   });
   await step('same-profile real restart preserves consent/history and never resends', async () => {
     const port = new URL(descriptor.origin).port; await stop(); await start(Number(port)); await page.reload();
@@ -139,19 +152,15 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', '#didi-orb', '#orb-stage'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
-    // V2-R1 narrow: a Voice/Chat switcher shows one lane at a time; the empty-state orb stays in the Voice segment.
+    // Narrow (#282, 2824816): the Voice/Chat switcher and its stacking rules were dropped and the connected
+    // chat is the main surface, so at 375 the chat and its composer own the narrow viewport while the voice
+    // lane keeps its place in the DOM. The hero orb geometry stays pinned by the desktop step above.
     await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.narrow === 'true', { timeout: 8000 });
-    assert.ok(await page.locator('.lane-switch').isVisible(), 'the narrow switcher is visible');
-    assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice segment is visible');
-    assert.equal(await page.locator('#lane-chat').isVisible(), false, 'the Chat lane hides behind the switcher');
-    const mobileOrb = await page.locator('#didi-orb').boundingBox();
-    const mobileStage = await page.locator('#orb-stage').boundingBox();
-    assert.ok(Math.abs(mobileOrb.height - mobileStage.height * 0.55) <= 2, 'the narrow voice view keeps the orb at 55 percent of the stage');
-    assert.equal(Math.round(mobileOrb.width), Math.round(mobileOrb.height), 'the narrow orb canvas is square');
-    await page.locator('[data-segment="chat"]').click();
-    await page.locator('#lane-chat').waitFor();
-    assert.equal(await page.locator('#lane-chat').isVisible(), true, 'the Chat segment becomes visible');
-    assert.equal(await page.locator('#lane-voice').isVisible(), false, 'the Voice lane hides behind the switcher');
+    assert.equal(await page.locator('.lane-switch').count(), 0, 'the dropped narrow switcher never returns');
+    assert.equal(await page.locator('#lane-voice').count(), 1, 'the voice lane keeps its place in the narrow DOM');
+    assert.equal(await page.locator('#connected-draft').isVisible(), true, 'the connected composer is the narrow surface');
+    assert.equal(await page.locator('#connected-draft').isEnabled(), true, 'the composer accepts typing without a switcher step');
+    assert.equal(await page.locator('#connected-entries').isVisible(), true, 'the saved conversation is on that surface');
     assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
     const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
     const positions = [];
@@ -171,8 +180,8 @@ try {
     await viewport('history', '#connected-entries');
     await page.locator('#connected-draft').fill('Unsent synthetic mobile viewport proof; do not send automatically.');
     await viewport('composer', '#connected-draft');
-    assert.ok(positions.at(-1).send.visible && positions.at(-1).send.unoccluded, 'Actual Send control fully visible and unoccluded at375px');
-    assert.ok(positions.at(-1).draft.visible && positions.at(-1).draft.unoccluded, 'Actual composer fully visible and unoccluded at375px');
+    assert.ok(positions.at(-1).send.visible && positions.at(-1).send.unoccluded, `Actual Send control fully visible and unoccluded at375px (${JSON.stringify(positions.at(-1).send)})`);
+    assert.ok(positions.at(-1).draft.visible && positions.at(-1).draft.unoccluded, `Actual composer fully visible and unoccluded at375px (${JSON.stringify(positions.at(-1).draft)})`);
     assert.equal(await page.locator('#connected-send').isEnabled(), true);
     await writeFile(join(artifacts, `mobile-dom-${sha}.json`), JSON.stringify({ sha, counts, positions, savedTurns, source: 'actual shipped DOM and hardware-rendered unstitched viewport captures' }, null, 2));
   });
@@ -191,18 +200,18 @@ try {
     await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
-    await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: cancelled'));
+    await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('You cancelled this request. Ask again when ready. Content may have been sent before it stopped.'));
     assert.equal(await page.locator('#connected-entries .assistant').count(), 0);
     child.send('fail-next'); await page.locator('#connected-draft').fill('Show an honest controlled provider failure.'); await page.locator('#connected-send').click();
-    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: error'));
+    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('The model failed. Ask again.'));
     assert.equal(await page.locator('#connected-entries .assistant').count(), 0);
     await page.screenshot({ path: join(artifacts, `truthful-errors-${sha}.png`), fullPage: true });
   });
   assert.deepEqual(errors, []);
   await step('default owner projection remains explicit public Lux Didi', async () => {
     assert.deepEqual((await api('/status')).ownerProfile, { status: 'default', displayName: 'Lux Didi' });
-    await page.locator('#lane-chat .lane-title').waitFor();
-    assert.equal((await page.locator('#lane-chat .lane-title').innerText()).trim(), 'Chat');
+    await page.locator('#panel-right[data-state="open"] .lane-title').waitFor();
+    assert.equal((await page.locator('#panel-right .lane-title').innerText()).trim(), 'Chat');
   });
   const productTitle = await page.title();
   for (const mode of ['owner-unconfigured', 'owner-configured']) {
@@ -232,6 +241,9 @@ try {
         const lifecycle = await Promise.all([pairResponse, clearResponse]);
         for (const response of lifecycle) assert.equal(response.status(), 200, 'expected real pairing/selection-clear route success');
         await page.locator('#connected-send').waitFor(); paired = true;
+        // #282: side panels launch collapsed, so the chat panel is opened the owner's way here too, as the
+        // main flow does, before its consent and composer are read or clicked.
+        await openPanel('right');
         const status = await api('/status'), route = await api('/chat/status');
         const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
         assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: label });
@@ -257,7 +269,7 @@ try {
           assert.ok(surfaces.every(surface => !surface.includes(value)), 'protected owner metadata must not reach status/UI');
         }
         assert.deepEqual(unexpected, []); assert.deepEqual(ownerErrors, []);
-        assert.ok(ownerConsole.filter(event => !event.paired).every(event => event.text.includes('401 (Unauthorized)')), 'only the expected unauthenticated pairing response is allowed before pairing');
+        assert.ok(ownerConsole.filter(event => !event.paired).every(event => event.text.includes('401 (Unauthorized)')), `only the expected unauthenticated pairing response is allowed before pairing: ${JSON.stringify(ownerConsole.filter(event => !event.paired))}`);
         assert.deepEqual(ownerConsole.filter(event => event.paired), []);
         const posts = ownerRequests.filter(request => request.method === 'POST');
         assert.deepEqual(posts.map(request => request.path).sort(), ['/api/v1/auth/pair', '/api/v1/conversation-selection/clear'], JSON.stringify(posts));

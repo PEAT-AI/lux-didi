@@ -60,22 +60,38 @@ final class MiniOrbToggle {
     }
 }
 
-/// Mini orb position, remembered like `WindowFrameRestore` but at 300x300 and
-/// without the 980x760 window minimum, so a compact frame is never rejected.
-/// A frame that is still partly on a screen is clamped into that screen rather
-/// than discarded, so unplugging a display never throws the orb away.
+/// Pill position, remembered like `WindowFrameRestore` but at the pill's fixed
+/// 64x26 and without the 980x760 window minimum, so a compact frame is never
+/// rejected. A frame that is still partly on a screen is clamped into that
+/// screen rather than discarded, so unplugging a display never throws the pill
+/// away. The `screens` are visible frames (`NSScreen.visibleFrame`), so the pill
+/// never lands under the menu bar, and on a notched display, where the menu bar
+/// covers the notch and its `safeAreaInsets.top`, never inside the camera
+/// housing either.
 enum MiniOrbFrameRestore {
-    static let size = CGSize(width: 300, height: 300)
+    /// MINI2: the pill is 64x26 pt and its corner radius is half its height.
+    static let size = CGSize(width: 64, height: 26)
+    /// The gap between the menu bar and the top of the pill.
+    static let topMargin: CGFloat = 6
+
+    /// The default: top-center, just below the menu bar.
+    static func defaultFrame(in visible: CGRect) -> CGRect {
+        let width = min(size.width, visible.width), height = min(size.height, visible.height)
+        return clamp(CGRect(x: visible.midX - width / 2, y: visible.maxY - height - topMargin,
+                            width: width, height: height), into: visible)
+    }
+
+    /// A remembered position wins over the default one; a remembered size never
+    /// does, because the pill is fixed and an older, larger saved frame must not
+    /// reinflate it.
     static func resolve(_ saved: CGRect?, screens: [CGRect]) -> CGRect {
         let fallback = CGRect(x: 0, y: 0, width: 1440, height: 900)
-        if let saved, saved.width >= 120, saved.height >= 120 {
-            let screen = screens.first(where: { $0.intersects(saved) }) ?? screens.first ?? fallback
-            let width = min(saved.width, screen.width), height = min(saved.height, screen.height)
-            return clamp(CGRect(x: saved.minX, y: saved.minY, width: width, height: height), into: screen)
-        }
-        let screen = screens.first ?? fallback
+        let primary = screens.first ?? fallback
+        guard let saved, saved.width > 0, saved.height > 0 else { return defaultFrame(in: primary) }
+        let screen = screens.first(where: { $0.contains(CGPoint(x: saved.midX, y: saved.midY)) })
+            ?? screens.first(where: { $0.intersects(saved) }) ?? primary
         let width = min(size.width, screen.width), height = min(size.height, screen.height)
-        return CGRect(x: screen.midX - width / 2, y: screen.midY - height / 2, width: width, height: height)
+        return clamp(CGRect(x: saved.minX, y: saved.minY, width: width, height: height), into: screen)
     }
     /// Shifts a rect inside `screen` without resizing it: the orb never lands
     /// under the menu bar, off an edge, or outside every Space it can join.
@@ -95,6 +111,8 @@ enum MiniOrbPanelPolicy {
     static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     static let becomesKey = false
     static let becomesMain = false
+    /// The capsule radius is half the pill height, so the ends are round.
+    static var cornerRadius: CGFloat { MiniOrbFrameRestore.size.height / 2 }
 }
 
 /// Borderless, floating, non-activating panel that hosts the compact orb route.
@@ -121,7 +139,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         overlay.onExpand = onExpand
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.cornerRadius = 28
+        container.layer?.cornerRadius = MiniOrbPanelPolicy.cornerRadius
         container.layer?.masksToBounds = true
         for view in [web, overlay] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false

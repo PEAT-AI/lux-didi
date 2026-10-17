@@ -11,6 +11,9 @@ import './intent-tools.test.js';
 import './research.test.js';
 // Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
 import './host-log.test.js';
+// Side-effect import: register the 3j response-watchdog suite in the declared live-session check,
+// the same way the host-log allowlist suite is registered here.
+import './live-watchdog.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -35,14 +38,14 @@ import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -80,10 +83,11 @@ function writeFailingStore(store: Store, marker: string): Store {
   return store;
 }
 
-function profileInput(limits?: Record<string, number>, model = MODEL) {
+function profileInput(limits?: Record<string, number>, model = MODEL, provider: 'gemini' | 'openai' = 'gemini') {
   return {
-    provider: 'gemini', liveModelId: model, voice: 'ExplicitVoice', keyReference: 'test-reference',
-    route: { enabled: true, provider: 'gemini', modelId: model, dataClasses: ['ordinary'] },
+    provider, liveModelId: model, voice: 'ExplicitVoice',
+    keyReference: provider === 'openai' ? 'openai-primary' : 'test-reference',
+    route: { enabled: true, provider, modelId: model, dataClasses: ['ordinary'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
     ...(limits ? { limits } : {}),
   };
@@ -104,10 +108,11 @@ interface Harness {
 async function harness(t: TestContext, overrides: {
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
-  socketFactory?: NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
+  socketFactory?: NonNullable<LiveVoiceAdapterOptions['socketFactory']>;
   port?: LiveVoicePort;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
+  provider?: 'gemini' | 'openai';
   tools?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
@@ -131,7 +136,7 @@ async function harness(t: TestContext, overrides: {
   if (overrides.failingWrite) writeFailingStore(store, overrides.failingWrite);
   let clock = NOW;
   let memorySelections = 0;
-  const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model);
+  const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model, overrides.provider);
   const profile = validateLiveProfile({ ...initialProfile,
     ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
@@ -304,12 +309,31 @@ test('a test-only port with different capabilities drives the live session with 
   assert.equal('modelId' in request, false, 'the port request carries no model name');
   const output = attachment.output[Symbol.asyncIterator]();
   assert.equal((await output.next()).value?.kind, 'marker');
-  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 2, 3]), mimeType: 'audio/pcm;rate=24000' });
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 2, 3]), rate: 24000 });
   const chunk = await output.next();
   assert.equal(chunk.value?.kind, 'audio', 'the fake session audio reached the attached consumer');
   assert.deepEqual([...(chunk.value as { pcm: Uint8Array }).pcm], [1, 2, 3]);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
+});
+
+test('the host suite drives a port declared as gemini and as openai with no provider branch', async t => {
+  for (const provider of ['gemini', 'openai'] as const) {
+    const model = provider === 'openai' ? 'gpt-live-1' : MODEL;
+    const fake = fakeLiveVoicePort({ provider });
+    const h = await harness(t, { port: fake.port, provider, model });
+    const session = h.owner.create({ idempotencyKey: `provider-${provider}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    assert.equal(fake.port.capabilities.provider, provider, 'the port declares its own provider');
+    assert.equal(fake.sessionsOpened, 1, `the ${provider} port opened once`);
+    // The grant the host persists names the provider the profile carries, never a literal.
+    const grant = h.store.transaction(tx => tx.get('SELECT provider FROM live_grants WHERE live_session_id=?', [session.liveSessionId]));
+    assert.equal(grant?.['provider'], provider);
+    assert.equal(h.owner.current().state, 'listening');
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+  }
 });
 
 test('the host reuses a resumption handle only when the adapter declares the capability', async t => {
@@ -1561,7 +1585,8 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const { session, attachment } = await attached(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['remember_note', 'research']);
+  // OC1 (#228): the host-native open tools are declared beside research and remember_note.
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_url', 'remember_note', 'research']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
   assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
@@ -2794,4 +2819,69 @@ test('the earlier-conversations section fills the space under the target in a re
   const sections = sizes?.['sections'] as Record<string, number> | undefined;
   assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
   assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
+});
+
+test('live.json without a provider is OpenAI GPT-Live by default and fails closed on an empty slot', async t => {
+  const h = await harness(t);
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-default-'));
+  const configDir = join(root, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // OV1-R2: the owner default when live.json names no provider: openai, gpt-live-1, marin.
+  writePrivate(configDir, 'live.json', `${JSON.stringify({
+    schemaVersion: 1, enabled: true, dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+  })}\n`);
+  const loaded = loadLiveConfig({ configDir, ownerId: h.store.assistantId });
+  assert.equal(loaded.status, 'configured');
+  if (loaded.status !== 'configured') return;
+  assert.equal(loaded.config.provider, 'openai');
+  assert.equal(loaded.config.model, 'gpt-live-1');
+  assert.equal(loaded.config.voice, 'marin');
+  // TRAIN3J-R3: no OpenAI key slot is a create-time failure, never a silent Gemini session, and the
+  // status stays local validation (configured without reading the secret).
+  const missing = composeLive(h.store, configDir);
+  assert.equal(missing.status.status, 'configured');
+  assert.equal(missing.status.provider, 'openai');
+  assert.equal(missing.service.enabled, true);
+  assert.throws(() => missing.service.create('ordinary', 'ov1-openai-missing', context(h.store)),
+    (error: { code?: string }) => error.code === 'key_missing');
+  // Gemini stays selectable, but only when live.json says so and its own slot holds the key.
+  writePrivate(configDir, 'live.json', `${JSON.stringify({
+    schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede',
+    dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+  })}\n`);
+  const geminiMissing = composeLive(h.store, configDir);
+  assert.equal(geminiMissing.status.status, 'configured');
+  assert.equal(geminiMissing.status.provider, 'gemini', 'the status names the selected provider');
+  assert.throws(() => geminiMissing.service.create('ordinary', 'ov1-gemini-missing', context(h.store)),
+    (error: { code?: string }) => error.code === 'key_missing');
+});
+
+test('a tool call in flight owns the silence, so the response watchdog never fires over it', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, beforeTool: () => slow, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  await attached(h);
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog' || record.event === 'live_dead_air_nudge') receipts.push(record);
+  } });
+  t.after(detach);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'watchdog1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
+  scheduler.runDue(); await tick();
+  const fired = receipts.filter(record => record.event === 'live_watchdog' && record['phase'] !== 'armed').map(record => record['phase']);
+  assert.deepEqual(fired, [], 'a working tool is not silence: the watchdog never nudges or recovers over it');
+  assert.ok(!receipts.some(record => record.event === 'live_dead_air_nudge'), 'the tool has not returned, so even the dead-air nudge has not fired');
+  assert.equal(h.requests.length, 1, 'no recovery while the tool is in flight');
+  finish();
+  await h.f.frame(2);
+  assert.ok(h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'the tool response still reaches the provider');
+  assert.equal(h.requests.length, 1, 'a delivered tool response returns to the same session');
 });

@@ -58,6 +58,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
       tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
   }
+  if (value.event === 'native_action') {
+    // Closed receipt: the action, its ack code and a scheme or extension, never the target.
+    const allowed = ['action', 'code', 'detail', 'event'];
+    if (Object.keys(value).sort().join(',') !== allowed.join(',')) return;
+    if (typeof value.action !== 'string' || !['open_url', 'open_file', 'open_app'].includes(value.action)) return;
+    if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed'].includes(value.code)) return;
+    if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
+    return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
+  }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
@@ -262,6 +271,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'msSinceLastModelAudio'].sort().join(',')) return;
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
+  }
+  if (value.event === 'live_watchdog') {
+    // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
+    if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
+    if (!isSafeMember(value.phase, ['armed', 'nudged', 'recovered', 'settled'])) return;
+    if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
+    return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
   }
   if (value.event === 'live_turn_script') {
     // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.

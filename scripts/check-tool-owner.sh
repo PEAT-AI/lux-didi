@@ -10,13 +10,15 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-tool-owner.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,adapters/model,adapters/mcp}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,adapters/model,adapters/mcp,adapters/live-voice}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
+# server/tools imports the Live provider union type: copy its declaration module too.
+cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root/server/test/tool-owner.test.ts" "$out/source/test/"
 cp "$root/server/test/live-shape.test.ts" "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"

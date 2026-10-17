@@ -1019,8 +1019,9 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
 
   h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_url', args: { url: 'https://example.test/notes/plan' } }] } });
-  await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'native_action'));
-  const action = frames.map(frame => frame.text && JSON.parse(frame.text) as Record<string, unknown>).find(frame => frame?.type === 'native_action')!;
+  await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
+  const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
+  const action = parsed.find(frame => frame?.type === 'native_action')!;
   assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
   assert.equal(action.action, 'open_url');
   assert.equal(action.target, 'https://example.test/notes/plan');
@@ -1033,8 +1034,8 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   // A duplicate ack settles nothing and leaves the session usable for the next action.
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
   h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-2', name: 'open_app', args: { name: 'Safari' } }] } });
-  await waitFor(() => frames.filter(frame => frame.text && JSON.parse(frame.text).type === 'native_action').length === 2);
-  const second = frames.map(frame => frame.text && JSON.parse(frame.text) as Record<string, unknown>).filter(frame => frame?.type === 'native_action').at(-1)!;
+  await waitFor(() => frames.filter(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action').length === 2);
+  const second = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null)).filter(frame => frame?.type === 'native_action').at(-1)!;
   assert.equal(second.action, 'open_app');
   assert.equal(second.target, 'Safari');
   assert.notEqual(second.id, action.id, 'each action carries its own frame id');

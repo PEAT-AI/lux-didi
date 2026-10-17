@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -62,7 +63,7 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
-  const session = owner.create({ idempotencyKey: `watchdog-${dir}`, inputClass: 'ordinary' }, ctx);
+  const session = owner.create({ idempotencyKey: `watchdog-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
   await attachment.ready;
   return {

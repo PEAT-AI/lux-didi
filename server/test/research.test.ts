@@ -7,6 +7,7 @@ import {
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
 import './research-shape.test.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
@@ -335,6 +336,40 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   assert.equal(calendarLogs.length, 1);
   assert.equal((calendarLogs[0] as unknown as Record<string, unknown>)['window'], 'tomorrow');
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
+});
+
+test('a calendar read keeps its own budget and is never starved by the start deadline (probe10)', async () => {
+  // The merged window read fans out one serialized remote call per visible calendar, so the calendar
+  // source needs its budget even when selection and the other reads already spent the start deadline.
+  let clock = 0;
+  const lateSelector: ResearchSelector = {
+    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
+  };
+  const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  const read = h.subcalls.find(entry => entry.tool === 'gcal_list');
+  assert.ok(read, 'the calendar read still runs');
+  assert.equal(read!.ok, true);
+  assert.ok(read!.items >= 1, 'the read carries real events');
+  // The run's own budget is unchanged: the read finished after the start deadline, so the run says so.
+  assert.equal(reply['status'], 'partial');
+});
+
+test('the calendar deadline sits above the connector read budget it must outlive', async () => {
+  // A read cut by the caller's abort is discarded by the result gate, so the two constants are one
+  // invariant across two modules: the batch deadline must outlive the connector's own read budget.
+  assert.ok(RESEARCH.calendarDeadlineMs > GOOGLE_CALENDAR_READ_MS,
+    `${RESEARCH.calendarDeadlineMs} must exceed ${GOOGLE_CALENDAR_READ_MS}`);
+});
+
+test('the calendar budget never extends another source past the start deadline', async () => {
+  let clock = 0;
+  const lateMailSelector: ResearchSelector = {
+    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:1d' }], pUseful: { mail_search: 1 } }; },
+  };
+  const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
+  await runResearch(h.deps, { action: 'start', question: 'any mail today' }, new AbortController().signal);
+  assert.equal(h.executed.some(entry => entry.name === 'gmail_list'), false);
 });
 
 test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {

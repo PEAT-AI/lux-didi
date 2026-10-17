@@ -52,6 +52,15 @@ export const RESEARCH = Object.freeze({
   selectorDeadlineMs: 6_000,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
+  /**
+   * The calendar source's own budget. A merged calendar window read is one remote call per visible
+   * calendar (22 on the smoke account), and the calendar connector backend serializes those calls
+   * (measured 1.7-6 s each), so the source costs a serialized fan-out rather than the single-read p50
+   * above. It sits above the connector's own GOOGLE_CALENDAR_READ_MS so the partial read the connector
+   * returns is still accepted: a read cut by the caller's abort is discarded by the result gate, which is
+   * how the calendar answer arrived empty.
+   */
+  calendarDeadlineMs: 46_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -941,7 +950,6 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
   const deadlineAt = started + run.deadlineMs;
-
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
 
   // Dead air: the model is told the run is alive every few seconds. A selector that burns its whole
@@ -1043,7 +1051,14 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     const batches: CandidateKind[][] = [];
     for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
     for (const batch of batches) {
-      const remainingMs = deadlineAt - now();
+      // The calendar source carries its own budget: its merged window read fans out one serialized
+      // remote call per visible calendar, so the run deadline sized for a single read would abort it
+      // mid-fan-out and report a refused, empty read. Only this batch is widened; every other source and
+      // every later round keeps the run deadline, and the run's own budget is never rewritten.
+      const batchDeadline = batch.includes('calendar_window')
+        ? Math.max(deadlineAt, started + RESEARCH.calendarDeadlineMs)
+        : deadlineAt;
+      const remainingMs = batchDeadline - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);
       const latencies = new Map<CandidateKind, number>();

@@ -60,9 +60,12 @@ test('the mini route opens no audio context, no microphone and no Live socket', 
   // A source guard: the compact route is presentation only, so it cannot reach
   // the voice or Live paths even by accident.
   const source = readFileSync(new URL('../src/mini.ts', import.meta.url), 'utf8');
-  for (const forbidden of ['AudioContext', 'getUserMedia', 'mediaDevices', 'MediaRecorder', 'RTCPeerConnection', 'WebSocket', 'fetch(', 'EventSource', "from './api", "from './live-view.ts'"]) {
+  for (const forbidden of ['AudioContext', 'getUserMedia', 'mediaDevices', 'MediaRecorder', 'RTCPeerConnection', 'WebSocket', 'fetch(', 'EventSource', "from './api'"]) {
     assert.equal(source.includes(forbidden), false, `mini.ts must not reference ${forbidden}`);
   }
+  const imports = source.split('\n').filter((line) => line.startsWith('import '));
+  assert.ok(imports.length > 0, 'the mini route still names the types it renders');
+  assert.ok(imports.every((line) => line.startsWith('import type ')), 'every mini route import is type only, so no runtime module reaches it');
   // A runtime guard: painting the mini route constructs no audio or Live
   // transport, so the surface cannot open a session of its own.
   const touched: string[] = [];

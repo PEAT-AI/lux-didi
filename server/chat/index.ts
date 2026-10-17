@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
+import type { DataClass, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
@@ -14,8 +14,9 @@ import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } fr
 import type { ToolEvidence } from './types.js';
 import { assemble, chatAllowsToolClasses, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
+import { answerInstruction, chatToolRegistry, deterministicAnswer, notReachedLabels } from './tools.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatStepEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -164,7 +165,8 @@ export class ChatService implements ChatPort {
     })).slice(0, 16);
   }
 
-  async #generate(run: RunSnapshot, context: DomainContext, request: ModelRequest, registry: ToolDefinition[], control: ModelControl): Promise<Pick<ModelResult, 'status' | 'text'> & { dataClass: 'private' | 'sensitive' }> {
+  async #generate(run: RunSnapshot, context: DomainContext, request: ModelRequest, registry: ToolDefinition[], control: ModelControl): Promise<Pick<ModelResult, 'status' | 'text'> & {
+    dataClass: 'private' | 'sensitive'; partial?: true; notReached?: readonly string[] }> {
     const model = this.#config.model!;
     const tools = this.#config.tools;
     let dataClass: 'private' | 'sensitive' = 'private';
@@ -176,7 +178,18 @@ export class ChatService implements ChatPort {
     const active = this.#toolAuthorities.get(run.runId)!;
     const host = { runId: run.runId, actorId: context.clientId, authorityEpoch: context.authorityEpoch,
       revision: active.authority.revision, grants: registry.map(t => ({ tool: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId })) };
-    const loop = await runTools({ model: { generate: async (next, nextControl) => {
+    const steps: ChatStepEvent[] = [];
+    const rounds: number[] = [];
+    const onStep = (event: ChatStepEvent) => { steps.push(event); this.#emit(run.runId, event); };
+    const acquire = chatToolRegistry(registry, { runId: run.runId, onStep });
+    const fence = new AbortController();
+    const signal = AbortSignal.any([control.signal, fence.signal]);
+    // One run budget: acquisition ends at the fence, the answer phase keeps the remainder.
+    const runBudget = Math.max(1, control.deadlineMs - this.#now());
+    const acquireMs = Math.min(70_000, Math.round(runBudget * 0.78));
+    const answerMs = Math.max(200, runBudget - acquireMs);
+    const fenceTimer = setTimeout(() => fence.abort(), acquireMs);
+    const acquirePhase = async () => runTools({ model: { generate: async (next, nextControl) => {
       // Consent and route currency are checked before EVERY request, including evidence follow-ups.
       this.#checkPolicy(run.runId, run.sessionId, context);
       if (!this.lookupAuthority(run.runId) || next.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) throw new ContextFailure('unavailable');
@@ -188,14 +201,22 @@ export class ChatService implements ChatPort {
       });
       // runTools retains originals for validation; the canonical helper alone derives provider schemas.
       const declarations = next.declarations?.length === 0 ? [] : declarationsFor(registry).declarations;
-      return generate({ ...next, declarations }, nextControl);
-    } }, request, registry, host, control, maxSteps: 4,
+      const roundStarted = this.#now();
+      const answered = await generate({ ...next, declarations }, nextControl);
+      rounds.push(this.#now() - roundStarted);
+      return answered;
+      } }, request, registry: acquire, host, control: { ...control, signal }, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
       journal: tools.owner.journal, resultGate: tools.owner.resultGate });
+    // A fenced or throwing acquisition still answers from what it gathered.
+    let loop: LoopResult | undefined;
+    try { loop = await acquirePhase(); }
+    catch { loop = undefined; }
+    finally { clearTimeout(fenceTimer); fence.abort(); }
     // The finite bound can stop after a tool result, before another model request.
     // Read its projection through the SAME canonical gate, never from raw journal JSON.
     if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
-      const final = await tools.owner.resultGate.authorize(host, loop.resultBindings ?? [], request.dataClasses, control.signal);
+      const final = await tools.owner.resultGate.authorize(host, loop?.resultBindings ?? [], request.dataClasses, control.signal);
       const toolEvidence = final.state === 'allowed' ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : [];
       this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
@@ -203,9 +224,49 @@ export class ChatService implements ChatPort {
         tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
       });
     }
-    return { status: loop.status === 'limit' ? 'truncated' : loop.status === 'uncertain' ? 'error' : loop.status, text: loop.text, dataClass };
+    const settled = loop;
+    if (settled !== undefined && settled.status === 'complete' && settled.text.trim().length > 0) {
+      return { status: 'complete', text: settled.text, dataClass };
+    }
+    // A gate refusal is not a cut run: it keeps its own outcome, never an invented answer.
+    if (settled !== undefined && settled.text.trim().length > 0 && settled.status !== 'limit'
+      && settled.status !== 'uncertain' && settled.status !== 'empty') {
+      return { status: settled.status, text: settled.text, dataClass };
+    }
+    // ANSWER: one tool-free call over the frozen evidence, then a deterministic answer if it fails.
+    // Nothing gathered during acquisition is discarded at the fence.
+    const evidence = this.#frozenEvidence(run);
+    const notReached = notReachedLabels(steps);
+    let answer = '';
+    if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
+      const answerAbort = new AbortController();
+      const answerTimer = setTimeout(() => answerAbort.abort(), answerMs);
+      try {
+        const result = await generate({ ...request, declarations: [],
+          contents: [...request.contents, { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
+        { signal: AbortSignal.any([control.signal, answerAbort.signal]), deadlineMs: this.#now() + answerMs });
+        answer = result.text.trim();
+      } catch { answer = ''; }
+      finally { clearTimeout(answerTimer); }
+    }
+    return { status: 'complete', text: answer || deterministicAnswer(evidence, notReached), dataClass, partial: true, notReached };
   }
 
+  /** The evidence persisted before every model request: frozen at the fence, never re-read from a call. */
+  #frozenEvidence(run: RunSnapshot): { name: string; markdown: string }[] {
+    let stored: unknown[] = [];
+    try {
+      this.#config.store.transaction(tx => {
+        const row = tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId]);
+        const trace = row?.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
+        stored = Array.isArray(trace.toolEvidence) ? trace.toolEvidence : [];
+      });
+    } catch { return []; }
+    return stored.flatMap(item => {
+      const entry = item as Record<string, unknown>;
+      return typeof entry.name === 'string' && typeof entry.markdown === 'string' ? [{ name: entry.name, markdown: entry.markdown }] : [];
+    });
+  }
   #row(tx: Transaction, runId: string, context: DomainContext) {
     const row = tx.get('SELECT * FROM chat_runs WHERE run_id=? AND owner_assistant_id=?', [runId, context.assistantId]);
     if (!row) throw new ChatError('not_found');
@@ -491,7 +552,7 @@ export class ChatService implements ChatPort {
     if (listeners.size >= 32) throw new ChatError('unavailable');
     const subscription = new Subscription<ChatEvent>(this.#config.subscriberCapacity ?? 16, () => {
       listeners.delete(subscription); if (!listeners.size) this.#subscribers.delete(runId);
-    }, last => ({ type: 'resync_required', sequence: last.sequence, reason: 'backpressure' }));
+    }, last => ({ type: 'resync_required', sequence: 'sequence' in last ? last.sequence : 0, reason: 'backpressure' }));
     listeners.add(subscription); this.#subscribers.set(runId, listeners);
     subscription.push({ type: 'snapshot', sequence: run.sequence, run });
     if (run.state === 'terminal') subscription.close();
@@ -522,7 +583,8 @@ export class ChatService implements ChatPort {
     }
   }
   #publish(run: RunSnapshot) { this.#emit(run.runId, { type: 'snapshot', sequence: run.sequence, run }); }
-  #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private'): RunSnapshot {
+  #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private',
+    extras: { partial?: true; notReached?: readonly string[] } = {}): RunSnapshot {
     this.#authorize(context);
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
@@ -541,7 +603,7 @@ export class ChatService implements ChatPort {
       if (changed !== 1) throw new ChatError('epoch_mismatch');
       return this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])!, context);
     });
-    this.#publish(final); return final;
+    this.#emit(final.runId, { type: 'snapshot', sequence: final.sequence, run: final, ...extras }); return final;
   }
   #partial(run: RunSnapshot, context: DomainContext, text: string) {
     if (!text) return;
@@ -637,7 +699,8 @@ export class ChatService implements ChatPort {
       await new Promise<void>(resolve => setImmediate(resolve));
       if (controller.signal.aborted || this.get(run.runId, context).state !== 'dispatch_intent') return;
       this.#checkPolicy(run.runId, run.sessionId, context);
-      const duration = this.#config.deadlineMs ?? 60000;
+      // One run budget for both phases: acquisition is fenced well inside it so the answer lands.
+      const duration = this.#config.deadlineMs ?? 90000;
       const deadlineMs = this.#now() + duration;
       const deadline = new Promise<'deadline'>(resolve => { timeout = setTimeout(() => resolve('deadline'), duration); });
       if (!this.#config.model) throw new ContextFailure('unavailable');
@@ -651,7 +714,8 @@ export class ChatService implements ChatPort {
       if (result === 'aborted') return;
       if (result === 'deadline') { this.#finish(run, context, 'deadline'); controller.abort(); return; }
       const outcome = this.#outcome(result);
-      try { this.#finish(run, context, outcome, result.text, result.dataClass); }
+      const extras = result.partial === true ? { partial: true as const, notReached: result.notReached ?? [] } : {};
+      try { this.#finish(run, context, outcome, result.text, result.dataClass, extras); }
       catch { this.#finish(run, context, 'persistence_failed', result.text); }
     } catch (error) {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';

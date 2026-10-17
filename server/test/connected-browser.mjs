@@ -140,19 +140,15 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', '#didi-orb', '#orb-stage'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
-    // Narrow (FE1-R1, #282): the Voice/Chat switcher and its stacking rules were dropped, so both lanes share
-    // one narrow scroll; the voice stage keeps the narrow hero orb (a 180 px holder under 880 px), square and
-    // inside the stage, and the chat composer stays reachable in the same scroll.
+    // Narrow (#282, 2824816): the Voice/Chat switcher and its stacking rules were dropped and the connected
+    // chat is the main surface, so at 375 the chat and its composer own the narrow viewport while the voice
+    // lane keeps its place in the DOM. The hero orb geometry stays pinned by the desktop step above.
     await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.narrow === 'true', { timeout: 8000 });
     assert.equal(await page.locator('.lane-switch').count(), 0, 'the dropped narrow switcher never returns');
-    assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice lane is visible at 375');
-    const mobileOrb = await page.locator('#didi-orb').boundingBox();
-    const mobileStage = await page.locator('#orb-stage').boundingBox();
-    assert.ok(mobileOrb.width >= 160 && mobileOrb.width <= 200 && mobileOrb.height >= 160 && mobileOrb.height <= 200, `the narrow orb renders the hero diameter (${mobileOrb.width}x${mobileOrb.height}, band 160-200)`);
-    assert.equal(Math.round(mobileOrb.width), Math.round(mobileOrb.height), 'the narrow orb canvas is square');
-    assert.ok(mobileOrb.y >= mobileStage.y && mobileOrb.y + mobileOrb.height <= mobileStage.y + mobileStage.height, 'the narrow stage contains the whole orb');
-    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'the narrow orb is centred in the stage');
-    assert.equal(await page.locator('#connected-draft').isEnabled(), true, 'the chat composer stays reachable in the same narrow scroll');
+    assert.equal(await page.locator('#lane-voice').count(), 1, 'the voice lane keeps its place in the narrow DOM');
+    assert.equal(await page.locator('#connected-draft').isVisible(), true, 'the connected composer is the narrow surface');
+    assert.equal(await page.locator('#connected-draft').isEnabled(), true, 'the composer accepts typing without a switcher step');
+    assert.equal(await page.locator('#connected-entries').isVisible(), true, 'the saved conversation is on that surface');
     assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
     const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
     const positions = [];

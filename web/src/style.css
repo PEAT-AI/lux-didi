@@ -470,18 +470,6 @@ html.mini .mini-stage .presence-glow{top:132px;left:50%;transform:translate(-50%
 /* margin:0 overrides the full-window rule's -48px margins, which would push the
    orb above the panel (UI3A-R8). */
 html.mini .mini-stage canvas{position:absolute;left:50%;top:132px;width:240px;height:240px;margin:0;transform:translate(-50%,-50%);display:block}
-html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);width:276px;max-width:276px;margin:0;padding:0 12px;box-sizing:border-box}
-html.mini .mini-stage .orb-label{font-size:1.05rem;color:var(--mini-label)}
-html.mini .mini-stage .voice-honesty{font-size:.68rem;color:var(--mini-honesty)}
-html.mini .mini-stage .voice-honesty span{color:var(--mini-honesty-dim)}
-html.mini .mini-stage .activity-line{max-width:100%;font-size:.94rem;color:var(--mini-activity);font-weight:600;animation:none}
-html.mini .mini-stage .activity-line .activity-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;overflow-wrap:normal}
-html.mini .mini-stage .activity-indicator{background:var(--mini-mark)}
-html.mini .mini-stage .activity-mark{color:var(--mini-mark)}
-html.mini .mini-stage .activity-thinking{color:var(--mini-thinking)}
-html.mini .mini-stage .activity-thinking .activity-indicator{background:var(--mini-thinking-warm)}
-html.mini .mini-stage .activity-failed{color:var(--mini-failed)}
-html.mini .mini-stage .activity-failed .activity-indicator{background:var(--mini-failed-mark)}
 html.mini .mini-stage canvas[data-state=IDLE],html.mini .mini-stage canvas[data-state=DISCONNECTED],html.mini .mini-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.9) opacity(.9)}
 html.mini .mini-pill{position:relative;display:flex;align-items:center;gap:5px;box-sizing:border-box;width:64px;height:26px;min-height:26px;max-width:none;margin:0;padding:0 5px;border:1px solid rgba(255,255,255,.16);border-radius:13px;background:rgba(13,16,20,.86);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);overflow:hidden}
 /* The presence glow is one soft wash behind the orb, never a second drawing. */
@@ -526,7 +514,24 @@ html.mini .mini-pill[data-mini-state=connecting]:after{content:"";position:absol
 @keyframes mini-level{0%,100%{height:24%}50%{height:88%}}
 @keyframes mini-speak{from{height:30%}to{height:92%}}
 @keyframes mini-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){html.mini .mini-pill .mini-level i,html.mini .mini-pill[data-mini-state=connecting]:after{animation:none}html.mini .mini-pill .mini-level i{height:60%}}
+
+/* M3: every change of state is a transition, never a jump. The canvas eases its own
+   colour, glow and amplitude over 500 ms (orb-states.ts); the wash and the bars follow
+   on the same curve, so no part of the pill arrives before another. */
+html.mini .mini-pill .presence-glow,html.mini .mini-pill .mini-level i{transition:filter 500ms ease-in-out,opacity 500ms ease-in-out,background-color 500ms ease-in-out}
+html.mini .mini-pill canvas{transition:filter 500ms ease-in-out}
+/* A running tool is an amber orb with one steady highlight going round it, which is
+   distinct from thinking's slower inner swirl. */
+html.mini .mini-pill[data-mini-state=tool]:before{content:"";position:absolute;left:9px;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;border:1px solid var(--mini-thinking-warm);border-right-color:transparent;border-radius:50%;animation:mini-orbit 2.2s linear infinite}
+@keyframes mini-orbit{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+/* M3-R2: cold and hot-muted are grey as well as dim, and the state machine paints the
+   exact opacity and grey as CSS variables, so colour is never the only difference and
+   neither number jumps: the loop eases them and the breathe is a slow sine. */
+html.mini .mini-pill canvas{opacity:var(--mini-orb-opacity,1);filter:grayscale(var(--mini-orb-grey,0)) brightness(var(--mini-orb-bright,1))}
+html.mini .mini-pill[data-mini-state=idle] canvas{--mini-orb-bright:.8}
+html.mini .mini-pill[data-mini-state=muted] canvas{--mini-orb-bright:.9}
+html.mini .mini-pill[data-mini-state=connecting] canvas{--mini-orb-bright:.85}
+@media (prefers-reduced-motion:reduce){html.mini .mini-pill .mini-level i,html.mini .mini-pill[data-mini-state=connecting]:after,html.mini .mini-pill[data-mini-state=tool]:before{animation:none;content:none}html.mini .mini-pill .mini-level i{height:60%}html.mini .mini-pill canvas,html.mini .mini-pill .presence-glow{transition:none}}
 
 /* UI3a: the FULL window's one mode control (issue 311). A quiet text button that sits
    with the live pill in the header; it is only rendered under the native bridge,

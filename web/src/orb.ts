@@ -2,7 +2,7 @@
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU } from './orb-classic.ts';
-import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
+import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState, type OrbPosture } from './orb-level.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export type { AudioFrame } from './orb-level.ts';
 export { LatestFrame, silentFrame } from './orb-level.ts';
@@ -10,6 +10,21 @@ export { LatestFrame, silentFrame } from './orb-level.ts';
  *  scaled about the centre so the average speaking footprint fills most of the canvas, and a
  *  destination-out band fades everything before the square edge. */
 export const ORB_PRESENCE = { heroScale: 2.9, vignetteInner: 0.33, vignetteOuter: 0.5 } as const;
+
+/** M3: the mini route's state machine eases colour, glow and amplitude itself and hands
+ *  the numbers here, so the pill shows its state without a second renderer. The full
+ *  window publishes nothing and keeps its own posture and hue rules untouched. */
+export interface OrbVisualOverride { hue?: number; glow?: number; amplitude?: number; posture?: OrbPosture }
+const published = new WeakMap<HTMLCanvasElement, OrbVisualOverride>();
+const renderers = new WeakMap<HTMLCanvasElement, Orb>();
+
+/** Hand the renderer on this canvas the numbers to draw with. `undefined` clears them. */
+export function publishOrbVisual(canvas: HTMLCanvasElement, visual: OrbVisualOverride | undefined): void {
+  if (visual) published.set(canvas, visual); else published.delete(canvas);
+  // A reduced-motion pill never runs the frame loop, so ask for the one still frame
+  // that shows the new colour.
+  renderers.get(canvas)?.refreshIfStill();
+}
 export class Orb {
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
@@ -34,6 +49,7 @@ export class Orb {
   private transition: { activity: number; target: number } | undefined;
   readonly audio = new LatestFrame();
   constructor(private canvas: HTMLCanvasElement, private state: VoiceState) {
+    renderers.set(canvas, this);
     this.context=canvas.getContext('2d');
     if(this.context)this.classic=new ClassicRenderer(this.context);
     Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.motionState.low,scale:this.lastScale}),configurable:true});
@@ -65,6 +81,8 @@ export class Orb {
     this.draw(performance.now(),still);
     if(!this.motion.matches&&!document.hidden&&this.context)this.animation=requestAnimationFrame(this.tick);
   };
+  /** One still frame on demand, for a canvas whose loop is not running (reduced motion). */
+  refreshIfStill() { if(!this.destroyed&&this.animation===undefined)this.reset(); }
   private tick = (time: number) => {
     if(this.destroyed||this.motion.matches||document.hidden){this.animation=undefined;return;}
     // Frame budget (#283): 60 fps while active, 30 idle in a focused window, 12 idle unfocused.
@@ -80,7 +98,8 @@ export class Orb {
     const dt=this.lastTime?clampFrameDelta((time-this.lastTime)/1000):0.016;
     this.lastTime=time;
     const frame=this.audio.read(time);
-    const active=posture(this.state,frame);
+    const visual=published.get(this.canvas);
+    const active=visual?.posture??posture(this.state,frame);
     const mid=Math.min(1,Math.max(0,frame.mid));
     this.mid+=(mid-this.mid)*smoothingAlpha(dt,mid>this.mid?ORB_SMOOTHING_TAU.midAttack:ORB_SMOOTHING_TAU.midDecay);
     const high=Math.min(1,Math.max(0,frame.high));
@@ -93,9 +112,11 @@ export class Orb {
     ctx.clearRect(0,0,s,s);
     const zoom=ORB_PRESENCE.heroScale*m.scale;
     ctx.save();ctx.translate(c,c);ctx.rotate(m.swirl);ctx.scale(zoom,zoom);ctx.translate(-c,-c);
-    const hueTarget=this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174;
-    this.hue=this.hue===undefined||still?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.14);
-    this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,m.level,m.activity,m.glow,m.flare,this.mid,this.high,m.flux,m.low);
+    const hueTarget=visual?.hue??(this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174);
+    this.hue=this.hue===undefined||still||visual?.hue!==undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.14);
+    // The pill's machine has already eased these, so they are drawn as given.
+    const activity=m.activity*(visual?.amplitude??1), glow=visual?.glow??m.glow;
+    this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
     ctx.restore();
     // Nothing reaches the square edge: the outermost band fades the whole drawing (rings and glow
     // included) to transparent, so the canvas never shows a straight cut (V3-R6 item 1).

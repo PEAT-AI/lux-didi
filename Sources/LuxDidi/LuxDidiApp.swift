@@ -826,6 +826,18 @@ struct RootView: View {
         model.stopDictation("Didi hidden")
         window?.orderOut(nil)
     }
+    /// M3-R2: the one native toggle behind the orb click and the Right Command tap.
+    /// P1 points both at `NativePresence.togglePresence`; until then the same three
+    /// steps run through the existing bridge commands, so this is a thin call and no
+    /// new audio code.
+    private func applyPresenceStep(_ step: PresenceStep) {
+        switch step {
+        case .connect: if model.live?.isCapturing != true { model.handleBridgeCommand(.start) }
+        case .hotMute: if model.live?.isMuted == false { model.handleBridgeCommand(.mute) }
+        case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
+        }
+    }
+
     private func hostMiniSurface() -> Bool { presentMiniPanel() }
     private func dismissMiniSurface() { miniOrb.hideSurface() }
     private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }
@@ -836,7 +848,7 @@ struct RootView: View {
             // No page to host: the coordinator falls back to the FULL window.
             return false
         }
-        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] in self?.miniOrb.expand() }
+        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] step in self?.applyPresenceStep(step) }
         miniPanel = panel
         panel.orderFrontRegardless()
         if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {

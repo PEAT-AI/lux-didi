@@ -537,10 +537,10 @@ struct RootView: View {
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
-        model.onMiniMode = { [weak self] in _ = self?.coordinator.presentMini() }
-        model.onPresenceMute = { [weak self] muted in
-            if muted { self?.presence.mute(.app) } else { self?.presence.unmute(.app) }
-        }
+           model.onMiniMode = { [weak self] in self?.showMiniOrb() }
+           model.onPresenceMute = { [weak self] muted in
+               if muted { self?.presence.mute(.app) } else { self?.presence.unmute(.app) }
+           }
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
@@ -605,14 +605,16 @@ struct RootView: View {
             }
             .sink { [weak self] level in self?.pushPillLevel(level) }
         liveObservation = model.$live.sink { [weak self] conversation in
-            self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
-                self?.updateLiveStatus(state: state)
-                self?.model.publishBridgeLive()
-                self?.presenceTransitioned(state)
+            guard let self else { return }
+            liveStateObservation = conversation?.$state.sink { [weak self] state in
+                guard let self else { return }
+                updateLiveStatus(state: state)
+                model.publishBridgeLive()
+                presenceTransitioned(state)
             }
-            self?.updateLiveStatus(state: conversation?.state ?? .idle)
-            self?.model.publishBridgeLive()
-            self?.presenceTransitioned(conversation?.state ?? .idle)
+            updateLiveStatus(state: conversation?.state ?? .idle)
+            model.publishBridgeLive()
+            presenceTransitioned(conversation?.state ?? .idle)
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -902,13 +904,31 @@ struct RootView: View {
     }
     /// The FULL window's mode button (#311), and the same path the web button
     /// takes through the bridge. Presentation only: Live keeps running.
-    @objc func showMiniOrb() { _ = coordinator.presentMini() }
+    @objc func showMiniOrb() {
+        // M3-R2: presenting the pill starts the session it belongs to, the same way the
+        // chord does, so the pill is never on screen with the microphone never live.
+        if model.live?.isCapturing != true { model.startLive() }
+        _ = coordinator.presentMini()
+    }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.
     private func orderOutFullWindow() {
         model.stopDictation("Didi hidden")
         window?.orderOut(nil)
     }
+    /// M3-R2: the one native toggle behind the orb click and the Right Command tap.
+    /// P1 points both at `NativePresence.togglePresence`; until then the same three
+    /// steps run through the existing bridge commands, so this is a thin call and no
+    /// new audio code.
+    private func applyPresenceStep(_ step: PresenceStep) {
+        switch step {
+        case .connect: if model.live?.isCapturing != true { model.handleBridgeCommand(.start) }
+        case .hotMute: if model.live?.isMuted == false { model.handleBridgeCommand(.mute) }
+        case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
+        }
+        // M3-R5: muting takes the pill off the screen and unmuting brings it back.
+    }
+
     private func hostMiniSurface() -> Bool { presentMiniPanel() }
     private func dismissMiniSurface() { miniOrb.hideSurface() }
     private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }
@@ -919,7 +939,7 @@ struct RootView: View {
             // No page to host: the coordinator falls back to the FULL window.
             return false
         }
-        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] in self?.presence.toggle(.click) }
+           let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] step in self?.applyPresenceStep(step) }
         miniPanel = panel
         panel.orderFrontRegardless()
         if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {

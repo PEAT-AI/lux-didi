@@ -154,17 +154,29 @@ enum MiniOrbPanelPolicy {
     static var cornerRadius: CGFloat { MiniOrbFrameRestore.size.height / 2 }
 }
 
+/// M3-R2: one press on the orb, three steps. The orb click and the Right Command tap
+/// are the same press, so both ask this one table and the app runs one toggle:
+/// nothing live connects, a live orb mutes the microphone hot, a hot muted orb
+/// brings the microphone back. The names match the page's own answer.
+enum PresenceStep: String, Equatable {
+    case connect
+    case hotMute = "hot-mute"
+    case live
+}
+
 /// Borderless, floating, non-activating panel that hosts the compact orb route.
 /// A transparent overlay owns the whole surface: a drag moves the panel, a click
-/// that did not move expands to the full window.
+/// that did not move asks the orb what the press means.
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
     private let frameKey: String
     private let overlay: MiniOrbHitView
 
-    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onExpand: @escaping @MainActor () -> Void) {
-        self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView()
+    private let onStep: @MainActor (PresenceStep) -> Void
+
+    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onStep: @escaping @MainActor (PresenceStep) -> Void) {
+        self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView(); self.onStep = onStep
         super.init(contentRect: NSRect(origin: .zero, size: MiniOrbFrameRestore.size),
                    styleMask: MiniOrbPanelPolicy.styleMask, backing: .buffered, defer: false)
         isFloatingPanel = true
@@ -175,7 +187,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         backgroundColor = .clear
         hasShadow = true
         hidesOnDeactivate = false
-        overlay.onExpand = onExpand
+        overlay.onClick = { [weak self] in self?.press() }
         let container = NSView()
         container.wantsLayer = true
         container.layer?.cornerRadius = MiniOrbPanelPolicy.cornerRadius
@@ -216,15 +228,32 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     @objc private func screenParametersChanged() { restoreFrame(); rememberFrame() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
+    /// Ask the page which of the three steps this press means. A page that is not ready
+    /// yet still gets a press that does something: connect is the step with nothing live,
+    /// and it never guesses a mute the owner did not ask for.
+    private func press() {
+        Task { [weak self] in
+            guard let self else { return }
+            let answer = try? await self.webView.evaluateJavaScript("window.didiClickStep ? window.didiClickStep() : null")
+            let step = (answer as? String).flatMap(PresenceStep.init(rawValue:)) ?? .connect
+            self.onStep(step)
+        }
+    }
+
     private func rememberFrame() { UserDefaults.standard.set(NSStringFromRect(frame), forKey: frameKey) }
 }
 
-/// Transparent drag-or-click surface above the web view. Deliberately captures
-/// every mouse event, so the orb is not an interactive control; there is no
-/// JavaScript-to-native handler.
+/// Transparent drag-or-click surface above the web view. It captures every mouse
+/// event, so the orb never takes focus; a press that did not drag is a press on
+/// the orb (M3-R2).
 @MainActor
 final class MiniOrbHitView: NSView {
-    var onExpand: (@MainActor () -> Void)?
+    var onClick: (@MainActor () -> Void)?
+
+    /// M3-R2: first mouse. The pill is a non-activating panel, so its first click
+    /// must reach the orb without activating the app or its window.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     private var downPoint: NSPoint?
     private var dragged = false
     override func mouseDown(with event: NSEvent) { downPoint = event.locationInWindow; dragged = false }
@@ -234,6 +263,6 @@ final class MiniOrbHitView: NSView {
         guard !dragged, let start = downPoint else { return }
         let end = event.locationInWindow
         guard hypot(end.x - start.x, end.y - start.y) < 4 else { return }
-        onExpand?()
+        onClick?()
     }
 }

@@ -61,6 +61,25 @@ expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
+// M3-R12: this build has one mini surface, and nothing hides it on microphone state.
+// Presence owns its visibility and its opacity (cold 0.35, hot-muted 0.55, live 1.0), so the
+// surface stays on screen in cold and in hot-muted, and only an explicit hide or expand
+// takes it away.
+var presence = "cold"
+var gateDismissals = 0
+var gatePresents = 0
+let surface = MiniOrbToggle(startLive: { presence = "live" }, stopLive: { presence = "cold" },
+                            liveIsRunning: { presence == "live" },
+                            presentPanel: { gatePresents += 1 },
+                            dismissPanel: { gateDismissals += 1 },
+                            expandToWindow: {})
+surface.showSurface()
+expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
+presence = "hot-muted"
+expect(surface.isVisible && gateDismissals == 0, "hot-muted leaves the surface on screen")
+presence = "cold"
+expect(surface.isVisible && gateDismissals == 0, "cold leaves the surface on screen")
+
 // MINI2: the single key. Right Command is Naya's key; Right Option belongs to
 // SuperWhisper and is never watched. A tap fires, a chord use and a long hold do
 // not, and a repeated press is still one press.

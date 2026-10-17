@@ -480,3 +480,12 @@ test('the earlier-conversations section sits right after # Memory and yields bef
   assert.ok(!huge.text.includes('EEEE'));
   assert.ok(huge.text.includes('SYNTHETIC retained memory'));
 });
+
+test('the tool conduct gates research to factual questions and voices an empty search honestly', () => {
+  assert.ok(NAYA_TOOLS.includes("Call research only for a factual question about the owner's mail, calendar, chat, knowledge or the web. Never call it for an opinion, a statement, a feeling or small talk."), 'the research gate is stated verbatim');
+  assert.ok(NAYA_TOOLS.includes('When a search finds nothing, say what you searched and that nothing matched. Never call a source unreachable unless the tool result says it is down.'), 'the empty-search line is stated verbatim');
+});
+
+test('the voice surface asks for varied phrasing, never the same framing phrase twice', () => {
+  assert.ok(NAYA_VOICE_SURFACE.includes('Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.'), 'the phrasing rule is stated verbatim');
+});

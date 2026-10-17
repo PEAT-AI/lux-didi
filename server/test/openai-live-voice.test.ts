@@ -499,3 +499,129 @@ describe('openai gpt-live adapter', () => {
     session.close();
   });
 });
+
+describe('openai gpt-live turn states', () => {
+  /** The live state the host projects from the port's own events: the orb's sequence, in order. */
+  const project = (events: readonly LiveVoiceEvent[]): string[] => {
+    let thinking = false, speaking = false;
+    const states = ['listening'];
+    for (const event of events) {
+      if (event.type === 'modelTurnStarted' && !speaking) thinking = true;
+      else if (event.type === 'audio') { thinking = false; speaking = true; }
+      else if (event.type === 'waitingForInput' && event.value) { thinking = false; speaking = false; }
+      else if (event.type === 'turnComplete' || event.type === 'interrupted') { thinking = false; speaking = false; }
+      const state = thinking ? 'thinking' : speaking ? 'speaking' : 'listening';
+      if (states[states.length - 1] !== state) states.push(state);
+    }
+    return states;
+  };
+  const waiting = (captured: Captured) => captured.events.filter(event => event.type === 'waitingForInput' && event.value === true).length;
+  const starts = (captured: Captured) => captured.events.filter(event => event.type === 'modelTurnStarted').length;
+  const inputFinals = (captured: Captured) => captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true).length;
+
+  test('a plain answer goes listening, thinking, speaking, listening, and completes at two seconds', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'What is on' });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' my plate' });
+    await until(() => opened.captured.events.filter(event => event.type === 'inputTranscription').length === 2);
+    clock.advance(699);
+    await quiet();
+    assert.equal(starts(opened.captured), 0, 'the owner is still mid-episode');
+    clock.advance(1);
+    await until(() => starts(opened.captured) === 1);
+    assert.equal(inputFinals(opened.captured), 1, 'the ended episode finishes the owner transcript');
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(500);
+    await until(() => waiting(opened.captured) === 1);
+    clock.advance(1_000);
+    await quiet();
+    assert.equal(completions(opened.captured), 0, 'audible silence is not the semantic end of the turn');
+    clock.advance(500);
+    await until(() => completions(opened.captured) === 1);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking', 'listening']);
+  });
+
+  test('audio before the completion re-enters SPEAKING', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(600);
+    await until(() => waiting(opened.captured) === 1);
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 2);
+    clock.advance(500);
+    await until(() => waiting(opened.captured) === 2);
+    assert.equal(waiting(opened.captured), 2, 'the new audio earns its own silence receipt');
+    assert.equal(completions(opened.captured), 0);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'speaking', 'listening', 'speaking']);
+  });
+
+  test('a five second silent think shows thinking and never completes', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'Plan my week' });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
+    clock.advance(700);
+    await until(() => starts(opened.captured) === 1);
+    clock.advance(5_000);
+    await quiet();
+    assert.equal(completions(opened.captured), 0);
+    assert.equal(audioOf(opened.captured).length, 0);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking']);
+  });
+
+  test('owner background speech over her own audio flips no state', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm' });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
+    clock.advance(700);
+    await quiet();
+    assert.equal(starts(opened.captured), 0, 'her audio is playing, so this is not a think time');
+    assert.equal(interruptions(opened.captured), 0, 'one word is not a barge-in');
+    assert.deepEqual(project(opened.captured.events), ['listening', 'speaking']);
+  });
+
+  test('a continuous stream of a cut answer is dropped until the 2500 ms bound, then plays', async t => {
+    const lines: string[] = [];
+    t.mock.method(console, 'error', (...args: unknown[]) => {
+      if (typeof args[0] === 'string' && args[0].includes('gptlive_post_flush_dropped_ms')) lines.push(args[0]);
+    });
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(opened.captured) === 1);
+    const before = audioOf(opened.captured).length;
+    for (let index = 0; index < 20; index += 1) { sendAudio(opened.f, 7_200); clock.advance(100); await quiet(); }
+    assert.equal(audioOf(opened.captured).length, before, 'the cut answer never replays inside the window');
+    clock.advance(600);
+    sendAudio(opened.f, 7_200);
+    await until(() => audioOf(opened.captured).length === before + 1);
+    assert.equal(lines.length, 1, 'one receipt for the dropped window');
+    assert.ok((JSON.parse(lines[0]!) as { ms: number }).ms >= 2_000, 'the bound is what ended the drop');
+  });
+
+  test('a cut answer that resumes after a 400 ms gap plays at once', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f, 96_000);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(opened.captured) === 1);
+    const before = audioOf(opened.captured).length;
+    sendAudio(opened.f, 7_200);
+    await quiet();
+    clock.advance(400);
+    sendAudio(opened.f, 7_200);
+    await until(() => audioOf(opened.captured).length >= before + 1);
+    await quiet();
+    assert.equal(audioOf(opened.captured).length, before + 1, 'only the frame after the gap plays');
+  });
+});

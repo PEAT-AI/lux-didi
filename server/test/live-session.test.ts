@@ -2913,3 +2913,32 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
   assert.ok(h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'the tool response still reaches the provider');
   assert.equal(h.requests.length, 1, 'a delivered tool response returns to the same session');
 });
+
+test('a model turn start enters THINKING and every live_state change is written as it happens', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_state')) lines.push(args[0]);
+  });
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, language: 'en-IN' });
+  const session = h.owner.create({ idempotencyKey: 'live-state-receipts', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const states = () => lines.map(line => (JSON.parse(line) as { event: string; state: string }).state);
+  const settle = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
+  await settle();
+  assert.deepEqual(states(), ['listening'], 'the opening state is written at the start, with no poll');
+  fake.emit({ type: 'inputTranscription', text: 'plan my week', finished: true });
+  fake.emit({ type: 'modelTurnStarted' });
+  await settle();
+  assert.deepEqual(states(), ['listening', 'thinking'], 'a generation start is the think time');
+  fake.emit({ type: 'audio', pcm, rate: 24_000 });
+  await settle();
+  fake.emit({ type: 'waitingForInput', value: true });
+  await settle();
+  fake.emit({ type: 'turnComplete' });
+  await settle();
+  assert.deepEqual(states(), ['listening', 'thinking', 'speaking', 'listening'], 'each change is written once, when it happens');
+  assert.equal(h.owner.get(session.liveSessionId).state, 'listening');
+  attachment.close();
+});

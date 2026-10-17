@@ -109,6 +109,8 @@ interface ActiveSession {
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
+  /** A delegated response is owed and generating: busy, not mute, so the watchdog must not nudge or rebuild. */
+  awaitingDelegated: boolean;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
@@ -623,7 +625,7 @@ export class LiveSessionOwner {
       const terminal = parseTerminal(row.terminal_outcome);
       const pastSession: LivePageProjection['pastSession'] = terminal || !handle
         ? { outcome: terminal?.state ?? 'unknown', endedAt: terminal ? Number(row.terminal_at) : null, lastObservedAt: Number(row.updated_at) } : undefined;
-      const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle?.rebuilding ? 'rebuilding' : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
+      const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle ? this.#handleState(handle) : 'idle';
       const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
       const entries: LivePageProjection['entries'] = [];
       for (const item of rows) {
@@ -649,6 +651,16 @@ export class LiveSessionOwner {
     if (state === this.#lastProjectedState) return;
     this.#lastProjectedState = state;
     hostLogEvent({ event: 'live_state', state, at: this.#now() });
+  }
+
+  /** The live state of an open session, the same derivation the web page reads. */
+  #handleState(handle: ActiveSession): LivePageProjection['state'] {
+    return handle.rebuilding ? 'rebuilding' : handle.thinking ? 'thinking' : handle.speaking ? 'speaking' : handle.consumerState === 'attached' ? 'listening' : 'ended';
+  }
+
+  /** Every transition is written when it happens, not only when a web page polls for it. */
+  #noteState(handle: ActiveSession): void {
+    this.#observeState(this.#handleState(handle));
   }
 
   get(liveSessionId: string): LiveSessionSnapshot {
@@ -837,7 +849,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, nudgeTurn: 0, nudgeFiredTurn: 0,
+      recoveries: 0, nudgeTurn: 0, nudgeFiredTurn: 0, awaitingDelegated: false,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
@@ -866,6 +878,7 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
+    this.#noteState(handle);
     void handle.done.promise.catch(() => {});
     // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
     // the owner call ceiling ends the call for time exactly as before. Neither is the other.
@@ -956,6 +969,10 @@ export class LiveSessionOwner {
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (handle.pendingCallIds.size > 0) return;
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
+      // A delegated response that is still generating is busy, not mute: nudging it would inject a turn into a
+      // working one and the recovery would then rebuild it (issue #348). The deadline stays the session's own, so
+      // this only refreshes the clock and writes no receipt of its own.
+      if (handle.awaitingDelegated) { this.#armWatchdog(handle); return; }
       if (step === 'nudge') {
         if (handle.watchdogPhase === 'nudged') return;
         try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
@@ -1275,12 +1292,18 @@ export class LiveSessionOwner {
         this.#watchdogEvent(handle, event);
         // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
         if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
+        // The delegated reply has started speaking, so it is no longer an owed-and-silent response.
+        if (event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription') handle.awaitingDelegated = false;
         if (event.type === 'modelTurnStarted') {
           journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
+          // A generation start is the think time. gpt-live-1 sends none for a plain turn, so the adapter
+          // synthesizes one when the owner's episode ends, and this is what puts the orb in THINKING.
+          if (!handle.speaking) handle.thinking = true;
           handle.turnCompleteSeen = false;
+          this.#noteState(handle);
           continue;
         }
         if (event.type === 'resumptionHandle') {
@@ -1322,9 +1345,10 @@ export class LiveSessionOwner {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
-            if (responses.length) this.#armDeadAir(handle);
+            if (responses.length) { this.#armDeadAir(handle); handle.awaitingDelegated = true; }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
             handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
+            this.#noteState(handle);
           }); continue;
         }
         if (event.type === 'toolCallCancellation') {
@@ -1338,6 +1362,7 @@ export class LiveSessionOwner {
             handle.pendingCallIds.delete(id);
           }
           handle.thinking = handle.pendingCallIds.size > 0;
+          this.#noteState(handle);
           continue;
         }
         if (event.type === 'interrupted') {
@@ -1346,6 +1371,8 @@ export class LiveSessionOwner {
           // A barge-in abandons any awaited output, and a tool that never resolves must not leave
           // THINKING stuck (F4).
           handle.thinking = false;
+          handle.awaitingDelegated = false;
+          this.#noteState(handle);
           handle.turnInterrupted = true;
           logTurnScript(handle);
           journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'interrupt',
@@ -1359,16 +1386,18 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete' }); handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete' }); handle.speaking = false; handle.turnCompleteSeen = true; handle.awaitingDelegated = false; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           logTurnScript(handle);
+          this.#noteState(handle);
         }
-        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
+        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; this.#noteState(handle); }
         if (event.type === 'audio') {
           countAudio(handle, 'output', event.pcm.byteLength);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
+          this.#noteState(handle);
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
             if (handle.inputFinalAt !== undefined) {
@@ -1776,6 +1805,8 @@ export class LiveSessionOwner {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
           this.#armDeadAir(handle);
+          // The model now owes a delegated reply: from here to its first output it is busy, not mute.
+          handle.awaitingDelegated = true;
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
@@ -1783,6 +1814,7 @@ export class LiveSessionOwner {
     // A tool result keeps thinking until the model's first output audio or an explicit wait for input,
     // so the orb never flashes LISTENING between the tool and her speech (F1).
     handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
+    this.#noteState(handle);
   }
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;

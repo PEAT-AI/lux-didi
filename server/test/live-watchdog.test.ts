@@ -160,3 +160,32 @@ test('a port with different declarations runs the same watchdog path', async t =
     assert.equal(live.fake.sessionsOpened, 2, 'the recovery is fresh seeded even when resumption is supported');
   }
 });
+
+test('an owner turn that ends arms the watchdog, and the next turn arms it again', async t => {
+  const live = await openLive(t);
+  const plainTurnEnd = async (text: string) => {
+    await live.emit({ type: 'inputTranscription', text, finished: true });
+    await live.emit({ type: 'modelTurnStarted' });
+  };
+  await plainTurnEnd('what is on my plate');
+  assert.deepEqual(phases(live), ['armed'], 'the ended owner turn owes a reply');
+  await live.emit({ type: 'turnComplete' });
+  await plainTurnEnd('and then what');
+  assert.deepEqual(phases(live), ['armed', 'armed'], 'the second turn is watched as well');
+  assert.equal(live.fake.sessionsOpened, 1);
+});
+
+test('a delegated response that thinks for ten seconds is busy, not mute', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'toolCall', calls: [{ id: 'call_1', name: 'research_lookup', args: { q: 'plate' } }] });
+  await until(live, () => live.fake.toolResponses.length === 1, 5_000);
+  await live.emit({ type: 'modelTurnStarted' });
+  assert.deepEqual(phases(live), ['armed'], 'the delegated response is watched from its start');
+  await live.advance(10_000);
+  assert.deepEqual(phases(live), ['armed'], 'no nudge and no rebuild while the delegated response generates');
+  assert.equal(live.fake.sessionsOpened, 1);
+  assert.equal(terminalCode(live), undefined, 'the call is still up');
+  await live.emit({ type: 'audio', pcm, rate: 24_000 });
+  await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 2_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'a reply that stopped speaking is watched again');
+});

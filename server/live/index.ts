@@ -460,17 +460,21 @@ export class LiveSessionOwner {
       // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
       // stale or absent one is assembled here, exactly as before, and adopted for the next start.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
+        let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
         const start = chooseStartContext(this.#warm.take(), () => {
-          // The summaries fill what the other sections leave under the target, so measure it first.
+          // The summaries fill what the other sections leave under the target, so measure it once.
+          basis = composeSession(undefined);
           earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
-            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(composeSession(undefined).text.length) });
+            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
             summary: earlier.section.length ? earlier.section : undefined,
             summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: undefined };
         });
         if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
         else this.#warm.adopt(start.sections);
-        return earlier.section ? composeSession(earlier.section) : composeSession(undefined);
+        // With no summary section the measured basis is the result, so a start composes once.
+        if (!earlier.section) return basis ?? composeSession(undefined);
+        return composeSession(earlier.section);
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }

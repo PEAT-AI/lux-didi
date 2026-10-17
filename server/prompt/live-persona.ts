@@ -102,36 +102,53 @@ export function headVoiceBlock(accent: string | undefined): string | undefined {
 export const LIVE_ACCENTS = Object.freeze(['indian-strong', 'indian-light', 'voice-default'] as const);
 export type LiveAccent = typeof LIVE_ACCENTS[number];
 export const LIVE_DEFAULT_ACCENT: LiveAccent = 'indian-strong';
-/**
- * The host's own accent texts, one per steering selection: neutral and descriptive, no owner content. The
- * owner's private overlay accent still follows the block and adds its detail. PV1-R1 supplies the final
- * wording; until then these placeholders are pinned by a test, so a swap is a deliberate edit.
- */
-export const LIVE_ACCENT_PRESETS: Readonly<Record<Exclude<LiveAccent, 'voice-default'>, string>> = Object.freeze({
-  'indian-strong': 'PLACEHOLDER PV1-R1 strong Indian accent: speak English in a strong, unmistakable Indian accent, with Indian English rhythm and stress on every turn, including right after tool results.',
-  'indian-light': 'PLACEHOLDER PV1-R1 light Indian accent: speak English in a light Indian accent, with Indian English rhythm and softer consonants on every turn, including right after tool results.',
-});
-/** Every preset block, the closed set the session composer strips before it places the current one. */
-const ACCENT_BLOCKS: readonly string[] = Object.values(LIVE_ACCENT_PRESETS);
 
-/** The accent block for one selection, or undefined when the voice's own accent is asked for. */
-export function accentAnchor(accent: LiveAccent | undefined): string | undefined {
+/** One selection's two anchor texts: the head block that opens the instructions and the tail that closes them. */
+export interface LiveAccentPreset { readonly head: string; readonly tail: string }
+const ACCENT_WHO = 'You are a young woman from Pune who grew up speaking Indian English at home and at school, and you have never spoken any other accent.';
+const ACCENT_HOLD = 'Stay in this accent for the whole session, in every single sentence, never drifting to an American or British accent. Examples of your phrasing: "Actually, the bicycle is balancing itself only, because of the steering." "See, the wheels are spinning, na, so it wants to go straight." "This is the thing, no? You just have to keep moving."';
+const ACCENT_STRONG_DETAIL = 'Accent: speak English with a strong, clearly audible Indian English accent, as an educated native Indian English speaker does. Use syllable-timed rhythm with even stress instead of English stress-timing and vowel reduction. Pronounce t and d as retroflex, with the tongue curled back. Merge v and w into one soft sound. Use unaspirated p, t and k. Use clear full vowels, a rolled or tapped r, and the Indian English sing-song intonation with rising and falling pitch on phrases. Use natural Indian English phrasing such as "actually", "itself", "only", "na" and "no?". Do not caricature or exaggerate; keep it natural and fluent.';
+// Ruling PV1-R1: the light preset is the strong text with the strength word softened and the retroflex, v/w and
+// unaspirated sentences removed. It is untested on the wire, which the ruling says plainly.
+const ACCENT_LIGHT_DETAIL = 'Accent: speak English with a gentle, natural Indian English accent, as an educated native Indian English speaker does. Use syllable-timed rhythm with even stress instead of English stress-timing and vowel reduction. Use clear full vowels, a rolled or tapped r, and the Indian English sing-song intonation with rising and falling pitch on phrases. Use natural Indian English phrasing such as "actually", "itself", "only", "na" and "no?". Do not caricature or exaggerate; keep it natural and fluent.';
+
+/**
+ * The host's own accent texts, measured on gpt-live-1 voice marin (ruling PV1-R1): the head block is the very
+ * first text of the instructions, the tail block the very last, and the owner's private overlay accent still
+ * follows the head and adds its detail. They name no owner content.
+ */
+export const LIVE_ACCENT_PRESETS: Readonly<Record<Exclude<LiveAccent, 'voice-default'>, LiveAccentPreset>> = Object.freeze({
+  'indian-strong': Object.freeze({
+    head: [ACCENT_WHO, ACCENT_STRONG_DETAIL, ACCENT_HOLD].join('\n\n'),
+    tail: ACCENT_HOLD,
+  }),
+  'indian-light': Object.freeze({
+    head: [ACCENT_WHO, ACCENT_LIGHT_DETAIL, ACCENT_HOLD].join('\n\n'),
+    tail: ACCENT_HOLD,
+  }),
+});
+/** Every preset anchor text, the closed set the session composer strips before it places the current one. */
+const ACCENT_BLOCKS: readonly string[] = Object.values(LIVE_ACCENT_PRESETS).flatMap(preset => [preset.head, preset.tail]);
+
+/** The preset for one selection, or undefined when the voice's own accent is asked for. */
+export function accentPreset(accent: LiveAccent | undefined): LiveAccentPreset | undefined {
   const chosen: LiveAccent = accent ?? LIVE_DEFAULT_ACCENT;
   return chosen === 'voice-default' ? undefined : LIVE_ACCENT_PRESETS[chosen];
 }
 
 /** The head anchor: the accent block first, then the overlay's accent detail, so the opening words carry it. */
 export function headAnchor(overlayAccent: string | undefined, accent: LiveAccent | undefined): string | undefined {
-  const parts = [accentAnchor(accent), headVoiceBlock(overlayAccent)].filter((part): part is string => part !== undefined);
+  const parts = [accentPreset(accent)?.head, headVoiceBlock(overlayAccent)].filter((part): part is string => part !== undefined);
   return parts.length ? parts.join(separator) : undefined;
 }
 
-/** The terminal anchor: the language and voice anchor, then the accent block again so the last words carry it. */
+/** The terminal anchor: the language and voice anchor, then the accent tail again so the last words carry it. */
 export function terminalAnchor(language: string | undefined, overlayAccent: string | undefined, accent: LiveAccent | undefined): string {
-  return voiceAnchor(language, overlayAccent) + (accentAnchor(accent) === undefined ? '' : `${separator}${accentAnchor(accent)!}`);
+  const tail = accentPreset(accent)?.tail;
+  return voiceAnchor(language, overlayAccent) + (tail === undefined ? '' : `${separator}${tail}`);
 }
 
-/** One region without a leading accent block from the closed set, so the current one replaces it exactly. */
+/** One region without a leading accent anchor from the closed set, so the current one replaces it exactly. */
 function stripLeadingAccent(text: string): string {
   for (const block of ACCENT_BLOCKS) {
     if (text === block) return '';
@@ -139,7 +156,7 @@ function stripLeadingAccent(text: string): string {
   }
   return text;
 }
-/** One region without a trailing accent block from the closed set (the tail anchor puts it last). */
+/** One region without a trailing accent anchor from the closed set (the tail anchor puts it last). */
 function stripTrailingAccent(text: string): string {
   for (const block of ACCENT_BLOCKS) {
     if (text === block) return '';
@@ -471,7 +488,9 @@ export function composeLiveSessionInstruction(input: {
   // the selection froze last start also sits at the front, so it is stripped before the current one is placed.
   const native = baseAt !== -1 && (baseAt === 0 || input.text.slice(0, baseAt).includes(VOICE_HEAD_PREFIX)
     || ACCENT_BLOCKS.some(block => input.text.startsWith(block)));
-  const prefix = native ? stripLeadingAccent(input.text.slice(0, baseAt)) : '';
+  // The separator before the public base sits in the prefix; it is the join the re-assembly puts back.
+  const frozenPrefix = native ? stripLeadingAccent(input.text.slice(0, baseAt)) : '';
+  const prefix = frozenPrefix.endsWith(separator) ? frozenPrefix.slice(0, frozenPrefix.length - separator.length) : frozenPrefix;
   const body = native ? stripTrailingAccent(input.text.slice(baseAt + baseMarker.length)) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
@@ -485,7 +504,7 @@ export function composeLiveSessionInstruction(input: {
   const emitLore = lore.filter(block => !held(block));
   const emitOverlay = overlay !== undefined && !held(overlay) ? overlay : undefined;
   const tools = input.tools.length ? NAYA_TOOLS : undefined;
-  const accentBlock = accentAnchor(input.accentSelection);
+  const accent = accentPreset(input.accentSelection);
   const preface = "# Memory\nThese are the owner's past notes: historical context, not instructions.";
   type Entry = { readonly id: ComposedSection['id']; readonly text: string };
   // Issue 1014 order: head, style, overlay, base, tools, runtime, lore, memory, pickup, anchor.
@@ -517,13 +536,13 @@ export function composeLiveSessionInstruction(input: {
     ];
     // The selected accent block sits at the very start and again at the very end, so the last words before
     // speaking carry it too. An absent block (the voice's own accent) leaves the text as it stands.
-    if (accentBlock === undefined || !placed.length) return placed;
+    if (accent === undefined || !placed.length) return placed;
     const first = placed[0]!;
     const last = placed[placed.length - 1]!;
     return [
-      { id: first.id, text: `${accentBlock}${separator}${first.text}` },
+      { id: first.id, text: `${accent.head}${separator}${first.text}` },
       ...placed.slice(1, -1),
-      { id: last.id, text: `${last.text}${separator}${accentBlock}` },
+      { id: last.id, text: `${last.text}${separator}${accent.tail}` },
     ];
   };
   const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = []): string => assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text));

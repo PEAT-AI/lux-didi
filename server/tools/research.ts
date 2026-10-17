@@ -52,6 +52,8 @@ export const RESEARCH = Object.freeze({
   selectorDeadlineMs: 6_000,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
+  /** RD: a single source that outlives this is cut, so one slow connector never owns the whole turn. */
+  sourceDeadlineMs: 4_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -942,13 +944,24 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const started = run.startedAt;
   const deadlineAt = started + run.deadlineMs;
 
-  deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
+  // RD: dead air is the longest stretch the model hears nothing, measured at every delivery, so the
+  // run log states the real silence instead of the whole elapsed time.
+  let lastHeardAt = started;
+  let worstGapMs = 0;
+  const notify = (progress: ResearchProgress): void => {
+    const at = now();
+    worstGapMs = Math.max(worstGapMs, at - lastHeardAt);
+    lastHeardAt = at;
+    deps.emit(progress);
+  };
+
+  notify({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
 
   // Dead air: the model is told the run is alive every few seconds. A selector that burns its whole
   // deadline or a slow source read used to leave the model and the owner in silence until the end.
   const schedule = deps.schedule ?? scheduleTimer;
   const beat = (): void => {
-    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
+    notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
     heartbeat = schedule(beat, RESEARCH.progressEveryMs);
   };
   let heartbeat = schedule(beat, RESEARCH.progressEveryMs);
@@ -1045,12 +1058,24 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     for (const batch of batches) {
       const remainingMs = deadlineAt - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
-      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);
+      const roundCut = new AbortController();
+      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), roundCut.signal]);
       const latencies = new Map<CandidateKind, number>();
-      await Promise.all(batch.map(async kind => {
+      const readStarted = new Set<CandidateKind>();
+      // RD: the round hands the model an answer as soon as one source has something to say, and cuts
+      // the sources still reading instead of holding the turn open for the slowest connector.
+      let answered = false;
+      let wake: () => void = () => {};
+      const firstSufficient = new Promise<void>(resolve => { wake = resolve; });
+      const reads = batch.map(async kind => {
         const action = selection.actions.find(entry => entry.kind === kind);
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
         if (subs.length === 0) return;
+        readStarted.add(kind);
+        // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
+        const cut = new AbortController();
+        const readSignal = AbortSignal.any([roundSignal, cut.signal]);
+        const cutTimer = schedule(() => { if (!latencies.has(kind)) cut.abort(); }, Math.max(0, Math.min(RESEARCH.sourceDeadlineMs, deadlineAt - now())));
         // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
         // sent twice, so the connector is asked one question once.
         const issued = subs.filter(call => !run.calls.has(callSignature(call)));
@@ -1061,17 +1086,19 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
         const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
           let out: IntentSubResult[] = [];
-          try { out = await deps.execute(list, roundSignal); } catch { out = []; }
+          try { out = await deps.execute(list, readSignal); } catch { out = []; }
           const failed = list.map((_, index) => index).filter(index => !(out[index]?.ok));
           if (failed.length > 0 && deadlineAt - now() > 1_000) {
             try {
-              const retried = await deps.execute(failed.map(index => list[index]!), roundSignal);
+              const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
               failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
             } catch { /* keep the first attempt's result */ }
           }
           return out;
         };
         const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(issued);
+        // The first source with real text ends the wait: the rest are cut below, never awaited.
+        if (!answered && !cut.signal.aborted && run.questionClass !== 'cross_source' && results.some(result => result.ok && result.text.trim())) { answered = true; wake(); }
         // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
         // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
         const second: IntentSubCall[] = [];
@@ -1095,6 +1122,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           results.push(...extra);
         }
         latencies.set(kind, now() - at);
+        cutTimer.cancel();
         const key = `${kind}:${subs.map(sub => JSON.stringify(sub.args)).join(',')}`;
         // Outcome 2: the read is credited per source. `brief` fans out over several sources, so each
         // one is credited and delivered on its own instead of the whole batch going uncredited.
@@ -1133,15 +1161,23 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             ...(partial ? { unread: Number(partial[1]) } : {}),
           });
         }
-      }));
+      });
 
-      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
+      // RD: the round ends when the first sufficient source answers, and the readers still working are cut.
+      const all = Promise.all(reads);
+      await Promise.race([all, firstSufficient]);
+      if (answered) roundCut.abort();
+      await all;
+      if (answered) stopReason = 'sufficient';
+
+      const cutKinds = batch.filter(kind => readStarted.has(kind) && !latencies.has(kind));
+      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: latencies.has(kind) ? 'completed' : cutKinds.includes(kind) ? 'cut' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
       if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
       if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
     }
     run.rounds = round;
-    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
-    if (stopReason === 'deadline' || stopReason === 'ops_exhausted') break;
+    notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
+    if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'sufficient') break;
     // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
     if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
 
@@ -1156,14 +1192,14 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   run.ended = true;
   const elapsedMs = now() - started;
-  const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs ? 'partial' : 'answered') : 'partial');
+  const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sourceLog.some(entry => entry.disposition === 'cut') ? 'partial' : 'answered') : 'partial');
   const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
   heartbeat.cancel();
-  deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
+  notify({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
   const reply = buildReply(run, status, configured, canContinue, limit);
   driver ??= 'single-source-hint';
   const replyFindings = Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [];
-  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: elapsedMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply).length, driver, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply['canContinue'] === true, findingChars: replyFindings.map(finding => (finding.text ?? '').length) });
+  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply).length, driver, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply['canContinue'] === true, findingChars: replyFindings.map(finding => (finding.text ?? '').length) });
   return reply;
 }
 

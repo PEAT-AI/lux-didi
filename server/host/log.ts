@@ -24,7 +24,7 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
-const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed'];
+const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
@@ -452,6 +452,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
     return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
+  }
+  if (value.event === 'research_lookup') {
+    // N3: one receipt per routed lookup: the layer, its outcome and its wall time. Never a query.
+    const keys = ['event', 'researchId', 'source', 'outcome', 'ms'];
+    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
+    if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: 'research_lookup', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

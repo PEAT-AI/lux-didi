@@ -2978,7 +2978,8 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   t.after(() => detach());
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { port: fake.port, scheduler, language: 'en-IN' });
+  // Long timers: this test walks 19 s of wall clock, so only the response watchdog may fire.
+  const h = await harness(t, { port: fake.port, scheduler, language: 'en-IN', limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   const session = h.owner.create({ idempotencyKey: 'delegated-busy', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;

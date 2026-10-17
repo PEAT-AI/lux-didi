@@ -113,3 +113,14 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
+
+test('live_turn_script is a closed enum of script buckets with character counts only', () => {
+  const UUID = '11111111-1111-4111-8111-111111111111';
+  const turn = { event: 'live_turn_script', liveSessionId: UUID, script: 'mixed', latinChars: 40, devanagariChars: 3, afterTool: true, interrupted: false };
+  assert.deepEqual(safeEvent(turn), turn);
+  assert.equal(safeEvent({ ...turn, script: 'cyrillic' }), undefined, 'only the three script buckets exist');
+  assert.equal(safeEvent({ ...turn, text: 'SYNTHETIC-SPOKEN-TEXT' }), undefined, 'any key that could carry text fails closed');
+  assert.equal(safeEvent({ ...turn, latinChars: 1.5 }), undefined, 'a non-integer count is refused');
+  assert.equal(safeEvent({ ...turn, afterTool: 'yes' }), undefined, 'the flags are booleans');
+  assert.equal(safeEvent({ ...turn, liveSessionId: 'not-a-session' }), undefined, 'a foreign id is refused');
+});

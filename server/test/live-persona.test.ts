@@ -178,7 +178,9 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   assert.ok(NAYA_TOOLS.indexOf(WHERE_HIS_WORLD_LIVES) < NAYA_TOOLS.indexOf('research returns the findings'),
     'the layer routing text opens the tools section');
   // OC1 (#228): the open tools are declared to the model with one exact sentence.
-  assert.match(NAYA_TOOLS, /You can open a web page, a file in the owner's home folder, or an app when the owner asks\. Find the exact item first with research or knowledge, say what you are opening, then open it\./);
+  // K6-R1: the item comes from what research already returned. The 3j smoke showed four research
+  // calls in a row and never a spoken answer, so a second call is the failure to avoid.
+  assert.ok(NAYA_TOOLS.includes("You can open a web page, a file in the owner's home folder, or an app when the owner asks. Name the exact item from what research already returned; call research again only when nothing it returned fits. Say what you are opening, then open it."), 'the open-actions sentence names what research returned');
   // #263: a name after a colon reads as a tool name to the model. The retired routing targets must never
   // reappear, because the Live session declares only research and remember_note.
   for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {

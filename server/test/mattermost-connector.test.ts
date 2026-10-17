@@ -195,9 +195,12 @@ test('the research chat thread read uses the argument name the child declares, s
       return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
     }
     const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE });
-    const text = 'projection' in result ? result.projection.text : '';
-    console.error('DBG ' + JSON.stringify({ args: call.args, state: result.state, text: text.slice(0, 120) }));
-    return { key: call.key, name: call.name, ok: result.state === 'completed', text, originalCharacters: text.length, omittedCharacters: 0 };
+    // Shape the read the way the host does before it reaches the model.
+    const projected = result.state === 'completed'
+      ? projectMattermostResult(f.adapter, { state: 'completed', tool: call.name as never, projection: result.projection, response: result.payload })
+      : { ok: false as const, reason: result.state };
+    const text = projected.ok ? projected.projection.text : '';
+    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
   }));
   const deps: ResearchDeps = {
     now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),

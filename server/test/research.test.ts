@@ -586,9 +586,9 @@ test('the first sufficient source keeps its own second hop and the read stays an
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
   const h = harness({ selector, execute: async subs => subs.map(call => call.name === 'gmail_list'
     ? sub(call.name, 'a mail body', true, call.key)
-    : sub(call.name, 'the release is green [id ks1]', true, call.key)) });
+    : sub(call.name, 'the release is green [id 7]', true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
-  assert.ok(h.executed.some(call => call.name === 'knowledge_read'), 'the winner opened the insight it found');
+  assert.ok(h.executed.some(call => call.name === 'get_insight'), 'the winner opened the insight it found');
   assert.equal(h.logs[0]!.sources.find(entry => entry.kind === 'knowledge')?.disposition, 'completed');
   assert.equal(h.logs[0]!.status, 'answered', 'a read that answered is not a partial answer');
   assert.ok((reply['findings'] as unknown[]).length > 0);
@@ -602,7 +602,7 @@ test('a start call returns inside six seconds even when its first read never ans
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.answerWithinMs); await settle();
-  const reply = await Promise.race([running, new Promise<null>(resolve => setImmediate(() => resolve(null)))]);
+  const reply = await Promise.race([running, settle().then(() => null)]);
   assert.notEqual(reply, null, 'the call came back instead of waiting for the read');
   assert.ok(h.logs[0]!.elapsedMs <= RESEARCH.answerWithinMs + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
 });

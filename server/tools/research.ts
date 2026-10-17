@@ -1062,8 +1062,11 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       // RD: a start call answers inside answerWithinMs, so the owner hears a reply instead of waiting on
       // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
-      const answerBy = call.action === 'start' && round === 1 ? Math.min(remainingMs, Math.max(1_000, started + RESEARCH.answerWithinMs - now())) : remainingMs;
-      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(answerBy)]);
+      const answerBy = call.action === 'start' && round === 1 && started + RESEARCH.answerWithinMs - now() < remainingMs
+        ? Math.max(1_000, started + RESEARCH.answerWithinMs - now()) : remainingMs;
+      const answerCut = new AbortController();
+      const answerTimer = schedule(() => answerCut.abort(), answerBy);
+      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(answerBy), answerCut.signal]);
       const latencies = new Map<CandidateKind, number>();
       const readStarted = new Set<CandidateKind>();
       const cutKinds = new Set<CandidateKind>();
@@ -1181,6 +1184,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         stopReason = 'answered';
       }
       await all;
+      answerTimer.cancel();
 
       for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) ? 'cut' : latencies.has(kind) ? 'completed' : 'skipped', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named

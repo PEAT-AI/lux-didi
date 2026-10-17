@@ -8,12 +8,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
 import { ConfigError, credentialsFor, initializeProviderConfig, loadProviderConfig } from '../config/index.js';
+import { saveLiveSelection } from '../config/live.js';
 import { validateOwner } from '../config/files.js';
 
 const synthetic = 'synthetic_NEVER_PRINT_739+abc=';
 const profile = () => ({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'gemini-synthetic', keyReference: 'gemini-primary', dataClasses: ['ordinary', 'private'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'off', verbosity: 'balanced' } });
 const secret = () => ({ schemaVersion: 1, keyReference: 'gemini-primary', key: synthetic });
 const cli = fileURLToPath(new URL('../config/cli.js', import.meta.url));
+/** The text/Gemini path is no longer the CLI default (OV1-R2), so those tests name it explicitly. */
+const GEMINI = ['--provider', 'gemini'];
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'didi-config-test-')); chmodSync(root, 0o700);
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -135,7 +138,7 @@ test('exclusive initialization preserves all existing targets byte-for-byte', t 
     else { mkdirSync(f.configDir, { mode: 0o700 }); if (kind !== 'empty') f.put('profile.json', kind === 'partial' ? '{' : { ...profile(), enabled: kind !== 'disabled' }); if (kind === 'ready') f.put('gemini-primary.json', secret()); }
     const before = lstatSync(f.configDir);
     const contents = before.isDirectory() ? readdirSync(f.configDir).map(n => [n, readFileSync(join(f.configDir, n), 'utf8')]) : [];
-    assert.throws(() => initializeProviderConfig(f.options), e => { safe(e); return e instanceof ConfigError; });
+    assert.throws(() => initializeProviderConfig({ ...f.options, provider: 'gemini' }), e => { safe(e); return e instanceof ConfigError; });
     assert.equal(lstatSync(f.configDir).ino, before.ino);
     if (before.isDirectory()) assert.deepEqual(readdirSync(f.configDir).map(n => [n, readFileSync(join(f.configDir, n), 'utf8')]), contents);
     if (before.isFile()) assert.equal(readFileSync(f.configDir, 'utf8'), 'untouched');
@@ -143,22 +146,22 @@ test('exclusive initialization preserves all existing targets byte-for-byte', t 
 });
 
 test('real CLI initialization: private at creation, safe stdout/argv, then actual resolver use', async t => {
-  const f = fixture(t); const result = f.run(); assert.equal(result.status, 0, result.stderr);
+  const f = fixture(t); const result = f.run(GEMINI); assert.equal(result.status, 0, result.stderr);
   safe(result); assert.equal(result.stdout, 'Provider configuration initialized.\n'); assert.equal(result.stderr, '');
   assert.equal(statSync(f.configDir).mode & 0o7777, 0o700);
   assert.deepEqual(readdirSync(f.configDir).sort(), ['gemini-primary.json', 'profile.json']);
   for (const name of ['profile.json', 'gemini-primary.json']) { const s = statSync(join(f.configDir, name)); assert.equal(s.mode & 0o7777, 0o600); assert.equal(s.uid, process.getuid!()); assert.equal(s.nlink, 1); }
   const status = f.load(); assert.equal(status.status, 'ready'); if (status.status === 'ready') assert.equal(await status.credentials.resolve('gemini-primary'), synthetic);
-  const again = f.run(); assert.notEqual(again.status, 0); safe(again);
+  const again = f.run(GEMINI); assert.notEqual(again.status, 0); safe(again);
   const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8', timeout: 5000 }); assert.equal(help.status, 0); assert.match(help.stdout, /--source-env/);
 });
 
 test('initialization failure leaves explicit private incomplete directory without active profile', t => {
   const f = fixture(t); writeFileSync(f.sourceEnvPath, `GEMINI_API_KEY=\"${synthetic}\n`, { mode: 0o600 });
-  const result = f.run(); assert.notEqual(result.status, 0); safe(result);
+  const result = f.run(GEMINI); assert.notEqual(result.status, 0); safe(result);
   assert.equal(statSync(f.configDir).mode & 0o7777, 0o700); assert.equal(existsSync(join(f.configDir, 'profile.json')), false);
   assert.equal(f.load().status, 'unconfigured');
-  assert.throws(() => initializeProviderConfig(f.options), ConfigError);
+  assert.throws(() => initializeProviderConfig({ ...f.options, provider: 'gemini' }), ConfigError);
 });
 
 test('real write failure cannot activate profile or leave permissive temporary files', t => {
@@ -173,7 +176,7 @@ test('real write failure cannot activate profile or leave permissive temporary f
 test('literal source subset: plain/single/double quoted and ignored variables never exported', async t => {
   for (const quote of ['', "'", '"']) {
     const f = fixture(t); writeFileSync(f.sourceEnvPath, `# synthetic\r\nOTHER=ignored\r\nGEMINI_API_KEY=${quote}${synthetic}${quote}\r\n`, { mode: 0o600 });
-    assert.equal(f.run().status, 0); const s = f.load(); assert.equal(s.status, 'ready'); if (s.status === 'ready') assert.equal(await s.credentials.resolve('gemini-primary'), synthetic);
+    assert.equal(f.run(GEMINI).status, 0); const s = f.load(); assert.equal(s.status, 'ready'); if (s.status === 'ready') assert.equal(await s.credentials.resolve('gemini-primary'), synthetic);
   }
   assert.equal(process.env['OTHER'], undefined);
 });
@@ -182,7 +185,7 @@ test('mixed foreign punctuation and spaces import exactly the target through the
   for (const quote of ['', "'", '"']) {
     const f = fixture(t);
     writeFileSync(f.sourceEnvPath, `# mixed source\r\nFOREIGN_SINGLE='spaces ; | & $() "literal" \`literal\`'\r\nGEMINI_API_KEY=${quote}${synthetic}${quote}\r\nFOREIGN_DOUBLE="spaces ; | & $() 'literal'"\r\nFOREIGN_PLAIN=spaces ; | & $() # opaque\r\n`, { mode: 0o600 });
-    const result = f.run(); assert.equal(result.status, 0, result.stderr); safe(result);
+    const result = f.run(GEMINI); assert.equal(result.status, 0, result.stderr); safe(result);
     assert.deepEqual(JSON.parse(readFileSync(join(f.configDir, 'gemini-primary.json'), 'utf8')), secret());
     const status = f.load(); assert.equal(status.status, 'ready');
     if (status.status === 'ready') assert.equal(await status.credentials.resolve('gemini-primary'), synthetic);
@@ -192,12 +195,12 @@ test('mixed foreign punctuation and spaces import exactly the target through the
 test('foreign shell-looking literals never execute or assign environment through the public importer', async t => {
   const f = fixture(t); const marker = join(f.root, 'executed'); const env = { ...process.env };
   writeFileSync(f.sourceEnvPath, `PROVIDER_IMPORT_FOREIGN_CANARY='\`touch ${marker}\` ; $(touch ${marker})'\nGEMINI_API_KEY=${synthetic}\nPROVIDER_IMPORT_DOUBLE="$(touch ${marker}) ; $HOME"\nOTHER=$(touch ${marker})\n`, { mode: 0o600 });
-  initializeProviderConfig(f.options);
+  initializeProviderConfig({ ...f.options, provider: 'gemini' });
   assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(env), 'importer changed environment'); assert.equal(existsSync(marker), false);
   const status = f.load(); assert.equal(status.status, 'ready');
   if (status.status === 'ready') assert.equal(await status.credentials.resolve('gemini-primary'), synthetic);
   const cliFixture = fixture(t); writeFileSync(cliFixture.sourceEnvPath, readFileSync(f.sourceEnvPath), { mode: 0o600 });
-  const result = cliFixture.run(); assert.equal(result.status, 0, result.stderr); safe(result);
+  const result = cliFixture.run(GEMINI); assert.equal(result.status, 0, result.stderr); safe(result);
   assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(env), 'CLI changed environment'); assert.equal(existsSync(marker), false);
   assert.deepEqual(JSON.parse(readFileSync(join(cliFixture.configDir, 'gemini-primary.json'), 'utf8')), secret());
 });
@@ -216,7 +219,7 @@ test('foreign quote and continuation grammar fails closed without disclosing sou
   for (const value of values) {
     const f = fixture(t);
     writeFileSync(f.sourceEnvPath, `GEMINI_API_KEY=${synthetic}\n${foreignName}=${value}\n`, { mode: 0o600 });
-    assert.throws(() => initializeProviderConfig(f.options), e => {
+    assert.throws(() => initializeProviderConfig({ ...f.options, provider: 'gemini' }), e => {
       assert.ok(e instanceof ConfigError); assert.equal(e.code, 'invalid_source'); safe(e);
       assert.ok(!inspect(e).includes(foreignName) && !inspect(e).includes(foreignValue)); return true;
     });
@@ -241,7 +244,7 @@ test('whole-file target cardinality and target charset stay strict around foreig
   sources.push(`GEMINI_API_KEY=${synthetic}\n${foreign}GEMINI_API_KEY=${synthetic}`);
   for (const source of sources) {
     const f = fixture(t); writeFileSync(f.sourceEnvPath, source, { mode: 0o600 });
-    const result = f.run(); assert.notEqual(result.status, 0); safe(result);
+    const result = f.run(GEMINI); assert.notEqual(result.status, 0); safe(result);
     assert.match(result.stderr, /invalid_source/); assert.deepEqual(readdirSync(f.configDir), []);
   }
 });
@@ -250,7 +253,7 @@ test('source duplicate/absent/malformed/oversized/malicious shell syntax rejecte
   const payloads = ['', 'OTHER=ignored', `GEMINI_API_KEY=${synthetic}\nGEMINI_API_KEY=other`, 'export GEMINI_API_KEY=abc', 'GEMINI_API_KEY =abc', 'GEMINI_API_KEY="unterminated', 'GEMINI_API_KEY="a\\nb"', 'GEMINI_API_KEY=${OTHER}', 'GEMINI_API_KEY=`touch MARKER`', 'GEMINI_API_KEY=$(touch MARKER)', 'GEMINI_API_KEY=abc;touch MARKER', "GEMINI_API_KEY='$(touch MARKER)'", 'GEMINI_API_KEY=abc # comment', 'GEMINI_API_KEY=', ' '.repeat(65537)];
   for (const payload of payloads) {
     const f = fixture(t); const marker = join(f.root, 'executed'); writeFileSync(f.sourceEnvPath, payload.replaceAll('MARKER', marker), { mode: 0o600 });
-    const result = f.run(); assert.notEqual(result.status, 0); safe(result); assert.equal(existsSync(marker), false); assert.equal(existsSync(join(f.configDir, 'profile.json')), false);
+    const result = f.run(GEMINI); assert.notEqual(result.status, 0); safe(result); assert.equal(existsSync(marker), false); assert.equal(existsSync(join(f.configDir, 'profile.json')), false);
   }
 });
 
@@ -258,7 +261,7 @@ test('CLI rejects unknown/duplicate/missing flags and input/source insecure file
   const f = fixture(t); for (const args of [['--variable', 'GEMINI_API_KEY'], ['--owner-id', 'other'], ['--key', synthetic]]) { const r = f.run(args); assert.notEqual(r.status, 0); assert.ok(!r.stdout.includes(synthetic) && !r.stderr.includes(synthetic)); }
   const missing = spawnSync(process.execPath, [cli, 'init'], { encoding: 'utf8', timeout: 5000 }); assert.notEqual(missing.status, 0);
   for (const field of ['profileInputPath', 'sourceEnvPath'] as const) {
-    const g = fixture(t); chmodSync(g[field], 0o644); const r = g.run(); assert.notEqual(r.status, 0); safe(r); assert.equal(existsSync(join(g.configDir, 'profile.json')), false);
+    const g = fixture(t); chmodSync(g[field], 0o644); const r = g.run(GEMINI); assert.notEqual(r.status, 0); safe(r); assert.equal(existsSync(join(g.configDir, 'profile.json')), false);
   }
   const d = fixture(t); writeFileSync(d.profileInputPath, JSON.stringify({ ...profile(), enabled: false })); assert.notEqual(d.run().status, 0); assert.equal(existsSync(join(d.configDir, 'profile.json')), false);
 });
@@ -350,4 +353,62 @@ test('a credentials resolver reads only the slot it is asked for and never falls
   writeFileSync(join(f.configDir, 'openai-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'openai-primary', key: 'openai_NEVER_PRINT_739' }), { mode: 0o600 });
   assert.equal(await credentialsFor(f.configDir).resolve('openai-primary'), 'openai_NEVER_PRINT_739');
   assert.equal(await credentialsFor(f.configDir).resolve('gemini-primary'), synthetic);
+});
+
+test('init defaults to the OpenAI slot and refuses to re-seed an existing dir only for Gemini', async t => {
+  const f = fixture(t);
+  writeFileSync(f.sourceEnvPath, `OPENAI_API_KEY=${synthetic}\n`, { mode: 0o600 });
+  const seeded = f.run(); // OV1-R2: no --provider means the owner default, OpenAI GPT-Live.
+  assert.equal(seeded.status, 0, seeded.stderr);
+  assert.deepEqual(readdirSync(f.configDir).sort(), ['openai-primary.json']);
+});
+
+test('init --provider openai adds only the OpenAI slot to an existing dir and never touches the Gemini key', async t => {
+  const f = fixture(t);
+  f.setup(); // installed state: gemini-primary.json + profile.json already present
+  const geminiBefore = readFileSync(join(f.configDir, 'gemini-primary.json'));
+  const profileBefore = readFileSync(join(f.configDir, 'profile.json'));
+  writeFileSync(f.sourceEnvPath, `OPENAI_API_KEY=${synthetic}\n`, { mode: 0o600 });
+  const result = f.run(['--provider', 'openai']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.includes(synthetic) || result.stderr.includes(synthetic), false);
+  // Byte-for-byte: the installed Gemini slot and text profile are untouched.
+  assert.deepEqual(readFileSync(join(f.configDir, 'gemini-primary.json')), geminiBefore);
+  assert.deepEqual(readFileSync(join(f.configDir, 'profile.json')), profileBefore);
+  assert.deepEqual(readdirSync(f.configDir).sort(), ['gemini-primary.json', 'openai-primary.json', 'profile.json']);
+  assert.equal(f.load().status, 'ready', 'the text profile still loads');
+  // A second seed of the same slot is refused, and the existing slot bytes stay put.
+  const openaiBefore = readFileSync(join(f.configDir, 'openai-primary.json'));
+  assert.notEqual(f.run(['--provider', 'openai']).status, 0);
+  assert.deepEqual(readFileSync(join(f.configDir, 'openai-primary.json')), openaiBefore);
+});
+
+test('select writes the same persisted selection as the settings route and refuses an empty slot', async t => {
+  const f = fixture(t);
+  f.setup();
+  writeFileSync(join(f.configDir, 'live.json'), JSON.stringify({
+    schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede',
+    keyReference: 'gemini-primary', dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+    limits: { sessionMs: 900000 },
+  }), { mode: 0o600 });
+  // No OpenAI slot yet: the switch refuses rather than pointing the owner at a missing key.
+  const refused = spawnSync(process.execPath, [cli, 'select', '--config-dir', f.configDir, '--provider', 'openai'], { encoding: 'utf8', timeout: 5000 });
+  assert.notEqual(refused.status, 0);
+  assert.equal(readFileSync(join(f.configDir, 'live.json'), 'utf8').includes('"provider":"gemini"'), true, 'a refused select writes nothing');
+  // Seed the slot, then the same function the settings route calls persists both fields.
+  writeFileSync(join(f.configDir, 'openai-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'openai-primary', key: 'openai_NEVER_PRINT' }), { mode: 0o600 });
+  const selected = spawnSync(process.execPath, [cli, 'select', '--config-dir', f.configDir, '--provider', 'openai'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(selected.status, 0, selected.stderr);
+  const saved = JSON.parse(readFileSync(join(f.configDir, 'live.json'), 'utf8')) as Record<string, unknown>;
+  assert.equal(saved['provider'], 'openai');
+  assert.equal(saved['modelId'], 'gpt-live-1');
+  assert.equal(saved['voice'], 'marin');
+  assert.equal(saved['keyReference'], 'openai-primary');
+  assert.deepEqual(saved['limits'], { sessionMs: 900000 }, 'limits and preferences survive the rewrite');
+  // Direct call parity: the settings route and the CLI write identically.
+  const direct = saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' });
+  assert.deepEqual(direct, { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin' });
+  const viaCli = saveLiveSelection({ configDir: f.configDir, provider: 'gemini', voice: 'Puck' });
+  assert.deepEqual(viaCli, { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Puck' });
 });

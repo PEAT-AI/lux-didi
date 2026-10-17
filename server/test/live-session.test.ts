@@ -2745,3 +2745,39 @@ test('the earlier-conversations section fills the space under the target in a re
   assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
   assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
 });
+
+test('live.json without a provider is OpenAI GPT-Live by default and fails closed on an empty slot', async t => {
+  const h = await harness(t);
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-default-'));
+  const configDir = join(root, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // OV1-R2: the owner default when live.json names no provider: openai, gpt-live-1, marin.
+  writePrivate(configDir, 'live.json', `${JSON.stringify({
+    schemaVersion: 1, enabled: true, dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+  })}\n`);
+  const loaded = loadLiveConfig({ configDir, ownerId: h.store.assistantId });
+  assert.equal(loaded.status, 'configured');
+  if (loaded.status !== 'configured') return;
+  assert.equal(loaded.config.provider, 'openai');
+  assert.equal(loaded.config.model, 'gpt-live-1');
+  assert.equal(loaded.config.voice, 'marin');
+  // No OpenAI key slot: a named status, never a silent Gemini session.
+  const missing = composeLive(h.store, configDir);
+  assert.equal(missing.status.status, 'error');
+  assert.equal(missing.status.code, 'key_missing');
+  assert.equal(missing.status.provider, 'openai');
+  assert.equal(missing.service.enabled, false);
+  // Gemini stays selectable, but only when live.json says so and its own slot holds the key.
+  writePrivate(configDir, 'live.json', `${JSON.stringify({
+    schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede',
+    dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+  })}\n`);
+  const geminiMissing = composeLive(h.store, configDir);
+  assert.equal(geminiMissing.status.status, 'error');
+  assert.equal(geminiMissing.status.code, 'key_missing');
+  assert.equal(geminiMissing.status.provider, 'gemini', 'the status names the selected provider');
+});

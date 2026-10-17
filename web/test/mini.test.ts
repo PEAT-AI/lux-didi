@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState } from '../src/mini.ts';
+import { installMiniMeter, isMiniRoute, miniBarHeights, miniMarkup, miniMeter, miniModeButtonMarkup, miniState, type PillLevelHost } from '../src/mini.ts';
 import { singleKeyRow, singleKeyState } from '../src/settings-view.ts';
 
 test('the mini route is a query on the one built page', () => {
@@ -48,6 +48,34 @@ test('mini markup carries each glance state', () => {
   }
   assert.match(miniMarkup('speaking', ''), /presence-glow/, 'the glow is a state-independent element the CSS lights');
   assert.doesNotMatch(miniMarkup('error', ''), /presence-glow visible/);
+});
+
+test('the level meter follows the input level and its curve is bounded', () => {
+  assert.equal(miniBarHeights(0.5).length, 5, 'one height per bar');
+  assert.ok(miniBarHeights(1).every(height => height > 0.7 && height <= 1), 'a loud level fills the meter');
+  assert.equal(Math.max(...miniBarHeights(1)), 1, 'a loud level reaches the top on its tallest bar');
+  assert.ok(miniBarHeights(0).every(height => height > 0 && height <= 0.1), 'a silent level keeps a visible floor');
+  assert.deepEqual(miniBarHeights(2), miniBarHeights(1), 'a level above one is clamped');
+  assert.deepEqual(miniBarHeights(-1), miniBarHeights(0), 'a negative level is silence');
+  assert.deepEqual(miniBarHeights(Number.NaN), miniBarHeights(0), 'a non-number is silence');
+  assert.notDeepEqual(miniBarHeights(0.4), miniBarHeights(0.9), 'the bars track the level');
+});
+
+test('the native level hook writes the bars and flags the stage', () => {
+  const bars = [0, 1, 2, 3, 4].map(() => ({ style: { height: '' } }));
+  const added: string[] = [];
+  const stage = {
+    classList: { add: (name: string) => added.push(name) },
+    querySelectorAll: () => bars,
+  };
+  miniMeter(stage as unknown as Element, 0.6);
+  assert.deepEqual(added, ['has-level'], 'the stage is flagged so the CSS drops the keyframe fallback');
+  for (const bar of bars) assert.match(bar.style.height, /^\d+(\.\d+)?%$/, 'every bar gets a height');
+  miniMeter(null, 0.6);
+  const host: PillLevelHost = {};
+  installMiniMeter(host);
+  assert.equal(typeof host.didiPillLevel, 'function', 'the app evaluates window.didiPillLevel');
+  host.didiPillLevel?.(0.4);
 });
 
 test('the settings view names the single key, its on/off and why it can be inactive', () => {

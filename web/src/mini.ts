@@ -44,6 +44,39 @@ export function miniMarkup(state: MiniState, _caption = ''): string {
     + `<div class="mini-level" aria-hidden="true">${bars}</div></section>`;
 }
 
+/** Each bar's share of the stage height for one input level (0...1), so the
+ * meter is a measured function and not only a keyframe (review B5). Pure, so the
+ * curve is tested without a DOM. */
+export function miniBarHeights(level: number): number[] {
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0));
+  return [1, 0.78, 1.12, 0.84, 1.04].map(share => Math.max(0.06, Math.min(1, clamped * share)));
+}
+
+/** Writes one level onto the pill: the CSS variables the five bars scale by, and
+ * the flag that tells the stylesheet a native push is live. */
+export function miniMeter(stage: Element | null, level: number): void {
+  if (!stage) return;
+  const heights = miniBarHeights(level);
+  stage.querySelectorAll<HTMLElement>('.mini-level i').forEach((bar, index) => {
+    bar.style.height = `${(heights[index] ?? 0) * 100}%`;
+  });
+  stage.classList.add('has-level');
+}
+
+/** The global the native app evaluates in the pill's web view, the same shape the
+ * full route's renderer already reads. Installed once, when the module loads, so
+ * the pill meters without a second round of wiring. */
+export interface PillLevelHost { didiPillLevel?: (level: number) => void }
+
+export function installMiniMeter(host: PillLevelHost = globalThis as PillLevelHost): void {
+  host.didiPillLevel = (level: number) => {
+    // A preview or a test has no document; the hook is still installed and inert.
+    if (typeof document === 'undefined') return;
+    miniMeter(document.querySelector('.mini-pill'), level);
+  };
+}
+installMiniMeter();
+
 /** The FULL window's one mode control (#311): a visible button with an
  * accessible label that asks the native app for the mini orb. Only the native
  * app can move a surface, so a browser shell renders no button at all. */

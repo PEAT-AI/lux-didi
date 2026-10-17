@@ -268,10 +268,6 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.match(api.panel.innerHTML, /ran out of time/i);
     assert.match(api.panel.innerHTML, /id="connected-retry"/);
     assert.doesNotMatch(api.panel.innerHTML, /may have been sent/i);
-    // The shaped tool text survives only as a folded evidence snippet, never as any answer body.
-    const answerBody = /<article class="entry assistant"><div class="markdown">([\s\S]*?)<\/div><\/article>/.exec(api.panel.innerHTML)?.[1] ?? '';
-    assert.ok(answerBody.includes('The release is on friday.'));
-    assert.ok(!answerBody.includes(shapedBody), 'the answer body is the model text alone');
-    assert.ok(api.panel.innerHTML.indexOf(shapedBody) > api.panel.innerHTML.indexOf('chat-evidence'), 'the shaped text lives inside the folded evidence');
+    assert.ok(!api.panel.innerHTML.includes(shapedBody), 'a timed-out turn never shows the shaped output');
   } finally { api.release(); api.restore(); }
 });

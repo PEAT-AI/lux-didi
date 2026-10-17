@@ -728,11 +728,12 @@ export class LiveSessionOwner {
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
     handle.idleTimer = this.#schedule(() => {
-      // #303: an idle expiry with the model turn still open is the shape the 3h-a witness stalled in: audio
-      // streamed, then the provider went silent and never sent turnComplete. Record the silence since the last
-      // model audio so the next such stall is distinguishable from a turnComplete the adapter failed to map.
-      if (handle.speaking && !handle.turnCompleteSeen) hostLogEvent({ event: 'live_turn_open',
-        msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
+      // #303: an idle expiry after model audio had streamed, with no turnComplete ever seen, is the shape the
+      // 3h-a witness stalled in: the greeting played, then the provider went silent without ending its turn.
+      // Record the silence since the last model audio so the next such stall is distinguishable from a
+      // turnComplete the adapter failed to map.
+      if (handle.lastModelAudioAt !== undefined && !handle.turnCompleteSeen) hostLogEvent({ event: 'live_turn_open',
+        msSinceLastModelAudio: this.#now() - handle.lastModelAudioAt });
       this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null);
     }, remainingMs);
   }

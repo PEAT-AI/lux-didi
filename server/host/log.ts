@@ -230,10 +230,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
   if (value.event === 'live_turn_open') {
-    // #303: the provider ended generation while the turn was still open, so no turnComplete had arrived.
+    // #303: the provider streamed model audio and then went quiet without a turnComplete.
     // One duration, never any turn content.
     if (Object.keys(value).sort().join(',') !== ['event', 'msSinceLastModelAudio'].sort().join(',')) return;
-    if (!(value.msSinceLastModelAudio === null || isSafeCount(value.msSinceLastModelAudio))) return;
+    if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
   if (value.event === 'live_state') {

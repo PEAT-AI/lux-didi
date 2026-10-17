@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
+  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
   LIVE_RECOVERY_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget, type PersonaOverlay,
@@ -555,4 +555,46 @@ test('the earlier-conversations budget is what the rest of the instruction leave
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
   assert.ok(composed.text.includes(NAYA_TOOLS), 'tools are never dropped for summaries');
   assert.equal(composed.earlierConversationsIncluded, true);
+});
+
+const standingRecord = (id: string, text: string, status: 'current' | 'dated' | 'open' = 'current') =>
+  ({ id, text, standing: { id, text, status, capturedAt: '2026-09-01' } });
+
+test('standing memory sits after owner lore and before # Memory, and never rides the uuid-ordered list', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ownerProfile: FIXTURE_OWNER,
+    records: [{ id: 'plain', text: 'Fixture plain note' }, standingRecord('standing-1', 'Fixture standing note')] });
+  const ids = composed.sections.map(section => section.id);
+  assert.ok(ids.indexOf('owner-lore') < ids.indexOf('standing-memory'), 'after owner lore');
+  assert.ok(ids.indexOf('standing-memory') < ids.indexOf('memory'), 'before # Memory');
+  assert.ok(composed.text.includes(STANDING_MEMORY_PREFACE));
+  const memorySection = composed.sections.find(section => section.id === 'memory')!;
+  const memoryText = composed.text.slice(composed.text.indexOf('# Memory'), composed.text.indexOf('# Memory') + memorySection.chars);
+  assert.ok(!memoryText.includes('Fixture standing note'), 'a standing note is not repeated in # Memory');
+  assert.ok(memoryText.includes('Fixture plain note'));
+  assert.equal(composed.sections.filter(section => section.id === 'standing-memory').length, 1);
+});
+
+test('the standing section keeps its own budget and reports each omission as budget', () => {
+  const note = (index: number) => standingRecord(`standing-${String(index).padStart(2, '0')}`, `Fixture standing note ${index} `.repeat(6), 'open');
+  const records = Array.from({ length: 12 }, (_, index) => note(index));
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
+  const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
+  assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
+  assert.ok(composed.selectedIds.length > 0 && composed.selectedIds.length < records.length, 'whole notes only, and some omitted');
+  assert.deepEqual(composed.selectedIds, records.slice(0, composed.selectedIds.length).map(record => record.id), 'kept in rank order');
+  assert.ok(composed.omitted.length > 0);
+  for (const omission of composed.omitted) assert.equal(omission.reason, 'budget');
+  assert.equal(composed.text, composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records }).text, 'deterministic');
+});
+
+test('# Memory keeps its own budget when a standing set is present', () => {
+  const records = [
+    standingRecord('standing-1', 'S'.repeat(MEMORY_SECTION_CHAR_LIMIT)),
+    { id: 'plain-1', text: 'Fixture ad hoc voice note' },
+  ];
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
+  const memory = composed.sections.find(section => section.id === 'memory')!;
+  assert.ok(memory.chars <= MEMORY_SECTION_CHAR_LIMIT);
+  assert.ok(composed.text.includes('Fixture ad hoc voice note'));
+  assert.ok(composed.sections.some(section => section.id === 'standing-memory'));
 });

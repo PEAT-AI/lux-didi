@@ -1,5 +1,6 @@
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
+import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor, loadProviderConfig, slotKeyPresent } from '../config/index.js';
@@ -169,5 +170,12 @@ export const resolveLiveMemory: LiveMemorySource = tx => {
   for (let offset = 0; offset < ids.length; offset += memory.MAX_RESOLVE_ENTRIES) {
     records.push(...memory.resolveEntries(tx, ids.slice(offset, offset + memory.MAX_RESOLVE_ENTRIES)));
   }
-  return records.map(record => ({ id: record.entryId, text: record.text, dataClass: 'ordinary' }));
+  const ranked = new Map(listStandingMemory(tx).map(item => [item.id, item]));
+  return records.map((record): { id: string; text: string; dataClass: 'ordinary'; standing?: StandingMemoryItem } => {
+    // An imported note carries its ranking with it: the prompt keeps it in the standing-memory section.
+    const standing = ranked.get(record.entryId);
+    return standing === undefined
+      ? { id: record.entryId, text: record.text, dataClass: 'ordinary' }
+      : { id: record.entryId, text: record.text, dataClass: 'ordinary', standing };
+  });
 };

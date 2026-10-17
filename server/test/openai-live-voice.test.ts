@@ -133,7 +133,7 @@ describe('openai gpt-live adapter', () => {
 
   test('provider audio passes through at 24 kHz and both transcripts map onto the union', async t => {
     const { f, session, captured } = await ready(t);
-    const pcm = pcm16(7_200);
+    const pcm = pcm16(9_600);
     f.send({ type: 'session.output_audio.delta', delta: b64(pcm) });
     f.send({ type: 'session.input_transcript.delta', delta: 'What is', start_ms: 1_000, end_ms: 1_200 });
     f.send({ type: 'session.output_transcript.delta', delta: 'Checking', start_ms: 1_200, end_ms: 1_400 });
@@ -184,7 +184,7 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(journaled, ['mm', '   ', '\n\t '], 'a whitespace-only fragment is still journaled, an empty one is not');
     for (let index = 0; index < 30; index += 1) { speak(opened.f, 2_400); await quiet(); clock.advance(100); }
     await until(() => audioOf(opened.captured).length === 31);
-    assert.equal(audioBytes(opened.captured), (7_200 + 30 * 2_400) * 2, 'every valid output delta is forwarded');
+    assert.equal(audioBytes(opened.captured), (9_600 + 30 * 2_400) * 2, 'every valid output delta is forwarded');
     assert.equal(interruptions(opened.captured), 0, 'one word is not a barge-in');
     // No delegated response.created ever arrives here, which is the shape of a plain spoken reply.
     clock.advance(200);
@@ -731,6 +731,8 @@ describe('openai gpt-live turn states', () => {
     assert.equal(audioOf(opened.captured).length, before, 'the cut answer never replays inside the window');
     clock.advance(600);
     sendAudio(opened.f, 7_200);
+    // 3o: the cut drained the modelled playback, so the standing cushion re-arms before this frame plays.
+    clock.advance(400);
     await until(() => audioOf(opened.captured).length >= before + 1);
     await quiet();
     assert.equal(audioOf(opened.captured).length, before + 1, 'exactly one frame plays after the bound');
@@ -754,6 +756,7 @@ describe('openai gpt-live turn states', () => {
     await quiet();
     clock.advance(400);
     sendAudio(opened.f, 7_200);
+    clock.advance(400);
     await until(() => audioOf(opened.captured).length >= before + 1);
     await quiet();
     assert.equal(audioOf(opened.captured).length, before + 1, 'only the frame after the gap plays');

@@ -314,7 +314,7 @@ try {
     assert.match(await page.locator('.live-turns').innerText(), /standup at 2/, 'the streaming answer extended in place');
     await shoot('call-result-card.png');
 
-    // Scroll up: "Back to live" appears, and a background poll never yanks the reader back.
+    // Scroll up: "Jump to latest" appears, and a background poll never yanks the reader back.
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 20, [
       { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
       { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
@@ -325,7 +325,7 @@ try {
     await page.waitForTimeout(600);
     await page.evaluate(() => { const t = document.querySelector('.transcript'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
     await page.waitForFunction(() => { const p = document.querySelector('#transcript-jump'); return p && !p.hidden; }, { timeout: 8000 });
-    assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Back to live');
+    assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Jump to latest');
     await shoot('scrolled-back-to-live.png');
     const beforePoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 22, [
@@ -337,7 +337,7 @@ try {
     await page.waitForTimeout(1500);
     const afterPoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
     assert.ok(Math.abs(afterPoll - beforePoll) <= 2, `a background poll must not re-pin the reader (${beforePoll} -> ${afterPoll})`);
-    assert.ok(!(await page.locator('#transcript-jump').isHidden()), 'the reader still has Back to live after the poll');
+    assert.ok(!(await page.locator('#transcript-jump').isHidden()), 'the reader still has Jump to latest after the poll');
 
     // A finished session collapses under its dated divider, not as the live feed.
     fixture.setLive(session('ended', '2026-10-12T09:00:00Z', 4, [
@@ -345,8 +345,15 @@ try {
       { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
       { seq: 3, kind: 'turnComplete' },
     ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T09:05:00Z', lastObservedAt: '2026-10-12T09:05:00Z' } }));
-    await page.waitForSelector('.feed-session', { timeout: 12000 });
-    assert.equal(await page.locator('.feed-empty').count(), 1, 'an idle terminal session shows the empty line above its divider');
+    // UI3b (UI3B-R1): the finished session leaves the lane blank and waits in the closed panel.
+    await page.waitForSelector('#past-sessions', { timeout: 12000 });
+    assert.equal(await page.locator('.feed-empty').count(), 1, 'an idle terminal session shows the empty line alone');
+    assert.equal(await page.locator('.live-turns .entry').count(), 0, 'no line of the finished session stays in the lane');
+    assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), false, 'the past-sessions panel starts closed');
+    await page.locator('#past-sessions > summary').click();
+    // The panel lists dated sessions; opening one is how the owner reads it.
+    await page.locator('#past-sessions .feed-session > summary').first().click();
+    await page.waitForSelector('#past-sessions .feed-session .entry', { timeout: 8000 });
     await shoot('session-collapsed.png');
 
     // Reduced motion: the calm animation is off.

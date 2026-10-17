@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path';
 
 const { chromium } = createRequire(new URL('../package.json', import.meta.url))('playwright');
 const root = resolve(import.meta.dirname, '../..');
-const out = '/Users/rob/.lux/reports/lux-didi-stability-1015/v3-shots';
+const out = '/Users/rob/.lux/reports/lux-didi-stability-1015/ui3b-shots';
 await mkdir(out, { recursive: true });
 const state = await mkdtemp(join(tmpdir(), 'v3-shots-'));
 let child, descriptor, stderr = '';
@@ -235,6 +235,14 @@ try {
 
   let table = await sample('1440x900-dark-a-idle');
   idleStageTop = table.stageTop;
+  // UI3b item 5, shot 1: an app start with no session at all is a blank voice view under the orb.
+  await page.screenshot({ path: join(out, 'idle-fresh.png') });
+  shots.push('idle-fresh');
+  assert.deepEqual(await page.evaluate(() => ({
+    entries: document.querySelectorAll('.transcript .entry').length,
+    placeholder: !!document.querySelector('.transcript .transcript-placeholder'),
+    pastSessions: !!document.querySelector('#past-sessions'),
+  })), { entries: 0, placeholder: true, pastSessions: false }, 'idle-fresh is a blank voice view');
   assert.equal(table.labels, 0, 'no speaker labels anywhere');
   assert.equal(table.documentScrolls, false, 'the document never scrolls');
   assert.equal(table.chatColumn <= 760, true, 'the chat column is at most 760 px');
@@ -268,6 +276,14 @@ try {
   table = await sample('1440x900-dark-b-speaking', { width: 1440, height: 900 });
   assert.equal(table.stageTop, idleStageTop, `appending 30 lines never moves the orb stage (${idleStageTop} then ${table.stageTop})`);
   assert.equal(table.transcriptDistance <= 2, true, `the transcript stays pinned at the bottom (distance ${table.transcriptDistance})`);
+  // UI3b item 5, shot 2: thirty synthetic lines in, the view is still following the newest line.
+  await page.screenshot({ path: join(out, 'in-call-following.png') });
+  shots.push('in-call-following');
+  assert.deepEqual(await page.evaluate(() => ({
+    entries: document.querySelectorAll('.transcript .entry').length,
+    pinned: Math.round(document.querySelector('.transcript').scrollHeight - document.querySelector('.transcript').scrollTop - document.querySelector('.transcript').clientHeight) <= 2,
+    pillHidden: document.querySelector('#transcript-jump').hidden,
+  })), { entries: 30, pinned: true, pillHidden: true }, 'in-call-following follows the newest line');
   if (table.chatDistance > 2) {
     const chatState = await page.evaluate(() => { const el = document.querySelector('#connected-entries'); const pill = document.querySelector('#chat-jump'); return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, jumpHidden: pill.hidden, entries: el.children.length }; });
     throw Error(`the chat list is not pinned: ${JSON.stringify({ ...chatState, distance: table.chatDistance })}`);
@@ -302,6 +318,10 @@ try {
   await scrollUp();
   table = await sample('1440x900-dark-c-scrolled-up', { width: 1440, height: 900 });
   assert.equal(table.voiceJump, true, 'the transcript offers Jump to latest once the reader scrolls up');
+  // UI3b item 5, shot 3: the reader scrolled up, so the jump-to-latest pill is on screen.
+  await page.screenshot({ path: join(out, 'scrolled-up-with-pill.png') });
+  shots.push('scrolled-up-with-pill');
+  assert.equal(await page.evaluate(() => ({ hidden: document.querySelector('#transcript-jump').hidden, label: document.querySelector('#transcript-jump').textContent })).then(p => p.hidden === false && p.label === 'Jump to latest'), true, 'scrolled-up-with-pill shows the pill');
   assert.equal(table.chatJump, true, 'the chat list offers Jump to latest once the reader scrolls up');
   await repin();
   await scrollUp();

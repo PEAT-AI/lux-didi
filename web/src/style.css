@@ -355,6 +355,14 @@ html,body{height:100%;overflow:hidden}
 .feed-session-headline{color:var(--text);font-size:13px}
 .feed-session-count{color:var(--muted)}
 .feed-session-body{display:flex;flex-direction:column;gap:16px;opacity:.72}
+/* The past-sessions panel: one collapsed line under the feed, closed on every open and every session. */
+.feed-sessions{margin-top:4px;border-top:1px solid var(--border);padding-top:10px}
+.feed-sessions>summary{list-style:none;cursor:pointer;color:var(--muted);font-size:12px}
+.feed-sessions>summary::-webkit-details-marker{display:none}
+.feed-sessions>summary::marker{content:""}
+.feed-sessions>summary:hover{color:var(--text)}
+.feed-session-list{display:flex;flex-direction:column;gap:16px;padding-top:12px;opacity:.72}
+.live-job-gist{color:var(--muted);margin-left:8px}
 .feed-activity{align-self:flex-start;max-width:100%}
 .feed-notices{display:flex;flex-direction:column;gap:8px;max-width:min(var(--feed-measure),100%);margin:0 auto}
 .feed-jobs{display:flex;flex-direction:column;gap:16px;max-width:min(var(--feed-measure),100%);margin:0 auto;padding-top:16px}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -47,6 +47,12 @@ test('voice landing keeps the latest turn readable and secondary activity in a s
   assert.match(closed, /Take one small step\./);
   assert.doesNotMatch(closed, /live-latest-turn|live-result/,'no duplicate answer surface in the lane');
   assert.doesNotMatch(closed, /<details id="live-details"/,'no history disclosure in the lane');
+  // UI3B-R1 (owner decision): history is a panel, not an inline disclosure. It is closed by default and
+  // a past session is reachable only from inside it.
+  const withPast = liveMarkup(live, { live, earlier: [{ at: 'Yesterday, 09:15', html: '<p>old session</p>' }] });
+  assert.match(withPast, /<details class="feed-sessions" id="past-sessions"><summary/,'the past-sessions panel is closed by default');
+  assert.equal(withPast.slice(withPast.indexOf('id="past-sessions"')).startsWith('id="past-sessions"><summary'), true);
+  assert.match(withPast, /old session/,'the panel holds the earlier sessions');
 });
 
 test('the thinking label never names a tool; the activity line carries the phrase', () => {
@@ -694,7 +700,7 @@ test('FE1 the session divider names today, yesterday or the short date', () => {
   assert.equal(sessionDividerText(null, now), 'Earlier');
 });
 
-test('FE1 a terminal newest session collapses under its divider with the empty line above', () => {
+test('UI3b a terminal newest session opens on the blank line alone, with nothing from it inline', () => {
   const ended = { state: 'ended', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'hello' },
     { seq: 2, kind: 'outputTranscription', text: 'Hi there' },
@@ -702,13 +708,12 @@ test('FE1 a terminal newest session collapses under its divider with the empty l
   ], pastSession: { outcome: 'closed', endedAt: '2026-10-11T16:05:00Z', lastObservedAt: '2026-10-11T16:05:00Z' } } as unknown as LiveCurrent;
   const html = liveMarkup(ended);
   assert.match(html, /feed-empty/);
-  assert.match(html, /class="feed-session"/);
-  assert.ok(html.indexOf('feed-empty') < html.indexOf('class="feed-session"'), 'the empty line sits above the collapsed session');
-  const details = html.slice(html.indexOf('class="feed-session"'));
-  assert.doesNotMatch(details.slice(0, details.indexOf('>')), /open/, 'the past session is closed by default');
+  assert.doesNotMatch(html, /Hi there/, 'a finished session leaves no line in the voice view');
+  assert.doesNotMatch(html, /data-seg="past-session"/, 'a finished session is not an inline block');
+  assert.doesNotMatch(html, /id="past-sessions"/, 'with no earlier sessions the panel is absent, not an empty box');
 });
 
-test('FE1 an ended session becomes one collapsed dated block when a new one starts', () => {
+test('UI3b a new session starts blank and earlier sessions live only in the closed panel', () => {
   const previous = { state: 'ended', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'old question' },
     { seq: 2, kind: 'outputTranscription', text: 'Old answer' },
@@ -719,7 +724,20 @@ test('FE1 an ended session becomes one collapsed dated block when a new one star
   assert.match(block.html, /Old answer/);
   const fresh = { state: 'listening', since: '2026-10-12T16:00:00Z', cursor: 1, entries: [{ seq: 1, kind: 'inputTranscription', text: 'new question' }] } as unknown as LiveCurrent;
   const html = liveMarkup(fresh, { live: fresh, earlier: [block] });
-  assert.ok(html.indexOf('feed-session') < html.indexOf('divider:session'), 'the ended block sits above the fresh divider');
+  assert.ok(html.indexOf('new question') < html.indexOf('id="past-sessions"'), 'the current session is the feed; the panel sits after it');
+  assert.equal(html.includes('Old answer'), true, 'the earlier session is reachable from the panel');
+  assert.match(html, /<details class="feed-sessions" id="past-sessions"><summary/, 'the panel carries no open attribute, so it starts closed');
+});
+
+test('UI3b the past-sessions panel lists every earlier session and nothing when there is none', () => {
+  const previous = { state: 'ended', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [{ seq: 1, kind: 'outputTranscription', text: 'Old answer' }] } as unknown as LiveCurrent;
+  const block = earlierSession(previous)!;
+  const panel = pastSessionsMarkup([block]);
+  assert.match(panel, /id="past-sessions"/);
+  assert.match(panel, /Past sessions/);
+  assert.doesNotMatch(panel.slice(0, panel.indexOf('>')), /open/);
+  assert.equal(pastSessionsMarkup([]), '', 'no earlier sessions means no panel');
+  assert.equal(pastSessionListMarkup([block]), block.html);
 });
 
 test('FE1 the feed is one surface with headline rows and collapsed detail', () => {
@@ -753,14 +771,16 @@ test('FE1-R1 a finished session shows its first turn headline and turn count, co
     { seq: 5, kind: 'outputTranscription', text: 'Thanks for watching.' },
     { seq: 6, kind: 'turnComplete' },
   ], pastSession: { outcome: 'closed', endedAt: '2026-10-11T16:05:00Z', lastObservedAt: '2026-10-11T16:05:00Z' } } as unknown as LiveCurrent;
-  const html = liveMarkup(ended);
-  assert.match(html, /<details class="feed-session" data-seg="past-session">/, 'the finished session is a closed, expandable block');
+  // UI3b: the finished session's summary and body live in the past-sessions panel, never in the lane.
+  const html = pastSessionsMarkup([earlierSession(ended)!]);
+  assert.match(html, /<details class="feed-session" data-seg="earlier:/, 'the finished session is a closed, expandable block');
   assert.match(html, /<summary class="feed-divider"><span class="feed-divider-date">/, 'the divider date leads the summary');
   assert.match(html, /class="feed-session-headline">Ship the UI\.</, 'the first turn headline is shown under the divider');
   assert.match(html, /class="feed-session-count">2 turns</, 'the turn count is shown');
   assert.equal(sessionTurnCount(ended), 2);
   assert.equal(sessionHeadline(ended), 'Ship the UI.');
   assert.match(html, /Ship the UI\. Then run the audit\./, 'the full answer stays in the collapsed body');
+  assert.doesNotMatch(liveMarkup(ended), /Ship the UI/, 'and the lane itself stays blank');
 });
 
 test('FE1-R1 the orb caption carries the state word only, never the activity row', () => {
@@ -777,6 +797,28 @@ test('a job state renders as a plain human sentence, never the raw enum token (M
   for (const state of ['in_progress', 'completed', 'failed', 'unknown'] as const) {
     assert.equal(jobStateLabel(state).includes('unknown'), false, 'the raw state word never reaches the panel');
   }
+});
+
+test('UI3b a job result is one clean line: the gist and the state chip, never the raw evidence', () => {
+  const live = { state: 'idle', entries: [], cursor: 0, jobs: [{ id: 'j1', originSessionId: 's1', state: 'completed', createdAt: 0,
+    markdown: '## Findings\n- **Source A** says `x`\n- Source B says y\n\nMore prose.', delivered: false }] } as LiveCurrent;
+  const html = liveMarkup(live);
+  assert.match(html, /Background task finished/, 'the state stays a human sentence');
+  assert.match(html, /live-job-gist/, 'the gist is its own chip on the same line');
+  assert.match(html, /Findings/, 'the gist is the first sentence of the result');
+  assert.doesNotMatch(html, /Source B says y/, 'raw evidence bullets never reach the voice view');
+  assert.doesNotMatch(html, /<li>|<h2|<code>/, 'nothing of the raw markdown structure survives');
+  assert.equal(jobGist('**Done** &amp; dusted.'), 'Done & dusted.', 'entities are decoded and markers stripped');
+  assert.equal(jobGist(''), '');
+});
+
+test('UI3b an opened detail stays open when a poll repaints its segment', () => {
+  const html = '<article data-seg="turn:2"><details class="feed-turn-detail" data-seg="detail:2" open><summary>Full answer</summary>body</details></article>';
+  const repaint = '<article data-seg="turn:2"><details class="feed-turn-detail" data-seg="detail:2"><summary>Full answer</summary>body and more</details></article>';
+  assert.deepEqual(openSegments(html), ['detail:2']);
+  assert.deepEqual(openSegments(repaint), [], 'a closed row reports nothing');
+  assert.match(restoreOpen(repaint, openSegments(html)), /<details class="feed-turn-detail" data-seg="detail:2" open>/, 'the reader keeps their open detail');
+  assert.equal(restoreOpen(repaint, []), repaint, 'nothing to restore leaves the markup untouched');
 });
 
 test('a live job card shows the plain sentence, not "Background task unknown" (M1)', () => {

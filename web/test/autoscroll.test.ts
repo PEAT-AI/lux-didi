@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import { PIN_SLACK_PX, distanceFromBottom, isPinned, jumpVisible, nextPinned } from '../src/autoscroll.ts';
 
 const list = (scrollTop: number, scrollHeight = 1000, clientHeight = 400) => ({ scrollTop, scrollHeight, clientHeight });
@@ -30,5 +31,22 @@ test('FE1 a poll that grows the feed never re-pins a reader who scrolled up; a n
   assert.equal(nextPinned(false, grown), false, 'growth alone never drags a reader back to the bottom');
   // A new session starts pinned: the binder re-settles to the newest line until the reader takes over.
   assert.equal(nextPinned(true, grown), true);
-  assert.equal(jumpVisible(false, grown), true, 'Back to live is offered while the reader is away from the bottom');
+  assert.equal(jumpVisible(false, grown), true, 'Jump to latest is offered while the reader is away from the bottom');
+});
+
+test('UI3b the voice transcript follows the newest line under one rule, the pin on #transcript alone', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.equal(source.match(/attachPin\(/g)?.length, 1, 'exactly one scroll mechanism is bound in the page');
+  assert.doesNotMatch(source, /\.live-transcript/, 'the dead second anchor never returns');
+  assert.match(source, /attachPin\(list, pill\)/, 'the pin owns the transcript container');
+  assert.match(source, /id="transcript-jump"[^>]*hidden>Jump to latest</, 'the jump-to-latest pill starts hidden');
+});
+
+test('UI3b a reader who scrolled up sees the jump pill; a reader at the bottom does not', () => {
+  const bottom = list(600);
+  const scrolledUp = list(0);
+  assert.equal(jumpVisible(true, bottom), false);
+  assert.equal(jumpVisible(false, scrolledUp), true);
+  // The pill is the reader's way back: the pin itself never drags them down while they are away.
+  assert.equal(nextPinned(false, scrolledUp), false);
 });

@@ -280,12 +280,13 @@ export function evidenceMarkup(evidence: readonly ToolEvidence[], now = Date.now
     const rows = blocksOf(tool.markdown).map(block => evidenceRow(tool, block, now)).filter(row => row.line);
     rows.sort((left, right) => right.at - left.at);
     const label = sourceLabel(tool.name);
-    groups.set(label, (groups.get(label) ?? []).concat(rows.slice(0, 6)));
+    groups.set(label, (groups.get(label) ?? []).concat(rows));
   }
   const sections: string[] = [];
   for (const [label, rows] of groups) {
-    if (!rows.length) continue;
-    const items = rows.map(row => `<li class="chat-evidence-item"><span class="chat-evidence-line">${escapeHtml(row.line)}</span>${row.snippet ? `<span class="chat-evidence-snippet">${escapeHtml(row.snippet)}</span>` : ''}</li>`).join('');
+    const kept = rows.sort((left, right) => right.at - left.at).slice(0, 6);
+    if (!kept.length) continue;
+    const items = kept.map(row => `<li class="chat-evidence-item"><span class="chat-evidence-line">${escapeHtml(row.line)}</span>${row.snippet ? `<span class="chat-evidence-snippet">${escapeHtml(row.snippet)}</span>` : ''}</li>`).join('');
     sections.push(`<section class="chat-evidence-source"><h4>${escapeHtml(label)}</h4><ul>${items}</ul></section>`);
   }
   if (!sections.length) return '';

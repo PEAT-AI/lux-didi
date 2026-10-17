@@ -564,9 +564,12 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   t.after(() => session.close()); const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object; tools: unknown } }).setup;
   assert.equal('thinkingConfig' in setup.generationConfig, false);
+  // Golden: the port carries the original schema and this adapter builds the Gemini dialect itself, so the
+  // wire payload is exactly what the host used to declare (enum and ARRAY collapsed to STRING, original kept
+  // in the description) and the caller's declarations are never rewritten.
   const expectedTools = [{ functionDeclarations: [
-    { name: 'first', description: 'First', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', enum: ['one', 'two'] } }, required: ['query'] }, behavior: 'BLOCKING' },
-    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'ARRAY', items: { type: 'STRING' } } } }, behavior: 'BLOCKING' },
+    { name: 'first', description: 'First', parameters: { type: 'OBJECT', required: ['query'], properties: { query: { type: 'STRING', description: 'Original schema: {"type":"STRING","enum":["one","two"]}' } } }, behavior: 'BLOCKING' },
+    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'STRING', description: 'Original schema: {"type":"ARRAY","items":{"type":"STRING"}}' } } }, behavior: 'BLOCKING' },
   ] }];
   assert.deepEqual(setup.tools, expectedTools);
   assert.equal(JSON.stringify(setup.tools), JSON.stringify(expectedTools), 'serialized declaration and nested schema order is exact');
@@ -644,16 +647,23 @@ test('a rejected provider frame reports one shape-only diagnostic with no value 
   assert.equal(safeEvent({ ...diagnostic, keys: ['serverContent', 'bad key name!'] }), undefined, 'a non-key path is refused');
 });
 
-test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
+test('an original schema with unsupported keys never reaches the wire raw', async t => {
+  // The fixture closes 1007 on any additionalProperties in the setup schema, exactly as Gemini does. The port
+  // now carries the original schema, so this adapter must build the dialect itself and keep the wire clean.
   const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), tools: [
     { name: 'invalid', description: 'Invalid original schema', parameters: { type: 'OBJECT', properties: { nested: { type: 'OBJECT', additionalProperties: false } } } },
   ] }, control());
   const captured = collect(session);
-  await assert.rejects(session.ready, code('provider_setup_rejected'));
-  assert.equal((await session.done).code, 'provider_setup_rejected');
-  await captured.done;
-  assert.equal(captured.events.some(event => event.type === 'ready'), false);
+  await f.frame(1);
+  const declaration = (f.frames[0] as { setup: { tools: { functionDeclarations: { parameters: { properties: { nested: unknown } } }[] }[] } })
+    .setup.tools[0]!.functionDeclarations[0]!;
+  // The unsupported key survives only inside the description text, never as a schema key the provider rejects.
+  assert.deepEqual(declaration.parameters.properties.nested,
+    { type: 'OBJECT', description: 'Original schema: {"type":"OBJECT","additionalProperties":false}' });
+  f.send({ setupComplete: {} });
+  await session.ready;
+  session.close(); await captured.done;
   noCanary(captured.events);
 });
 

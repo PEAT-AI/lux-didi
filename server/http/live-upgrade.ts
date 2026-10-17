@@ -8,14 +8,14 @@ import {
   LiveError, type LiveAttachment, type LiveContext, type LiveFragmentPage,
   type LivePublicMarker, type LiveSessionSnapshot,
 } from '../live/index.js';
-import type { DataClass } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
 
 export interface LiveStatusPayload {
   service: 'live';
   status: 'unconfigured' | 'disabled' | 'error' | 'configured';
   code?: string;
-  provider?: 'gemini';
+  provider?: LiveVoiceProvider;
   model?: string;
   voice?: string;
   dataClasses?: string[];

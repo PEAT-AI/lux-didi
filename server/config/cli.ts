@@ -1,13 +1,14 @@
 import { initializeProviderConfig, migrateProviderBinding, ConfigError, type InitializeOptions, type MigrateBindingOptions } from './index.js';
+import { isLiveVoiceProvider } from '../adapters/live-voice/index.js';
 
 const help = 'Usage: node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-id <current-store-owner> --profile-input <private-profile-json> --source-env <authorized-private-env-file> [--binding-input <private-binding-json>]\n       node <compiled-root>/config/cli.js migrate-binding --config-dir <existing-private-dir> --owner-id <current-store-owner> --binding-input <private-binding-json>\nAll paths must be explicit absolute paths. Fixed source variable: GEMINI_API_KEY. Binding is an operator assertion, not provider identity verification.\n';
 type Command = { command: 'init'; options: InitializeOptions } | { command: 'migrate-binding'; options: MigrateBindingOptions };
 function argumentsFrom(args: string[]): Command {
   const command = args[0];
   if ((command !== 'init' && command !== 'migrate-binding') ||
-      (command === 'init' ? args.length !== 9 && args.length !== 11 : args.length !== 7)) throw new ConfigError('invalid_arguments');
+      (command === 'init' ? ![9, 11, 13].includes(args.length) : args.length !== 7)) throw new ConfigError('invalid_arguments');
   const names: Record<string, string> = { '--config-dir': 'configDir', '--owner-id': 'ownerId', '--binding-input': 'bindingInputPath',
-    ...(command === 'init' ? { '--profile-input': 'profileInputPath', '--source-env': 'sourceEnvPath' } : {}) };
+    ...(command === 'init' ? { '--profile-input': 'profileInputPath', '--source-env': 'sourceEnvPath', '--provider': 'provider' } : {}) };
   const values: Record<string, string> = {};
   for (let i = 1; i < args.length; i += 2) {
     const flag = args[i]!;
@@ -23,8 +24,11 @@ function argumentsFrom(args: string[]): Command {
     return { command, options: { ...common, bindingInputPath: values['bindingInputPath'] } };
   }
   if (!values['profileInputPath'] || !values['sourceEnvPath']) throw new ConfigError('invalid_arguments');
+  const provider = values['provider'];
+  if (provider !== undefined && !isLiveVoiceProvider(provider)) throw new ConfigError('invalid_arguments');
   return { command, options: { ...common, profileInputPath: values['profileInputPath'], sourceEnvPath: values['sourceEnvPath'],
-    ...(values['bindingInputPath'] ? { bindingInputPath: values['bindingInputPath'] } : {}) } };
+    ...(values['bindingInputPath'] ? { bindingInputPath: values['bindingInputPath'] } : {}),
+    ...(provider !== undefined ? { provider } : {}) } };
 }
 if (process.argv.slice(2).length === 1 && process.argv[2] === '--help') {
   process.stdout.write(help);

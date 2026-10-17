@@ -525,8 +525,12 @@ public actor LiveSessionCoordinator {
         if error is DecodingError { return .invalidFrame }
         return fallback
     }
+    /// The Live providers this client can open. The host picks one per session and pins it in its status and
+    /// grant, so this is a shape gate only: the provider name is never the choice, the host status is.
+    static let liveProviders: Set<String> = ["gemini", "openai"]
     private func validateIntent(_ frozen: LiveBeginIntent) throws {
-        guard !frozen.assistantID.isEmpty, frozen.provider == "gemini", !frozen.model.isEmpty, !frozen.voice.isEmpty,
+        guard !frozen.assistantID.isEmpty, LiveSessionCoordinator.liveProviders.contains(frozen.provider),
+              !frozen.model.isEmpty, !frozen.voice.isEmpty,
               ["ordinary", "private", "sensitive"].contains(frozen.inputClass) else { throw LiveClientError.invalidIntent }
         try LiveSocketTransport.validate(LiveSocketBinding(origin: frozen.origin, sessionID: UUID().uuidString,
                                                           authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))

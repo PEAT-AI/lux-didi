@@ -1,18 +1,17 @@
 import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_LIVE_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { dirname, join } from 'node:path';
-import { isLiveVoiceProvider, type DataClass } from '../adapters/live-voice/index.js';
+import { isLiveVoiceProvider, type DataClass, type LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
-import { reference } from './index.js';
+import { slotFor } from './index.js';
 
 const liveLimit = 16 * 1024;
 const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences', 'limits'];
 const preferenceKeys = ['dataClass', 'language', 'register', 'humor', 'verbosity'];
 const requiredKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences'];
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
-const modelPattern = /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 // A two-letter language with an optional two-letter region, case-normalised, or undefined when the
 // tag carries a script/sub-language or no two-letter language. The setup languageCode keeps this
@@ -34,6 +33,7 @@ export function liveSetupLanguage(locale: string | undefined): string {
 
 /** The frozen, sanitized Live identity. Never carries key bytes or prompt text. */
 export interface LiveConfiguredProfile {
+  readonly provider: LiveVoiceProvider;
   readonly preferences: ValidatedPreferences;
   readonly model: string;
   readonly voice: string;
@@ -48,8 +48,9 @@ export type LiveConfigStatus =
   | { status: 'configured'; config: LiveReadyProfile }
   | { status: 'error'; code: string };
 
-function modelId(value: unknown): string {
-  if (typeof value !== 'string' || !modelPattern.test(value)) throw new LiveConfigError('invalid_model');
+/** The provider's own model-id dialect: each slot pins the ids it can serve, never a shared pattern. */
+function modelId(provider: LiveVoiceProvider, value: unknown): string {
+  if (typeof value !== 'string' || !slotFor(provider).modelPattern.test(value)) throw new LiveConfigError('invalid_model');
   return value;
 }
 function voice(value: unknown): string {
@@ -86,8 +87,9 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     if (typeof input['enabled'] !== 'boolean') fail('invalid_profile');
     const provider = input['provider'];
     if (!isLiveVoiceProvider(provider)) throw new LiveConfigError('invalid_provider');
-    if (input['keyReference'] !== reference) fail('invalid_reference');
-    const model = modelId(input['modelId']);
+    const slot = slotFor(provider);
+    if (input['keyReference'] !== slot.keyReference) fail('invalid_reference');
+    const model = modelId(provider, input['modelId']);
     const chosenVoice = voice(input['voice']);
     const dataClasses = classList(input['dataClasses']);
     const preferences = validatePreferences(
@@ -95,8 +97,8 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       options.ownerId,
     );
     const config: LiveConfiguredProfile = Object.freeze({
-      preferences, model, voice: chosenVoice, dataClasses,
-      profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: reference, modelId: model, dataClasses }),
+      provider, preferences, model, voice: chosenVoice, dataClasses,
+      profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),
     });
     // The optional local overlay lives beside the data directory, outside Git; an invalid file
     // fails closed into a typed status instead of silently falling back to the public base.
@@ -121,7 +123,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       ...(language !== undefined ? { language } : {}),
     });
     const profile = validateLiveProfile({
-      provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: reference,
+      provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference,
       language: setupLanguage,
       route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
       prompt: { text: composed.text, dataClass: preferences.dataClass },

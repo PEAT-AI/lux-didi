@@ -4,7 +4,7 @@ import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor, loadProviderConfig } from '../config/index.js';
 import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
-import { GeminiLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
+import { createLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import type { Credentials } from '../adapters/model/types.js';
 import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type LiveAttachment, type LiveContext, type LiveToolsComposition, type LivePageProjection, type LiveFragmentPage, type LiveProfile, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
@@ -23,7 +23,7 @@ export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSo
 
 function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
-    service: 'live', status: 'configured', provider: 'gemini', model: profile.liveModelId, voice: profile.voice,
+    service: 'live', status: 'configured', provider: profile.provider, model: profile.liveModelId, voice: profile.voice,
     dataClasses: [...profile.route.dataClasses], profileIdentity: liveProfileIdentity(profile),
     limits: { sessionMs: profile.limits.sessionMs, idleMs: profile.limits.idleMs },
   };
@@ -36,7 +36,7 @@ function statusPayload(loaded: LiveConfigStatus, profile: LiveProfile | undefine
   if (loaded.status === 'error') return { service: 'live', status: 'error', code: loaded.code };
   const config: LiveConfiguredProfile = loaded.config;
   return {
-    service: 'live', status: loaded.status, provider: 'gemini', model: config.model, voice: config.voice,
+    service: 'live', status: loaded.status, provider: config.provider, model: config.model, voice: config.voice,
     dataClasses: [...config.dataClasses], profileIdentity: config.profileIdentity,
   };
 }
@@ -125,9 +125,9 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const researchSelector = testing?.researchSelector ?? (provider?.status === 'ready'
     ? createGeminiSelector(new GeminiAdapter({ modelId: provider.profile.modelId, keyReference: provider.profile.keyReference, credentials, route: provider.route }))
     : undefined);
-  const voice = new GeminiLiveVoiceAdapter({
+  const voice = createLiveVoiceAdapter({
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, credentials,
-    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: [...profile.route.dataClasses] },
+    route: { enabled: true, provider: profile.provider, modelId: profile.liveModelId, dataClasses: [...profile.route.dataClasses] },
     // wsBufferedBytes belongs to the gateway consumer socket, not this provider socket.
     limits: {
       handshakeMs: profile.limits.handshakeMs, idleMs: profile.limits.idleMs,

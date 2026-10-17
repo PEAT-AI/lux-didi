@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
-import { GeminiLiveVoiceAdapter, LiveVoiceError, liveVoiceActivityDefaults } from '../adapters/live-voice/index.js';
+import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
+import { liveVoiceActivityDefaults } from '../adapters/live-voice/gemini.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
-import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
 
@@ -16,7 +17,7 @@ function noCanary(value: unknown) { assert.equal(JSON.stringify(value).includes(
 
 for (const frameMode of ['binary', 'text'] as const) describe(`${frameMode} provider frames`, () => {
 const fixture = (t: TestContext) => providerFixture(t, frameMode);
-const ready = (t: TestContext, overrides: Partial<GeminiLiveVoiceOptions> = {}) => providerReady(t, overrides, frameMode);
+const ready = (t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}) => providerReady(t, overrides, frameMode);
 
 test('explicit user-first opening preserves incomplete history and model-first opens a spoken turn without user audio', async t => {
   for (const opening of ['user_first', 'model_first'] as const) {
@@ -137,7 +138,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionHandle', 'goAway', 'outcome']);
   assert.deepEqual(captured.events.map(e => e.sequence), captured.events.map((_, i) => i + 1));
   const output = captured.events.find((e): e is Extract<LiveVoiceEvent, { type: 'audio' }> => e.type === 'audio')!;
-  assert.deepEqual(output.pcm, pcm); assert.equal(output.mimeType, 'audio/pcm;rate=24000');
+  assert.deepEqual(output.pcm, pcm); assert.equal(output.rate, 24000);
   assert.ok(captured.events.some(e => e.type === 'resumptionHandle' && e.handle === 'synthetic-adapter-resumption-secret'));
   assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e), false); noCanary(captured.events);
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
@@ -168,7 +169,7 @@ test('disabled/mismatched/unknown route and classified request fail before crede
   let keys = 0, sockets = 0;
   const base = options({ credentials: { resolve: async () => { keys++; return CANARY; } }, socketFactory: () => { sockets++; throw Error(CANARY); } });
   for (const route of [ { ...base.route, enabled: false }, { ...base.route, modelId: 'models/other' }, { ...base.route, provider: 'unknown' } ]) {
-    assert.throws(() => new GeminiLiveVoiceAdapter({ ...base, route } as GeminiLiveVoiceOptions).open(request(), control()), code('route_denied'));
+    assert.throws(() => new GeminiLiveVoiceAdapter({ ...base, route } as LiveVoiceAdapterOptions).open(request(), control()), code('route_denied'));
   }
   for (const bad of [ { ...request(), dataClasses: ['private'] }, { ...request(), dataClasses: ['unknown'] }, { ...request(), system: { text: 'x', dataClass: 'private' } }, { ...request(), history: [{ role: 'tool', text: 'x', dataClass: 'ordinary' }] }, { ...request(), history: [{ role: 'user', text: '', dataClass: 'ordinary' }] }, { ...request(), system: null } ]) {
     assert.throws(() => new GeminiLiveVoiceAdapter(base).open(bad as LiveVoiceRequest, control()), e => e instanceof LiveVoiceError);
@@ -409,7 +410,7 @@ class FakeUpstream extends EventEmitter {
 
 async function fakeReady(limits?: Partial<LiveVoiceLimits>) {
   let socket!: FakeUpstream;
-  const socketFactory = (() => (socket = new FakeUpstream())) as unknown as NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
+  const socketFactory = (() => (socket = new FakeUpstream())) as unknown as NonNullable<LiveVoiceAdapterOptions['socketFactory']>;
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory, ...(limits ? { limits } : {}) })).open(request(), control());
   await new Promise<void>(resolve => setImmediate(resolve));
   socket.open(); socket.setup(); await session.ready;

@@ -1,8 +1,9 @@
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall } from './types.js';
-import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } from './types.js';
+import type { DataClass, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall } from './types.js';
+import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
+import { geminiDialect } from '../../tools/declarations.js';
 import { effectiveLanguageCode } from '../../prompt/live-persona.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
@@ -37,6 +38,18 @@ const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   ...liveVoiceTimerDefaults,
 });
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
+
+// Google Live API automatic activity detection defaults for setup.realtimeInputConfig.automaticActivityDetection.
+// prefixPaddingMs keeps the first syllables, silenceDurationMs tolerates a mid-sentence thinking pause,
+// and the LOW end sensitivity stops a brief pause from ending the turn.
+// https://ai.google.dev/api/live (AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity)
+// prefixPaddingMs 700 (was 300): release 3a echo-analysis (Argon round 2, lux 89995) measured a brief
+// >= 300 ms non-lexical event (residual echo on loud prosody) cutting Naya off, so absorb a longer pre-roll.
+export const liveVoiceActivityDefaults = Object.freeze({
+  prefixPaddingMs: 700, silenceDurationMs: 800,
+  startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+} as const);
+
 
 // The only place a model id is read. It derives this adapter's own capability values; every wire decision
 // below reads a capability, never the id. `gemini-3.8 live` takes the provider default thinking level and
@@ -101,7 +114,7 @@ interface Settings {
 export class GeminiLiveVoiceAdapter implements LiveVoicePort {
   private readonly settings: Settings;
   readonly capabilities: LiveVoiceCapabilities;
-  constructor(options: GeminiLiveVoiceOptions) {
+  constructor(options: LiveVoiceAdapterOptions) {
     if (!object(options) || typeof options.modelId !== 'string' || !/^models\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(options.modelId)
       || typeof options.voice !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(options.voice)
       || typeof options.keyReference !== 'string' || !options.keyReference.trim() || options.keyReference.length > 256
@@ -156,7 +169,12 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128 || request.tools.some(t => !object(t) || typeof t.name !== 'string' || !t.name || !object(t.parameters)))) fail('invalid_request');
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
-    const declarations = this.capabilities.supportsToolScheduling ? request.tools?.map(declaration => ({ ...declaration, behavior: declaration.name === MEMORY_TOOL ? 'NON_BLOCKING' : 'BLOCKING' })) : request.tools;
+    // The port carries the original JSON schemas; this adapter owns its own wire dialect.
+    const declarations = request.tools?.map(declaration => ({
+      ...declaration, parameters: geminiDialect(declaration.parameters),
+      ...(this.capabilities.supportsToolScheduling
+        ? { behavior: declaration.name === MEMORY_TOOL ? 'NON_BLOCKING' : 'BLOCKING' } : {}),
+    }));
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
@@ -499,7 +517,7 @@ class Session implements LiveVoiceSession {
           if (!pcm.length || pcm.length % 2 || pcm.toString('base64') !== blob.data) fail('protocol_error');
           this.diagnostic.outputAudioFrames++; this.diagnostic.outputAudioPCMBytes += pcm.length;
           if (this.initialTurnComplete) { this.diagnostic.outputAudioAfterInitialTurnFrames++; this.diagnostic.outputAudioAfterInitialTurnPCMBytes += pcm.length; }
-          events.push({ type: 'audio', pcm: new Uint8Array(pcm), mimeType: 'audio/pcm;rate=24000' });
+          events.push({ type: 'audio', pcm: new Uint8Array(pcm), rate: 24000 });
         }
         if ('text' in part) events.push({ type: 'modelText', text: this.text(part.text), thought: part.thought === true });
       }

@@ -35,7 +35,7 @@ import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -104,7 +104,7 @@ interface Harness {
 async function harness(t: TestContext, overrides: {
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
-  socketFactory?: NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
+  socketFactory?: NonNullable<LiveVoiceAdapterOptions['socketFactory']>;
   port?: LiveVoicePort;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
@@ -304,7 +304,7 @@ test('a test-only port with different capabilities drives the live session with 
   assert.equal('modelId' in request, false, 'the port request carries no model name');
   const output = attachment.output[Symbol.asyncIterator]();
   assert.equal((await output.next()).value?.kind, 'marker');
-  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 2, 3]), mimeType: 'audio/pcm;rate=24000' });
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 2, 3]), rate: 24000 });
   const chunk = await output.next();
   assert.equal(chunk.value?.kind, 'audio', 'the fake session audio reached the attached consumer');
   assert.deepEqual([...(chunk.value as { pcm: Uint8Array }).pcm], [1, 2, 3]);

@@ -2815,7 +2815,9 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
   while (!h.calls.length) await tick();
   h.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
   scheduler.runDue(); await tick();
-  assert.deepEqual(receipts, [], 'a working tool is not silence: no watchdog phase and no dead-air nudge');
+  const fired = receipts.filter(record => record.event === 'live_watchdog' && record['phase'] !== 'armed').map(record => record['phase']);
+  assert.deepEqual(fired, [], 'a working tool is not silence: the watchdog never nudges or recovers over it');
+  assert.ok(!receipts.some(record => record.event === 'live_dead_air_nudge'), 'the tool has not returned, so even the dead-air nudge has not fired');
   assert.equal(h.requests.length, 1, 'no recovery while the tool is in flight');
   finish();
   await h.f.frame(2);

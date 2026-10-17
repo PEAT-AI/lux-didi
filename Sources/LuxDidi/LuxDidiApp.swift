@@ -495,6 +495,8 @@ struct RootView: View {
             if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
         }
         window.isReleasedWhenClosed = false
+        // UI3A-R7: a real File menu, so Command-W reaches the close path.
+        NSApp.mainMenu = WindowMenu.build(appName: "Naya", closeTarget: window)
         window.contentView = makeRootContent()
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
@@ -846,6 +848,18 @@ struct RootView: View {
         guard window.isVisible else { failProof("registered hotkey callback must show"); return }
         escape()
         guard !window.isVisible, model.draft.contains("retained"), !applicationShouldTerminateAfterLastWindowClosed(NSApp) else { failProof("Escape/lifecycle retention"); return }
+        show()
+        // UI3A-R7: the Command-W key equivalent a keystroke sends reaches the close
+        // path and hides the window exactly like the traffic light.
+        guard let closeItem = NSApp.mainMenu?.item(withTitle: "File")?.submenu?.items
+                .first(where: { $0.action == #selector(NSWindow.performClose(_:)) }),
+              closeItem.keyEquivalent == "w", closeItem.keyEquivalentModifierMask == .command,
+              let keyDown = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                  timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                  context: nil, characters: "w", charactersIgnoringModifiers: "w",
+                  isARepeat: false, keyCode: UInt16(kVK_ANSI_W)),
+              NSApp.mainMenu?.performKeyEquivalent(with: keyDown) == true, !window.isVisible
+        else { failProof("Command-W must reach the close path"); return }
         show()
         do {
             let url = URL(fileURLWithPath: path)

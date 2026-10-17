@@ -23,6 +23,10 @@ extension LaunchKind {
     }
 }
 
+/// The close command's two outcomes: an active Live session keeps running in the
+/// mini orb, otherwise the window hides.
+enum CloseOutcome: Equatable { case mini, hidden }
+
 /// The one owner of which surface is visible: the FULL window or the MINI orb.
 /// A surface is a pair of closures, so every transition is proven in
 /// Tests/DidiMacTests/main.swift without a window, a screen or a launch.
@@ -88,11 +92,51 @@ final class PresentationCoordinator {
     /// running in the orb; without one the window simply hides and the app
     /// stays in the Dock.
     func closeFull() {
-        if liveIsRunning() { presentMini() } else { hideAll() }
+        switch Self.closeOutcome(liveIsRunning: liveIsRunning()) {
+        case .mini: presentMini()
+        case .hidden: hideAll()
+        }
+    }
+
+    /// What a close does (UI3A-R2, UI3A-R7). Pure, so both outcomes are asserted
+    /// without a session, and the key command cannot drift from the close button.
+    static func closeOutcome(liveIsRunning: Bool) -> CloseOutcome {
+        liveIsRunning ? .mini : .hidden
     }
 
     /// Ctrl-Opt-Shift-Space: hide the window, or bring it back.
     func toggleWindow(activating: Bool) {
         if mode == .full { hideAll() } else { presentFull(activating: activating) }
+    }
+}
+
+/// The app's main menu (UI3A-R7). A hand-built NSApplication carries no AppKit
+/// File menu, so Command-W had no binding at all and the window could only be
+/// closed by its traffic light. File > Close Window sends the standard
+/// `performClose:` to the window, so the key command and the close button travel
+/// the same `windowShouldClose` path: hide when idle, switch to MINI during Live.
+@MainActor
+enum WindowMenu {
+    static let closeTitle = "Close Window"
+    static func build(appName: String = "Naya", closeTarget: AnyObject?) -> NSMenu {
+        let main = NSMenu()
+        let appItem = NSMenuItem(title: appName, action: nil, keyEquivalent: "")
+        appItem.submenu = {
+            let menu = NSMenu(title: appName)
+            menu.addItem(withTitle: "Quit \(appName)",
+                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            return menu
+        }()
+        main.addItem(appItem)
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        fileItem.submenu = {
+            let menu = NSMenu(title: "File")
+            let close = menu.addItem(withTitle: closeTitle,
+                                     action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+            close.target = closeTarget
+            return menu
+        }()
+        main.addItem(fileItem)
+        return main
     }
 }

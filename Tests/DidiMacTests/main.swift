@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -111,6 +112,27 @@ coordinator.toggleWindow(activating: true)
 expect(coordinator.mode == .full && visibleSurfaces == ["full"], "the window shortcut brings the window back")
 for _ in 0..<20 { coordinator.presentMini(); coordinator.presentFull(activating: false); coordinator.presentMini() }
 expect(visibleSurfaces.count == 1 && coordinator.mode == .mini, "rapid switching ends with exactly one surface")
+
+// UI3A-R2 / UI3A-R7: Command-W is a real binding in the app menu, and the close
+// command has two outcomes. Both are asserted on the same values the app runs, so
+// the key path cannot drift from the close button.
+let mainMenu = WindowMenu.build(appName: "Naya", closeTarget: nil)
+let fileMenu = mainMenu.item(withTitle: "File")?.submenu
+let closeItem = fileMenu?.items.first { $0.action == #selector(NSWindow.performClose(_:)) }
+expect(closeItem?.title == "Close Window", "the File menu carries a Close Window item")
+expect(closeItem?.keyEquivalent == "w", "Close Window carries the Command-W key equivalent")
+expect(closeItem?.keyEquivalentModifierMask == .command, "the Close Window equivalent is Command, not Control or Option")
+expect(mainMenu.items.first?.submenu?.items.contains { $0.keyEquivalent == "q" } == true, "the app menu keeps Quit")
+expect(PresentationCoordinator.closeOutcome(liveIsRunning: true) == .mini, "a close during an active Live session goes to MINI")
+expect(PresentationCoordinator.closeOutcome(liveIsRunning: false) == .hidden, "a close while idle hides the window")
+liveActive = true
+coordinator.presentFull(activating: true)
+coordinator.closeFull()
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the close command with Live running shows only the orb")
+coordinator.presentFull(activating: true)
+liveActive = false
+coordinator.closeFull()
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the close command while idle leaves no surface")
 miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()

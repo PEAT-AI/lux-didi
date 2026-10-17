@@ -16,6 +16,13 @@ test('keyed assignments are redacted and the key survives', () => {
   }
 });
 
+test('a spaced passphrase is redacted to the end of its line', () => {
+  assert.equal(redactSecrets('password: correct horse battery staple'), 'password: [redacted]');
+  assert.equal(redactSecrets('client_secret = my super secret value'), 'client_secret = [redacted]');
+  assert.equal(redactSecrets('prefix\npassword: two words\nsuffix'), 'prefix\npassword: [redacted]\nsuffix');
+  assert.equal(redactSecrets('"password": "two words"'), '"password": "[redacted]"');
+});
+
 test('known token formats are redacted', () => {
   const cases = [
     'Bearer abcdefghijklmnopqrstuvwx',
@@ -43,7 +50,13 @@ test('a PEM private key block is redacted as one unit', () => {
   const out = redactSecrets(`before\n${block}\nafter`);
   assert.equal(out.includes('MIIEpAIBAAKCAQEA'), false);
   assert.equal(out.includes('BEGIN RSA PRIVATE KEY'), false);
-  assert.match(out, /^before\n\[redacted\]\nafter$/);
+  assert.match(out, /^before\n(\[redacted\]\n){4}after$/, 'the block keeps its line count');
+});
+
+test('an unterminated PEM block redacts in place and never drops what follows', () => {
+  const out = redactSecrets('before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\nafter one\nafter two');
+  assert.equal(out.includes('MIIEpAIBAAKCAQEA'), false);
+  assert.match(out, /^before\n\[redacted\]\n\[redacted\]\n\[redacted\]\n\[redacted\]$/);
 });
 
 test('the leak shape: a bare token under a username and an email line', () => {
@@ -106,11 +119,14 @@ test('one megabyte of adversarial input finishes under 50 ms', () => {
   assert.ok(best < 50, `redaction took ${best.toFixed(1)} ms`);
 });
 
-test('a line longer than the scan window is redacted through its window and keeps its tail', () => {
+test('a secret anywhere on a very long line is redacted', () => {
+  const filler = 'a'.repeat(70_000);
+  assert.equal(redactSecrets(`${filler} password=hunter2`).includes('hunter2'), false);
+  assert.equal(redactSecrets(`${filler} Bearer abcdefghijklmnopqrstuvwx`).includes('abcdefghijklmnop'), false);
   const tail = 'z'.repeat(200_000);
   const out = redactSecrets(`password=sekr1t ${tail}`);
   assert.equal(out.includes('sekr1t'), false);
-  assert.equal(out.endsWith(tail), true);
+  assert.equal(out.startsWith('password=[redacted]'), true);
 });
 
 test('the marker is the documented literal', () => {

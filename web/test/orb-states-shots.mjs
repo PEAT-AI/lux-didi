@@ -83,7 +83,7 @@ try {
       glow: Math.round(visual.glow * 1000) / 1000,
       state: visual.state,
       // M3-R6: the crossfade progress, 1 when the change has landed.
-      mix: visual.mixing ? Math.round(visual.mixing.t * 1000) / 1000 : 1,
+      mix: visual.mixing ? Math.round(visual.mixing.t * 1000) / 1000 : null,
       mixFrom: visual.mixing ? Math.round(visual.mixing.from * 10) / 10 : null,
       mixTo: visual.mixing ? Math.round(visual.mixing.to * 10) / 10 : null,
     } : null;
@@ -164,8 +164,8 @@ try {
       const first = visuals[0], last = visuals.at(-1);
       assert.ok(first && last, `${from} to ${to} reported a painted visual on every frame`);
       assert.equal(last.hue, HUES[to], `${from} to ${to} fades in the ${to} hue`);
-      assert.equal(first.mix, 0, `${from} to ${to} starts before the fade`);
-      const partial = visuals.filter((v) => v.mix > 0 && v.mix < 1).length;
+      assert.equal(first.mix, null, `${from} to ${to} starts on the old state, before the fade`);
+      const partial = visuals.filter((v) => v.mix !== null && v.mix > 0 && v.mix < 1).length;
       assert.ok(partial >= 1, `${from} to ${to} fades across the strip: ${JSON.stringify(visuals.map((v) => v.mix))}`);
       assert.equal(last.mixFrom ?? HUES[from], HUES[from], `${from} to ${to} fades from the ${from} hue`);
       await page.waitForTimeout(450);
@@ -174,7 +174,7 @@ try {
         assert.equal(settled.state, to, `${from} to ${to} lands on ${to}`);
       } else {
         assert.equal(settled.hue, HUES[to], `${from} to ${to} settles on the ${to} hue`);
-        assert.equal(settled.mix, 1, `${from} to ${to} finishes the fade`);
+        assert.equal(settled.mix, null, `${from} to ${to} finishes the fade`);
       }
       moved.push(`${from}-to-${to}${enlarged ? '@300' : ''}:${distinct}->${Math.round(settled.hue)}`);
       if (enlarged) await enlarge(false);

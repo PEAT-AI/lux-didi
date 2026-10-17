@@ -218,7 +218,7 @@ test('the real view composes the turn: running steps, the answer with folded evi
   const api = installTurnApi({
     s1: { conversation: conversationOf('run-1'), entries: [ownerSays], run: runOf('1') },
     s2: { conversation: conversationOf('run-2'), entries: [ownerSays], run: runOf('2', { state: 'accepted' }) },
-    s3: { conversation: conversationOf('run-3'), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf('3', { finalEntryId: 'e2' }) },
+    s3: { conversation: conversationOf('run-3'), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf('3', { state: 'accepted' }) },
     s4: { conversation: conversationOf('run-4'), entries: [ownerSays], run: runOf('4', { outcome: 'deadline', partialText: '' }) },
   });
   try {
@@ -241,10 +241,12 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.doesNotMatch(api.panel.innerHTML, /chat-steps-done/);
     assert.doesNotMatch(api.panel.innerHTML, /chat-evidence/, 'no evidence before the answer');
     api.release();
-    // A turn with an answer: steps summary, answer, evidence, sources, in that order.
+    // A turn with an answer: the run's steps arrive, then the snapshot that carries the saved answer.
     await view.select('s3');
     await settle();
     api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
+    await settle();
+    api.emit({ type: 'snapshot', run: runOf('3', { finalEntryId: 'e2' }) });
     await settle();
     view.attach();
     assert.match(api.panel.innerHTML, /<summary>Checked Mattermost<\/summary>/, 'the folded summary names the source');
@@ -254,6 +256,7 @@ test('the real view composes the turn: running steps, the answer with folded evi
     const order = ['what changed?', 'chat-steps-done', 'entry assistant', 'chat-evidence', 'chat-sources'].map(marker => api.panel.innerHTML.indexOf(marker));
     assert.deepEqual(order, [...order].sort((left, right) => left - right), `turn order ${order.join(',')}`);
     assert.ok(!api.panel.innerHTML.includes(shapedBody));
+    api.release();
     // A read-only run that ran out of time: plain copy and the next action, no send warning.
     await view.select('s4');
     await settle();

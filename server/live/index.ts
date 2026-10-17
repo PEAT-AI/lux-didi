@@ -1287,13 +1287,11 @@ export class LiveSessionOwner {
           const view: ResearchProgressView = { researchId: progress.researchId, phase: progress.phase, sourcesDone: [...progress.sourcesDone], sourcesPending: [...progress.sourcesPending], elapsedMs: progress.elapsedMs };
           this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
         }
-        // RD: the model is told the lookup is alive on the turn it is already answering, so Naya can say
-        // she is checking instead of leaving the owner in silence. Source names and counts only, never
-        // the question, and never on the closing beat where the tool result itself answers.
-        if ((progress.phase === 'started' || progress.phase === 'round') && !this.#settled(handle) && generation === handle.generation) {
-          const read = progress.sourcesDone.length ? `read ${progress.sourcesDone.join(', ')}` : 'nothing read yet';
-          const left = progress.sourcesPending.length ? `still checking ${progress.sourcesPending.join(', ')}` : 'every source checked';
-          try { handle.session.sendText({ text: `Research progress: ${read}; ${left}. Say one short line about it while you wait, and no findings yet.` }); } catch { /* transport may have terminated */ }
+        // RD: one text turn at the moment the lookup starts, so Naya can say she is checking instead of
+        // leaving the owner in silence. Source names only, never the question. Later beats stay on the
+        // journal channel: a second mid-call turn makes the model answer over its own pending tool call.
+        if (progress.phase === 'started' && !this.#settled(handle) && generation === handle.generation) {
+          try { handle.session.sendText({ text: `Research progress: nothing read yet; still checking ${progress.sourcesPending.join(', ')}. Say one short line about it while you wait, and no findings yet.` }); } catch { /* transport may have terminated */ }
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,

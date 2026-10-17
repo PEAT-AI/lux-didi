@@ -2724,3 +2724,17 @@ test('the earlier-conversations section fills the space under the target in a re
   assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
   assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
 });
+
+// Contract RD: the owner must not hear silence while a lookup runs, so the model is handed one progress
+// turn at the start of the run, on the channel it already answers on, and never the question text.
+test('RD: research start hands the model one voiceable progress line, with no question text', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'lookup-dead-air');
+  const before = h.f.frames.length;
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const frames = h.f.frames.slice(before) as { realtimeInput?: { text?: unknown } }[];
+  const spoken = frames.filter(frame => typeof frame.realtimeInput?.text === 'string').map(frame => String(frame.realtimeInput!.text));
+  assert.equal(spoken.length, 1, 'exactly one progress turn per research start');
+  assert.match(spoken[0]!, /Research progress/i);
+  assert.doesNotMatch(spoken[0]!, /what is on my calendar/, 'the question text never travels on the progress line');
+});

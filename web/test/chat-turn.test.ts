@@ -201,17 +201,17 @@ function installTurnApi(turns: Record<string, { conversation: Record<string, unk
 
 const shapedBody = 'shaped-body-that-is-not-an-answer';
 const evidence: ToolEvidence[] = [{ name: 'mattermost_search', markdown: `- chan | alice | 2026-10-17T09:00:00Z | ${shapedBody}`, sources: [{ title: 'Mattermost: one', url: 'https://mm.example.org/p/1' }] }];
-const runOf = (over: Record<string, unknown>) => ({ runId: `run-${String(over.runId ?? '1')}`, sessionId: 's1', state: 'terminal', outcome: 'complete', finalEntryId: null, finalText: null, partialText: '', mayHaveBeenSent: false, sequence: 0, memorySelection: null, toolEvidence: evidence, ...over });
+const runOf = (id: string, over: Record<string, unknown> = {}) => ({ runId: `run-${id}`, sessionId: 's1', state: 'terminal', outcome: 'complete', finalEntryId: null, finalText: null, partialText: '', mayHaveBeenSent: false, sequence: 0, memorySelection: null, toolEvidence: evidence, ...over });
 const conversationOf = (runId: string) => ({ scope: 'conversation', sessionId: 's1', provider: 'p', model: 'm', state: 'active', revision: 1, permittedClasses: [], latestRunId: runId });
 const ownerSays = { id: 'e1', role: 'user' as const, text: 'what changed?' };
 
 test('the real view composes the turn: running steps, the answer with folded evidence, then the honest no-answer state (F1)', async () => {
   const ConnectedView = await loadView();
   const api = installTurnApi({
-    s1: { conversation: conversationOf('run-1'), entries: [ownerSays], run: runOf({ runId: '1' }) },
-    s2: { conversation: conversationOf('run-2'), entries: [ownerSays], run: runOf({ runId: '2', state: 'accepted' }) },
-    s3: { conversation: conversationOf('run-3'), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf({ runId: '3', finalEntryId: 'e2' }) },
-    s4: { conversation: conversationOf('run-4'), entries: [ownerSays], run: runOf({ runId: '4', outcome: 'deadline', partialText: '' }) },
+    s1: { conversation: conversationOf('run-1'), entries: [ownerSays], run: runOf('1') },
+    s2: { conversation: conversationOf('run-2'), entries: [ownerSays], run: runOf('2', { state: 'accepted' }) },
+    s3: { conversation: conversationOf('run-3'), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf('3', { finalEntryId: 'e2' }) },
+    s4: { conversation: conversationOf('run-4'), entries: [ownerSays], run: runOf('4', { outcome: 'deadline', partialText: '' }) },
   });
   try {
     const view = new ConnectedView(() => {});

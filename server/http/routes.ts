@@ -54,9 +54,12 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     matched(['POST']); query(url, []);
     if (!body) bad('Invalid settings request');
     const input = object(body);
-    fields(input, ['provider', 'voice'], ['provider']);
+    // PV1-R3: the accent rides beside provider and voice. Membership of the closed set is the config
+    // layer's check, which answers the typed invalid_accent, so this layer mirrors the voice treatment.
+    fields(input, ['provider', 'voice', 'accent'], ['provider']);
     if (!isLiveVoiceProvider(input['provider'])) bad('Invalid provider');
     if (input['voice'] !== undefined && (typeof input['voice'] !== 'string' || !input['voice'].length || input['voice'].length > 64)) bad('Invalid voice');
+    if (input['accent'] !== undefined && (typeof input['accent'] !== 'string' || !input['accent'].length || input['accent'].length > 40)) bad('Invalid accent');
     return { kind: 'live', action: 'settings', id: null, input, mutation: true };
   }
   if (path === '/api/v1/live/text') {

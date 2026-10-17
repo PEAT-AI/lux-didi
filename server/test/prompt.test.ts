@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -310,4 +310,15 @@ test('the research outcome sentence distinguishes nothing matched from a read cu
   assert.ok(NAYA_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
   assert.ok(NAYA_TOOLS.includes('A read cut short is said as cut short, so offer a narrower ask.'), 'a cut read is voiced as cut short');
   assert.ok(NAYA_TOOLS.indexOf('A read cut short is said as cut short') > NAYA_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
+});
+
+test('PV1: the persona base names the spoken cue and the single research call', () => {
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  assert.ok(instruction.includes('Before any tool call, say one short line of at most six words that tells him what you are checking.'), 'the spoken cue is named');
+  assert.ok(instruction.includes('Put every lookup one question needs into one research call with several lookups; never make several research calls in a row for one question.'), 'and one research call carries the lookups');
+  // PV1-R3: the old cue rule is absent from the whole composed instruction, not just from the base.
+  for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once']) {
+    assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
+  }
+  assert.equal(instruction.split('what you are checking').length - 1, 1, 'the cue surface is stated once');
 });

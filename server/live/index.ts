@@ -24,7 +24,8 @@ import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { headVoiceBlock, voiceAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -560,7 +561,10 @@ export class LiveSessionOwner {
       type Earlier = ReturnType<typeof buildEarlierConversationsSection>;
       let records: MemoryRecords = [];
       let earlier: Earlier = { section: '', selectedIds: [], omitted: [] };
+      // PV1: the accent selection is read at this session start, so a saved accent takes effect without a
+      // restart; the session composer replaces whatever block the frozen prompt still carries.
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+        accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
@@ -1276,16 +1280,20 @@ export class LiveSessionOwner {
       const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
       const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
       const accent = this.#profile.overlay?.accent;
+      // PV1: the head and the terminal anchors carry the accent block the session composed with, so both
+      // are counted from the same composer the instruction used.
+      const selection = currentLiveAccent();
       // The head block and the terminal anchor are serialised once, at composition, so their counts come
       // from the same composer the instruction used: the head block from the overlay accent, the terminal
       // anchor from the bare primary language (AC1) rather than the regional setup tag. The serialised
       // instruction must end with the terminal anchor; the fallback covers a locale with no primary.
       const bareLanguage = canonicalSpeechLanguage(this.#profile.language);
-      const terminalAnchor = [bareLanguage, undefined].map(language => voiceAnchor(language, accent))
-        .find(candidate => handle.request.system.text.endsWith(candidate)) ?? voiceAnchor(bareLanguage, accent);
+      const terminalAnchors = [bareLanguage, undefined].map(language => terminalAnchor(language, accent, selection));
+      const terminalAnchorText = terminalAnchors
+        .find(candidate => handle.request.system.text.endsWith(candidate)) ?? terminalAnchors[0]!;
       console.error(JSON.stringify({ event: 'live_session_diagnostics', terminalCode: handle.diagnosticTerminalCode,
-        headVoiceChars: headVoiceBlock(accent)?.length ?? 0,
-        terminalVoiceChars: terminalAnchor.length,
+        headVoiceChars: headAnchor(accent, selection)?.length ?? 0,
+        terminalVoiceChars: terminalAnchorText.length,
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),

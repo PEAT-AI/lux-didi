@@ -10,6 +10,8 @@ import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { ConfigError } from '../config/index.js';
+import { currentLiveAccent } from '../config/live.js';
+import { LiveConfigError } from '../live/types.js';
 import { OPENAI_DELEGATION_MODEL } from '../adapters/live-voice/openai.js';
 import { clientDiagnostic, object, resolveRoute } from './routes.js';
 import { projectIdentity } from '../connectors/identity.js';
@@ -128,8 +130,11 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'settings') {
           if (!live.saveSelection) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live settings are not writable here', 503);
           let saved;
-          try { saved = live.saveSelection({ provider: route.input['provider'], ...(route.input['voice'] !== undefined ? { voice: route.input['voice'] } : {}) }); }
-          catch (error) { throw new ServiceError('BAD_REQUEST', error instanceof ConfigError ? error.code : 'invalid_selection', 400); }
+          try {
+            saved = live.saveSelection({ provider: route.input['provider'],
+              ...(route.input['voice'] !== undefined ? { voice: route.input['voice'] } : {}),
+              ...(route.input['accent'] !== undefined ? { accent: route.input['accent'] } : {}) });
+          } catch (error) { throw new ServiceError('BAD_REQUEST', error instanceof ConfigError || error instanceof LiveConfigError ? error.code : 'invalid_selection', 400); }
           send(res, 200, success(saved));
           return;
         }
@@ -148,6 +153,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           provider: active?.provider ?? null,
           modelId: active?.model ?? null,
           voice: active?.voice ?? null,
+          // The accent selection the next session start composes with, so the page can show what runs.
+          accent: active ? currentLiveAccent() : null,
           // Names only: the delegation backend the OpenAI Live adapter pins, and nothing else about it.
           ...(active?.provider === 'openai' ? { delegationModel: OPENAI_DELEGATION_MODEL } : {}),
           personaName: active ? personaName : null,

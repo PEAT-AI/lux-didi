@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { saveLiveSelection } from '../config/live.js';
+import { currentLiveAccent, loadLiveConfig, saveLiveSelection } from '../config/live.js';
+import { resolveRoute } from '../http/routes.js';
+import { ServiceError } from '../contracts/errors.js';
 import { LiveConfigError } from '../live/types.js';
 
 /** A private config dir with both credential slots seeded: the switch never has to borrow a key. */
@@ -40,12 +42,52 @@ test('a voice outside the provider own list is refused with the typed invalid_vo
 
 test('each provider saves its own voice, and the default stays the provider default', t => {
   const f = fixture(t);
+  // PV1: the selection result now carries the accent too, and an absent accent is indian-strong.
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' }),
-    { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin' });
+    { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin', accent: 'indian-strong' });
   assert.equal(f.saved()['provider'], 'openai');
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'gemini' }),
-    { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede' });
+    { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede', accent: 'indian-strong' });
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'cinder' }),
-    { provider: 'openai', modelId: 'gpt-live-1', voice: 'cinder' });
+    { provider: 'openai', modelId: 'gpt-live-1', voice: 'cinder', accent: 'indian-strong' });
   assert.equal(f.saved()['voice'], 'cinder');
+});
+
+test('PV1: the accent selection validates, defaults and reaches the next session start', t => {
+  const f = fixture(t);
+  // Absent from live.json means indian-strong, and a load publishes that current value.
+  const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  assert.equal(loaded.status, 'configured');
+  assert.equal(currentLiveAccent(), 'indian-strong', 'an absent accent means indian-strong');
+  // A value outside the closed set is refused with its own typed code, which the route answers as a 400.
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', accent: 'fake-indian' }),
+    (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_accent');
+  assert.equal(f.saved()['accent'], undefined, 'a refused save writes nothing');
+  // A listed value is persisted and becomes the value the next session start composes with, with no restart.
+  assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'indian-light' }),
+    { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin', accent: 'indian-light' });
+  assert.equal(f.saved()['accent'], 'indian-light');
+  assert.equal(currentLiveAccent(), 'indian-light');
+  // The voice's own accent is a real selection, not an absence.
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', accent: 'voice-default' }).accent, 'voice-default');
+  assert.equal(currentLiveAccent(), 'voice-default');
+});
+
+test('PV1-R3: the settings route accepts the accent field and the config layer answers a typed 400', t => {
+  const url = new URL('http://didi.test/api/v1/live/settings');
+  // The closed field list admits the accent, so a provider, voice and accent save is no longer refused here.
+  const route = resolveRoute('POST', url, { provider: 'openai', voice: 'marin', accent: 'indian-light' });
+  assert.equal(route.kind, 'live');
+  assert.equal(route.action, 'settings');
+  assert.equal(route.input['accent'], 'indian-light');
+  // A wrong type is the route's own typed refusal, and it fires before any file is touched.
+  assert.throws(() => resolveRoute('POST', url, { provider: 'openai', accent: 42 }),
+    (error: unknown) => error instanceof ServiceError && error.status === 400 && error.message === 'Invalid accent');
+  // A value outside the closed set passes the route and fails the config layer with its own typed code, which
+  // server.ts answers as a 400 carrying invalid_accent.
+  const f = fixture(t);
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'fake-indian' }),
+    (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_accent');
+  // And the same save with a listed value lands, which is the path the page takes.
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'indian-light' }).accent, 'indian-light');
 });

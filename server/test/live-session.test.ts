@@ -11,6 +11,8 @@ import './intent-tools.test.js';
 import './research.test.js';
 // Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
 import './host-log.test.js';
+// Side-effect import: register the owner remember_note suite in the declared live-session check.
+import './live-remember.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -22,7 +24,8 @@ import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.j
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
-import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/index.js';
+import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
+import * as summaries from '../domain/summaries.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -2549,4 +2552,23 @@ test('a terminal Live session schedules distillation without awaiting it and rec
   release?.();
   const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!);
   assert.ok(String(row['memory_provenance']).includes('injectedSummaryIds'));
+});
+
+test('the earlier-conversations section fills the space under the target in a real session', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const h = await harness(t);
+  h.store.transaction(tx => {
+    for (let i = 0; i < 20; i++) summaries.insertSummary(tx, { liveSessionId: `synthetic-past-${String(i).padStart(2, '0')}`, status: 'complete',
+      summary: `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, endedAt: NOW - i * 3_600_000, now: NOW });
+  });
+  const session = h.owner.create({ idempotencyKey: 'summary-budget', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+  const provenance = JSON.parse(String(row['memory_provenance'])) as { injectedSummaryIds: string[] };
+  assert.ok(provenance.injectedSummaryIds.length > 6, `the budget keeps more than the old six (${provenance.injectedSummaryIds.length})`);
+  const sizes = lines.map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; } })
+    .find(entry => entry?.['event'] === 'live_instruction_sizes');
+  const sections = sizes?.['sections'] as Record<string, number> | undefined;
+  assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
+  assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
 });

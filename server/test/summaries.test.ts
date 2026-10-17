@@ -7,7 +7,7 @@ import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
-import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
+import { buildEarlierConversationsSection, earlierConversationsBudget } from '../prompt/live-persona.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
@@ -370,5 +370,25 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
     for (let i = 35; i >= 6; i--) assert.equal(status(`s-rec-${String(i).padStart(2, '0')}`), 'complete', `s-rec-${i} recovered`);
     for (let i = 5; i >= 0; i--) assert.equal(status(`s-rec-${String(i).padStart(2, '0')}`), 'failed', `s-rec-${i} left for a later start`);
     assert.equal(status('s-nojournal'), 'failed', 'a row with no surviving journal is never re-queued');
+  } finally { h.cleanup(); }
+});
+
+test('twenty complete summaries fill the space left under the target instead of the old six', () => {
+  const h = open();
+  try {
+    for (let i = 0; i < 20; i++) h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: `past-${String(i).padStart(2, '0')}`,
+      status: 'complete', summary: `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, endedAt: NOW - i * 3_600_000, now: NOW }));
+    const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
+    assert.equal(candidates.length, 20);
+    const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
+    const basis = build();
+    const section = buildEarlierConversationsSection(candidates, { now: NOW + 1, timeZone: 'UTC', maxChars: earlierConversationsBudget(basis.text.length) });
+    assert.ok(section.selectedIds.length > 6, `kept ${section.selectedIds.length} summaries`);
+    assert.equal(section.omitted.length, 20 - section.selectedIds.length);
+    assert.deepEqual(section.selectedIds, candidates.slice(0, section.selectedIds.length).map(candidate => candidate.id), 'newest first');
+    const composed = build(section.section);
+    assert.equal(composed.earlierConversationsIncluded, true);
+    assert.ok(composed.text.length > basis.text.length);
   } finally { h.cleanup(); }
 });

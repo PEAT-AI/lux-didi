@@ -154,8 +154,8 @@ function rows(h: Harness) { return h.store.transaction(tx => tx.all('SELECT * FR
 function frozen(h: Harness, id: string) {
   return h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,prompt_identity FROM live_sessions WHERE live_session_id=?', [id]));
 }
-async function remember(h: Harness, text: string | undefined, args: Record<string, unknown>, frame: number) {
-  if (text !== undefined) h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+async function remember(h: Harness, text: string | undefined, args: Record<string, unknown>, frame: number, finished = true) {
+  if (text !== undefined) h.f.send({ serverContent: { inputTranscription: { text, finished } } });
   h.f.send({ toolCall: { functionCalls: [{ id: `remember-${frame}`, name: 'remember_note', args }] } });
   await h.f.frame(frame);
   const response = h.f.frames[frame - 1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
@@ -201,7 +201,7 @@ test('Live remember writes owner words once, freezes the current prompt and reca
 test('Live remember provenance refusals do not write memory', async t => {
   for (const [utterance, text, code] of [
     [undefined, 'model invention', 'owner_transcript_not_final'],
-    ['What is on my calendar?', 'model invention', 'owner_transcript_not_final'],
+    ['What is on my calendar?', 'model invention', 'owner_text_mismatch'],
     ['remember that mint is Friday', 'mint is Monday', 'owner_text_mismatch'],
     ['remember this as private: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
     ['remember privately mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
@@ -381,4 +381,50 @@ test('a later remember_note cannot recreate a deleted note from the retained voi
   assert.match(String(tombstone?.source_key), /^[0-9a-f-]{36}:\d+$/);
   assert.equal(JSON.stringify(tombstone).includes(payload), false);
   assert.equal(rows(h).some(row => row.text === payload), false, 'retained voice turn must not resurrect deleted memory');
+});
+
+test('the model phrasing decides, not a remember prefix, and the stored note reaches the next session', async t => {
+  for (const [utterance, note] of [
+    ['note that the Mongoose mint is due Friday', 'the Mongoose mint is due Friday'],
+    ['keep in mind I prefer short answers in the morning', 'I prefer short answers in the morning'],
+    ['remember the Mongoose mint is due Friday', 'the Mongoose mint is due Friday'],
+  ] as const) {
+    await t.test(utterance, async st => {
+      const h = await harness(st, { tools: true });
+      const { session } = await attached(h);
+      const result = await remember(h, utterance, { text: note, kind: 'task' }, 2);
+      assert.equal(result.remembered, true);
+      assert.equal(typeof result.entryId, 'string');
+      assert.ok(rows(h).some(row => row.text === utterance), 'the owner words are stored verbatim');
+      const journal = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind='toolResult'", [session.liveSessionId]));
+      assert.ok(journal.some(row => String(row['text']).includes(String(result.entryId))), 'the journal confirms the stored note');
+      const next = h.owner.create({ idempotencyKey: `next-${utterance.slice(0, 12)}`, inputClass: 'ordinary' }, h.ctx);
+      assert.ok(String(frozen(h, next.liveSessionId)?.accepted_prompt_snapshot).includes(note), 'the next session recalls the note');
+    });
+  }
+});
+
+test('a note grounded in the latest partial turn is stored when the transcript never finalizes', async t => {
+  const scheduler = new RememberClock();
+  const h = await harness(t, { tools: true, scheduler });
+  await attached(h);
+  const note = 'the Mongoose mint is due Friday';
+  const resultPromise = remember(h, `remember ${note}`, { text: note, kind: 'task' }, 2, false);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
+  scheduler.advance(1500);
+  const result = await resultPromise;
+  assert.equal(result.remembered, true);
+  assert.equal(typeof result.entryId, 'string');
+  assert.equal(rows(h).length, 1);
+});
+
+test('a note with no owner speech at all is still refused', async t => {
+  const scheduler = new RememberClock();
+  const h = await harness(t, { tools: true, scheduler });
+  await attached(h);
+  const resultPromise = remember(h, undefined, { text: 'model invention', kind: 'fact' }, 2, false);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
+  scheduler.advance(1500);
+  assert.deepEqual(await resultPromise, { remembered: false, code: 'owner_transcript_not_final' });
+  assert.equal(rows(h).length, 0);
 });

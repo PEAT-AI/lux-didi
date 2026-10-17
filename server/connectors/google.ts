@@ -259,7 +259,6 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     // budget of its own: a read that runs until the caller aborts loses its whole result to the result
     // gate, so it stops short and reports the calendars it did not reach as unread.
     const stopAt = Date.now() + settings.calendarReadMs;
-    void stopAt;
     const listed = await dispatch('gcal_calendars', { maxResults: Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults) }, signal);
     if (listed.state !== 'completed') return listed;
     // The owner's primary calendar is always read first and awaited inside the sub-deadline; every other
@@ -278,11 +277,11 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     };
     const primaryOnly = explicit === undefined && selected.length > 0 && calendars[0]?.primary === true;
     // 1. The primary calendar, awaited on its own so it never loses the race to the deadline.
-    if (primaryOnly && signal?.aborted !== true) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
+    if (primaryOnly && signal?.aborted !== true && Date.now() < stopAt) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
     // 2. Every remaining calendar, concurrently, cut short by the caller's deadline.
     let next = primaryOnly ? 1 : 0;
     const worker = async (): Promise<void> => {
-      while (next < selected.length && signal?.aborted !== true) {
+      while (next < selected.length && signal?.aborted !== true && Date.now() < stopAt) {
         const index = next++;
         record(index, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal));
       }
@@ -291,6 +290,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     await Promise.race([
       Promise.all(Array.from({ length: width }, worker)),
       new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }),
+      new Promise<void>(resolve => { const left = stopAt - Date.now(); if (left <= 0) resolve(); else setTimeout(resolve, left).unref(); }),
     ]);
     // A credentialed or failed read must stay visible: never an empty success.
     if (out.every(entry => entry === undefined) && (failure ?? refusal) !== undefined) return (failure ?? refusal)!;

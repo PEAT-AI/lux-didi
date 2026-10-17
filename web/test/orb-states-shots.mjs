@@ -61,6 +61,13 @@ try {
   });
   assert.match(String(renderer), /Metal/i, `headless renderer must be Metal, got ${renderer}`);
 
+  /// The frame's own bytes: a still orb encodes to one PNG and a moving one does not, so a
+  /// frame that repeats its neighbour is a frame the transition did not reach.
+  const frameHash = async (name) => {
+    const bytes = await readFile(join(shots, `${name}.png`));
+    return `${bytes.length}:${bytes.subarray(24, 64).toString('base64')}`;
+  };
+
   /// The visual the loop last painted. The hue and the glow are the state machine's own
   /// eased numbers, so they prove a transition moved the colour, where a PNG byte count
   /// would pass on the breathe alone (review F5).

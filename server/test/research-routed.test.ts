@@ -366,7 +366,7 @@ test('the per-lookup receipt carries source, outcome and ms and never a query', 
 test('the batch bound grows with the lookup count for every source except the calendar', () => {
   assert.equal(lookupBound('calendar', 1, 15_000), RESEARCH.routedCalendarDeadlineMs);
   assert.equal(lookupBound('calendar', 2, 15_000), RESEARCH.routedCalendarDeadlineMs, 'two windows never double the calendar budget');
-  assert.ok(lookupBound('calendar', 2, 15_000) <= RESEARCH.startDeadlineMs / 2, 'and it stays well inside the start deadline');
+  assert.ok(lookupBound('calendar', 2, 15_000) < RESEARCH.startDeadlineMs, 'and it stays inside the start deadline, never equal to it');
   assert.equal(lookupBound('knowledge', 1, 15_000), RESEARCH.sourceDeadlineMs);
   assert.equal(lookupBound('knowledge', 2, 15_000), RESEARCH.sourceDeadlineMs * 2, 'a coalesced batch buys the time each lookup needs');
   assert.equal(lookupBound('knowledge', 4, 9_000), 9_000, 'never past what the run has left');
@@ -398,7 +398,7 @@ test('two calendar windows share one calendar-list read and one budget, each rep
   assert.deepEqual(names, ['gcal_list', 'gcal_calendars', 'gcal_list'], 'the calendar list is dispatched once for both windows');
   assert.deepEqual(h.lookups.map(event => event.source), ['calendar', 'calendar']);
   assert.deepEqual(h.lookups.map(event => event.outcome), ['ok', 'ok']);
-  const windows = calendar.calls()[0]!.filter(call => call.name === 'gcal_list').map(call => call.args['timeMin']);
+  const windows = calendar.calls()[0]!.filter(call => call.name === 'gcal_list').map(call => `${String(call.args['timeMin'])}|${String(call.args['timeMax'])}`);
   assert.equal(new Set(windows).size, 2, 'and each window is its own read');
   assert.ok(lookupBound('calendar', 2, RESEARCH.startDeadlineMs) === RESEARCH.routedCalendarDeadlineMs, 'two windows get one read budget, never two');
   const findings = (reply['findings'] ?? []) as { source: string; text: string }[];

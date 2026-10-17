@@ -1,4 +1,9 @@
 import { test, type TestContext } from 'node:test';
+import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
+import type { ChatStepEvent } from '../chat/types.js';
+import type { ExecutionContext, ToolDefinition } from '../adapters/model/types.js';
+import { attachHostLogSink } from '../tools/host-events.js';
+import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,17 +26,22 @@ const SOURCES = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence'
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
 const UNCLASSIFIED = '[unclassified](https://example.com/unclassified) insight 100';
 
-async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 'private']) {
+async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 'private'],
+  overrides: Partial<import('../chat/index.js').ChatConfig> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'chat-tools-'));
   const requests: ModelRequest[] = [];
   const responseEntities: string[] = [];
   let ask = true;
+  // Fence fixtures: hang the connector after N dispatches, and fail the tool-free answer call.
+  let hangAfter: number | null = null;
+  let failAnswer = false;
   let repeat = false;
   let illegalFinal = false;
   let finalStatus: 'complete' | 'empty' | 'truncated' = 'complete';
   let beforeFinal: (() => void) | undefined;
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
+    if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
     if (ask && request.declarations?.some(d => d.name === 'search_knowledge') && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
       return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
@@ -57,7 +67,10 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let errorFlag = true;
   let payload = ACCEPTED;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
+  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.();
+    if (hangAfter !== null && executions > hangAfter) return new Promise(() => {}) as never;
+    return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
+
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init); assert.equal(req.url, endpoint.url);
@@ -76,7 +89,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const chat = new ChatService(Object.assign({}, f.config, { tools: composition }));
+  const chat = new ChatService(Object.assign({}, f.config, { tools: composition }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);
@@ -87,7 +100,20 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') return event.run;
     throw Error('no terminal snapshot');
   };
-  return { ...f, chat, owner, registry, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
+  // Same turn, keeping the subscription events so a test can see the partial flags.
+  const turnEvents = async (sessionId: string) => {
+    const accepted = chat.accept({ sessionId, text: 'Which emails arrived?', idempotencyKey: randomUUID() }, f.context);
+    const events: import('../chat/types.js').ChatEvent[] = [];
+    let finished: RunSnapshot | undefined;
+    for await (const event of chat.subscribe(accepted.runId, f.context)) {
+      events.push(event);
+      if (event.type === 'snapshot' && event.run.state === 'terminal') { finished = event.run; break; }
+    }
+    if (!finished) throw Error('no terminal snapshot');
+    return { run: finished, events };
+  };
+  return { ...f, chat, owner, registry, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
+    slowCalls: (after = 0) => { hangAfter = after; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
     leak: (text: string) => { payload = text; },
@@ -251,25 +277,25 @@ test('an early visible answer does not add a synthesis request', async t => {
   assert.equal(run.outcome, 'complete'); assert.equal(f.requests.length, 1); assert.equal(f.executions(), 0);
 });
 
-test('the tools-disabled synthesis cannot dispatch a returned mixed text and tool call', async t => {
+test('the fenced synthesis still answers, and its function call is never dispatched', async t => {
   const f = await fixture(t); f.repeatCalls(); f.illegalFinalCall(); const run = await f.turn(f.session());
-  assert.equal(f.requests.length, 5);
+  assert.equal(f.requests.length, 6, 'the fence adds exactly one tool-free answer call');
   assert.deepEqual(f.requests[4]!.declarations, []);
+  assert.deepEqual(f.requests[5]!.declarations, [], 'the answer call declares no tools');
   assert.equal(f.executions(), 4, 'a synthesis function call is never dispatched');
-  assert.equal(run.outcome, 'truncated');
-  assert.equal(run.finalEntryId, null);
-  assert.match(run.partialText, /PROVISIONAL/);
+  assert.equal(run.outcome, 'complete');
+  assert.notEqual(run.finalEntryId, null);
   assert.equal(run.toolEvidence?.length, 4);
 });
 
-test('empty and noncomplete synthesis outcomes never commit an assistant entry', async t => {
+test('a fence that reached no answer still commits one from the evidence gathered', async t => {
   for (const status of ['empty', 'truncated'] as const) {
     const f = await fixture(t); f.repeatCalls(); f.finalOutcome(status); const run = await f.turn(f.session());
-    assert.equal(f.requests.length, 5);
-    assert.deepEqual(f.requests[4]!.declarations, []);
+    assert.equal(f.requests.length, 6);
+    assert.deepEqual(f.requests[5]!.declarations, [], 'the answer call declares no tools');
     assert.equal(f.executions(), 4);
-    assert.equal(run.outcome, status);
-    assert.equal(run.finalEntryId, null);
+    assert.equal(run.outcome, 'complete', `${status} still answers the owner`);
+    assert.notEqual(run.finalEntryId, null);
   }
 });
 
@@ -302,7 +328,7 @@ test('a result rejected after connector execution cannot disclose its raw sentin
   f.rawRejectedResult(); f.setDispatchHook(() => { f.registry.revoke(f.endpoint.id); });
   const rejected = await f.turn(session);
   assert.equal(f.executions(), 2, 'rejected raw connector response must actually be produced');
-  assert.notEqual(rejected.outcome, 'complete');
+  assert.equal(rejected.outcome, 'complete', 'the owner still gets an answer from the accepted evidence');
   assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED/);
   assert.doesNotMatch(JSON.stringify(rejected), /REJECTED/);
   assert.doesNotMatch(JSON.stringify(f.chat.get(rejected.runId, f.context)), /REJECTED/);
@@ -340,3 +366,130 @@ test('sensitive-capable Chat consent does not widen a private-only connector pol
   assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: run.finalEntryId! })).dataClass, 'private');
   assert.deepEqual(f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [f.endpoint.id])), before);
 });
+
+
+// --- Step events, per-call timeout and the answer phase helpers (release 3k) ---
+
+const execContext = (signal = new AbortController().signal): ExecutionContext => ({ runId: 'run-1', actorId: 'owner',
+  authorityEpoch: 'epoch-1', revision: 1, accountId: 'acct', resourceId: 'res', executionId: 'run-1:0:0', signal });
+
+const toolDef = (name: string, execute: ToolDefinition['execute']): ToolDefinition => ({ name, description: `${name} tool`,
+  parameters: { type: 'object', properties: {} }, validate: () => true, effect: 'read', accountId: 'acct', resourceId: 'res', execute });
+
+const completedOutcome = { status: 'completed' as const, result: { id: 'result-1', sha256: 'a'.repeat(64) } };
+
+test('a chat tool call that outlives its timeout returns a structured timeout and never hangs', async () => {
+  const events: ChatStepEvent[] = [];
+  const registry = chatToolRegistry([toolDef('gmail_list', () => new Promise(() => {}))],
+    { runId: 'run-1', onStep: event => events.push(event),
+      onFinished: record => events.push({ type: 'chat_step', runId: 'run-1', ...record, phase: 'end', resultCount: 0 }), timeoutMs: 20 });
+  assert.deepEqual(await registry[0]!.execute({}, execContext()), { status: 'failed', code: 'timeout' });
+  const end = events.at(-1)!;
+  assert.deepEqual([end.phase, end.ok, end.tool], ['end', false, 'gmail_list']);
+  assert.equal(typeof end.ms, 'number');
+});
+
+test('the fence signal aborts an in-flight chat call and reports it as cancelled', async () => {
+  const events: ChatStepEvent[] = [];
+  const fence = new AbortController();
+  let aborted = false;
+  const registry = chatToolRegistry([toolDef('search', (_args, ctx) => new Promise((_resolve, reject) => {
+    ctx.signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }, { once: true });
+  }))], { runId: 'run-1', onStep: event => events.push(event),
+      onFinished: record => events.push({ type: 'chat_step', runId: 'run-1', ...record, phase: 'end', resultCount: 0 }), timeoutMs: CHAT_TOOL_TIMEOUT_MS });
+  const pending = registry[0]!.execute({}, execContext(fence.signal));
+  fence.abort();
+  assert.deepEqual(await pending, { status: 'failed', code: 'cancelled' });
+  assert.equal(aborted, true);
+});
+
+test('chat step events pair start with end in order and carry no tool content', async () => {
+  const events: ChatStepEvent[] = [];
+  const registry = chatToolRegistry([
+    toolDef('gmail_list', async () => completedOutcome),
+    toolDef('gdrive_read', async () => ({ status: 'failed', code: 'connector_error' })),
+  ], { runId: 'run-1', onStep: event => events.push(event),
+      onFinished: record => events.push({ type: 'chat_step', runId: 'run-1', ...record, phase: 'end', resultCount: 0 }) });
+  await registry[0]!.execute({ query: 'secret query text' }, execContext());
+  await registry[1]!.execute({}, execContext());
+  assert.deepEqual(events.map(event => [event.phase, event.tool, event.ok]),
+    [['start', 'gmail_list', undefined], ['end', 'gmail_list', true],
+      ['start', 'gdrive_read', undefined], ['end', 'gdrive_read', false]]);
+  assert.equal(events[0]!.label, 'listed mail');
+  const wire = JSON.stringify(events);
+  assert.equal(wire.includes('secret query text'), false);
+  assert.equal(wire.includes('result-1'), false);
+});
+
+test('a throwing chat tool keeps the failure and still closes its step', async () => {
+  const events: ChatStepEvent[] = [];
+  const registry = chatToolRegistry([toolDef('calendar', async () => { throw new Error('boom'); })],
+    { runId: 'run-1', onStep: event => events.push(event),
+      onFinished: record => events.push({ type: 'chat_step', runId: 'run-1', ...record, phase: 'end', resultCount: 0 }) });
+  await assert.rejects(() => registry[0]!.execute({}, execContext()), /boom/);
+  assert.deepEqual(events.map(event => [event.phase, event.ok]), [['start', undefined], ['end', false]]);
+});
+
+test('a call cut by the fence is named as not reached for the partial answer', () => {
+  const base = { type: 'chat_step' as const, runId: 'run-1', tool: 'mail', label: toolLabel('mail') };
+  assert.deepEqual(notReachedLabels([{ ...base, stepId: 'run-1:1', phase: 'start' },
+    { ...base, stepId: 'run-1:2', phase: 'start' }, { ...base, stepId: 'run-1:1', phase: 'end', ok: true }]), ['searched mail']);
+});
+
+test('the deterministic answer is written from the frozen evidence, never from nothing', () => {
+  const evidence = [{ name: 'gmail_list', markdown: 'two messages' }, { name: 'search', markdown: 'one insight' }];
+  assert.equal(deterministicAnswer(evidence, ['searched mail']),
+    'I searched listed mail and searched everything; found 2 items; searched mail did not answer in time.');
+  assert.equal(deterministicAnswer([], []), 'I could not search any source; found 0 items.');
+  const instruction = answerInstruction(evidence, ['searched mail']);
+  assert.equal(instruction.includes('two messages'), true);
+  assert.equal(instruction.includes('Do not call any tool'), true);
+  assert.equal(instruction.includes('Still running when the search stopped: searched mail.'), true);
+});
+
+// --- The contract's fence evidence: a slow connector, the answer that still lands, and the receipt ---
+
+const receipts = (): { seen: Record<string, unknown>[]; detach: () => void } => {
+  const seen: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe) seen.push(safe); } });
+  return { seen, detach };
+};
+
+test('a slow connector is fenced: the answer lands, the aborted call is not retried, and the receipt records it', async t => {
+  const { seen, detach } = receipts();
+  t.after(detach);
+  const f = await fixture(t, ['ordinary', 'private'], { deadlineMs: 1200 });
+  f.slowCalls();
+  const { run, events } = await f.turnEvents(f.session());
+  assert.equal(run.outcome, 'complete', 'a fenced run still answers');
+  assert.notEqual(run.finalEntryId, null);
+  assert.equal(f.executions(), 1, 'the aborted connector call is dispatched once and never retried');
+  assert.equal(f.requests.length, 2, 'one acquire request plus one answer request');
+  assert.deepEqual(f.requests[1]!.declarations, [], 'the answer call declares no tools');
+  const last = events.filter(event => event.type === 'snapshot').at(-1);
+  assert.equal(last?.type === 'snapshot' && last.partial, true, 'the final answer event is marked partial');
+  assert.deepEqual(last?.type === 'snapshot' ? last.notReached : undefined, ['searched the knowledge base'],
+    'the fence names the call it cut');
+  const receipt = seen.find(entry => entry.event === 'chat_timing');
+  assert.equal(receipt?.outcome, 'fenced');
+  assert.equal(Array.isArray(receipt?.tools) && (receipt!.tools as { ok: boolean }[])[0]!.ok, false, 'the aborted call is recorded as not ok');
+  assert.equal(typeof receipt?.fenceMs, 'number');
+});
+
+test('the evidence gathered before the fence is answered from even when the answer call fails', async t => {
+  const f = await fixture(t, ['ordinary', 'private'], { deadlineMs: 2000 });
+  f.repeatCalls(); f.slowCalls(1); f.failAnswerCall();
+  const run = await f.turn(f.session());
+  assert.equal(run.outcome, 'complete');
+  assert.equal((run.toolEvidence ?? []).length, 1, 'the first round evidence is kept, never discarded');
+  assert.match(run.finalText ?? '', /found 1 item/, 'the deterministic answer is written from that evidence');
+});
+
+// --- The chat intent surface: voice parity, one call searches and shapes ---
+
+
+
+
+
+
+

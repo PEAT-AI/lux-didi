@@ -43,6 +43,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
+  if (value.event === 'chat_timing') {
+    // Timing receipts: milliseconds and counts only, never text, never a tool argument or result.
+    const id = (v: unknown): v is string => typeof v === 'string' && /^[0-9A-Za-z][0-9A-Za-z-]{0,63}$/.test(v);
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
+    const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 900_000;
+    if (!id(value.runId) || !['answered', 'fenced'].includes(String(value.outcome))) return;
+    if (!Array.isArray(value.rounds) || value.rounds.length > 8 || !value.rounds.every(ms)) return;
+    if (!Array.isArray(value.tools) || value.tools.length > 32) return;
+    const tools: { tool: string; ok: boolean; ms: number }[] = [];
+    for (const entry of value.tools) {
+      const item = entry as Record<string, unknown>;
+      if (!token(item.tool) || typeof item.ok !== 'boolean' || !ms(item.ms)) return;
+      tools.push({ tool: item.tool, ok: item.ok, ms: item.ms });
+    }
+    if (!ms(value.fenceMs) || !ms(value.acquireMs) || !ms(value.answerMs)) return;
+    return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
+      tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
+  }
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.
     const allowed = ['action', 'code', 'detail', 'event'];

@@ -34,8 +34,12 @@ export interface RunSnapshot {
   /** Accepted result-gate projections only; never connector payloads or provider parts. */
   toolEvidence?: ToolEvidence[];
 }
-export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
+/** One tool call of a run, for the step list: a label and counts, never tool content. */
+export type ChatStepEvent = { type: 'chat_step'; runId: string; stepId: string; tool: string; phase: 'start' | 'end';
+  label: string; resultCount?: number; ok?: boolean; ms?: number };
+export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot; partial?: true; notReached?: readonly string[] }
   | { type: 'text'; sequence: number; text: string; provisional: true }
+  | ChatStepEvent
   | { type: 'resync_required'; sequence: number; reason: 'backpressure' | 'storage_unavailable' };
 /** Conversation-scoped notification: durable run identifiers only, never transcript content. */
 export type ConversationEvent = { type: 'run'; sessionId: string; runId: string }

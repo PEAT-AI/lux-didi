@@ -2800,7 +2800,7 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
   let finish!: () => void;
   const slow = new Promise<void>(resolve => { finish = resolve; });
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { tools: true, beforeTool: () => slow, scheduler, limits: { idleMs: 600_000 } });
+  const h = await harness(t, { tools: true, beforeTool: () => slow, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   await attached(h);
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {

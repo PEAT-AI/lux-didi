@@ -727,7 +727,14 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
-    handle.idleTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null), remainingMs);
+    handle.idleTimer = this.#schedule(() => {
+      // #303: an idle expiry with the model turn still open is the shape the 3h-a witness stalled in: audio
+      // streamed, then the provider went silent and never sent turnComplete. Record the silence since the last
+      // model audio so the next such stall is distinguishable from a turnComplete the adapter failed to map.
+      if (handle.speaking && !handle.turnCompleteSeen) hostLogEvent({ event: 'live_turn_open',
+        msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
+      this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null);
+    }, remainingMs);
   }
 
   #cancelNudge(handle: ActiveSession): void { handle.nudgeTimer?.cancel(); handle.nudgeTimer = undefined; }
@@ -1068,11 +1075,7 @@ export class LiveSessionOwner {
             msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
-        // and playback drains (F2). #303: while the turn stays open that way, log the fact once, with the
-        // silence since the last model audio, so a greeting that streamed audio and never completed is
-        // distinguishable next time from one the adapter failed to map.
-        if (event.type === 'generationComplete' && handle.speaking && !handle.turnCompleteSeen) hostLogEvent({ event: 'live_turn_open',
-          msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
+        // and playback drains (F2).
         if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {

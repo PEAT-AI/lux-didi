@@ -29,6 +29,8 @@ cp server/config/files.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"
 cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
+# The staged declarations import ws and the MCP SDK types: resolve them from the one installed tree.
+ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
   --noUnusedLocals --noUnusedParameters --skipLibCheck \

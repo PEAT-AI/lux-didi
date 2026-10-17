@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LiveConfigError, saveLiveSelection } from '../config/live.js';
+import { saveLiveSelection } from '../config/live.js';
+import { LiveConfigError } from '../live/types.js';
 
 /** A private config dir with both credential slots seeded: the switch never has to borrow a key. */
 function fixture(t: TestContext) {
@@ -26,9 +27,9 @@ function fixture(t: TestContext) {
 test('a voice outside the provider own list is refused with the typed invalid_voice error', t => {
   const f = fixture(t);
   for (const [provider, voice] of [['gemini', 'marin'], ['gemini', 'Puck'], ['openai', 'Aoede'], ['openai', 'nira']] as const) {
-    assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider, voice }), (error: unknown) => {
-      assert.ok(error instanceof LiveConfigError);
-      assert.equal(error.code, 'invalid_voice');
+    assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider, voice }), (thrown: unknown) => {
+      if (!(thrown instanceof LiveConfigError)) return false;
+      assert.equal(thrown.code, 'invalid_voice');
       return true;
     }, `${provider}/${voice} is outside the provider list`);
   }

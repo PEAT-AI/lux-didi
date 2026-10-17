@@ -11,6 +11,9 @@ import './intent-tools.test.js';
 import './research.test.js';
 // Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
 import './host-log.test.js';
+// Side-effect import: register the 3j response-watchdog suite in the declared live-session check,
+// the same way the host-log allowlist suite is registered here.
+import './live-watchdog.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';

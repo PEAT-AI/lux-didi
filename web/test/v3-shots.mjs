@@ -284,6 +284,19 @@ try {
     pinned: Math.round(document.querySelector('.transcript').scrollHeight - document.querySelector('.transcript').scrollTop - document.querySelector('.transcript').clientHeight) <= 2,
     pillHidden: document.querySelector('#transcript-jump').hidden,
   })), { entries: 30, pinned: true, pillHidden: true }, 'in-call-following follows the newest line');
+  // UI3b item 5, shot 3: the reader scrolled up, so the jump-to-latest pill is on screen. Taken here,
+  // with the other two, because the measurement block below samples the animated canvas frame by frame.
+  const scrollAway = async () => {
+    await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400); } });
+    await page.waitForFunction(() => !document.querySelector('#transcript-jump').hidden);
+  };
+  await scrollAway();
+  await page.screenshot({ path: join(out, 'scrolled-up-with-pill.png') });
+  shots.push('scrolled-up-with-pill');
+  assert.deepEqual(await page.evaluate(() => ({ hidden: document.querySelector('#transcript-jump').hidden, label: document.querySelector('#transcript-jump').textContent })), { hidden: false, label: 'Jump to latest' }, 'scrolled-up-with-pill shows the pill');
+  await page.locator('#transcript-jump').click();
+  await page.locator('#chat-jump').click();
+  await page.waitForFunction(() => document.querySelector('#transcript-jump').hidden && document.querySelector('#chat-jump').hidden);
   if (table.chatDistance > 2) {
     const chatState = await page.evaluate(() => { const el = document.querySelector('#connected-entries'); const pill = document.querySelector('#chat-jump'); return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, jumpHidden: pill.hidden, entries: el.children.length }; });
     throw Error(`the chat list is not pinned: ${JSON.stringify({ ...chatState, distance: table.chatDistance })}`);
@@ -318,10 +331,6 @@ try {
   await scrollUp();
   table = await sample('1440x900-dark-c-scrolled-up', { width: 1440, height: 900 });
   assert.equal(table.voiceJump, true, 'the transcript offers Jump to latest once the reader scrolls up');
-  // UI3b item 5, shot 3: the reader scrolled up, so the jump-to-latest pill is on screen.
-  await page.screenshot({ path: join(out, 'scrolled-up-with-pill.png') });
-  shots.push('scrolled-up-with-pill');
-  assert.equal(await page.evaluate(() => ({ hidden: document.querySelector('#transcript-jump').hidden, label: document.querySelector('#transcript-jump').textContent })).then(p => p.hidden === false && p.label === 'Jump to latest'), true, 'scrolled-up-with-pill shows the pill');
   assert.equal(table.chatJump, true, 'the chat list offers Jump to latest once the reader scrolls up');
   await repin();
   await scrollUp();

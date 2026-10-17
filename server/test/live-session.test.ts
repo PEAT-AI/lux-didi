@@ -2939,6 +2939,6 @@ test('a model turn start enters THINKING and every live_state change is written 
   fake.emit({ type: 'turnComplete' });
   await settle();
   assert.deepEqual(states(), ['listening', 'thinking', 'speaking', 'listening'], 'each change is written once, when it happens');
-  assert.equal(h.owner.get(session.liveSessionId).state, 'listening');
+  assert.equal(h.owner.get(session.liveSessionId).consumerState, 'attached', 'the owner is still attached and listening');
   attachment.close();
 });

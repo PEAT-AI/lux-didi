@@ -70,12 +70,12 @@ export const RESEARCH = Object.freeze({
   /**
    * P5: the time each source really needs. One 4 s cut for every source equalled the chat connector's
    * own latency: Mattermost answered at 3,803 ms and was cut at 4,001 ms in the same call, and the
-   * first calendar read took 4.4 s. P5-R1 is the owner's order that depth beats speed: every remote
-   * connector read gets 12 s, and the two local reads (knowledge, memory, 8 s) get the same slack.
+   * first calendar read took 4.4 s. P5-R1 is the owner's order that depth beats speed: every connector
+   * read (knowledge, company, chat, calendar, mail) gets 12 s, and the in-process memory read 8 s.
    * This is the single table every per-source bound reads.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 8_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 12_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,

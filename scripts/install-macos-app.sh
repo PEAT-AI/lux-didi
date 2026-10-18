@@ -45,7 +45,7 @@ name="$(basename "$built")"
 # The requirement macOS matches the Accessibility grant against. An ad-hoc
 # signature states a bare cdhash, which no reinstall can match; a
 # certificate-backed one names an identifier and a certificate anchor.
-designated_requirement() { codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => //p' | head -1; }
+designated_requirement() { codesign -d -r- "$1" 2>&1 | sed -n 's/^#* *designated => //p' | head -1; }
 is_adhoc_requirement() {
   case "$1" in
     *'cdhash H"'*) case "$1" in *certificate*) return 1;; *) return 0;; esac;;

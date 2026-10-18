@@ -518,7 +518,7 @@ bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(gi
 # Stable signing (#382): the designated requirement is what macOS keys the
 # Accessibility grant to, so the build either carries a certificate-backed one or
 # says out loud that it fell back to an ad-hoc cdhash that changes every build.
-app_requirement="$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p' | head -1)"
+app_requirement="$(codesign -d -r- "$app" 2>&1 | sed -n 's/^#* *designated => //p' | head -1)"
 printf 'APP-DESIGNATED-REQUIREMENT %s\n' "$app_requirement"
 case "$app_requirement" in
   *'certificate leaf = H"'*|*'certificate root = H"'*)
@@ -586,7 +586,7 @@ mkdir -p "$stable_app/Contents/MacOS"
 cp "$app/Contents/Info.plist" "$stable_app/Contents/Info.plist"
 cp /bin/echo "$stable_app/Contents/MacOS/LuxDidi"
 codesign --force --sign 'Lux Didi Local Signing' --keychain "$local_keychain" "$stable_app"
-stable_requirement="$(codesign -d -r- "$stable_app" 2>&1 | sed -n 's/^designated => //p' | head -1)"
+stable_requirement="$(codesign -d -r- "$stable_app" 2>&1 | sed -n 's/^#* *designated => //p' | head -1)"
 printf 'IDENTITY-DESIGNATED-REQUIREMENT %s\n' "$stable_requirement"
 case "$stable_requirement" in
   *'cdhash H"'*)

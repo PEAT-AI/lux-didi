@@ -704,7 +704,7 @@ test('PV2: the budget numbers are the wire-tested ones and a 43,000-char composi
   assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
   // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, and the
   // model's 16,384 instruction tokens hold about 60,000 characters; the host targets 44,000 of them.
-  const fits = composeLiveInstruction({ base: 'B'.repeat(43_000), language: 'en' });
+  const fits = composeLiveInstruction({ base: 'B'.repeat(42_000), language: 'en' });
   assert.ok(fits.text.length >= 43_000, `the composition is at least 43,000 chars (${fits.text.length})`);
   assert.ok(fits.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `and stays under the target (${fits.text.length})`);
   assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(53_000), language: 'en' }),

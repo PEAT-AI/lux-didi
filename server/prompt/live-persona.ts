@@ -341,7 +341,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   const head = headAnchor(input.overlay?.accent ?? input.accent, input.accentSelection);
   const voice = terminalAnchor(input.language, input.overlay?.accent ?? input.accent, input.accentSelection);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
-    .map(section => ({ id: section.id, text: `[${section.id}]\n${clipOwnerLore(section.text)}` }));
+    .map(section => ({ id: section.id, text: `[${section.id}]\n${section.id === 'owner-lore' ? clipOwnerLore(section.text) : section.text}` }));
   const ownerLore = owner.filter(section => section.id === 'owner-lore');
   const ownerStyle = owner.filter(section => section.id === 'owner-style');
   const overlayText = input.overlay !== undefined ? overlaySection(input.overlay) : undefined;

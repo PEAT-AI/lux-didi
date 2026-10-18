@@ -540,6 +540,13 @@ if [ -z "$assets" ]; then
   assets="$work/assets"
   bash scripts/build-asset-bundle.sh "$assets"
 fi
+# A second bundle build into the same output path must replace the shell, never
+# nest it: `cp -R src dst` into an existing dst leaves the previous index.html
+# served while the fresh bundles sit in Resources/web/dist/dist.
+bash scripts/build-asset-bundle.sh "$assets"
+[ ! -e "$assets/Resources/web/dist/dist" ] || { echo 'MACOS-INSTALL FAIL: the second bundle build nested the shell under Resources/web/dist/dist' >&2; exit 1; }
+bash scripts/build-macos-app.sh --check-web-shell "$assets/Resources/web/dist" || { echo 'MACOS-INSTALL FAIL: the rebuilt bundle shell does not match the assets beside it' >&2; exit 1; }
+printf 'MACOS-INSTALL: second bundle build into one output path replaced the shell without nesting\n'
 app="$work/Lux Didi.app"
 bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)"
 

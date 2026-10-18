@@ -59,6 +59,14 @@ export const RESEARCH = Object.freeze({
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
+   * R6: the first answer point. A call answers while its reads are still running, at this many ms after it
+   * started, as long as one source has findings by then. The readers still working are never cut for it:
+   * they keep going to their own deadlines and each one that settles later is reported once.
+   */
+  firstAnswerMs: 4_500,
+  /** R6: how many late lines one source may hand the host, so a block stays short and speakable. */
+  lateItems: 6,
+  /**
    * The calendar source's own budget. A merged calendar window read is one remote call per visible
    * calendar (22 on the smoke account), and the calendar connector backend serializes those calls
    * (measured 1.7-6 s each), so the source costs a serialized fan-out rather than the single-read p50
@@ -690,6 +698,16 @@ export class ResearchLedger {
 // ---------------------------------------------------------------------------------------------
 // Run
 
+/** R6: one metadata-only line for the moment a call answered ahead of the sources still reading. */
+export interface ResearchFirstAnswer {
+  event: 'research_first_answer'; researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
+}
+
+/** R6: one event per source that settles after the first answer. Only what the source really returned. */
+export interface ResearchLateFindings {
+  researchId: string; source: SourceKind; ms: number; items: string[]; ok: boolean;
+}
+
 export interface ResearchProgress {
   researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
   sourcesDone: SourceKind[]; sourcesPending: SourceKind[]; elapsedMs: number;
@@ -750,6 +768,15 @@ export interface ResearchDeps {
   /** One live step per source as it starts and ends; defaults to the host event the Live owner
    *  forwards to the voice view. Never a message body, never an id. */
   step?: ((step: LiveToolStepBody) => void) | undefined;
+  /** R6: one receipt for the first answer point, metadata only; defaults to the host log sink. */
+  logFirstAnswer?: ((event: ResearchFirstAnswer) => void) | undefined;
+  /**
+   * R6: a source settled after the first answer went out. The host builds the block and decides how it is
+   * delivered; the loop itself never speaks and never cancels a reader for it.
+   */
+  late?: ((event: ResearchLateFindings) => void) | undefined;
+  /** R6: the readers a first answer left running, handed over so their completion can be awaited. */
+  background?: ((done: Promise<void>) => void) | undefined;
   /**
    * K6: her own memory, read locally by the composition that holds it, never over the network.
    * Absent means a memory lookup reports itself unavailable instead of inventing an answer.
@@ -1338,7 +1365,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
-async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], unavailableReason: (source: SourceKind) => string, signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
+async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], unavailableReason: (source: SourceKind) => string, signal: AbortSignal, now: () => number, limit: number, first: FirstAnswerState): Promise<JsonObject> {
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
@@ -1365,25 +1392,19 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   }
   let outcomes: RoutedOutcome[] = [];
   let reply: JsonObject | undefined;
-  // #280: the routed start returned without its terminal run line, so every smoke probe read
-  // research_run 0 and a routed read that threw left no line at all. The line is written once, from
-  // this finally, so an errored or cut run stays visible and a good run is never written twice.
-  let runStatus: ResearchRunLog['status'] = 'partial';
-  let runStop = 'insufficient';
-  try {
-    try {
-      outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
-    } finally {
-      beatTimer?.cancel();
-    }
-    // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
-    // way the selector path does, so a routed read is never trimmed to a search reply's length.
-    if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
+  // R6: every layer named below is being read, so a first answer can name the ones still running.
+  for (const bucket of groups.values()) first.reading.add(bucket[0]!.read.source);
+  // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
+  // way the selector path does, so a routed read is never trimmed to a search reply's length.
+  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
+  // R6: a layer is credited the moment it settles, so the first answer sees what is already in hand and a
+  // layer that lands afterwards is reported late instead of waiting for the slowest one.
+  const record = (batch: readonly RoutedOutcome[]): void => {
     // P5: the receipt carries the deadline the read was given, so a cut read is never judged by a bound it
     // never had. A same-source batch shares one bound, so the count is the group's own size.
     const batchSizes = new Map<SourceKind | 'memory', number>();
-    for (const outcome of outcomes) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
-    for (const outcome of outcomes) {
+    for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
+    for (const outcome of batch) {
       logLookup({
         event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
@@ -1412,6 +1433,26 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
       else if (outcome.outcome === 'timeout') { run.cutShort.add(outcome.source); }
       else run.sourcesFailed.add(outcome.source);
     }
+  };
+  let runStatus: ResearchRunLog['status'] = 'partial';
+  let runStop = 'insufficient';
+  // #280: the routed start returned without its terminal run line, so every smoke probe read
+  // research_run 0 and a routed read that threw left no line at all. The line is written once, from
+  // this finally, so an errored or cut run stays visible and a good run is never written twice.
+  try {
+    try {
+      await Promise.all([...groups.values()].map(async plans => {
+        const batch = await routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now });
+        record(batch);
+        outcomes.push(...batch);
+        for (const outcome of batch) {
+          first.reading.delete(outcome.source);
+          lateFindingsOf(deps, first, run.researchId, outcome.source, outcome.ms, outcome.lines, outcome.outcome === 'ok' || outcome.outcome === 'empty');
+        }
+      }));
+    } finally {
+      beatTimer?.cancel();
+    }
     run.ended = true;
     const sources: JsonObject = {};
     for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
@@ -1438,8 +1479,79 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   }
 }
 
+/**
+ * R6: the first answer point's state, shared by the call and its still-running readers. The call answers at
+ * `firstAnswerMs` when any source has findings; from that moment on each reader that settles with something
+ * the reply did not already carry is reported once, so the host can hand it over without holding the turn.
+ */
+interface FirstAnswerState {
+  /** When the call answered ahead of its readers; unset until then. */
+  at?: number;
+  /** Source lines the first reply already carried, so a late block never repeats one. */
+  seen: Set<string>;
+  /** Sources already reported late: one event per source per call. */
+  delivered: Set<string>;
+  /** Sources being read right now, which is what the first reply names as pending. */
+  reading: Set<SourceKind>;
+  /** The loop's live view, published once it holds a run and a reply budget. */
+  snapshot?: () => { run: RunState; configured: readonly SourceKind[]; limit: number };
+}
+
+const lineKey = (line: string): string => line.trim().toLowerCase().replace(/\s+/gu, ' ');
+
+/** R6: what this source returned that the first reply did not already say. Never an invented line. */
+function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId: string, source: SourceKind, ms: number, lines: readonly string[], ok: boolean): void {
+  if (first.at === undefined || first.delivered.has(source)) return;
+  first.delivered.add(source);
+  const items: string[] = [];
+  for (const line of lines) {
+    const key = lineKey(line);
+    if (!key || first.seen.has(key)) continue;
+    first.seen.add(key);
+    items.push(line);
+    if (items.length >= RESEARCH.lateItems) break;
+  }
+  deps.late?.({ researchId, source, ms, items, ok });
+}
+
+/**
+ * R6: the call answers at the earlier of two moments: every source has settled, or `firstAnswerMs` with at
+ * least one source's findings in hand. A call with nothing to say yet waits exactly as it always has.
+ */
+async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: Promise<JsonObject>): Promise<JsonObject | undefined> {
+  const schedule = deps.schedule ?? scheduleTimer;
+  let cancel = (): void => {};
+  const due = new Promise<'due'>(resolve => { cancel = schedule(() => resolve('due'), RESEARCH.firstAnswerMs).cancel; });
+  const raced = await Promise.race([loop.then(() => 'settled' as const, () => 'settled' as const), due]);
+  cancel();
+  if (raced === 'settled') return undefined;
+  const view = first.snapshot?.();
+  if (view === undefined) return undefined;
+  const found = [...view.run.ledger.values()].flatMap(entry => entry.lines ?? []);
+  // No source has findings yet, so there is no answer to give: the call waits, as today, to its own budget.
+  if (found.length === 0) return loop;
+  for (const line of found) first.seen.add(lineKey(line));
+  const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
+  const reply = buildReply(view.run, 'partial', view.configured, false, view.limit);
+  first.at = deps.now();
+  const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
+  (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
+  return { ...reply, pending };
+}
+
 /** The bounded loop. One call runs it start to finish within the run deadline. */
 export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
+  const first: FirstAnswerState = { seen: new Set(), delivered: new Set(), reading: new Set() };
+  const loop = runResearchLoop(deps, call, signal, first);
+  const early = await firstAnswerOf(deps, first, loop);
+  if (early === undefined) return loop;
+  // The call answers now. The readers keep going to their own deadlines, so their findings still land.
+  deps.background?.(loop.then(() => undefined, () => undefined));
+  return early;
+}
+
+/** The loop behind a call: unchanged by the first answer point except for what it reports late. */
+async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, so the
   // body the owner asked for is never trimmed away for the length of a search reply.
@@ -1476,10 +1588,11 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     run = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() }) ?? deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
   }
   run.direction = call.direction ?? run.direction;
+  first.snapshot = () => ({ run, configured, limit });
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
-  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit);
+  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];
@@ -1647,14 +1760,10 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       const latencies = new Map<CandidateKind, number>();
       const readStarted = new Set<CandidateKind>();
       const cutKinds = new Set<CandidateKind>();
-      // RD: the round hands the model an answer as soon as one source has something to say, and cuts the
-      // sources still reading instead of holding the turn open for the slowest connector. The winner is
-      // never abandoned: its own second hop (a mail body, a chat thread) still completes.
-      let answered = false;
-      let winner: CandidateKind | undefined;
-      let wake: () => void = () => {};
-      const firstSufficient = new Promise<void>(resolve => { wake = resolve; });
-      const abandon = new Map<CandidateKind, AbortController>(batch.map(kind => [kind, new AbortController()]));
+      // RD: the round hands the model an answer as soon as one source has something to say. R6: it no
+      // longer cuts the readers still working, because the call answers on its own clock (runResearch) and
+      // every reader lands on its own deadline. A cut here is always the source's own budget running out.
+      let answeredRound = false;
       const reads = batch.map(async kind => {
         const action = selection.actions.find(entry => entry.kind === kind);
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
@@ -1682,6 +1791,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const deadSources = allSources.filter(source => unavailable.includes(source));
         const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
         for (const source of startSources) {
+          first.reading.add(source);
           publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
         }
         for (const source of deadSources) {
@@ -1697,7 +1807,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         });
         // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
         const cut = new AbortController();
-        const readSignal = AbortSignal.any([roundSignal, cut.signal, abandon.get(kind)!.signal]);
+        const readSignal = AbortSignal.any([roundSignal, cut.signal]);
         // P5: the cut follows this source's own deadline from the table, never one number for every source.
         const readDeadlineMs = sourceDeadlineMs(startSources);
         const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
@@ -1722,8 +1832,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           return out;
         };
         const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(issued);
-        // The first source with real text ends the wait: the rest are cut below, never awaited.
-        if (!answered && !cut.signal.aborted && results.some(result => result.ok && result.text.trim())) { answered = true; winner = kind; wake(); }
+        // R6: a source with real text is its own credit; the rest of the round still finishes.
+        if (!answeredRound && !cut.signal.aborted && results.some(result => result.ok && result.text.trim())) answeredRound = true;
         // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
         // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
         const second: IntentSubCall[] = [];
@@ -1771,6 +1881,10 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
             ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
           });
+          // R6: this source settled after the call had already answered, so what it found is handed over
+          // once, and only if the first reply did not already say it.
+          first.reading.delete(part.source);
+          lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok));
         }
         // A source that answered counts as read, so an empty result is never re-offered as pending.
         if (results.some(result => result.ok)) run.readKinds.add(kind);
@@ -1797,24 +1911,18 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       });
 
       // RD: the round ends when the first sufficient source answers, and the readers still working are cut.
-      const all = Promise.all(reads);
-      await Promise.race([all, firstSufficient]);
-      if (answered) {
-        // One settle turn of grace, so a source that answers in the same batch is credited rather than cut.
-        await Promise.race([all, new Promise<void>(resolve => setImmediate(resolve))]);
-        for (const kind of readStarted) if (kind !== winner && !latencies.has(kind)) { cutKinds.add(kind); abandon.get(kind)!.abort(); }
-        if (cutKinds.size > 0) sawCut = true;
-        stopReason = 'answered';
-      }
-      await all;
+      // R6: no reader is cut because another answered. The call's first answer point is its own race, and
+      // every reader here finishes or reaches its own deadline, so a late block has something true to say.
+      await Promise.all(reads);
+      if (answeredRound) stopReason = 'answered';
       // The answer bound is a cut like any other: the read it stopped is named, and the turn ends partial.
-      if (answerCut.signal.aborted && !answered) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
+      if (answerCut.signal.aborted) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
       if (cutKinds.size > 0) sawCut = true;
 
       for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) || !latencies.has(kind) ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0 });
       // A source that ran out of its own deadline ends the turn as an honest partial: it is named
       // unchecked, and the model can ask to continue instead of another round silently spending time.
-      if (cutKinds.size > 0 && !answered) { stopReason = 'deadline'; break; }
+      if (cutKinds.size > 0 && !answeredRound) { stopReason = 'deadline'; break; }
       if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
       if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
     }
@@ -1862,7 +1970,11 @@ export function knownReply(ledger: ResearchLedger, researchId: string, configure
 }
 
 interface Deferred { promise: Promise<JsonObject>; resolve: (reply: JsonObject) => void }
-type ActiveRun = { superseded: boolean; awaiter: Deferred };
+type ActiveRun = {
+  superseded: boolean; awaiter: Deferred;
+  /** R6/M2: the readers a first answer left running; the run is over when this settles. */
+  reading?: Promise<void>;
+};
 function deferred(): Deferred {
   let resolve!: (reply: JsonObject) => void;
   const promise = new Promise<JsonObject>(r => { resolve = r; });
@@ -1924,14 +2036,21 @@ export class ResearchScheduler {
 
   #drive(call: ResearchCall, signal: AbortSignal, id: string): Promise<JsonObject> {
     const awaiter = deferred();
-    const entry = { superseded: false, awaiter };
+    const entry: ActiveRun = { superseded: false, awaiter };
     this.#active.set(id, entry);
-    runResearch(this.#deps, call, signal).then(reply => {
-      if (this.#active.get(id) === entry) this.#active.delete(id);
+    // R6/M2: a call that answered ahead of its readers is still the run those readers belong to, so stop
+    // and continue must find it. The entry leaves the active set only when the run itself has ended.
+    const deps: ResearchDeps = { ...this.#deps, background: done => {
+      entry.reading = done;
+      this.#deps.background?.(done);
+    } };
+    const settle = (): void => { if (this.#active.get(id) === entry) this.#active.delete(id); };
+    runResearch(deps, call, signal).then(reply => {
       if (!entry.superseded) awaiter.resolve(reply);
+      if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     }).catch(() => {
-      if (this.#active.get(id) === entry) this.#active.delete(id);
       if (!entry.superseded) awaiter.resolve({ error: 'research_failed' });
+      if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     });
     return awaiter.promise;
   }

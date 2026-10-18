@@ -25,6 +25,10 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
+/** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
+const LATE_DELIVERIES = ['commentary', 'thinking', 'dropped'];
+const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'session_closed', 'no_thinking_channel',
+  'no_commentary_channel', 'already_spoken', 'window_elapsed', 'owner_speaking', 'new_question', 'answer_playing', 'send_failed'];
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
@@ -597,6 +601,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       knowledge = { detail: row['detail'], maxChars: row['maxChars'], deadlineMs: row['deadlineMs'], truncated: row['truncated'] };
     }
     return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}) };
+  }
+  if (value.event === 'research_first_answer') {
+    // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
+    // reply and the ones it named as pending. Never a query, never a finding.
+    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending'])) return;
+    if (!isSafeId(value.researchId) || typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
+    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending };
+  }
+  if (value.event === 'research_late_findings') {
+    // R6: one line per source that settled after the first answer: how long it took, how many items it
+    // really returned, and how the host delivered them. Never the text of one.
+    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'delivered', 'reason'])) return;
+    if (!isSafeId(value.researchId) || !isSafeMember(value.source, RESEARCH_SOURCES)) return;
+    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (typeof value.items !== 'number' || !Number.isInteger(value.items) || value.items < 0 || value.items > 16) return;
+    if (!isSafeMember(value.delivered, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
+    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, delivered: value.delivered, reason: value.reason };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

@@ -2338,6 +2338,7 @@ test('a provider rebuild never lowers the marker sequence the Mac sees', async t
   const before = await markerSequence(output, 'inputTranscription');
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-sequence-resumption-secret' }, goAway: { timeLeft: '10s' } });
   await h.f.frame(2);
+  h.f.send({ setupComplete: {} });
   await continuity(output, 'resumed');
   // The rebuilt provider session counts its own events from one again; the sequence the Mac sees must not.
   h.f.send({ serverContent: { inputTranscription: { text: 'after the rebuild', finished: true } } });

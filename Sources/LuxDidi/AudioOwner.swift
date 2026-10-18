@@ -44,13 +44,14 @@ struct NativeAudioEvent: Equatable {
 /// Append-only JSON-lines journal for audio metadata, under the app support dir when a file
 /// URL is given. A test can pass no URL and read `events` instead.
 @MainActor final class NativeAudioJournal {
-    private let fileURL: URL?
-    private var handle: FileHandle?
+    private var file: NativeLogFile
     private(set) var events: [NativeAudioEvent] = []
     var observer: ((NativeAudioEvent) -> Void)?
+    /// The live session this journal is inside, if any: every line written meanwhile carries its id.
+    var sessionID: String?
 
-    init(fileURL: URL?) {
-        self.fileURL = fileURL
+    init(fileURL: URL?, limit: Int = NativeLogFile.limit) {
+        self.file = NativeLogFile(fileURL, limit: limit)
     }
 
     func record(_ event: NativeAudioEvent) {
@@ -58,21 +59,10 @@ struct NativeAudioEvent: Equatable {
         observer?(event)
         var record = event.fields
         record["event"] = event.name
-        record["timestamp"] = event.timestamp
+        if let sessionID, record["liveSessionId"] == nil { record["liveSessionId"] = sessionID }
+        record.merge(NativeLogClock.shared.stamp("audio", at: event.at)) { current, _ in current }
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
-        // Created lazily on the first record, so constructing the journal writes no directory.
-        if handle == nil, let fileURL {
-            try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
-                                                     withIntermediateDirectories: true)
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
-                FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-            }
-            let opened = try? FileHandle(forWritingTo: fileURL)
-            _ = try? opened?.seekToEnd()
-            handle = opened
-        }
-        guard let handle else { return }
-        try? handle.write(contentsOf: data + Data([10]))
+        file.append(data + Data([10]))
     }
 }
 

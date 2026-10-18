@@ -271,6 +271,7 @@ actor GatedSocket: LiveSocket {
         try await underlying.sendPCM(data)
     }
     func sendControl(_ command: LiveControl) async throws { try await underlying.sendControl(command) }
+    func sendReceipt(_ frame: String) async throws { try await underlying.sendReceipt(frame) }
     func cancel() async { closed = true; await underlying.cancel(); await gate.release() }
 }
 struct GatedSockets: LiveSocketConnecting {
@@ -285,6 +286,7 @@ actor StopProbeSocket: LiveSocket {
     private let gate: Gate
     private var waiter: CheckedContinuation<LiveFrame, Error>?
     private(set) var controls: [LiveControl] = []
+    private(set) var receipts: [String] = []
     private var closed = false
     init(_ frames: [LiveFrame], _ gate: Gate) { self.frames = frames; self.gate = gate }
     func receive() async throws -> LiveFrame {
@@ -299,6 +301,7 @@ actor StopProbeSocket: LiveSocket {
         guard !closed else { throw LiveClientError.unavailable }
         controls.append(command)
     }
+    func sendReceipt(_ frame: String) async throws { receipts.append(frame) }
     func cancel() async {
         closed = true
         waiter?.resume(throwing: LiveClientError.transport); waiter = nil
@@ -315,6 +318,7 @@ actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
     private var waiter: CheckedContinuation<LiveFrame, Error>?
     private(set) var inputs: [Data] = []
     private(set) var controls: [LiveControl] = []
+    private(set) var receipts: [String] = []
     private(set) var connections = 0
     func connect(_ binding: LiveSocketBinding) -> any LiveSocket { connections += 1; return self }
     func push(_ frame: LiveFrame) {
@@ -327,6 +331,7 @@ actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
     }
     func sendPCM(_ data: Data) { inputs.append(data) }
     func sendControl(_ command: LiveControl) { controls.append(command) }
+    func sendReceipt(_ frame: String) { receipts.append(frame) }
     func cancel() { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
 }
 
@@ -340,6 +345,7 @@ actor ScriptedSocket: LiveSocket {
     }
     func sendPCM(_ data: Data) { inputs.append(data) }
     func sendControl(_ command: LiveControl) {}
+    func sendReceipt(_ frame: String) {}
     func cancel() { frames = [] }
 }
 struct FixedSockets: LiveSocketConnecting {

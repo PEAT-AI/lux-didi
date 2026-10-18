@@ -313,6 +313,7 @@ import WebKit
     }
     func startLive(pickupJobID: String? = nil) {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
+        stopTrigger.clear()
         if live?.isCapturing == false { liveAuthorityOwner.clear() }
         micModeReceiptAtLiveStart()
         let conversation = liveAuthorityOwner.ownerStart {
@@ -324,11 +325,16 @@ import WebKit
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
         orbLevels?.start()
     }
-    func stopLive() {
+    /// D12-5: the Stop receipt names what pressed it. A stop the app makes itself stays `other`.
+    /// The status menu's item travels through the web state machine and comes back as a bridge
+    /// command, so its trigger is armed here and consumed by exactly that one Stop.
+    var stopTrigger = LiveStopTriggerLatch()
+    func stopLive(trigger: LiveStopTrigger = .other) {
+        let named = stopTrigger.take(trigger)
         let conversation = live
         orbLevels?.stop(); orbLevels = nil
         conversation?.stopCapture()
-        Task { await conversation?.stop() }
+        Task { await conversation?.stop(trigger: named) }
     }
 
     // MARK: - Presence effects (council 2026-10-17, option C)
@@ -434,7 +440,7 @@ import WebKit
         switch message {
         case .mini: onMiniMode?()
         case .start: startLive()
-        case .stop: stopLive()
+        case .stop: stopLive(trigger: .button)
         case .mute: if live?.isMuted == false { onPresenceMute?(true) }
         case .unmute: if live?.isMuted == true { onPresenceMute?(false) }
         case .openExternal(let url): shell?.openExternal(url)
@@ -461,6 +467,7 @@ import WebKit
         if wasRecording && !voice.state.transcript.isEmpty { draft = voice.state.transcript }
     }
     func stopRecording(_ reason: String) {
+        // A programmatic stop (logout, dictation hand-off, window close) keeps the `other` trigger.
         stopLive()
         stopDictation(reason)
     }
@@ -510,7 +517,7 @@ struct RootView: View {
         isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
         start: { [weak self] in self?.model.startLive() },
         mute: { [weak self] in self?.presence.mute(.app) },
-        stop: { [weak self] in self?.model.stopLive() })
+        stop: { [weak self] in self?.model.stopLive(trigger: .hotkey) })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
     /// Q4-R2: the status menu's "Show mini orb" is presentation only.
@@ -520,7 +527,7 @@ struct RootView: View {
     private var miniCookie: HTTPCookie?
     private lazy var miniOrb = MiniOrbToggle(
         startLive: { [weak self] in self?.model.startLive() },
-        stopLive: { [weak self] in self?.model.stopLive() },
+        stopLive: { [weak self] in self?.model.stopLive(trigger: .button) },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
         presentPanel: { [weak self] trigger in self?.presentMiniThroughCoordinator(trigger: trigger) ?? .failed("no_app") },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
@@ -533,8 +540,8 @@ struct RootView: View {
     /// input mute are effects of the same transitions.
     private lazy var presence = NativePresence(effects: PresenceEffects(
         openSession: { [weak self] in self?.model.startLive() },
-        cancelConnecting: { [weak self] in self?.model.stopLive() },
-        closeSession: { [weak self] in self?.model.stopLive() },
+        cancelConnecting: { [weak self] in self?.model.stopLive(trigger: .button) },
+        closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
@@ -883,7 +890,7 @@ struct RootView: View {
     }
     @objc func startLiveFromMenu() { menuBridge.start() }
     @objc func muteLiveFromMenu() { summonActions.mute() }
-    @objc func stopLiveFromMenu() { menuBridge.stop() }
+    @objc func stopLiveFromMenu() { model.stopTrigger.arm(.menu); menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
     @objc private func showGettingStarted() {
         show()

@@ -157,37 +157,88 @@ expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == false, "a key pressed
 expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x40) == false, "the Right Option device bit is never a Right Command press")
 expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x80040), "a Right Option press is another modifier, so a press under it is a chord")
 
-// B7 regression: the positive branch, asked once on the first interactive launch
-// and never again, proven through the prompt seam with no modal and no TCC.
-let positiveSuite = "didi.single-key.positive.\(UUID().uuidString)"
-let positiveDefaults = UserDefaults(suiteName: positiveSuite)!
-var prompts = 0
-SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: positiveDefaults, granted: false, prompt: { prompts += 1 })
-expect(prompts == 1 && positiveDefaults.bool(forKey: SingleKeyTrigger.askedKey), "the first interactive launch asks for the grant once")
-SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: positiveDefaults, granted: false, prompt: { prompts += 1 })
-expect(prompts == 1, "the grant is asked once, ever")
-let grantedSuite = "didi.single-key.granted.\(UUID().uuidString)"
-let grantedDefaults = UserDefaults(suiteName: grantedSuite)!
-SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, defaults: grantedDefaults, granted: true, prompt: { prompts += 1 })
-expect(prompts == 1, "a present grant is never asked for")
-positiveDefaults.removePersistentDomain(forName: positiveSuite)
-grantedDefaults.removePersistentDomain(forName: grantedSuite)
-
 // B6 regression: a tap the system disabled is re-armed, everything else is not.
 expect(RightCommandTapDetector.shouldReArm(.tapDisabledByTimeout), "a timed out tap is re-armed")
 expect(RightCommandTapDetector.shouldReArm(.tapDisabledByUserInput), "a user-disabled tap is re-armed")
 expect(RightCommandTapDetector.shouldReArm(.keyDown) == false && RightCommandTapDetector.shouldReArm(.flagsChanged) == false, "a key event is never a re-arm")
 
-// The grant is asked for once, on the first interactive launch only, so no
-// install, proof or smoke launch can open a permission prompt.
+// #3p / B7 regression: the grant is asked once per app version on an interactive
+// launch and only while it is missing, proven through the prompt seam with no modal
+// and no TCC prompt. An ad-hoc signed install can lose the grant, so a new version
+// asks once more instead of staying silent for ever.
 let grantSuite = "didi.single-key.test.\(UUID().uuidString)"
 let grantDefaults = UserDefaults(suiteName: grantSuite)!
+var prompts = 0
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3p", defaults: grantDefaults, enabled: true,
+                                     trusted: false, prompt: { prompts += 1 })
+expect(prompts == 1, "an untrusted new version asks for the grant once")
+expect(grantDefaults.string(forKey: SingleKeyGrantPrompt.versionKey) == "3p", "the asked version is the one remembered")
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3p", defaults: grantDefaults, enabled: true,
+                                     trusted: false, prompt: { prompts += 1 })
+expect(prompts == 1, "the same version never asks again")
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3q", defaults: grantDefaults, enabled: true,
+                                     trusted: false, prompt: { prompts += 1 })
+expect(prompts == 2, "a new version asks once more, which is the ad-hoc install's case")
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3r", defaults: grantDefaults, enabled: true,
+                                     trusted: true, prompt: { prompts += 1 })
+expect(prompts == 2, "a key that has its grant is never asked for")
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3s", defaults: grantDefaults, enabled: false,
+                                     trusted: false, prompt: { prompts += 1 })
+expect(prompts == 2, "a key that is turned off is never asked for")
 for kind in [LaunchKind.installedProof, .selfCheck, .uiProof, .verification] {
-    SingleKeyTrigger.requestGrantIfNeeded(for: kind, defaults: grantDefaults)
-    expect(grantDefaults.bool(forKey: SingleKeyTrigger.askedKey) == false, "a \(kind) launch never asks for the single-key grant")
+    SingleKeyTrigger.requestGrantIfNeeded(for: kind, version: "3t", defaults: grantDefaults, enabled: true, trusted: false)
+    expect(grantDefaults.string(forKey: SingleKeyGrantPrompt.versionKey) != "3t", "a \(kind) launch never asks for the single-key grant")
 }
 expect(SingleKeyTrigger.explanation.contains("\n") == false && SingleKeyTrigger.explanation.count < 300, "the grant explanation is one line")
 grantDefaults.removePersistentDomain(forName: grantSuite)
+
+// #3p: the launch receipt and the tap receipt, proven with a fake trust provider and
+// no event tap, so a silent Right Command can never again be a guess.
+let singleKeyWasEnabled = SingleKeyTrigger.isEnabled
+SingleKeyTrigger.isEnabled = true
+var singleKeyReceipts: [[String: Any]] = []
+let untrustedKey = SingleKeyTrigger()
+untrustedKey.system = .init(trusted: { false }, install: { true })
+untrustedKey.onReceipt = { singleKeyReceipts.append($0) }
+expect(untrustedKey.start() == false && untrustedKey.tapCreated == false, "an untrusted launch creates no tap")
+let untrustedState = SingleKeyTrigger.stateReceipt(enabled: true, trusted: false, tapCreated: untrustedKey.tapCreated, signing: "adhoc")
+expect(untrustedState["event"] as? String == "single_key_state" && untrustedState["tapCreated"] as? Bool == false
+    && untrustedState["trusted"] as? Bool == false && untrustedState["signing"] as? String == "adhoc",
+    "the launch receipt says the key is untrusted and has no tap")
+let trustedKey = SingleKeyTrigger()
+trustedKey.system = .init(trusted: { true }, install: { true })
+trustedKey.onReceipt = { singleKeyReceipts.append($0) }
+expect(trustedKey.start() && trustedKey.tapCreated, "a trusted launch creates the tap")
+let trustedState = SingleKeyTrigger.stateReceipt(enabled: true, trusted: true, tapCreated: trustedKey.tapCreated, signing: "identity")
+expect(trustedState["tapCreated"] as? Bool == true && trustedState["signing"] as? String == "identity",
+    "the launch receipt says the tap is live and what signed it")
+var presenceAfterTap: [PresenceState] = [.connecting, .hotMuted, .hotMuted]
+var singleKeyPresence = PresenceState.cold
+trustedKey.presenceState = { singleKeyPresence }
+trustedKey.onTap = { singleKeyPresence = presenceAfterTap.removeFirst() }
+trustedKey.receive(.rightCommandDown, at: 300)
+trustedKey.receive(.rightCommandUp, at: 300.1)
+expect(singleKeyReceipts.count == 1 && singleKeyReceipts[0]["event"] as? String == "single_key_tap"
+    && singleKeyReceipts[0]["action"] as? String == "start" && singleKeyReceipts[0]["reason"] as? String == "connecting",
+    "a tap that starts Naya logs single_key_tap start")
+trustedKey.receive(.rightCommandDown, at: 310)
+trustedKey.receive(.rightCommandUp, at: 310.1)
+expect(singleKeyReceipts.count == 2 && singleKeyReceipts[1]["action"] as? String == "stop"
+    && singleKeyReceipts[1]["reason"] as? String == "hotMuted", "a tap that stops Naya logs single_key_tap stop")
+trustedKey.receive(.rightCommandDown, at: 320)
+trustedKey.receive(.rightCommandUp, at: 320.1)
+expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "ignored"
+    && singleKeyReceipts[2]["reason"] as? String == "hotMuted", "a tap the machine does not move is logged as ignored with the state it stayed in")
+trustedKey.receive(.rightCommandDown, at: 330)
+trustedKey.receive(.rightCommandUp, at: 330.4)
+expect(singleKeyReceipts.count == 3, "a hold is not a tap and leaves no receipt")
+expect(SingleKeyTapOutcome(from: .live, to: .live).action == .ignored && SingleKeyTapOutcome(from: .live, to: .live).reason == "live",
+    "a tap the machine does not move is a receipt naming the state, proven directly")
+expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .start && SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
+    "a move out of cold or back from hot-muted starts, a move to cold stops")
+expect(SingleKeyTrigger.signing == "adhoc" || SingleKeyTrigger.signing == "identity" || SingleKeyTrigger.signing == "unknown",
+    "the signing fact is one of the three the receipt knows")
+SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
 // MINI2: the pill is 64x26, sits top-center just below the menu bar (the screens

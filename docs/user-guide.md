@@ -37,9 +37,10 @@ menu (it is on by default). A short tap of the right Command key starts or stops
 Naya exactly like Control Option Space: it ignores the key while you are using it in
 a chord such as Cmd+C, and it ignores a press held longer than 300 milliseconds, so
 ordinary typing never triggers it. The first time you launch Naya by hand, macOS
-asks once for Accessibility (or Input Monitoring) permission with a one-line
-explanation; the chord keeps working whether or not you allow it, and the settings
-page says when the key is inactive and why. Right Option belongs to SuperWhisper, so
+asks for Accessibility (or Input Monitoring) permission with a one-line
+explanation, and asks again once after each update, because macOS can drop the grant
+when the app is replaced; the chord keeps working whether or not you allow it, and
+the settings page and the menu bar say when the key is inactive and why. Right Option belongs to SuperWhisper, so
 Naya never uses it.
 
 Use the menu if a shortcut is unavailable.

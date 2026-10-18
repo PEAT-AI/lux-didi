@@ -159,6 +159,7 @@ test('canonical compiler emits every published production unit and no unpublishe
     'index.ts', 'runtime/**/*.ts', 'http/**/*.ts', 'contracts/**/*.ts', 'domain/**/*.ts',
     'host/**/*.ts', 'memory/**/*.ts', 'chat/**/*.ts', 'config/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts',
     'adapters/live-voice/**/*.ts', 'connectors/**/*.ts', 'prompt/**/*.ts', 'live/**/*.ts',
+    'trace/**/*.ts',
   ].sort(), 'canonical production roots must include all accepted units and approved CHAT/config composition');
   for (const entry of ['index', 'runtime/store', 'http/server', 'contracts/index', 'domain/facade',
     'host/index', 'chat/index', 'config/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index', 'live/index']) {

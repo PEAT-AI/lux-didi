@@ -511,3 +511,33 @@ test('the distiller carries no persona name literal', () => {
   const source = readFileSync(new URL('../../services/summarize.ts', import.meta.url), 'utf8');
   assert.equal(/Naya/.test(source), false, 'the persona name is a parameter, never a literal');
 });
+
+test('the host-start reconciler re-distils a no_text_model skip once a text model exists', async () => {
+  const h = open();
+  try {
+    withTurns(h.store, 's-requeue');
+    withTurns(h.store, 's-sealed');
+    seedSession(h.store, 's-thin');
+    seedTurn(h.store, 's-thin', 'inputTranscription', 'only one owner turn');
+    await summarizer(h.store, null).distill('s-requeue');
+    await summarizer(h.store, null).distill('s-thin');
+    const status = (id: string) => h.store.transaction(tx => summaries.getBySession(tx, id))!;
+    assert.equal(status('s-requeue').skipReason, 'no_text_model');
+    assert.equal(status('s-thin').skipReason, 'too_few_turns');
+    // Still no model: the reconciler re-reads the row and writes nothing new.
+    await summarizer(h.store, null).reconcile();
+    assert.equal(status('s-requeue').skipReason, 'no_text_model');
+    // With a model, only the no_text_model row is reopened and distilled; the other skip reason stays sealed.
+    const model = new FakeModel([reply('{"skip": false, "summary": "The owner said one and two; Mira found nothing.", "openLoop": null}')]);
+    await summarizer(h.store, model, 'Mira').reconcile();
+    const reopened = status('s-requeue');
+    assert.equal(reopened.status, 'complete');
+    assert.equal(reopened.promptVersion, SUMMARY_PROMPT_VERSION);
+    assert.equal(reopened.skipReason, null);
+    assert.equal(model.calls, 1, 'the sealed skip never reaches the model');
+    const sealed = status('s-thin');
+    assert.equal(sealed.status, 'skipped');
+    assert.equal(sealed.skipReason, 'too_few_turns');
+    assert.equal(sealed.summary, null);
+  } finally { h.cleanup(); }
+});

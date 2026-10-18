@@ -190,7 +190,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
   async function distill(liveSessionId: string, runOptions: { deadHost?: boolean } = {}): Promise<void> {
     const prepared = options.store.transaction(tx => {
       const existing = summaries.getBySession(tx, liveSessionId);
-      if (existing) return null;
+      // A row skipped only for a missing text model is not terminal: with a model configured now, the session is
+      // distilled again. Every other skip reason and every complete or failed row stays sealed.
+      if (existing && !(options.model && summaries.reopenNoModelSkip(tx, liveSessionId))) return null;
       const transcript = readSessionTranscript(tx, liveSessionId);
       const injectedIds = summaries.injectedSummaryIdsForSession(tx, liveSessionId);
       const injected = injectedIds

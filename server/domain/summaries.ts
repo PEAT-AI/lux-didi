@@ -131,13 +131,14 @@ export function listSummaries(tx: Transaction): SummaryRecord[] {
   return tx.all('SELECT * FROM conversation_summaries ORDER BY created_at DESC, rowid DESC').map(toRecord);
 }
 
-/** Ended sessions that still have no summary row, oldest first; the reconciler's work list. */
+/** Ended sessions the reconciler may still distil, oldest first: no row, or a row skipped only for a missing text model. */
 export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
   const rows = tx.all(
     `SELECT s.live_session_id AS id, s.terminal_at AS ended_at, s.terminal_outcome AS outcome
        FROM live_sessions s
        LEFT JOIN conversation_summaries c ON c.live_session_id = s.live_session_id
-      WHERE s.lifecycle = 'terminal' AND c.id IS NULL
+      WHERE s.lifecycle = 'terminal'
+        AND (c.id IS NULL OR (c.status = 'skipped' AND c.skip_reason = 'no_text_model'))
       ORDER BY (s.terminal_at IS NULL), s.terminal_at ASC, s.created_at ASC`,
   );
   return rows.map(row => ({ liveSessionId: String(row['id']), endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']),
@@ -175,6 +176,14 @@ export function countFailedDeadlineSessionsWithJournal(tx: Transaction): number 
 /** Remove a failed row so distillation may run once more for its session; refuses any non-failed row. */
 export function removeFailed(tx: Transaction, liveSessionId: string): boolean {
   const row = tx.get("SELECT id FROM conversation_summaries WHERE live_session_id=? AND status='failed'", [liveSessionId]);
+  if (!row) return false;
+  tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [liveSessionId]);
+  return true;
+}
+
+/** Remove a row skipped only because no text model was configured, so a later start distils it; any other row is refused. */
+export function reopenNoModelSkip(tx: Transaction, liveSessionId: string): boolean {
+  const row = tx.get("SELECT id FROM conversation_summaries WHERE live_session_id=? AND status='skipped' AND skip_reason='no_text_model'", [liveSessionId]);
   if (!row) return false;
   tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [liveSessionId]);
   return true;

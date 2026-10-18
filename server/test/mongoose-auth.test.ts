@@ -265,7 +265,7 @@ test('a lock held by a live writer refuses, a stale one is reclaimed, and no loc
     const lock = join(dir, '.mongoose-mcp.json.lock');
     writeFileSync(lock, '', { mode: 0o600 });
     // The record's own clock starts now, so only the lock's age is under test.
-    const written = statSync(lock).mtimeMs;
+    const written = Math.round(statSync(lock).mtimeMs);
     writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: written, consentStartedAt: written }));
     await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => written, fetch: ok }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-busy');
     // The holder crashed a minute ago: the lock is stale and the next caller takes it.

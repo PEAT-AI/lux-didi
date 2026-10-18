@@ -1534,7 +1534,10 @@ describe('openai gpt-live receipts', () => {
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_a') });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_b') });
     await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
-    // The second call answers first: the batch is not settled, so the owner defers, then one create carries both.
+    // The response that emitted both calls finishes before either answer is ready, which is the case the gate is
+    // built for: the first answer is deferred until the batch is complete, then one create carries both.
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
+    await until(() => rows('response.terminal').length === 1);
     session.sendToolResponse({ responses: [{ id: 'call_b', name: 'research', response: { ok: true } }] });
     session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
     await tick();

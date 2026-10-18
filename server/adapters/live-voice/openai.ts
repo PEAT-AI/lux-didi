@@ -1303,18 +1303,15 @@ class Session implements LiveVoiceSession {
   }
 
   /**
-   * The delegation guide's order (S5): every result of the backend response is written together, then exactly one
-   * `response.create`. Nothing is written while the response is still emitting calls, because a call emitted after
-   * it would be answered by a continuation already sent: the batch is complete only when its response is.
+   * The delegation guide's order (S5): each answered call's output is written the moment it is ready, and exactly
+   * one `response.create` follows once every call of the backend response has its output. A create never answers a
+   * partial batch, because a call emitted after it would have no continuation left to carry it.
    */
   private writeAnswered(): LiveToolSendOutcome {
     if (!this.pendingCalls.length) return this.continuationOutcome;
-    if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) {
-      this.deferralReceipt();
-      return this.continuationOutcome = 'deferred';
-    }
     const written: string[] = [];
     for (const call of this.pendingCalls) {
+      if (!this.answeredCalls.has(call.id)) continue;
       const response = this.answeredCalls.get(call.id)!;
       // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
       // Exactly one terminal output per call: success, error, timeout and cancellation are all that one object.
@@ -1322,14 +1319,19 @@ class Session implements LiveVoiceSession {
       this.recordCommand(outputId, 'tool_out');
       if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
-        this.answeredCalls.clear();
         return this.continuationOutcome = 'failed';
       }
       written.push(call.id);
       this.outputSent.add(call.id);
     }
-    this.pendingCalls = []; this.answeredCalls.clear();
-    this.noteDelegationOutputs(written);
+    this.pendingCalls = this.pendingCalls.filter(call => !written.includes(call.id));
+    for (const id of written) this.answeredCalls.delete(id);
+    if (written.length) this.noteDelegationOutputs(written);
+    // A call of this backend response still has no answer: its output is owed, so no continuation yet.
+    if (this.pendingCalls.length > 0) {
+      this.deferralReceipt();
+      return this.continuationOutcome = 'deferred';
+    }
     return this.continueTurn(written.length, 0);
   }
 

@@ -172,7 +172,7 @@ test('PV1-R3: the settings route accepts the accent field and the config layer a
 test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anything outside 1.0 to 1.2 is refused', t => {
   const f = fixture(t);
   // A file that names no pace plays at today's speed, and a save records the band's floor explicitly.
-  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' }).playbackRate, 1);
+  saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' });
   assert.equal(f.saved()['playbackRate'], 1);
   // The operator surface: the flag lands in the file and moves the process-current value the next start reads.
   const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', '1.08']);
@@ -183,8 +183,10 @@ test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anyt
   assert.equal(loaded.status, 'configured');
   assert.equal(loaded.status === 'configured' ? loaded.config.playbackRate : undefined, 1.08);
   // Both ends of the band are legal; 0.99, 1.21 and a non-number are not.
-  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: 1.2 }).playbackRate, 1.2);
-  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: 1 }).playbackRate, 1);
+  saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: 1.2 });
+  assert.equal(f.saved()['playbackRate'], 1.2);
+  saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: 1 });
+  assert.equal(f.saved()['playbackRate'], 1);
   for (const bad of ['0.99', '1.21', '0', 'faster']) {
     const refused = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', bad]);
     assert.equal(refused.status, 1, bad);

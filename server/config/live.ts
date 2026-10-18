@@ -273,7 +273,7 @@ function slotChoice(provider: LiveVoiceProvider): { modelId: string; voice: stri
  * preferences survive byte for byte.
  */
 export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown; accent?: unknown; voiceDescription?: unknown; playbackRate?: unknown }): {
-  provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent; playbackRate: number;
+  provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent;
 } {
   try {
     requireAbsolutePath(options.configDir);
@@ -314,7 +314,7 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     renameSync(pending, join(options.configDir, 'live.json'));
     currentAccent = chosenAccent;
     currentRate = chosenRate;
-    return { provider, modelId: model, voice: chosenVoice, accent: chosenAccent, playbackRate: chosenRate };
+    return { provider, modelId: model, voice: chosenVoice, accent: chosenAccent };
   } catch (error) {
     if (error instanceof LiveConfigError) throw error;
     throw safeError(error);

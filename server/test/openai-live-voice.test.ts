@@ -618,13 +618,9 @@ describe('openai gpt-live adapter', () => {
     await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     await quiet();
-    // S5: the first answer's own output goes the moment it is ready, and nothing follows it until the batch ends.
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create'],
-      'the ready output goes at once and no continuation follows while a call of the turn is unanswered');
-    // S5: an answer whose output is already on the wire is the same answer, never a second submission.
-    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
-    await quiet();
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create'], 'a repeated answer writes nothing');
+    // S5: the batch is not ready, so nothing goes upstream and no continuation is sent.
+    assert.deepEqual(f.frames.slice(1), [], 'nothing goes upstream while a call of the turn is unanswered');
+    assert.throws(() => session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), code('protocol_error'));
     session.sendToolResponse({ responses: [{ id: 'call_2', name: 'calendar', response: { ok: false } }] });
     await f.frame(4);
     assert.deepEqual(f.frames.slice(1).map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame)), [
@@ -836,13 +832,12 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: false } }] }), 'deferred');
     await quiet();
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create'],
-      'the ready output goes at once and no continuation follows while a call of the response is unanswered');
+    assert.deepEqual(f.frames.slice(1), [], 'nothing goes upstream while a call of the response is unanswered');
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
     await f.frame(4);
     assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
       { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
+      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
       { type: 'response.create' },
     ]);
   });

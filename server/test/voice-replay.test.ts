@@ -62,7 +62,10 @@ test('scenario 3: a late output after a timeout is not repeated and does not rev
   assert.equal(call.outputs.length, 1, `exactly one output submission for the call: ${describe(replay)}`);
   // Scoped to the generation that owed it: a re-submission after a reconnect resumes a lost call, which is a
   // different obligation, never a repeat of this one.
-  const late = replay.commands.filter(command => command.epoch === call.epoch && command.at > call.at + 12_000
+  // "Late" is measured from the ceiling's own submission, not from the call: the ceiling output lands a few
+  // milliseconds past the constant, and it is the one submission the scenario expects (S5 boundary, F1 G3).
+  const ceilingAt = call.outputs[0]!.at;
+  const late = replay.commands.filter(command => command.epoch === call.epoch && command.at > ceilingAt
     && (command.frame['item'] as Record<string, unknown> | undefined)?.['call_id'] === call.callId);
   assert.deepEqual(late.map(entry => ({ seq: entry.seq, at: entry.at - call.at, output: (entry.frame['item'] as Record<string, unknown>)['output'] })),
     [], `the late callback wrote a second submission for ${call.callId} ${describe(replay)}`);

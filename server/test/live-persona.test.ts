@@ -673,10 +673,11 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // 3p: the owner's morning call heard two over-long pre-tool cues, a spoken "[sigh]", a self-answered question,
 // one opener word three times, a calendar list before the real read and three padded answers near 69 words.
 // Six unconditional rules replace the six-word cue (P6-R1 keeps rule 6 uncapped: point first, then depth), the
-// wrapper grows under 1200 chars (P6-R3 raised the cap), and the accent block (pinned verbatim by PV1-R1)
+// wrapper growth stays bounded (P6-R3 set 1200; S4b raises the bound for the mandated delegation, backchannel,
+// interruption and honesty rules), and the accent block (pinned verbatim by PV1-R1)
 // keeps its wording.
 const WRAPPER_3O_CHARS = 6603;
-test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper grows under 1200 chars', () => {
+test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
@@ -690,7 +691,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   assert.equal(wrapper.includes('at most six words'), false, 'the six-word cue is retired, its rule is rule 1');
   assert.equal(wrapper.includes('Before any tool call'), false, 'the retired cue sentence is gone');
   const growth = wrapper.length - WRAPPER_3O_CHARS;
-  assert.ok(growth > 0 && growth < 1200, `the wrapper grows under the P6-R3 cap of 1200 chars (${growth})`);
+  const cap = 2000;
+  assert.ok(growth > 0 && growth < cap, `the wrapper grows under the S4b cap of ${cap} chars (${growth})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
   assert.ok(wrapper.includes('in the voice and accent defined above'), 'the wrapper still points at the accent block');
   for (const preset of Object.values(LIVE_ACCENT_PRESETS)) {

@@ -4,7 +4,7 @@ import type { DomainOperation, DomainOperations } from '../contracts/domain.js';
 export type DomainRoute = { kind: 'domain'; operation: DomainOperation; input: DomainOperations[DomainOperation]['input']; mutation: boolean };
 export type ConnectedRoute = { kind: 'connected'; action: 'status' | 'enroll' | 'conversation' | 'revoke' | 'accept' | 'run' | 'cancel' | 'events' | 'conversationEvents'; id: string | null; input: Record<string, unknown>; mutation: boolean };
 export type SelectionRoute = { kind: 'selection'; clear: boolean; mutation: boolean; input: Record<string, unknown> };
-export type LiveRoute = { kind: 'live'; action: 'status' | 'pendingJobs' | 'create' | 'snapshot' | 'journal' | 'revoke' | 'audio' | 'text' | 'settings'; id: string | null; input: Record<string, unknown>; mutation: boolean };
+export type LiveRoute = { kind: 'live'; action: 'status' | 'pendingJobs' | 'create' | 'snapshot' | 'journal' | 'revoke' | 'audio' | 'text' | 'settings' | 'prewarm'; id: string | null; input: Record<string, unknown>; mutation: boolean };
 export type Route = { kind: 'liveCurrent'; mutation: false; cursor: number } | DomainRoute | ConnectedRoute | SelectionRoute | LiveRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat' | 'toolsStatus' | 'liveConnections' | 'clientDiagnostics' | 'liveSummary'; mutation: boolean };
 type DirectKind = 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat' | 'toolsStatus' | 'liveConnections' | 'clientDiagnostics' | 'liveSummary';
 const bad = (message: string): never => { throw new ServiceError('BAD_REQUEST', message); };
@@ -61,6 +61,13 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     if (input['voice'] !== undefined && (typeof input['voice'] !== 'string' || !input['voice'].length || input['voice'].length > 64)) bad('Invalid voice');
     if (input['accent'] !== undefined && (typeof input['accent'] !== 'string' || !input['accent'].length || input['accent'].length > 40)) bad('Invalid accent');
     return { kind: 'live', action: 'settings', id: null, input, mutation: true };
+  }
+  if (path === '/api/v1/live/prewarm') {
+    // 338: the owner's wake instruction. A mutation with an empty body: it refreshes the warm context
+    // and answers the receipt, so it gets the same CSRF/cookie treatment as any other write.
+    matched(['POST']); query(url, []);
+    if (body) fields(object(body), [], []);
+    return { kind: 'live', action: 'prewarm', id: null, input: {}, mutation: true };
   }
   if (path === '/api/v1/live/text') {
     matched(['POST']); query(url, []);

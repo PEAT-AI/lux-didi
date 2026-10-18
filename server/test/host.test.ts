@@ -9,10 +9,16 @@ import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { installedConfigDirRefusal, pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { hostMigrations, installedConfigDirRefusal, pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
+import { WarmContextCache, chooseStartContext, withProvenance } from '../live/warm-context.js';
+import { createLiveSessionOwner } from '../live/index.js';
+import { loadLiveConfig } from '../config/live.js';
+import type { LiveVoicePort } from '../adapters/live-voice/index.js';
+import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
+import type { GoogleEvidence, GoogleResult } from '../connectors/google.js';
 import { listenService } from '../http/server.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
@@ -720,4 +726,181 @@ test('the entry refuses to start an unsupervised host on the installed app confi
     await assert.rejects(stat(join(dataDir, 'state.sqlite')), /ENOENT/, 'the refused start opens no state');
     await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the refused start installs no journal');
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// 338: the owner prewarm instruction. The handle answers the receipt the app records, and the closed
+// host-log line is the live owner's, so an unconfigured Live writes none.
+test('the host owner prewarm answers the quiet receipt when Live is unconfigured', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-prewarm-'));
+  const host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  try {
+    const receipt = await host.prewarm();
+    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no session has prepared sections yet');
+    const lines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(lines.filter(line => line['event'] === 'warm_prewarm').length, 0, 'no warm owner, so no receipt line');
+  } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+// 338: the owner's HTTP route for the same instruction (R3-R1). A wake belongs to no session, so it is
+// answered before the enabled gate; only the operator bearer may ask, and the body names no field.
+test('POST api/v1/live/prewarm answers the receipt and refuses a body field', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-prewarm-route-'));
+  const host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  const credential = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
+  const headers = { Authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-didi-authority-epoch': host.store.authorityEpoch };
+  try {
+    const url = `${host.service.origin}/api/v1/live/prewarm`;
+    const asked = await fetch(url, { method: 'POST', headers, body: '{}' });
+    assert.equal(asked.status, 200);
+    const answered = await asked.json() as { data: unknown };
+    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false });
+    const unknown = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ digest: 'x' }) });
+    assert.equal(unknown.status, 400, 'the body is closed: it names no field');
+    const read = await fetch(url, { method: 'GET', headers });
+    assert.equal(read.status, 405, 'it is a mutation, never a read');
+    const anonymous = await fetch(url, { method: 'POST' });
+    assert.equal(anonymous.status, 401, 'only the operator may ask');
+  } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('a forced warm refresh carries the calendar digest and the next start reads no source again', () => {
+  const sections = { persona: 'Naya is the owner\'s assistant.', memory: ['Prefers morning calls'],
+    summary: 'Yesterday: release planning.', calendar: '10:00 standup, 15:00 review.' };
+  const calls = { persona: 0, memory: 0, summary: 0, calendar: 0 };
+  let now = 1_000;
+  const cache = new WarmContextCache({ budget: 4_000, now: () => now, sources: {
+    persona: () => { calls.persona += 1; return sections.persona; },
+    memory: () => { calls.memory += 1; return sections.memory; },
+    summary: () => { calls.summary += 1; return sections.summary; },
+    calendar: () => { calls.calendar += 1; return sections.calendar; },
+  } });
+  assert.equal(cache.ageMs, undefined, 'nothing is assembled until a refresh asks for it');
+  const forced = cache.refresh(true);
+  assert.equal(forced?.sections.calendar, sections.calendar, 'the digest the owner read is in the assembly');
+  assert.match(forced?.text ?? '', /Today: 10:00 standup, 15:00 review\./);
+  assert.deepEqual(calls, { persona: 1, memory: 1, summary: 1, calendar: 1 }, 'one read per source per assembly');
+  now += 5;
+  cache.refresh(true);
+  assert.deepEqual(calls, { persona: 2, memory: 2, summary: 2, calendar: 2 }, 'a forced refresh assembles again');
+  assert.equal(cache.ageMs, 0, 'the receipt ages run from the forced assembly');
+  let assembled = 0;
+  const start = chooseStartContext(cache.take(), () => { assembled += 1; return { ...sections, summaryIds: [], summaryOmitted: [] }; });
+  assert.equal(start.warm, true, 'the forced assembly is what the next start takes');
+  assert.equal(assembled, 0, 'the store is not read a second time');
+  assert.equal(start.sections.calendar, sections.calendar);
+});
+
+// 339: the warm context's calendar digest. One bounded primary-calendar read, local host time, no
+// model call; unconfigured, empty or failed leaves the slot out so a session start never fails.
+type DigestReader = { calls: GcalListInput[]; gcalList(input: GcalListInput): Promise<GoogleResult> };
+function digestReader(events: readonly Record<string, unknown>[] | 'refused'): DigestReader {
+  const calls: GcalListInput[] = [];
+  return {
+    calls,
+    async gcalList(input: GcalListInput): Promise<GoogleResult> {
+      calls.push(input);
+      if (events === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
+      const evidence: GoogleEvidence = {
+        state: 'completed', tool: 'gcal_list', observedAt: 1_760_000_000_000,
+        decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: { events: [...events] } }) }] },
+        source: {} as GoogleEvidence['source'], coverage: {} as GoogleEvidence['coverage'],
+        projection: {} as GoogleEvidence['projection'], response: {} as GoogleEvidence['response'],
+      };
+      return evidence;
+    },
+  };
+}
+const digestNow = Date.parse('2026-10-18T10:00:00Z');
+const digestEvent = { id: 'e1', summary: 'standup', start: { dateTime: '2026-10-18T09:00:00Z' }, end: { dateTime: '2026-10-18T09:15:00Z' } };
+
+test('the warm calendar digest leaves the slot out when the connector is unconfigured', async () => {
+  assert.equal(await buildCalendarDigest(undefined, { now: digestNow, timeZone: 'UTC' }), undefined);
+});
+
+test('the warm calendar digest reads the primary calendar once and renders the empty day as absent', async () => {
+  const read = digestReader([]);
+  assert.equal(await buildCalendarDigest(read, { now: digestNow, timeZone: 'UTC' }), undefined);
+  assert.equal(read.calls.length, 1, 'exactly one bounded read');
+  assert.equal(read.calls[0]!.calendarId, 'primary', 'the primary calendar only');
+  assert.equal(read.calls[0]!.timeMin, '2026-10-18T00:00:00+00:00');
+  assert.equal(read.calls[0]!.timeMax, '2026-10-19T00:00:00+00:00');
+  assert.equal(read.calls[0]!.maxResults, 10);
+});
+
+test('the warm calendar digest keeps one bounded line and trims a day that does not fit', async () => {
+  const busy = Array.from({ length: 30 }, (_, index) => ({ id: 'e' + index, summary: 'review with the whole team ' + index, start: { dateTime: '2026-10-18T0' + (index % 10) + ':00:00Z' } }));
+  const digest = await buildCalendarDigest(digestReader(busy), { now: digestNow, timeZone: 'UTC' });
+  assert.equal(typeof digest, 'string');
+  assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
+  assert.match(digest ?? '', /^00:00 review with the whole team 0/, 'the first event keeps its local clock time');
+  assert.match(digest ?? '', /team 10$/, 'the last event that fits is kept whole');
+  assert.equal((digest ?? '').endsWith(', '), false, 'a trimmed digest never ends on a separator');
+});
+
+test('the warm calendar digest renders the day in the host time zone', async () => {
+  const utc = await buildCalendarDigest(digestReader([digestEvent]), { now: digestNow, timeZone: 'UTC' });
+  const kolkata = await buildCalendarDigest(digestReader([digestEvent]), { now: digestNow, timeZone: 'Asia/Kolkata' });
+  assert.equal(utc, '09:00 standup');
+  assert.equal(kolkata, '14:30 standup', 'the same instant, the host zone');
+  assert.equal(await buildCalendarDigest(digestReader('refused'), { now: digestNow, timeZone: 'UTC' }), undefined,
+    'a refused read leaves the slot out rather than failing the start');
+});
+
+// 338: the receipt the host log keeps is two ages and one flag, never the calendar it read.
+test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried', () => {
+  const receipt = { event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.deepEqual(safeEvent({ event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }),
+    { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no assembly yet is a valid receipt');
+  assert.equal(safeEvent({ ...receipt, digest: '10:00 standup with the board' }), undefined, 'the calendar text never reaches the log');
+  assert.equal(safeEvent({ ...receipt, ageAfterMs: -1 }), undefined, 'a negative age is refused');
+  assert.equal(safeEvent({ ...receipt, assembled: 'yes' }), undefined, 'the flag is a boolean');
+  assert.equal(safeEvent({ event: 'warm_prewarm', assembled: true }), undefined, 'both ages are always present');
+});
+
+// F9: a forced refresh of the sections a start chose keeps the summary provenance they were chosen
+// with, so `conversation_summary_injection` still accounts for what the start injected.
+test('a forced refresh keeps the summary provenance the start recorded', () => {
+  const previous = { persona: 'Naya is the owner\'s assistant.', memory: [] as readonly string[],
+    summary: 'Yesterday: release planning.', summaryIds: ['summary-17'] as readonly string[],
+    summaryOmitted: [{ id: 'summary-03', reason: 'budget' as const }], calendar: '09:00 old window' };
+  const cache = new WarmContextCache({ budget: 4_000, now: () => 0 });
+  const refreshed = cache.adopt(withProvenance({ ...previous, calendar: '10:00 standup' }, previous));
+  assert.deepEqual(refreshed?.sections.summaryIds, ['summary-17'], 'the injected ids survive the refresh');
+  assert.deepEqual(refreshed?.sections.summaryOmitted, [{ id: 'summary-03', reason: 'budget' }]);
+  assert.match(refreshed?.text ?? '', /Today: 10:00 standup/, 'the digest the owner read replaces the old one');
+  assert.match(refreshed?.text ?? '', /Recent conversation: Yesterday: release planning\./);
+});
+
+// F4 and R3-R5 at the owner: the digest is read once for each assembly, the prewarm assembles the
+// sections a start prepared, and the receipt carries the real ages instead of the degenerate nulls.
+test('the owner prewarm assembles after a start and reads the digest once per assembly', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-owner-prewarm-'));
+  const store = new Store(dir, hostMigrations);
+  const configDir = join(dir, 'provider-config');
+  let clock = 1_760_000_000_000;
+  let reads = 0;
+  const cleanup = async () => { store.close(); await rm(dir, { recursive: true, force: true }); };
+  try {
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+      dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+    await writeFile(join(configDir, 'live.json'), `${JSON.stringify(live)}\n`, { mode: 0o600 });
+    const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+    assert.equal(loaded.status, 'configured');
+    if (loaded.status !== 'configured') throw new Error('live.json must configure');
+    const owner = createLiveSessionOwner({
+      store, voice: {} as LiveVoicePort, profile: loaded.config.profile, now: () => clock, timeZone: 'UTC',
+      calendarDigest: async () => { reads += 1; return '10:00 standup, 15:00 review'; },
+    } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
+    const context = { clientId: 'owner-fixture', auditId: randomUUID(), authorityEpoch: store.authorityEpoch };
+    await owner.prepareCalendar();
+    assert.equal(reads, 1, 'R3-R5: one bounded read per assembly');
+    owner.create({ idempotencyKey: 'k1', inputClass: 'ordinary' }, context);
+    clock += 60_000;
+    const receipt = await owner.prewarm();
+    assert.equal(reads, 2, 'the prewarm reads the digest again for its own assembly');
+    assert.deepEqual(receipt, { ageBeforeMs: 60_000, ageAfterMs: 0, assembled: true }, 'the receipt carries the real ages');
+    await owner.shutdown();
+  } finally { await cleanup(); }
 });

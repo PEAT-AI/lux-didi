@@ -618,6 +618,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeId(value.researchId)) return;
     return { event: 'research_joined', researchId: value.researchId };
   }
+  if (value.event === 'warm_prewarm') {
+    // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:
+    // never the calendar digest, the summary or any prompt text.
+    if (!closedKeys(value, ['event', 'ageBeforeMs', 'ageAfterMs', 'assembled'])) return;
+    const age = (field: unknown): boolean => field === null || isSafeCount(field);
+    if (!age(value.ageBeforeMs) || !age(value.ageAfterMs)) return;
+    if (typeof value.assembled !== 'boolean') return;
+    return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
+  }
 }
 
 export class HostLog {

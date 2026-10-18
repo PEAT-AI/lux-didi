@@ -11,7 +11,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, chooseStartContext } from './warm-context.js';
+import { WarmContextCache, chooseStartContext, withProvenance, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
@@ -224,6 +224,16 @@ type SummaryHooks = {
   onSessionTerminal?: (liveSessionId: string) => void;
   log?: (event: { event: string } & Record<string, unknown>) => void;
 };
+
+/**
+ * The warm-context hook wired through the same composition seam: today's calendar digest, built by
+ * the host from the configured connector. Never accepted from transport, and absent means the slot
+ * stays out of the assembly (issue 339).
+ */
+type WarmHooks = { calendarDigest?: () => Promise<string | undefined> };
+
+/** The receipt one forced prewarm returns, and the host logs (issue 338). */
+export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean };
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
@@ -495,6 +505,11 @@ export class LiveSessionOwner {
   readonly #research: ResearchSelector | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
   #warm: WarmContextCache;
+  /** The digest the host built at the last prewarm; absent leaves the calendar slot out (issue 339). */
+  #calendar: string | undefined;
+  /** The sections the last start used, so a forced prewarm refreshes without reading the store again. */
+  #sections: WarmContextSections | undefined;
+  readonly #calendarDigest: (() => Promise<string | undefined>) | undefined;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -512,6 +527,8 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
+    // The digest hook rides the composition seam; a test may also pass it on the config directly.
+    this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
     this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
@@ -548,6 +565,38 @@ export class LiveSessionOwner {
 
   /** Safe operator-visible identity. Never carries key bytes or prompt text. */
   get profileIdentity(): string { return this.#profileIdentity; }
+
+  /**
+   * R3-R5: the calendar digest belongs to every warm assembly, so the caller that is about to assemble
+   * asks for it first: one bounded primary-calendar read, never on the voice turn path. Unconfigured,
+   * failed or empty leaves the slot out; nothing here can fail the assembly.
+   */
+  async prepareCalendar(): Promise<void> {
+    if (this.#calendarDigest === undefined) return;
+    try { this.#calendar = await this.#calendarDigest(); }
+    catch { this.#calendar = undefined; }
+  }
+
+  /**
+   * The owner's prewarm instruction (issue 338): read today's calendar digest once, then rebuild the
+   * warm assembly from the sections the last start used plus that digest, keeping the summary
+   * provenance that start recorded (F9). No store is read here, nothing talks to a model, and a
+   * connector failure leaves the slot out rather than failing the instruction. Returns the receipt
+   * the host logs as `warm_prewarm`.
+   */
+  async prewarm(): Promise<WarmPrewarmReceipt> {
+    const ageBeforeMs = this.#warm.ageMs ?? null;
+    await this.prepareCalendar();
+    const previous = this.#sections;
+    // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;
+    // it is not `refresh(true)` because a source collection cannot carry the provenance above.
+    const refreshed = previous === undefined ? undefined : this.#warm.adopt(withProvenance({ ...previous, calendar: this.#calendar }, previous));
+    if (refreshed !== undefined) this.#sections = refreshed.sections;
+    const receipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined };
+    // One closed metadata line per instruction, whichever route asked for it.
+    this.#summaryLog?.({ event: 'warm_prewarm', ...receipt });
+    return receipt;
+  }
   profileProjection(): LiveProfileProjection {
     return {
       provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
@@ -637,10 +686,12 @@ export class LiveSessionOwner {
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
             summary: earlier.section.length ? earlier.section : undefined,
-            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: undefined };
+            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
         });
         if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
         else this.#warm.adopt(start.sections);
+        // The sections this start used are what a forced prewarm refreshes, so it re-reads no store.
+        this.#sections = start.sections;
         // With no summary section the measured basis is the result, so a start composes once.
         if (!earlier.section) return basis ?? composeSession(undefined);
         return composeSession(earlier.section);

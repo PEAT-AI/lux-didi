@@ -17,10 +17,13 @@ import { listenService } from '../http/server.js';
 import { createStaticHandler } from '../http/static.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
+import type { WarmPrewarmReceipt } from '../live/index.js';
 import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime } from './mcp.js';
+import type { McpRuntimeComposition } from './mcp.js';
+import { buildCalendarDigest, createGoogleReader } from '../connectors/google.js';
 import { loadProviderConfig } from '../config/index.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import { createSummarizer } from '../services/summarize.js';
@@ -37,9 +40,25 @@ export interface LiveToolsComposition {
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource(source: AuthoritySource): void;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
+  /** 339: today's calendar digest for the warm context; absent leaves the slot out. */
+  calendarDigest?(): Promise<string | undefined>;
 }
 
 export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean; supervised?: boolean }
+
+/**
+ * The warm context's calendar digest (issue 339): one bounded read of today's primary calendar through
+ * the owner's configured google connector, in the host's own time zone. Without a current calendar
+ * grant there is no reader and the slot stays absent, so a session start is never failed by it.
+ */
+async function warmCalendarDigest(mcp: McpRuntimeComposition, now: () => number): Promise<string | undefined> {
+  const endpoint = mcp.status().endpoints.find(entry => entry.connector === 'google');
+  const grant = endpoint === undefined ? undefined : mcp.registry.currentGrant(endpoint.id);
+  if (grant === undefined || !grant.toolNames.includes('gcal_list')) return undefined;
+  const reader = createGoogleReader({ port: mcp.port, registry: mcp.registry,
+    config: { endpointId: grant.endpointId, account: grant.account, resource: grant.resource, schemaDigest: grant.schemaDigest, generation: grant.generation, family: 'calendar' } });
+  return await buildCalendarDigest(reader, { now: now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+}
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
   if (platform() === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
@@ -235,12 +254,15 @@ export async function startHost(config: HostConfig) {
       status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
+      calendarDigest: () => warmCalendarDigest(mcp, config.now ?? Date.now),
       onSessionTerminal: liveSessionId => summarizer.schedule(liveSessionId),
       log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    // The live service carries the owner's prewarm instruction; an unconfigured live keeps the quiet receipt.
+    const warmOwner = live as typeof live & { prewarm?: () => Promise<WarmPrewarmReceipt> };
     // The names a call will use, on the start event: a log alone then proves which provider, model and
     // voice served it. The status projection carries no key, reference or prompt.
     const liveNow = live.status();
@@ -265,7 +287,12 @@ export async function startHost(config: HostConfig) {
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.
       startupStage = 'ready';
       let closed = false;
-      return { store, chat, service, descriptor, descriptorPath, tools: liveTools, start: () => mcp.start(), async close() {
+      return { store, chat, service, descriptor, descriptorPath, tools: liveTools,
+        // 338: the owner's wake instruction, the same one POST api/v1/live/prewarm serves. The live
+        // owner writes the one closed `warm_prewarm` line, so either route logs it exactly once.
+        prewarm: async (): Promise<WarmPrewarmReceipt> =>
+          await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false },
+        start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
         logExit('ready', 'close');
         removeOwnDescriptor(descriptorPath);

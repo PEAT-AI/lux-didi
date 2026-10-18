@@ -1044,3 +1044,22 @@ expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 2
 let q4HighPill = CGRect(x: 688, y: 820, width: 64, height: 26)
 expect(MiniOrbFrameRestore.resolve(q4HighPill, screens: [miniScreen], firstShowAfterInstall: true) == q4HighPill,
        "a first show after an install keeps a saved pill frame inside the top band")
+
+// 338: a wake prewarms the host's warm context from the idle states only. COLD is exactly one
+// prewarm, HOT_MUTED is one more, and a wake during a live call does nothing at all.
+@MainActor final class WakePrewarmCounter { var calls = 0 }
+let wakeCounter = WakePrewarmCounter()
+let wakingPresence = NativePresence(effects: PresenceEffects(
+    setCaptureMuted: { _ in },
+    prewarm: { wakeCounter.calls += 1 }))
+wakingPresence.wake()
+expect(wakeCounter.calls == 1, "a wake while cold prewarms the warm context once")
+wakingPresence.tap(.app)
+wakingPresence.ready()
+expect(wakingPresence.state == .live, "the machine reaches live through the shipped transitions")
+wakingPresence.wake()
+expect(wakeCounter.calls == 1, "a wake while live prewarms nothing")
+wakingPresence.mute(.app)
+expect(wakingPresence.state == .hotMuted, "the mute enters the hot-muted grace")
+wakingPresence.wake()
+expect(wakeCounter.calls == 2, "a wake inside the hot-muted grace prewarms once more")

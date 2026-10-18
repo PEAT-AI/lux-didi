@@ -7,7 +7,7 @@ const credentialSteps: Record<string, NextStep> = {
   "gmail": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
   "calendar": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
   "mattermost": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
-  "mongoose": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
+  "mongoose": { text: "Mongoose session expired, reconnect Mongoose: sign in once in your browser, then restart Lux Didi.", command: "mongoose-login", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
 };
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 export const nextSteps: Record<string, Record<string, NextStep>> = Object.fromEntries(connectorIDs.map(id => [

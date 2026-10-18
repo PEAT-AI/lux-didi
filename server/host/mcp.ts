@@ -8,6 +8,7 @@ import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
+import { mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -141,7 +142,19 @@ export async function composeMcpRuntime(options: {
   const callDeadlineMs = options.callDeadlineMs ?? ENDPOINT_CALL_DEADLINE_MS;
   const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
     ? selection.catalog.endpoints.map(entry => [entry.id, callDeadlineMs] as const) : []);
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential: async reference => readMcpCredential(configDir, reference) });
+  // One credential seam for both shapes: a schemaVersion 1 pasted bearer, or the schemaVersion 2
+  // OAuth record this host owns and refreshes lazily. A v2 record is never read as a bearer token.
+  const credentialOwners = new Map(selection.state === 'configured'
+    ? selection.catalog.endpoints.filter(entry => entry.credentialRef).map(entry => [entry.credentialRef!, entry] as const) : []);
+  const resolveCredential = async (reference: string): Promise<string> => {
+    if (!readMongooseOAuth(configDir, reference)) return readMcpCredential(configDir, reference);
+    const owner = credentialOwners.get(reference);
+    return mongooseAccessToken(configDir, reference, {
+      now,
+      notify: reason => { if (owner) options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
+    });
+  };
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential });
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
@@ -186,8 +199,9 @@ export async function composeMcpRuntime(options: {
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return { retryable: false };
     }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
+    // A schemaVersion 2 OAuth record counts as present on its refresh token alone: no refresh happens here.
     if (entry.credentialRef) {
-      try { readMcpCredential(configDir, entry.credentialRef); }
+      try { if (!mongooseCredentialPresent(configDir, entry.credentialRef)) readMcpCredential(configDir, entry.credentialRef); }
       catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
     try {

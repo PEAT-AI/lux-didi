@@ -1,8 +1,22 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultDataDir, pairLocal, startHost, type HostConfig } from './runtime.js';
 import { supervise } from './supervision.js';
 import { ServiceError } from '../contracts/errors.js';
+import { MongooseLoginError, runMongooseLogin, type MongooseLoginCode } from './mongoose-login.js';
+import { loadMcpEndpoints } from '../config/mcp.js';
+
+/** One owner line per login failure: a closed code and a plain sentence, never a URL or a token. */
+const LOGIN_LINES: Record<MongooseLoginCode, string> = {
+  'metadata-unavailable': 'the Mongoose server did not publish its OAuth metadata, so sign-in cannot start',
+  'registration-refused': 'the Mongoose server refused to register the Lux Didi sign-in client',
+  'port-in-use': 'port 8768 is already in use, so the sign-in callback could not listen',
+  'state-mismatch': 'the sign-in reply did not match this request, so nothing was saved',
+  'authorization-refused': 'the browser sign-in did not finish',
+  'token-refused': 'the Mongoose server did not return a usable session',
+  'browser-unavailable': 'the default browser could not be opened',
+};
 
 /**
  * The one stdout writer for the supervised protocol. The native supervisor treats every byte after
@@ -15,13 +29,16 @@ function writeProtocolFrame(frame: Record<string, unknown>): void {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
-    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
+    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--mongoose-login] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--mongoose-login runs the owner sign-in in the default browser once, then writes the private Mongoose session record.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
     return;
   }
   const pairing = argv[0] === 'pair';
   if (pairing) argv = argv.slice(1);
+  const login = argv.includes('--mongoose-login');
+  if (login && pairing) throw new Error('Invalid sign-in configuration');
+  argv = argv.filter(arg => arg !== '--mongoose-login');
   const supervised = argv.includes('--supervised');
-  if (argv.filter(arg => arg === '--supervised').length > 1 || (pairing && supervised)) throw new Error('Invalid supervision configuration');
+  if (argv.filter(arg => arg === '--supervised').length > 1 || ((pairing || login) && supervised)) throw new Error('Invalid supervision configuration');
   argv = argv.filter(arg => arg !== '--supervised');
   const values = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
@@ -41,6 +58,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
   if (pairing) { process.stdout.write(`${await pairLocal(config.dataDir, config.descriptor)}\n`); return; }
+  if (login) { await runOwnerLogin(config); return; }
   // The supervised protocol writes its ready frame before any connector handshake; the connector
   // round starts from `host.start()` after the frame. Non-supervised starts keep the awaited shape.
   config.deferConnectors = supervised;
@@ -72,6 +90,32 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     supervision?.dispose();
     throw error;
   }
+
+/**
+ * The owner sign-in: one browser round, one atomic record write, one owner line. It never starts the
+ * host, never opens a browser before the loopback listener is bound and never prints a token.
+ */
+async function runOwnerLogin(config: HostConfig): Promise<void> {
+  const configDir = resolve(config.configDir ?? join(config.dataDir, 'provider-config'));
+  const selection = loadMcpEndpoints({ configDir });
+  const entry = selection.state === 'configured'
+    ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
+    : undefined;
+  if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) throw new Error('Mongoose sign-in needs a configured mongoose endpoint with a credential reference');
+  try {
+    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account, openBrowser: openInDefaultBrowser });
+  } catch (error) {
+    const code = error instanceof MongooseLoginError ? error.code : undefined;
+    console.error(code ? `Mongoose sign-in failed: ${LOGIN_LINES[code]}.` : 'Mongoose sign-in failed.');
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write('Mongoose sign-in complete. Restart Lux Didi to use it.\n');
+}
+
+function openInDefaultBrowser(url: string): void {
+  spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+}
 }
 // Node 26 main-module identity handles symlink spellings and stays false on import.
 // https://nodejs.org/api/esm.html#importmetamain

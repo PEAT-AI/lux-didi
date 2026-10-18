@@ -126,6 +126,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || sizes.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
     return { event: 'mattermost_shape', tool: value.tool, shape: value.shape, rawCharacters: value.rawCharacters, shapedCharacters: value.shapedCharacters, itemCount: value.itemCount };
   }
+  if (value.event === 'gptlive_setup_error') {
+    // A refused GPT-Live setup: the provider's own type, code and param and 300 characters of redacted
+    // message, the only record that names the field it refused. Never any instruction or request text.
+    if (Object.keys(value).sort().join(',') !== ['code', 'event', 'message', 'param', 'type'].sort().join(',')) return;
+    const bounded = (field: unknown): field is string => typeof field === 'string' && field.length <= 300 && !/[\u0000-\u001f\u007f]/.test(field);
+    if (![value.type, value.code, value.param, value.message].every(bounded)) return;
+    return { event: 'gptlive_setup_error', type: value.type, code: value.code, param: value.param, message: value.message };
+  }
   if (value.event === 'client_diagnostic' && value.source === 'native' && typeof value.receivedAt === 'string' && Number.isFinite(Date.parse(value.receivedAt)) && value.diagnostic && typeof value.diagnostic === 'object' && !Array.isArray(value.diagnostic)) {
     try { return { event: value.event, source: value.source, receivedAt: value.receivedAt, diagnostic: clientDiagnostic(value.diagnostic as Record<string, unknown>) }; } catch { return; }
   }

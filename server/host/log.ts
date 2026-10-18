@@ -17,6 +17,8 @@ const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// R7: the warm calendar digest's own closed vocabulary.
+const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'unconfigured'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
@@ -721,12 +723,21 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'warm_prewarm') {
     // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:
-    // never the calendar digest, the summary or any prompt text.
+    // never the calendar digest, the summary or any prompt text. Which source that assembly came from is
+    // on the receipt the caller holds (R7), not on this line.
     if (!closedKeys(value, ['event', 'ageBeforeMs', 'ageAfterMs', 'assembled'])) return;
     const age = (field: unknown): boolean => field === null || isSafeCount(field);
     if (!age(value.ageBeforeMs) || !age(value.ageAfterMs)) return;
     if (typeof value.assembled !== 'boolean') return;
     return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
+  }
+  if (value.event === 'calendar_digest') {
+    // R7: the warm digest used to be silent when it was suppressed or failed. One closed line says which
+    // of four states it reached, how many events rode it and how old it was, never an event's text.
+    if (!closedKeys(value, ['event', 'state', 'items', 'ageMs'])) return;
+    if (!CALENDAR_DIGEST_STATES.includes(value.state as typeof CALENDAR_DIGEST_STATES[number])) return;
+    if (!isSafeCount(value.items) || !isSafeCount(value.ageMs)) return;
+    return { event: 'calendar_digest', state: value.state, items: value.items, ageMs: value.ageMs };
   }
 }
 

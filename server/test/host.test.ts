@@ -9,7 +9,7 @@ import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { hostMigrations, installedConfigDirRefusal, pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
@@ -736,7 +736,7 @@ test('the host owner prewarm answers the quiet receipt when Live is unconfigured
   const host = await startHost({ dataDir: dir, webRoot, port: 0 });
   try {
     const receipt = await host.prewarm();
-    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no session has prepared sections yet');
+    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' }, 'no session has prepared sections yet');
     const lines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
     assert.equal(lines.filter(line => line['event'] === 'warm_prewarm').length, 0, 'no warm owner, so no receipt line');
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
@@ -853,6 +853,8 @@ test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried
   assert.deepEqual(safeEvent(receipt), receipt);
   assert.deepEqual(safeEvent({ event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }),
     { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no assembly yet is a valid receipt');
+  assert.equal(safeEvent({ event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true, reason: 'sources' }), undefined,
+    'the closed reason is on the receipt the caller holds, not on this line');
   assert.equal(safeEvent({ ...receipt, digest: '10:00 standup with the board' }), undefined, 'the calendar text never reaches the log');
   assert.equal(safeEvent({ ...receipt, ageAfterMs: -1 }), undefined, 'a negative age is refused');
   assert.equal(safeEvent({ ...receipt, assembled: 'yes' }), undefined, 'the flag is a boolean');
@@ -901,7 +903,64 @@ test('the owner prewarm assembles after a start and reads the digest once per as
     clock += 60_000;
     const receipt = await owner.prewarm();
     assert.equal(reads, 2, 'the prewarm reads the digest again for its own assembly');
-    assert.deepEqual(receipt, { ageBeforeMs: 60_000, ageAfterMs: 0, assembled: true }, 'the receipt carries the real ages');
+    assert.deepEqual(receipt, { ageBeforeMs: 60_000, ageAfterMs: 0, assembled: true, reason: 'sections' }, 'the receipt carries the real ages');
+    await owner.shutdown();
+  } finally { await cleanup(); }
+});
+
+// R7: mail and calendar are both `connector: google`, so the first google endpoint is not the calendar
+// endpoint. The digest reads the endpoint whose current grant carries gcal_list.
+test('R7: the calendar digest selects the google endpoint by its gcal_list grant', () => {
+  const grant = { endpointId: 'gmail', account: 'owner@example.test', resource: 'mail', schemaDigest: 's', toolNames: ['gmail_search'], effect: 'read' as const, generation: 1 };
+  const grants: Record<string, typeof grant> = { gmail: grant, gcal: { ...grant, endpointId: 'gcal', resource: 'calendar', toolNames: ['gcal_list'] } };
+  const both = [{ id: 'gmail', connector: 'google' }, { id: 'gcal', connector: 'google' }];
+  assert.equal(selectCalendarEndpoint(both, id => grants[id])?.endpointId, 'gcal', 'mail listed first never wins');
+  assert.equal(selectCalendarEndpoint([...both].reverse(), id => grants[id])?.endpointId, 'gcal', 'and the order does not matter');
+  assert.equal(selectCalendarEndpoint(both, () => undefined), undefined, 'no current grant, no reader');
+  assert.equal(selectCalendarEndpoint([{ id: 'gmail', connector: 'google' }], id => grants[id]), undefined,
+    'a mail-only google connector leaves the slot out');
+  assert.equal(selectCalendarEndpoint([{ id: 'gcal', connector: 'calendar' }], id => grants[id]), undefined,
+    'a non-google connector is never the digest reader');
+});
+
+// R7: a suppressed or failed digest used to be silent. The receipt is closed and carries no event text.
+test('R7: calendar_digest is one closed receipt over four states, with no event text', () => {
+  const receipt = { event: 'calendar_digest', state: 'present', items: 2, ageMs: 60_000 };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  for (const state of ['present', 'empty', 'failed', 'unconfigured']) assert.ok(safeEvent({ ...receipt, state }) !== undefined, `${state} is a state`);
+  assert.equal(safeEvent({ ...receipt, state: 'silent' }), undefined, 'the state set is closed');
+  assert.equal(safeEvent({ ...receipt, digest: '10:00 standup with the board' }), undefined, 'no event text rides the receipt');
+  assert.equal(safeEvent({ ...receipt, items: -1 }), undefined, 'a negative count is refused');
+  assert.equal(safeEvent({ ...receipt, ageMs: null }), undefined, 'the age is a count, never null');
+  assert.equal(safeEvent({ event: 'calendar_digest', state: 'present', items: 0 }), undefined, 'the age is always present');
+});
+
+// R7: a wake prewarm before the first start used to adopt nothing, so the first call never opened on a
+// digest the app had just read. It now assembles from its sources and says which.
+test('R7: a prewarm before the first start assembles from sources', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-prewarm-first-'));
+  const store = new Store(dir, hostMigrations);
+  const configDir = join(dir, 'provider-config');
+  let reads = 0;
+  const cleanup = async () => { store.close(); await rm(dir, { recursive: true, force: true }); };
+  try {
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+      dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+    await writeFile(join(configDir, 'live.json'), `${JSON.stringify(live)}\n`, { mode: 0o600 });
+    const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+    assert.equal(loaded.status, 'configured');
+    if (loaded.status !== 'configured') throw new Error('live.json must configure');
+    const owner = createLiveSessionOwner({
+      store, voice: {} as LiveVoicePort, profile: loaded.config.profile, now: () => 1_760_000_000_000, timeZone: 'UTC',
+      calendarDigest: async () => { reads += 1; return '10:00 standup, 15:00 review'; },
+    } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
+    const receipt = await owner.prewarm();
+    assert.equal(reads, 1, 'one bounded read for the wake');
+    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: 0, assembled: true, reason: 'sources' },
+      'the first prewarm assembles from sources and says so');
+    const second = await owner.prewarm();
+    assert.equal(second.reason, 'sections', 'a later wake refreshes the sections an assembly already holds');
     await owner.shutdown();
   } finally { await cleanup(); }
 });

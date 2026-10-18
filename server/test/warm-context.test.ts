@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WarmContextCache, assembleContext, chooseStartContext, collectSections, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 
 const sections = {
   persona: 'Naya is the owner\'s assistant.',
@@ -158,4 +159,21 @@ test('an empty source set assembles nothing rather than an empty block', () => {
   });
   assert.equal(cache.refresh(), undefined);
   assert.equal(cache.take(), undefined);
+});
+
+// R7: the digest the cache keeps is what a start composes from, so the composed instruction carries the
+// calendar section when the warm assembly holds a digest and none when it does not.
+test('R7: the warm assembly\'s digest reaches the composed instruction as the calendar section', () => {
+  const cache = new WarmContextCache({ sources: sources().value, budget: 4_000, now: () => 0 });
+  const warm = cache.refresh();
+  assert.equal(warm?.sections.calendar, sections.calendar, 'the cache keeps the digest');
+  const text = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  const compose = (calendar: string | undefined) => composeLiveSessionInstruction({ text, tools: [], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(calendar === undefined ? {} : { calendar }) });
+  const carried = compose(warm?.sections.calendar);
+  assert.ok(carried.text.includes('Today: 10:00 standup, 15:00 review'), 'the digest is in the instruction');
+  assert.ok(carried.sections.some(section => section.id === 'calendar'), 'as its own section');
+  const empty = compose(undefined);
+  assert.equal(empty.sections.some(section => section.id === 'calendar'), false, 'no digest, no section');
+  assert.doesNotMatch(empty.text, /Today:/);
 });

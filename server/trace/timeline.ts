@@ -100,11 +100,14 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
     const responseKey = str(row.response_key);
     if (responseKey === null) continue;
     let outcome: ContinuationOutcome = 'deferred';
+    let at = numOr(row.at, 0);
     try {
-      const detail = JSON.parse(String(row.detail)) as { outcome?: unknown };
+      const detail = JSON.parse(String(row.detail)) as { outcome?: unknown; decidedAt?: unknown };
       if (detail.outcome === 'sent' || detail.outcome === 'failed' || detail.outcome === 'deferred') outcome = detail.outcome;
+      // The producer's own decision time, not the store's write time: a receipt is stamped where the decision was.
+      if (typeof detail.decidedAt === 'number') at = detail.decidedAt;
     } catch { /* a row we cannot read tells no decision; the last readable one stands */ }
-    decisions.set(responseKey, { at: numOr(row.at, 0), outcome });
+    decisions.set(responseKey, { at, outcome });
   }
   return decisions;
 }

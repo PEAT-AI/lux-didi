@@ -465,8 +465,8 @@ test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write
     first.receipt('response.created', { responseKey: 'r1' }, { createdAt: T0 });
     const rejected: string[] = [];
     const rebuilt = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e2', onReject: code => rejected.push(code) });
-    rebuilt.receipt('call.intent', { callKey: 'c1', responseKey: 'r1' }, { name: 'research', argsChars: 2, intentAt: T0 + 10 });
+    rebuilt.receipt('response.observed', { responseKey: 'r1' }, { observedAt: T0 + 10 });
     assert.deepEqual(rejected, ['STALE_EPOCH'], 'a receipt from the socket the rebuild replaced is refused');
-    assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='call.intent'")).length, 0, 'and it writes no row');
+    assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='response.observed'")).length, 0, 'and it writes no row');
   });
 });

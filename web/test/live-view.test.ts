@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
 import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
@@ -144,7 +144,9 @@ test('transcript folds exact same-role fragments until a truthful turn boundary'
   assert.equal((html.match(/class="entry assistant"/g) ?? []).length, 4);
 });
 
-test('a typed turn interleaved with streamed Naya fragments joins one Naya card in journal order', () => {
+test('a mid-answer owner line is its own bubble, between two of hers', () => {
+  // The typed turn lands while her answer is still streaming; the journal has no turnComplete, so
+  // the speaker change itself is the boundary (P7 item 1).
   const live: LiveCurrent = { state: 'speaking', cursor: 6, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'What should I focus on today?' },
     { seq: 2, kind: 'turnComplete' },
@@ -155,27 +157,57 @@ test('a typed turn interleaved with streamed Naya fragments joins one Naya card 
   ] };
   assert.deepEqual(liveTranscript(live), [
     { role: 'user', text: 'What should I focus on today?' },
-    { role: 'naya', text: 'Hello there' },
+    { role: 'naya', text: 'Hel' },
     { role: 'user', text: 'Tell me more' },
+    { role: 'naya', text: 'lo there' },
   ]);
-  const html = liveMarkup(live);
-  assert.match(html, /class="entry assistant"[^>]*><div class="markdown"><p>Hello there/);
+  assert.deepEqual(sessionItems(live).map(item => item.key), ['user:1', 'naya:3', 'user:4', 'naya:5'],
+    'keys stay role:firstSeq, so an in-place update still finds its row');
 });
 
-test('transcript preserves exact fragment deltas without spaces or deduplication', () => {
+test('joinChunk puts exactly one space at every boundary', () => {
+  assert.equal(joinChunk('hello', 'there'), 'hello there');
+  assert.equal(joinChunk('done.', 'Next'), 'done. Next');
+  assert.equal(joinChunk('trailing ', 'space'), 'trailing space');
+  assert.equal(joinChunk('word', ' leading'), 'word leading');
+  assert.equal(joinChunk('', 'fresh'), 'fresh');
+  assert.equal(joinChunk('only', ''), 'only');
+});
+
+test('P7 a call with no turnComplete renders one bubble per turn, in the order spoken', () => {
+  // Owner call 1ea4cc4f row shape: alternating owner and Naya rows, 0 turnComplete, 5 tool results.
+  const rows: LiveCurrent['entries'] = [];
+  const expected: string[] = [];
+  let seq = 0;
+  for (let exchange = 1; exchange <= 13; exchange += 1) {
+    const role = exchange % 2 === 1 ? 'user' : 'naya';
+    seq += 1;
+    rows.push({ seq, kind: role === 'user' ? 'inputTranscription' : 'outputTranscription', text: role === 'user' ? `owner line ${seq}` : `her answer ${seq}.` });
+    expected.push(`${role}:${seq}`);
+    if ([2, 4, 6, 8, 10].includes(exchange)) {
+      seq += 1;
+      rows.push({ seq, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: 'row' } });
+    }
+  }
+  const items = sessionItems({ state: 'speaking', cursor: seq, entries: rows } as LiveCurrent);
+  const turns = items.filter(item => /^[a-z]+:\d+$/.test(item.key));
+  assert.deepEqual(turns.map(item => item.key), expected, '13 bubbles, each keyed by its own first delta');
+  assert.equal((liveMarkup({ state: 'speaking', cursor: seq, entries: rows } as LiveCurrent).match(/class="entry (user|assistant)"/g) ?? []).length, 13,
+    'no two turns share a bubble');
+});
+
+test('transcript joins the fragments of one speaker run with a space', () => {
   const live: LiveCurrent = { state: 'speaking', cursor: 7, entries: [
-    { seq: 1, kind: 'outputTranscription', text: 'Hel' },
-    { seq: 2, kind: 'outputTranscription', text: 'lo' },
+    { seq: 1, kind: 'outputTranscription', text: 'Hello' },
+    { seq: 2, kind: 'outputTranscription', text: 'and' },
     { seq: 3, kind: 'turnComplete' },
-    { seq: 4, kind: 'outputTranscription', text: 'ha' },
-    { seq: 5, kind: 'outputTranscription', text: 'ha' },
+    { seq: 4, kind: 'inputTranscription', text: 'ok' },
+    { seq: 5, kind: 'inputTranscription', text: 'then what' },
     { seq: 6, kind: 'turnComplete' },
-    { seq: 7, kind: 'inputTranscription', text: 'ok' },
   ] };
   assert.deepEqual(liveTranscript(live), [
-    { role: 'naya', text: 'Hello' },
-    { role: 'naya', text: 'haha' },
-    { role: 'user', text: 'ok' },
+    { role: 'naya', text: 'Hello and' },
+    { role: 'user', text: 'ok then what' },
   ]);
 });
 
@@ -750,17 +782,89 @@ test('FE1 the feed is one surface with headline rows and collapsed detail', () =
 });
 
 test('FE1 the turn row shows a headline and keeps the full answer in a closed detail', () => {
+  const answer = 'Ship the UI. Then run the audit against the release branch before the owner tests it, '
+    + 'because the transcript shows only the first sentence above the disclosure and everything else '
+    + 'has to stay one click away, which is the whole point of keeping the full answer closed here.';
+  assert.ok(answer.length >= TURN_DETAIL_MIN, 'the fixture is above the disclosure threshold');
   const live = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 5, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'what next?' },
-    { seq: 2, kind: 'outputTranscription', text: 'Ship the UI. Then run the audit.' },
+    { seq: 2, kind: 'outputTranscription', text: answer },
     { seq: 3, kind: 'turnComplete' },
   ] } as unknown as LiveCurrent;
   const html = liveMarkup(live);
-  assert.equal(turnHeadline('Ship the UI. Then run the audit.'), 'Ship the UI.');
-  assert.match(html, /<article class="entry assistant" data-feed="turn"[^>]*><div class="markdown"><p>Ship the UI\.<\/p>/, 'the first sentence is the visible headline');
-  assert.match(html, /<details class="feed-turn-detail"><summary>Full answer<\/summary>/, 'the full answer is a closed detail');
+  assert.equal(turnHeadline(answer), 'Ship the UI.');
+  assert.match(html, /<article class="entry assistant" data-feed="turn"[^>]*><div class="markdown"><p>Ship the UI\.<\/p>/);
+  assert.match(html, /<details class="feed-turn-detail"><summary>Full answer<\/summary>/);
   assert.doesNotMatch(html.slice(0, html.indexOf('feed-turn-detail')), /Then run the audit/, 'only the headline is visible above the detail');
   assert.match(html, /what next\?/, "the owner's verbatim line is kept in the detail");
+  // Below the threshold the whole closed answer is the bubble: no disclosure to open for one sentence.
+  const short = liveMarkup({ ...live, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'what next?' },
+    { seq: 2, kind: 'outputTranscription', text: 'Ship the UI. Then run the audit.' },
+    { seq: 3, kind: 'turnComplete' },
+  ] } as unknown as LiveCurrent);
+  assert.doesNotMatch(short, /feed-turn-detail/);
+  assert.match(short, /Then run the audit\./);
+});
+
+test('P7 an open bubble is never split into headline plus detail', () => {
+  const answer = 'The first thing is the audit. ' + 'Then the transcript work, which is long. '.repeat(10);
+  const open = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'what next?' },
+    { seq: 2, kind: 'outputTranscription', text: answer },
+  ] } as unknown as LiveCurrent;
+  const html = liveMarkup(open);
+  assert.match(html, /data-live-text>/, 'the growing answer carries the one text node the poll rewrites');
+  assert.doesNotMatch(html, /feed-turn-detail/, 'no disclosure while it is still being spoken');
+  assert.match(html, /which is long\./, 'the whole answer is visible');
+});
+
+test('P7 the growing bubble keeps its node and an opened detail stays open', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('function renderTranscript(');
+  assert.ok(start > 0, 'main.ts still renders the transcript in one function');
+  // renderTranscript is plain page code, so only its two type annotations need stripping for the vm.
+  const render = source.slice(start, source.indexOf('function bindTranscript('))
+    .replace('(list: HTMLElement)', '(list)').replace(/ as HTMLElement\[\]/g, '');
+  const replaced: string[] = [];
+  const makeRow = (html: string) => {
+    let current = html;
+    const seg = /data-seg="([^"]+)"/.exec(html)?.[1];
+    const textNode = { innerHTML: growingText(html) ?? '' };
+    const row: any = {
+      dataset: /data-growing/.test(html) ? { seg, growing: '' } : { seg },
+      classList: { add() {} },
+      querySelector: (selector: string) => (selector === '[data-live-text]' ? textNode : null),
+    };
+    Object.defineProperty(row, 'outerHTML', { get: () => current, set: (value: string) => { replaced.push(String(seg)); current = value; } });
+    return row;
+  };
+  const list: any = { children: [] as any[] };
+  const context: any = { list, live: undefined, openBySeg: new Map<string, string[]>(), liveSegments, openSegments, restoreOpen, growingText, FEED_EMPTY };
+  createContext(context);
+  const script = `${render}\nrenderTranscript(list);`;
+  const seed = [
+    { seq: 1, kind: 'inputTranscription', text: 'what next?' },
+    { seq: 2, kind: 'outputTranscription', text: 'The audit is first.' },
+    { seq: 3, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: 'Found one source.' } },
+    { seq: 4, kind: 'outputTranscription', text: 'Start there.' },
+  ];
+  context.live = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: seed } as unknown as LiveCurrent;
+  // The reader opened the tool chip before the answer started growing.
+  list.children = liveSegments(context.live).map((segment: any) => makeRow(restoreOpen(segment.html, ['tool:3'])));
+  const growingRow = list.children[2];
+  assert.ok(/data-growing/.test(growingRow.outerHTML), 'the last answer is the growing bubble');
+  context.live = { ...context.live, cursor: 5, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }] } as unknown as LiveCurrent;
+  runInContext(script, context);
+  assert.equal(list.children[2], growingRow, 'the growing bubble is the same DOM node, never replaced');
+  assert.match(growingRow.querySelector('[data-live-text]').innerHTML, /Right away\./, 'its text node grew in place');
+  assert.equal(replaced.includes('naya:4'), false, 'the growing row was never rewritten through outerHTML');
+  assert.match(list.children[1].outerHTML, /live-tool-result[^>]*open>/, 'the opened tool chip is still open');
+  assert.equal(replaced.includes('tool:3'), false);
+  // When the journal closes the run the row becomes an ordinary closed bubble.
+  context.live = { ...context.live, cursor: 6, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }, { seq: 6, kind: 'turnComplete' }] } as unknown as LiveCurrent;
+  runInContext(script, context);
+  assert.equal(growingText(list.children[2].outerHTML), undefined, 'a closed bubble is no longer growing');
 });
 
 test('FE1-R1 a finished session shows its first turn headline and turn count, collapsed', () => {

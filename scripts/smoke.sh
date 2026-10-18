@@ -34,12 +34,16 @@ if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then echo 'FAIL probe0-runtime node
 # The commit-based freshness guard, shared with probes.mjs so both surfaces name the same fact. Builds are not a
 # licence to judge old code: after a rebuild the guard runs again, and a still-stale build fails loudly here.
 stale_dist() {
-  "$node_bin" --input-type=module -e "const m = await import('file://$(pwd)/server/test/smoke/probes.mjs'); process.stdout.write(m.staleServerDist('$(pwd)/$dist_entry') ?? '');"
+  "$node_bin" --input-type=module -e "const m = await import('file://$(pwd)/server/test/smoke/probes.mjs'); const s = m.staleServerDist('$(pwd)/$dist_entry'); if (s) process.stdout.write('STALE ' + s);"
 }
-stale="$(stale_dist)"
+# Only a line this guard wrote counts, so no other output of the same interpreter can be read as a verdict.
+stale_verdict() {
+  case "$1" in STALE\ *) printf '%s' "${1#STALE }" ;; *) printf '' ;; esac
+}
+stale="$(stale_verdict "$(stale_dist)")"
 if [[ -n "$stale" ]]; then
   npm --prefix server run build || { echo "FAIL probe0-build $stale; the rebuild failed" >&2; exit 1; }
-  stale="$(stale_dist)"
+  stale="$(stale_verdict "$(stale_dist)")"
   if [[ -n "$stale" ]]; then echo "FAIL probe0-build $stale" >&2; exit 1; fi
 fi
 # The cap is the probes' own declared deadlines summed, plus this margin, never a fixed guess (#364): a slow
@@ -50,10 +54,14 @@ smoke_progress="$(mktemp "${TMPDIR:-/tmp}/didi-smoke-progress.XXXXXX")"
 trap 'rm -f "$smoke_plan" "$smoke_progress"' EXIT
 # One read of the probes' module for both facts: the summed budget, then every id the run must report.
 if ! "$node_bin" --input-type=module -e "const m = await import('file://$(pwd)/server/test/smoke/probes.mjs'); console.log(m.PROBE_BUDGET_MS); for (const id of m.PROBE_IDS) console.log(id);" >"$smoke_plan"; then
-  echo 'FAIL probe0-plan the probes module did not declare its deadlines' >&2
+  echo 'FAIL probe0-plan smoke plan import printed no budget' >&2
   exit 1
 fi
-smoke_budget_s=$(( $(head -1 "$smoke_plan") / 1000 ))
+smoke_budget_ms="$(head -1 "$smoke_plan")"
+case "$smoke_budget_ms" in
+  ''|*[!0-9]*) echo 'FAIL probe0-plan smoke plan import printed no budget' >&2; exit 1 ;;
+esac
+smoke_budget_s=$(( smoke_budget_ms / 1000 ))
 smoke_cap=$(( smoke_budget_s + SMOKE_MARGIN_SECONDS ))
 export LUX_SMOKE_PROGRESS="$smoke_progress"
 # The harness self-check proves the probes' pure helpers (the driver gate and the failure note) before the

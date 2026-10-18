@@ -553,7 +553,7 @@ async function main() {
   // probe starts, so a capped or killed run still shows everything it proved. The summary and the exit
   // code are computed from the same list afterwards.
   const report = result => {
-    report(result);
+    results.push(result);
     reported(result.id);
     log(`${result.skip ? 'SKIP' : result.ok ? 'PASS' : 'FAIL'} ${result.id} ${result.note}`);
   };

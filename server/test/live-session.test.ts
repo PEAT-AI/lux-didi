@@ -2452,6 +2452,14 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
 });
 
+// 3p: a list-first read went out before the real calendar lookup on the owner's morning call.
+test('the calendar declarations never invite a list before an event read', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
+  const descriptions = new Map(CONNECTOR_DESCRIPTORS['google']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
+  assert.match(descriptions.get('gcal_calendars')!, /Call it only when the owner asks which calendars exist; an event read needs no calendar list\./);
+  assert.match(descriptions.get('gcal_list')!, /Omit both for today in the host timezone\./);
+});
+
 function toolResponseCount(h: Harness): number {
   return h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).length;
 }

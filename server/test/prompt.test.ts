@@ -314,10 +314,10 @@ test('the research outcome sentence distinguishes nothing matched from a read cu
 
 test('PV1: the persona base names the spoken cue and the single research call', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  assert.ok(instruction.includes('Before any tool call, say one short line of at most six words that tells him what you are checking.'), 'the spoken cue is named');
+  assert.ok(instruction.includes('Before a lookup, say at most five words about what you are checking, then call the tool.'), 'the spoken cue is named');
   assert.ok(instruction.includes('Put every lookup one question needs into one research call with several lookups; never make several research calls in a row for one question.'), 'and one research call carries the lookups');
-  // PV1-R3: the old cue rule is absent from the whole composed instruction, not just from the base.
-  for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once']) {
+  // PV1-R3 and 3p: the retired cue rules are absent from the whole composed instruction, not just from the base.
+  for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
     assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
   }
   assert.equal(instruction.split('what you are checking').length - 1, 1, 'the cue surface is stated once');

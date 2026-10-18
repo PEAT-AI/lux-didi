@@ -1,6 +1,6 @@
 import type { SQLRow, SQLValue } from '../contracts/storage.js';
 import type {
-  CallOutcome, PlaybackTerminationReason, ResponseStatus, ResponseTerminalReason, StallReason,
+  CallOutcome, ContinuationOutcome, PlaybackTerminationReason, ResponseStatus, ResponseTerminalReason, StallReason,
   TurnCloseReason, TurnOrigin, TurnOutcome, UtteranceRole,
 } from './kinds.js';
 
@@ -24,6 +24,9 @@ export interface CallView {
   callKey: string; responseKey: string | null; turnId: string | null; name: string; argsChars: number;
   intentAt: number; executedAt: number | null; outputPreparedAt: number | null; outputWrittenAt: number | null;
   outcome: CallOutcome; ms: number | null; resultChars: number | null;
+  /** O1b-A: when the continuation this call's answer owed was decided, and how. Owed by the response, so
+   *  every call of one answered batch carries the same decision. */
+  continuationAt: number | null; continuationOutcome: ContinuationOutcome | null;
 }
 export interface PlaybackView {
   playbackKey: string; sourceInstanceId: string; segmentSeq: number; responseKey: string | null; turnId: string | null;
@@ -74,6 +77,7 @@ function callView(row: SQLRow): CallView {
     argsChars: numOr(row.args_chars, 0), intentAt: numOr(row.intent_at, 0), executedAt: num(row.executed_at),
     outputPreparedAt: num(row.output_prepared_at), outputWrittenAt: num(row.output_written_at),
     outcome: String(row.outcome) as CallOutcome, ms: num(row.ms), resultChars: num(row.result_chars),
+    continuationAt: null, continuationOutcome: null,
   };
 }
 function playbackView(row: SQLRow): PlaybackView {
@@ -86,13 +90,37 @@ function playbackView(row: SQLRow): PlaybackView {
   };
 }
 
+/**
+ * O1b-A: the continuation owner's last decision per answered response. A batch answers one response, so the
+ * decision is read once and every call of that batch reports the same time.
+ */
+function continuationDecisions(read: TraceRead, liveSessionId: string): Map<string, { at: number; outcome: ContinuationOutcome }> {
+  const decisions = new Map<string, { at: number; outcome: ContinuationOutcome }>();
+  for (const row of read.all("SELECT response_key, at, detail FROM trace_event WHERE live_session_id=? AND kind='continuation.decided' ORDER BY at, seq", [liveSessionId])) {
+    const responseKey = str(row.response_key);
+    if (responseKey === null) continue;
+    let outcome: ContinuationOutcome = 'deferred';
+    try {
+      const detail = JSON.parse(String(row.detail)) as { outcome?: unknown };
+      if (detail.outcome === 'sent' || detail.outcome === 'failed' || detail.outcome === 'deferred') outcome = detail.outcome;
+    } catch { /* a row we cannot read tells no decision; the last readable one stands */ }
+    decisions.set(responseKey, { at: numOr(row.at, 0), outcome });
+  }
+  return decisions;
+}
+
 export interface TimelineOptions { turn?: number; content?: boolean; capturedAt?: number }
 
 export function buildTimeline(read: TraceRead, liveSessionId: string, options: TimelineOptions = {}): TimelineReport {
   const turnRows = read.all('SELECT * FROM trace_turn WHERE live_session_id=? ORDER BY turn_index, opened_at', [liveSessionId]);
   const responses = read.all('SELECT * FROM trace_response WHERE live_session_id=? ORDER BY created_at, response_key', [liveSessionId]).map(responseView);
-  const calls = read.all('SELECT * FROM trace_call WHERE live_session_id=? ORDER BY intent_at, call_key', [liveSessionId]).map(callView);
+  const calls = read.all('SELECT * FROM trace_call WHERE live_session_id=? ORDER BY intent_at, call_key', [liveSessionId]).map(callView)
+    .map(call => {
+      const decided = call.responseKey === null ? undefined : continuations.get(call.responseKey);
+      return { ...call, continuationAt: decided?.at ?? null, continuationOutcome: decided?.outcome ?? null };
+    });
   const playback = read.all('SELECT * FROM trace_playback WHERE live_session_id=? ORDER BY segment_seq, received_at, playback_key', [liveSessionId]).map(playbackView);
+  const continuations = continuationDecisions(read, liveSessionId);
   const utterances = options.content === true
     ? read.all(`SELECT u.turn_id AS turn_id, u.role AS role, u.at AS at, u.final AS final, u.text AS text
                 FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
@@ -260,7 +288,8 @@ export function renderTimeline(report: TimelineReport): string {
     for (const c of track.calls) {
       lines.push(`  call ${c.callKey} ${c.name} response=${orDash(c.responseKey)} intent=${wall(c.intentAt)} executed=${wall(c.executedAt)}`
         + ` prepared=${wall(c.outputPreparedAt)} written=${wall(c.outputWrittenAt)} outcome=${c.outcome}`
-        + ` ms=${c.ms ?? '-'} argsChars=${c.argsChars} resultChars=${c.resultChars ?? '-'}`);
+        + ` ms=${c.ms ?? '-'} argsChars=${c.argsChars} resultChars=${c.resultChars ?? '-'}`
+        + ` continuation=${wall(c.continuationAt)}${c.continuationOutcome === null ? '' : `:${c.continuationOutcome}`}`);
     }
     for (const p of track.playback) lines.push(playbackLine(p));
   }

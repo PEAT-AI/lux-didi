@@ -1,12 +1,12 @@
 import { performance } from 'node:perf_hooks';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
 import {
-  CALL_OUTCOMES, COMMAND_KINDS, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
+  CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
   RESPONSE_STATUSES,
-  RESPONSE_TERMINAL_REASONS, STALL_REASONS, TRACE_DAY_MS, TRACE_RETENTION_DAYS, TRACE_SCHEMA_VERSION,
+  RESPONSE_TERMINAL_REASONS, SKIP_REASONS, STALL_REASONS, TRACE_DAY_MS, TRACE_RETENTION_DAYS, TRACE_SCHEMA_VERSION,
   TURN_CLOSE_REASONS, TURN_ORIGINS, TURN_OUTCOMES, UTTERANCE_ROLES, isOneOf,
-  type CallOutcome, type CommandKind, type EventSource, type PlaybackTerminationReason, type ProgressReason, type ResponseStatus,
-  type ResponseTerminalReason, type StallReason, type TraceEventKind, type TurnCloseReason,
+  type CallOutcome, type CommandKind, type ContinuationOutcome, type EventSource, type PlaybackTerminationReason, type ProgressReason, type ResponseStatus,
+  type ResponseTerminalReason, type SkipReason, type StallReason, type TraceEventKind, type TurnCloseReason,
   type TurnOrigin, type TurnOutcome, type UtteranceRole,
 } from './kinds.js';
 
@@ -41,12 +41,16 @@ export interface TraceDetailMap {
   'turn.closed': { closedAt: number; closeReason: TurnCloseReason; outcome?: TurnOutcome; stallReason?: StallReason };
   'turn.summary': { firstAudibleAt?: number; playbackDrainedAt?: number; outcome?: TurnOutcome; stallReason?: StallReason };
   'response.created': { createdAt: number; status?: ResponseStatus; providerResponseId?: string; delegationId?: string; continuationOfResponseKey?: string };
+  /** O1b-A (D12-1): one receipt per delegated response, with its provider id and how many calls it carried. */
+  'delegation.created': { createdAt: number; providerResponseId?: string; callCount: number };
   'response.observed': { observedAt: number; providerResponseId?: string; delegationId?: string };
   'response.terminal': { terminalAt: number; status: ResponseStatus; terminalReason: ResponseTerminalReason };
   'call.intent': { name: string; argsChars: number; intentAt: number; providerCallId?: string };
   'call.executed': { executedAt: number };
   'call.output_prepared': { outputPreparedAt: number };
   'call.output_written': { outputWrittenAt: number; outcome: CallOutcome; ms: number; resultChars: number };
+  /** O1b-A: the single continuation owner's decision, and why a `response.create` was skipped. */
+  'continuation.decided': { decidedAt: number; outcome: ContinuationOutcome; skipReason?: SkipReason };
   'playback.received': { segmentSeq: number; receivedAt: number };
   'playback.audible': { audibleAt: number };
   'playback.enqueued': { enqueuedAt: number };
@@ -58,6 +62,8 @@ export interface TraceDetailMap {
   'progress.thinking': { sentAt: number; chars: number };
   'call.ceiling': { ceilingMs: number; hitAt: number };
   'command.rejected': { rejectedAt: number; code: string; param: string; kind: CommandKind };
+  /** O1b-A (D12-3): the turn never became audible, with the age it reached and what the watchdog saw. */
+  'live.dead_air_stalled': { stalledAt: number; turnAgeMs: number; anyAudio: boolean; inaudibleMs: number };
 }
 
 export interface TraceWritePort { transaction<T>(body: (tx: Transaction) => T): T }
@@ -83,12 +89,14 @@ const KNOWN_ID_KEYS = new Set<string>([...ID_FIELDS, ...COUNT_FIELDS, 'source'])
 // Anything else is refused at runtime, so a caller cannot widen a metadata row into prose.
 const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'turn.opened': ['turnId'], 'turn.closed': ['turnId'], 'turn.summary': ['turnId'],
+  'delegation.created': ['responseKey'],
   'response.created': ['responseKey'], 'response.observed': ['responseKey'], 'response.terminal': ['responseKey'],
   'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
   'playback.received': ['playbackKey'], 'playback.audible': ['playbackKey'], 'playback.enqueued': ['playbackKey'],
   'playback.started': ['playbackKey'], 'playback.drained': ['playbackKey'], 'playback.interrupted': ['playbackKey'],
   'playback.terminated': ['playbackKey'],
   'progress.commentary': ['turnId'], 'progress.thinking': ['turnId'], 'call.ceiling': ['callKey'], 'command.rejected': ['turnId'],
+  'continuation.decided': ['responseKey'], 'live.dead_air_stalled': ['turnId'],
 };
 
 const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, FieldSpec>>>> = {
@@ -108,6 +116,9 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
     createdAt: { check: isCount }, status: { check: oneOf(RESPONSE_STATUSES), optional: true },
     providerResponseId: { check: isId, optional: true }, delegationId: { check: isId, optional: true },
     continuationOfResponseKey: { check: isId, optional: true },
+  },
+  'delegation.created': {
+    createdAt: { check: isCount }, providerResponseId: { check: isId, optional: true }, callCount: { check: isCount },
   },
   'response.observed': {
     observedAt: { check: isCount }, providerResponseId: { check: isId, optional: true }, delegationId: { check: isId, optional: true },
@@ -130,6 +141,12 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   'progress.thinking': { sentAt: { check: isCount }, chars: { check: isCount } },
   'call.ceiling': { ceilingMs: { check: isCount }, hitAt: { check: isCount } },
   'command.rejected': { rejectedAt: { check: isCount }, code: { check: isId }, param: { check: isId }, kind: { check: oneOf(COMMAND_KINDS) } },
+  'continuation.decided': {
+    decidedAt: { check: isCount }, outcome: { check: oneOf(CONTINUATION_OUTCOMES) }, skipReason: { check: oneOf(SKIP_REASONS), optional: true },
+  },
+  'live.dead_air_stalled': {
+    stalledAt: { check: isCount }, turnAgeMs: { check: isCount }, anyAudio: { check: isFlag }, inaudibleMs: { check: isCount },
+  },
 };
 
 function validateEvent(kind: TraceEventKind, ids: TraceEventIds, detail: unknown): void {
@@ -247,6 +264,14 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
           d.status ?? 'pending', d.createdAt, d.continuationOfResponseKey ?? null]);
       return;
     }
+    case 'delegation.created': {
+      const d = detail as TraceDetailMap['delegation.created'];
+      assertEpoch(tx, 'trace_response', 'response_key', ids.responseKey!, epoch);
+      requireChanged(tx.run(
+        'UPDATE trace_response SET provider_response_id=COALESCE(?, provider_response_id), delegation_id=COALESCE(delegation_id, ?) WHERE response_key=?',
+        [d.providerResponseId ?? null, `delegation:${ids.responseKey}`, ids.responseKey!]), `trace_response:${ids.responseKey}`);
+      return;
+    }
     case 'response.observed': {
       const d = detail as TraceDetailMap['response.observed'];
       assertEpoch(tx, 'trace_response', 'response_key', ids.responseKey!, epoch);
@@ -332,6 +357,16 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
     }
     // S4a progress and command receipts: the causal spine row is the whole record; no projection holds them.
     case 'progress.commentary': case 'progress.thinking': case 'call.ceiling': case 'command.rejected': return;
+    // O1b-A: the decision and the stall are spine rows; their epoch and their turn are already told by the
+    // response and turn rows they name, so the projection they touch is the stall reason on the turn.
+    case 'continuation.decided': {
+      assertEpoch(tx, 'trace_response', 'response_key', ids.responseKey!, epoch);
+      return;
+    }
+    case 'live.dead_air_stalled': {
+      tx.run("UPDATE trace_turn SET stall_reason=COALESCE(stall_reason, 'no_audible_output') WHERE turn_id=? AND closed_at IS NULL", [ids.turnId!]);
+      return;
+    }
     default: {
       const unreachable: never = kind;
       throw new TraceRecordError('UNKNOWN_KIND', `unknown event kind ${String(unreachable)} event ${seq}`);

@@ -3463,7 +3463,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the tool output is written with a source still reading');
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
-  assert.deepEqual(reply['pending'], ['knowledge'], 'the reply names the source it is still reading');
+  assert.deepEqual(reply['pending'], ['knowledge'], `the reply names the source it is still reading: ${JSON.stringify(reply).slice(0, 500)}`);
   assert.ok((reply['findings'] as unknown[]).length > 0, 'and carries what is already in hand');
   assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1, 'one receipt for the answer point');
   assert.deepEqual(fake.thinking.filter(text => text.startsWith('Later findings from')), [], 'nothing is appended before the reader lands');
@@ -3522,7 +3522,7 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(toolResponseCount(h), before + 1, 'the first answer still reaches the backend');
-  assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1);
+  assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1, JSON.stringify(receipts.filter(entry => entry['event'] === 'research_first_answer')));
   release();
   for (let i = 0; i < 400; i++) { if (receipts.some(entry => entry['event'] === 'research_late_findings')) break; await tick(); }
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');

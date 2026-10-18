@@ -763,7 +763,7 @@ describe('openai gpt-live turn states', () => {
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking'], 'the tool turn is think time, not speech');
     speak(opened.f);
     await quiet();
-    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'the answer starts on her first audible frame');
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'the answer starts on her first audible frame ' + JSON.stringify(opened.captured.events.filter(event => event.type === 'audio').map(event => [event.pcm.byteLength, event.audible])));
   });
 
   test('background speech while the server keeps talking flips no state and forwards every byte', async t => {

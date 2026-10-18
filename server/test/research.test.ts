@@ -4,7 +4,7 @@ import {
   RESEARCH, ResearchLedger, ResearchScheduler, createGeminiSelector, fallbackSelection, offerableCandidates,
   parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
-  researchCallBudgetMs, type ConnectorWarmLog, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
+  researchCallBudgetMs, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
@@ -735,28 +735,4 @@ test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never 
   const reply = await running;
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['knowledge', 'timeout', 12_000]], 'a cut knowledge read is a timeout at 12 s, never an empty search');
   assert.ok((reply['unchecked'] as string[]).includes('knowledge'), 'and it is named unchecked rather than reported as read');
-});
-
-test('P5: the warm-up probes each healthy connector once per session and never blocks the start', async () => {
-  const probes: string[] = [];
-  const warm: ConnectorWarmLog[] = [];
-  let release!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const scheduler = new ResearchScheduler({
-    now: () => 0,
-    configured: ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'],
-    unavailableNow: () => [{ source: 'mongoose', reason: 'connector_failure mongoose stage=credential' }],
-    execute: async subs => { probes.push(subs[0]!.name); await gate; return subs.map(call => sub(call.name, 'ok', true, call.key)); },
-    emit: () => {}, log: () => {}, ledger: new ResearchLedger(), logWarm: event => warm.push(event),
-  });
-  scheduler.warm();
-  assert.deepEqual(probes.sort(), ['gcal_calendars', 'gmail_list', 'mattermost_search', 'search_knowledge'], 'one cheap probe per configured, healthy connector, fired before anything is awaited');
-  assert.equal(warm.length, 0, 'the session start returns without waiting on a connector');
-  scheduler.warm();
-  await settle();
-  assert.equal(probes.length, 4, 'a second start in the same session proves nothing twice');
-  release();
-  await settle();
-  assert.deepEqual(warm.map(event => `${event.source}:${event.ok}`).sort(), ['calendar:true', 'chat:true', 'knowledge:true', 'mail:true'], 'each probe leaves one connector_warm receipt');
-  assert.ok(warm.every(event => typeof event.ms === 'number'));
 });

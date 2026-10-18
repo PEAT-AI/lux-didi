@@ -516,14 +516,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs)) return;
     return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs };
   }
-  if (value.event === 'connector_warm') {
-    // P5: one receipt per warm-up probe: which connector, how long the probe took and whether it answered.
-    const keys = ['event', 'source', 'ms', 'ok'];
-    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
-    if (typeof value.source !== 'string' || !RESEARCH_SOURCES.includes(value.source)) return;
-    if (!isSafeCount(value.ms) || typeof value.ok !== 'boolean') return;
-    return { event: 'connector_warm', source: value.source, ms: value.ms, ok: value.ok };
-  }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
     // sub-call also carries the resolved window kind, a closed enum, never a time or title.

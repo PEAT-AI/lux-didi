@@ -111,53 +111,6 @@ export const RESEARCH = Object.freeze({
 
 export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
 
-/** P5: the sources a warm-up can reach. Her own memory is read in process, so it has no connector. */
-export type WarmSource = Exclude<SourceKind, 'memory'>;
-
-/**
- * P5 outcome 2: the cheapest read each connector can serve, used once per live session to pay the cold
- * start before the owner asks anything. A calendar identity list (no window), a one-line mail list, a
- * one-word chat, knowledge and company search. Nothing here reads owner data it does not have to.
- */
-export const WARM_PROBES: Readonly<Record<WarmSource, IntentSubCall>> = Object.freeze({
-  knowledge: { key: 'warm', name: INTERNAL.knowledgeSearch, args: { query: 'warm', limit: 1 } },
-  calendar: { key: 'warm', name: INTERNAL.calendars, args: {} },
-  mail: { key: 'warm', name: INTERNAL.mailList, args: { q: 'in:inbox newer_than:1d', maxResults: 1 } },
-  chat: { key: 'warm', name: INTERNAL.chatSearch, args: { query: 'in:@me', limit: 1 } },
-  mongoose: { key: 'warm', name: INTERNAL.mongooseSearch, args: { query: 'warm' } },
-});
-
-const WARM_SOURCES = Object.keys(WARM_PROBES) as readonly WarmSource[];
-
-export interface WarmOptions {
-  configured: readonly SourceKind[];
-  /** A source that cannot serve a read is not warmed: its failure is already the session's own report. */
-  unavailable?: readonly SourceKind[];
-  signal?: AbortSignal | undefined;
-  /** Defaults to the host log sink. */
-  log?: (event: ConnectorWarmLog) => void;
-}
-
-/**
- * P5 outcome 2: fire one cheap read per configured, healthy connector in parallel and return at once.
- * The caller never awaits the probes, so the session starts on time; a probe that hangs is cut by its
- * own source deadline. One `connector_warm` receipt per probe records {source, ms, ok}.
- */
-export function warmConnectors(deps: Pick<ResearchDeps, 'execute' | 'now'>, options: WarmOptions): void {
-  const log = options.log ?? ((event: ConnectorWarmLog): void => { hostLogEvent(event); });
-  const skip = new Set<string>(options.unavailable ?? []);
-  for (const source of WARM_SOURCES) {
-    if (!options.configured.includes(source) || skip.has(source)) continue;
-    const deadlineMs = RESEARCH.sourceDeadline[source];
-    const at = deps.now();
-    const signal = options.signal !== undefined ? AbortSignal.any([options.signal, AbortSignal.timeout(deadlineMs)]) : AbortSignal.timeout(deadlineMs);
-    // Deliberately not awaited and never allowed to reject: a warm-up that fails must not reach the session.
-    void deps.execute([WARM_PROBES[source]], signal)
-      .then(results => log({ event: 'connector_warm', source, ms: Math.max(0, deps.now() - at), ok: results.some(result => result.ok) }))
-      .catch(() => log({ event: 'connector_warm', source, ms: Math.max(0, deps.now() - at), ok: false }));
-  }
-}
-
 /**
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
  * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
@@ -188,11 +141,6 @@ export interface ResearchRoutedLog {
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
   deadlineMs: number;
-}
-
-/** P5: one receipt per warm-up probe, so a cold start that never warmed is visible in the log. */
-export interface ConnectorWarmLog {
-  event: 'connector_warm'; source: SourceKind; ms: number; ok: boolean;
 }
 
 /** A source that cannot serve a read right now, with the reason its connector gave. */
@@ -742,8 +690,6 @@ export interface ResearchDeps {
   logRouted?: ((event: ResearchRoutedLog) => void) | undefined;
   /** N3/P5: one metadata-only receipt per source read, so its outcome, ms and deadline survive in the host log. */
   logSource?: ((event: ResearchSourceLog) => void) | undefined;
-  /** P5: one receipt per warm-up probe. */
-  logWarm?: ((event: ConnectorWarmLog) => void) | undefined;
 
   ledger: ResearchLedger;
   replyLimit?: number;
@@ -1758,20 +1704,7 @@ function deferred(): Deferred {
 export class ResearchScheduler {
   readonly #deps: ResearchDeps;
   #active = new Map<string, ActiveRun>();
-  #warmed = false;
   constructor(deps: ResearchDeps) { this.#deps = deps; }
-
-  /**
-   * P5 outcome 2: warm the connectors once, at live session start. Fire and forget, so the session
-   * begins on time; a second call in the same session proves nothing twice and does nothing.
-   */
-  warm(signal?: AbortSignal): void {
-    if (this.#warmed) return;
-    this.#warmed = true;
-    const configured = (this.#deps.configuredNow ?? (() => this.#deps.configured))();
-    const unavailable = (this.#deps.unavailableNow ?? (() => []))().map(entry => typeof entry === 'string' ? entry : entry.source);
-    warmConnectors(this.#deps, { configured, unavailable, ...(signal !== undefined ? { signal } : {}), ...(this.#deps.logWarm !== undefined ? { log: this.#deps.logWarm } : {}) });
-  }
 
   call(call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
     if (call.action === 'start') {

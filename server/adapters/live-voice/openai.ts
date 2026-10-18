@@ -909,27 +909,38 @@ class Session implements LiveVoiceSession {
       }
       case 'response.output_item.done': return this.outputItem(event, message);
       case 'response.done':
-      case 'response.completed': {
+      case 'response.completed':
+      // 3r E (ruling S1-R1): a response that ends any other way is terminal too. Failed, incomplete and cancelled
+      // are the provider's own words for "this response is over and no more of it will come".
+      case 'response.failed':
+      case 'response.incomplete':
+      case 'response.cancelled': {
         const usage = object(event.response) ? event.response.usage : undefined;
         if (object(usage) && typeof usage.total_tokens === 'number' && Number.isFinite(usage.total_tokens) && usage.total_tokens >= 0) {
           this.emit({ type: 'contextUsage', totalTokens: usage.total_tokens,
             ...(typeof usage.input_tokens === 'number' ? { promptTokens: usage.input_tokens } : {}),
             ...(typeof usage.output_tokens === 'number' ? { responseTokens: usage.output_tokens } : {}) });
         }
-        this.delegatedOutstanding = false;
-        // 3r E: a terminal done ends the wait for this response's audio even when it never spoke, so nothing waits
-        // for audio that cannot come. A response that did speak keeps its own account and completes normally.
-        this.responseDone(message);
-        if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
-        // End of turn is presentation idle, never this frame: a delegated response.done does not drain playback.
-        this.settleTurn();
-        // 3r A: the terminal event is the one place a deferred continuation is resumed through the same gate.
-        this.resumeContinuation();
+        this.endResponse(message);
         this.touch();
         return;
       }
       default: this.touch(); return;
     }
+  }
+
+  /**
+   * 3r E (ruling S1-R1): one place where a delegated response stops being active, however it stopped. It clears the
+   * outstanding flag so the turn can still complete, closes the delegation, and lets an owed continuation through the
+   * gate, so a result deferred behind this response is never left unresumable.
+   */
+  private endResponse(message: ObjectValue | undefined): void {
+    this.delegatedOutstanding = false;
+    if (message) this.responseDone(message);
+    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
+    // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
+    this.settleTurn();
+    this.resumeContinuation();
   }
 
   private endTurnTranscripts(): void {
@@ -1046,8 +1057,7 @@ class Session implements LiveVoiceSession {
       this.touch();
       return;
     }
-    if (!SPEECH_CUT_ERROR.test(`${type} ${errorCode}`)) { this.touch(); return; }
-    if (this.generation !== this.muted) {
+    if (SPEECH_CUT_ERROR.test(`${type} ${errorCode}`) && this.generation !== this.muted) {
       this.generation += 1;
       this.muted = this.generation;
       // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
@@ -1056,6 +1066,9 @@ class Session implements LiveVoiceSession {
       this.audioSinceCompletion = false;
       this.emit({ type: 'interrupted' });
     }
+    // 3r E (ruling S1-R1): an error ends the response that earned it, whether or not it cut the audio (3r F decides
+    // the cut), so the wait for its next frame does not outlive it and an owed continuation is resumed.
+    this.endResponse(undefined);
     this.touch();
   }
 
@@ -1207,6 +1220,7 @@ class Session implements LiveVoiceSession {
     this.answeredCalls.clear();
     this.outputSent.clear();
     this.continuationOwed = false;
+    this.delegatedOutstanding = false;
   }
 
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {

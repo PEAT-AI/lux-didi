@@ -812,6 +812,39 @@ describe('openai gpt-live adapter', () => {
     await until(() => completions(captured) === 1);
   });
 
+  test('3r E (S1-R1): an abandoned response ends the wait, resumes the owed continuation and lets the turn complete', async t => {
+    const clock = new FakeClock();
+    const { f, session, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    speak(f, 96_000);
+    await until(() => audioOf(captured).length === 1);
+    f.send(delegated('response.output_item.done', functionCall('call_1')));
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
+    clock.advance(4_000);
+    await quiet();
+    // The response never says done: it fails. That is still the end of it, so the gate opens and the turn can end.
+    f.send(delegated('response.failed', { response: { id: 'resp_1', status: 'failed' } }));
+    await f.frame(3);
+    assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
+    clock.advance(3_000);
+    await until(() => completions(captured) === 1);
+  });
+
+  test('3r E (S1-R1): a terminal error ends the response and resumes the owed continuation', async t => {
+    const clock = new FakeClock();
+    const { f, session, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    f.send(delegated('response.output_item.done', functionCall('call_1')));
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
+    // An error that names no cut: 3r F keeps the audio, and 3r E still ends the response it names.
+    f.send({ type: 'error', event_id: 'event_1', error: { type: 'server_error', code: 'response_aborted', param: null, message: 'aborted' } });
+    await f.frame(3);
+    assert.equal(interruptions(captured), 0, '3r F: this error names no cut');
+    assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
+  });
+
   test('a provider error cuts the response without ending the session, and session.closed maps the outcome', async t => {
     const { f, session, captured } = await ready(t);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });

@@ -605,42 +605,55 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   assert.notEqual(log.status, 'answered', 'a cut read is a partial answer, never an answered one');
 });
 
-test('the turn returns as soon as the first sufficient source answers, without waiting for the rest', async () => {
+test('R6: the call answers at 4.5 s while a slow source is still reading, and never cuts it', async () => {
   const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
+  let mailAborted = false;
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
+    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => { mailAborted = true; reject(new Error('aborted')); }; if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
+  const controller = new AbortController();
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
+  const running = runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, controller.signal);
+  await settle();
+  // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
-  assert.equal(heard, true, 'the reply comes back while the slow source is still reading');
+  assert.equal(heard, false, 'no source has a finding done, so the call has not answered yet');
+  clock.advance(RESEARCH.firstAnswerMs);
   const reply = await running;
-  assert.ok((reply['unchecked'] as string[]).includes('mail'), 'the source left behind is named, never silently dropped');
-  assert.equal(h.logs[0]!.elapsedMs, 0, 'the answer was ready before the slow source could spend any deadline');
+  assert.equal(mailAborted, false, 'the first answer never cuts a reader');
+  assert.deepEqual(reply['pending'], ['mail'], 'the source still reading is named as pending');
+  assert.ok((reply['unchecked'] as string[]).includes('mail'), 'and it is honest about what it has not read');
+  assert.equal(h.logs[0]?.elapsedMs, undefined, 'the run line is the run\'s own end, not the answer point');
+  controller.abort();
+  await reading;
 });
 
-// Reviewer T1: the early-return winner keeps its own second hop and its source stays credited.
-test('the first sufficient source keeps its own second hop when the round is cut for the answer', async () => {
+// Reviewer T1: the source that answered keeps its own second hop, and the reader behind it is not abandoned.
+test('R6: the source that answered keeps its own second hop, and the slow reader is credited late', async () => {
+  const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
   const read: string[] = [];
   let winnerSignalAborted = false;
-  const h = harness({ selector, execute: async (subs, signal) => {
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
     for (const call of subs) read.push(call.name);
     if (subs.some(call => call.name === 'gmail_list')) {
-      // The slow source is the one the early return abandons.
-      return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('abandoned')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
+      // The slow source: it answers only after the call has already replied, and it is never cut for that.
+      return subs.map(call => sub(call.name, 'the mail body', true, call.key));
     }
     if (subs.some(call => call.name === 'get_insight')) winnerSignalAborted = signal.aborted;
     return subs.map(call => sub(call.name, call.name === 'get_insight' ? 'the body' : '### Insight (PATTERN) [id 7]\nthe release is green', true, call.key));
   } });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
-  assert.ok(read.includes('get_insight'), 'the winner opened the insight it found before the round closed');
-  assert.equal(winnerSignalAborted, false, 'the winner is never abandoned by the early return');
+  const late: ResearchLateFindings[] = [];
+  h.deps.late = entry => { late.push(entry); };
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  assert.equal(winnerSignalAborted, false, 'the winner\'s own second hop runs under its own signal');
   assert.equal(h.logs[0]!.sources.find(entry => entry.kind === 'knowledge')?.disposition, 'completed');
-  assert.ok((h.logs[0]!.unchecked ?? []).includes('mail'), 'the abandoned source is named, not silently dropped');
   assert.ok(!(h.logs[0]!.unchecked ?? []).includes('knowledge'), 'the source that answered is not named unchecked');
   assert.ok((reply['findings'] as unknown[]).length > 0);
+  assert.equal(late.length, 0, 'everything settled before the answer point, so nothing is late');
 });
 
 // Reviewer B5 replacement: the owner hears a reply inside six seconds because the call itself returns.
@@ -845,7 +858,7 @@ test('R6: a call answers at 4.5 s with the layers still reading, then hands over
     memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
     execute: async (subs: readonly IntentSubCall[]) => {
       if (subs[0]!.name === 'search_knowledge') await gate.promise;
-      return subs.map(call => sub(call.name, 'Release 3t ships progressive research', true, call.key));
+      return subs.map(call => sub(call.name, '## Release 3t\nprogressive research ships', true, call.key));
     },
   });
   const first: ResearchFirstAnswer[] = [];
@@ -869,7 +882,7 @@ test('R6: a call answers at 4.5 s with the layers still reading, then hands over
   assert.equal(late.length, 0, 'nothing is reported while the reader is still working');
   gate.resolve();
   await reading;
-  assert.deepEqual(late.map(entry => [entry.source, entry.items, entry.ok]), [['knowledge', ['Release 3t ships progressive research'], true]], 'the late source is reported once, with what it returned');
+  assert.deepEqual(late.map(entry => [entry.source, entry.items, entry.ok]), [['knowledge', ['Release 3t | progressive research ships'], true]], 'the late source is reported once, with what it returned');
   assert.equal(h.deps.ledger.find(first[0]!.researchId) !== undefined, true, 'the run is the one the receipt named');
 });
 
@@ -881,7 +894,7 @@ test('R6: a call with no findings at 4.5 s waits for its sources instead of answ
     memory: () => ({ lines: [], text: '', total: 0 }),
     execute: async (subs: readonly IntentSubCall[]) => {
       await gate.promise;
-      return subs.map(call => sub(call.name, 'Release 3t ships progressive research', true, call.key));
+      return subs.map(call => sub(call.name, '## Release 3t\nprogressive research ships', true, call.key));
     },
   });
   const first: ResearchFirstAnswer[] = [];
@@ -906,10 +919,10 @@ test('R6: a late source whose lines the first reply already carried appends noth
   const gate = deferred<void>();
   const h = harness({
     now: clock.now, schedule: clock.schedule,
-    memory: () => ({ lines: ['Release 3t ships progressive research'], text: 'ignored', total: 1 }),
+    memory: () => ({ lines: ['Release 3t | progressive research ships'], text: 'ignored', total: 1 }),
     execute: async (subs: readonly IntentSubCall[]) => {
       if (subs[0]!.name === 'search_knowledge') await gate.promise;
-      return subs.map(call => sub(call.name, 'Release 3t ships progressive research', true, call.key));
+      return subs.map(call => sub(call.name, '## Release 3t\nprogressive research ships', true, call.key));
     },
   });
   const late: ResearchLateFindings[] = [];

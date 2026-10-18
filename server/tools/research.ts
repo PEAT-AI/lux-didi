@@ -1588,6 +1588,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     run = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() }) ?? deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
   }
   run.direction = call.direction ?? run.direction;
+  first.snapshot = () => ({ run, configured, limit });
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
@@ -1605,7 +1606,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let driver: ResearchDriver | undefined;
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
-  first.snapshot = () => ({ run, configured, limit });
   const deadlineAt = started + run.deadlineMs;
 
   // RD: dead air is the longest stretch the model hears nothing, measured at every delivery, so the

@@ -11,10 +11,14 @@ import { createLiveSessionOwner, liveMigrations, liveProfileIdentity, validateLi
 import type { LiveContext, LiveSessionOwner } from '../../live/index.js';
 import { Store } from '../../runtime/store.js';
 import { fixture } from '../openai-live-voice-fixture.js';
-import { replayTools, toolsMigrations } from './tools.js';
-import type { ToolScript } from './tools.js';
-import { analyse } from './invariants.js';
-import type { Violations } from './invariants.js';
+import { randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { createMcpAdapter } from '../../adapters/mcp/adapter.js';
+import { McpRegistry, canonicalToolDigest } from '../../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../../adapters/mcp/store.js';
+import { createToolsOwner, toolsMigrations } from '../../tools/index.js';
+import type { LiveAuthority } from '../../tools/types.js';
+import type { LiveToolsComposition } from '../../live/types.js';
 
 /**
  * The fault-replay driver: the real OpenAI adapter and the real host live session, driven together over a
@@ -436,3 +440,219 @@ async function applyClient(r: Replay, event: Record<string, unknown>): Promise<v
     default: throw new Error(`unknown client step ${String(event['type'])}`);
   }
 }
+
+/**
+ * Scriptable fake tools: a real MCP server over an in-process transport, so the host executes its real tool
+ * path, with a per-call script that sets latency, failure and a late callback. Latency is virtual: the call
+ * resolves when the replay clock reaches it, so a late callback is one that lands after the host settled.
+ */
+export interface ToolScript {
+  /** Virtual milliseconds before the tool answers. */
+  readonly latencyMs?: number;
+  /** The tool returns an MCP error result instead of content. */
+  readonly fail?: boolean;
+  /** The tool result text, when the call succeeds. */
+  readonly text?: string;
+}
+
+/** The migrations a store needs before a scripted tool composition can be applied. */
+
+export interface ReplayTools {
+  readonly composition: LiveToolsComposition;
+  readonly calls: { name: string; args: unknown; at: number }[];
+  /** Why the tool journal refused a call, if it did. An empty list means every scripted tool really ran. */
+  readonly journalErrors: readonly string[];
+  /** The queue of scripts; an exhausted queue answers immediately with the default synthetic result. */
+  script(entry: ToolScript): void;
+  /** Called by the driver once the live owner exists: the host's own authority lookup. */
+  setAuthority(lookup: (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>): void;
+  close(): Promise<void>;
+}
+
+const SCHEMAS = [
+  { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
+  { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
+];
+
+export async function replayTools(t: TestContext, store: Store, clock: ReplayClock, routeIdentity: string): Promise<ReplayTools> {
+  const calls: { name: string; args: unknown; at: number }[] = [];
+  const queue: ToolScript[] = [];
+  let authority: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const registry = new McpRegistry();
+  const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
+  registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
+  const sdk = new Server({ name: 'voice-replay-tools', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(SCHEMAS) }) as never);
+  sdk.setRequestHandler('tools/call', async request => {
+    const at = clock.now();
+    calls.push({ name: request.params.name, args: request.params.arguments, at });
+    const script = queue.shift() ?? {};
+    if (script.latencyMs) await new Promise<void>(resolve => { clock.setTimer(script.latencyMs!, resolve); });
+    if (script.fail) return { content: [{ type: 'text', text: 'synthetic tool failure' }], isError: true };
+    return { content: [{ type: 'text', text: script.text ?? '#1: Synthetic insight\n[Evidence](https://example.test/evidence)' }] };
+  });
+  await sdk.connect(transport);
+  // The MCP adapter reaches the endpoint over `fetch`; the scripted server answers in process, no network.
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) =>
+    transport.handleRequest(new Request(input, init)));
+  const port = createMcpAdapter({
+    registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
+    resolveCredential: async () => 'synthetic-token',
+    budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 1_000 },
+  });
+  const toolOwner = createToolsOwner({
+    store, ownerId: store.assistantId, registry, port,
+    lookupAuthority: async (runId, signal) => (authority ? authority(runId, signal) : null),
+  });
+  // The tool journal refuses a call for a policy reason; a replay records that reason instead of blaming the
+  // fake tool, so a scenario that expects a real result never passes on a refused call.
+  const journalErrors: string[] = [];
+  const intent = toolOwner.journal.intent.bind(toolOwner.journal);
+  toolOwner.journal.intent = (input) => {
+    try { return intent(input); } catch (error) { journalErrors.push(error instanceof Error ? error.message : String(error)); throw error; }
+  };
+  toolOwner.applyConnection({
+    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(SCHEMAS),
+    sourcePolicy: { id: 'voice-replay', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: routeIdentity, allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+  });
+  if ((await port.discover(endpoint.id)).state !== 'discovered') throw new Error('replay tools failed to discover the synthetic endpoint');
+  // Approve the connection's read grant: a projection without a current grant refuses every call, and a
+  // scenario would then be asserting against a dead tool.
+  toolOwner.projectConnection('lux');
+  return {
+    composition: { owner: toolOwner, connectionIds: () => ['lux'] },
+    calls,
+    journalErrors,
+    script: entry => { queue.push(entry); },
+    setAuthority: lookup => { authority = lookup; },
+    async close() { await port.close(); await transport.close(); await sdk.close(); },
+  };
+}
+
+/**
+ * The six invariants every scenario asserts, computed from what the driver observed. Each returns a plain
+ * sentence, so a failing scenario quotes the invariant it broke rather than an assertion line number.
+ */
+export interface Violations { readonly list: readonly string[] }
+
+const ANSWER_COMMANDS = new Set(['response.item.create', 'response.create']);
+
+export function analyse(input: {
+  readonly calls: readonly CallObligation[];
+  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly create: Command | undefined }[];
+  readonly commands: readonly Command[];
+  readonly projections: readonly Projection[];
+  readonly receipts: readonly Receipt[];
+  readonly dispositions: readonly { readonly at: number; readonly callId: string; readonly code: string }[];
+  readonly deadlineMs: number;
+  /** A scenario that ends a call before its answer is expected says so here, and only here. */
+  readonly allowUnanswered?: boolean;
+}): Violations {
+  const list: string[] = [];
+  const { calls, commands, projections, receipts, deadlineMs } = input;
+  const terminalAt = projections.find(entry => entry.lifecycle === 'terminal')?.at;
+
+  // 1. one local terminal disposition and one output submission per observed call, in the epoch that owes it.
+  //    A re-submission after a reconnect is a different generation resuming a lost call, not a repeat.
+  for (const call of calls) {
+    const outputs = commands.filter(command => command.type === 'response.item.create' && command.epoch === call.epoch
+      && (command.frame['item'] as Record<string, unknown> | undefined)?.['call_id'] === call.callId);
+    const lost = input.dispositions.find(entry => entry.callId === call.callId);
+    if (outputs.length === 0 && lost) continue;
+    if (outputs.length === 0) {
+      if (!input.allowUnanswered) list.push(`invariant 1: call ${call.callId} (${call.name}) got no output submission and no typed disposition`);
+    } else if (outputs.length > 1) {
+      list.push(`invariant 1: call ${call.callId} (${call.name}) got ${outputs.length} output submissions, not one`);
+    }
+  }
+
+  // 2. every ready batch gets exactly one continuation decision: one `response.create` immediately after the
+  //    batch's results, never a second one for the same results, and never a withheld one.
+  for (const batch of input.batches) {
+    if (batch.create === undefined) {
+      list.push(`invariant 2: the batch ${batch.callIds.join(',')} submitted its results and no continuation followed`);
+      continue;
+    }
+    // A continuation waits for every pending call of the delegation it answers: a create after a partial batch
+    // is the "do not resend it" the delegation guide forbids.
+    const decidedAt = batch.create.at;
+    const answered = new Set(input.batches.flatMap(entry => entry.create !== undefined && entry.create.at <= decidedAt ? entry.callIds : []));
+    const answeredNow = new Set([...answered, ...batch.callIds]);
+    for (const callId of batch.callIds) {
+      const call = calls.find(entry => entry.callId === callId);
+      if (!call) continue;
+      const pending = calls.filter(entry => entry.delegationId === call.delegationId && entry.epoch === call.epoch);
+      const missing = pending.filter(entry => !answeredNow.has(entry.callId)).map(entry => entry.callId);
+      if (missing.length > 0) {
+        list.push(`invariant 2: a continuation was sent for ${callId} while ${missing.join(',')} of delegation ${call.delegationId} had no result`);
+      }
+    }
+  }
+  const decided = new Set(input.batches.map(batch => batch.create?.seq).filter((seq): seq is number => seq !== undefined));
+  if (decided.size !== input.batches.filter(batch => batch.create !== undefined).length) {
+    list.push('invariant 2: one continuation decision covers more than one ready batch');
+  }
+
+  // 3. no stale-epoch write: once the session settled, nothing may be written for it but a close.
+  for (const command of commands) {
+    if (terminalAt !== undefined && command.at > terminalAt && ANSWER_COMMANDS.has(command.type)) {
+      list.push(`invariant 3: ${command.type} was written at ${command.at - terminalAt} ms after the session settled`);
+    }
+  }
+
+  // 4. no uncertain action is repeated: one output per call id ever, and no tool retried after a disposition.
+  const seen = new Set<string>();
+  for (const command of commands) {
+    if (command.type !== 'response.item.create') continue;
+    const item = command.frame['item'] as Record<string, unknown> | undefined;
+    if (item?.['type'] !== 'function_call_output') continue;
+    const id = `${command.epoch}:${String(item['call_id'])}`;
+    if (seen.has(id)) list.push(`invariant 4: the action for ${id} was submitted twice in one generation`);
+    seen.add(id);
+  }
+
+  // 5. pending work never disappears because audio went quiet: while a call is unanswered the projection may
+  //    not read listening, which is what an audible-silence rule produces.
+  for (const projection of projections) {
+    const outstanding = calls.filter(call => call.at <= projection.at && call.outputs.length === 0
+      && !input.dispositions.some(entry => entry.callId === call.callId && entry.at <= projection.at)
+      && (terminalAt === undefined || projection.at < terminalAt));
+    if (outstanding.length > 0 && projection.state === 'listening') {
+      list.push(`invariant 5: the orb read listening at ${projection.at} with ${outstanding.map(call => call.callId).join(',')} unanswered (${projection.cause})`);
+      break;
+    }
+  }
+
+  // 6. every turn that requires an answer ends in first audible output or a typed failure in its deadline.
+  for (const call of calls) {
+    if (call.outputs.length !== 1) continue;
+    const owedAt = call.outputs[0]!.at;
+    const delivered = receipts.find(receipt => receipt.at >= owedAt);
+    const settled = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal');
+    if (delivered === undefined && settled === undefined) {
+      list.push(`invariant 6: ${call.callId} was answered but the turn never became audible and never failed within the ${deadlineMs} ms deadline`);
+    } else if (delivered !== undefined && delivered.at - owedAt > deadlineMs) {
+      list.push(`invariant 6: ${call.callId} became audible ${delivered.at - owedAt} ms after submission, past the ${deadlineMs} ms deadline`);
+    }
+  }
+  return { list };
+}
+
+/** The compact facts a failing scenario prints: command types in order, orb states, receipts, calls. */
+export function trace(input: Replay): string {
+  const commands = input.commands.map(command => {
+    const item = command.frame['item'] as Record<string, unknown> | undefined;
+    const callId = item?.['type'] === 'function_call_output' ? `(${String(item['call_id'])})` : '';
+    return `g${command.epoch}:${command.type}${callId}`;
+  }).join(' -> ');
+  const orb = input.projections.map(entry => `${entry.state}@${entry.at - input.clock.startedAt}`).join(' ');
+  const calls = input.calls.map(call => `${call.callId}:${call.outputs.length}/${call.continuation ? 'continued' : 'open'}`).join(' ');
+  const outcome = input.owner.get(input.liveSessionId).terminal?.state ?? 'open';
+  const fill = `${input.inaudibleFrames} fill frames`;
+  return `\ncommands: ${commands}\norb: ${orb}\ncalls: ${calls}\nreceipts: ${input.receipts.length} (${fill})\ndisposition: ${outcome}`;
+}
+

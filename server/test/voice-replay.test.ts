@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { expectCommands, play } from './voice-replay/driver.js';
+import { expectCommands, play, trace as describe } from './voice-replay/driver.js';
 import type { Played } from './voice-replay/driver.js';
-import { trace as describe } from './voice-replay/invariants.js';
 import { sanitize } from './voice-replay/sanitize.js';
 
 /**

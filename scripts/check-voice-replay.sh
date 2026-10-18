@@ -18,20 +18,26 @@ node_test_files --test-reporter=tap --test-timeout=60000 dist/test/voice-replay.
 
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected voice replay tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected voice replay tests failed' >&2; exit 1; }
-# A parked scenario is a scenario the current code fails. It must be declared, with the wagon that owes the fix,
-# in voice-replay/parked.txt: an undeclared park fails the gate, and so does a declaration whose scenario has
-# started passing, because a stale park hides a recovered invariant.
-parked="$(cd .. && pwd)/server/test/voice-replay/parked.txt"
+# A parked scenario is a scenario the current code fails. It is declared here, with the wagon that owes the
+# fix, and a `todo` test quotes the assertion it falsifies. The gate checks the two in both directions: an
+# undeclared park fails, and so does a declaration whose scenario has started passing, because a stale park
+# hides a recovered invariant. Every line names the wagon in the report.
+cat > "$work/parked-declared.log" <<'PARKED'
+scenario-3 S4a
+scenario-4 S4a
+scenario-6 S4a
+scenario-9 S4a
+PARKED
 grep -Eo '^(not ok|ok) [0-9]+ - scenario [0-9]+:[^#]*# TODO' "$work/test.log" | grep -Eo 'scenario [0-9]+' | sed 's/ /-/' | sort -u > "$work/parked-now.log"
-grep -Ev '^[[:space:]]*(#|$)' "$parked" | cut -d' ' -f1 | sort -u > "$work/parked-declared.log"
-if ! diff -u "$work/parked-declared.log" "$work/parked-now.log" > "$work/parked-diff.log"; then
-  echo 'Voice replay: the parked scenarios differ from voice-replay/parked.txt' >&2
+cut -d' ' -f1 "$work/parked-declared.log" | sort -u > "$work/parked-names.log"
+if ! diff -u "$work/parked-names.log" "$work/parked-now.log" > "$work/parked-diff.log"; then
+  echo 'Voice replay: the parked scenarios differ from the declarations in this script' >&2
   cat "$work/parked-diff.log" >&2
   exit 1
 fi
 if [ -s "$work/parked-now.log" ]; then
   echo 'Voice replay gate: PASS, with parked scenarios:' >&2
-  grep -Ev '^[[:space:]]*(#|$)' "$parked" >&2
+  cat "$work/parked-declared.log" >&2
   exit 0
 fi
 echo 'Voice replay gate: PASS'

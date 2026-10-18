@@ -6,7 +6,7 @@ import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, vali
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
 import { ConfigError, fail, parseJson, readPrivate, safeError, validateRoot } from './files.js';
-import { configureDebugJournal } from '../host/journal.js';
+import { configureDebugJournal, currentDebugJournal } from '../host/journal.js';
 import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
@@ -144,6 +144,14 @@ function classList(value: unknown): readonly DataClass[] {
 }
 
 /**
+ * The debug journal is rooted at the host's own --data-dir, which the host entry installs before the live
+ * config is read (server/host/runtime.ts), so a host started against another --config-dir still journals
+ * into its own state and never into that config's folder. A caller with no installed journal (a unit
+ * caller, the CLI) keeps the config dir's parent, which is the data dir when no --config-dir was given.
+ */
+function journalDataDir(configDir: string): string { return currentDebugJournal()?.dataDir ?? dirname(configDir); }
+
+/**
  * Strict owner-only live.json in the existing configDir. Works with no text profile.json, never borrows
  * text consent and never reads a secret (the credential is resolved lazily by the adapter).
  *
@@ -156,8 +164,8 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     if (!options || typeof options !== 'object' || typeof options.configDir !== 'string' || typeof options.ownerId !== 'string') fail('invalid_arguments');
     // The debug journal is a host setting with its own default, so it is installed before live.json is
     // read: a host with no live.json, or none this run can reach, still journals; the file can only
-    // turn it off. This is the same data directory the persona overlay below resolves.
-    configureDebugJournal(dirname(options.configDir), true);
+    // turn it off.
+    configureDebugJournal(journalDataDir(options.configDir), true);
     // A load is the one authority on the accent this process composes with, so a file that is gone or
     // unreadable falls back to the default rather than keeping a value a previous fixture left behind.
     currentAccent = LIVE_DEFAULT_ACCENT;
@@ -206,9 +214,9 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       provider, preferences, model, voice: chosenVoice, dataClasses, debugJournal, playbackRate: chosenRate,
       profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),
     });
-    // The debug journal is rooted at the host data directory, the same place the persona overlay
-    // lives, and it is installed here so one owner preference governs both the live and chat paths.
-    configureDebugJournal(dirname(options.configDir), debugJournal);
+    // The debug journal is rooted at the host data directory, and it is installed here so one owner
+    // preference governs both the live and chat paths.
+    configureDebugJournal(journalDataDir(options.configDir), debugJournal);
     // The optional local overlay lives beside the data directory, outside Git; an invalid file
     // fails closed into a typed status instead of silently falling back to the public base.
     const overlay = loadPersonaOverlay({ dataDir: dirname(options.configDir) });

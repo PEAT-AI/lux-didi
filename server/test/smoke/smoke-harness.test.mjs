@@ -2,13 +2,13 @@
 // must say so. These tests never start the real host, make no model turn and print no credential.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { READY_TIMEOUT_MS, spawnSupervised, stopSupervised, waitForReady } from './strict-supervisor.mjs';
-import { launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, supervisorNote } from './probes.mjs';
+import { launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, stageProviderConfig, supervisorNote } from './probes.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '../../..');
 const smokeSource = join(repoRoot, 'scripts/smoke.sh');
@@ -185,4 +185,30 @@ test('probe8 still fails when research was never called', () => {
   assert.equal(turn.ok, false);
   assert.equal(summary.items, 0);
   assert.equal(chatProbe.check(summary), false);
+});
+
+// #397: a probe host must never be handed the installed app's own provider config, so the probes stage a
+// private copy first and run against it. Key file modes survive the copy and no key material is printed.
+test('probes stage the installed provider config into a private temp copy', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-smoke-config-copy-'));
+  const source = join(dir, 'installed', 'provider-config');
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, 'mcp.json'), '{"schemaVersion":1,"endpoints":[]}\n');
+  await writeFile(join(source, 'openai-primary.json'), '{"schemaVersion":1,"keyReference":"openai-primary","key":"synthetic_NEVER_PRINT"}\n');
+  await chmod(join(source, 'openai-primary.json'), 0o600);
+  const staged = await stageProviderConfig(source);
+  try {
+    assert.notEqual(staged.configDir, source, 'the host is never pointed at the installed config dir');
+    assert.ok(staged.configDir.startsWith(tmpdir()), 'the copy is a temp dir');
+    assert.deepEqual((await readdir(staged.configDir)).sort(), ['mcp.json', 'openai-primary.json']);
+    const key = join(staged.configDir, 'openai-primary.json');
+    assert.equal((await stat(key)).mode & 0o777, 0o600, 'the key file keeps its owner-only mode');
+    assert.equal(await readFile(key, 'utf8'), await readFile(join(source, 'openai-primary.json'), 'utf8'));
+    assert.equal((await stat(staged.configDir)).mode & 0o777, 0o700, 'the copy directory is private');
+  } finally { await staged.remove(); await rm(dir, { recursive: true, force: true }); }
+  assert.equal(existsSync(staged.configDir), false, 'the copy is removed, key material is not left behind');
+  // The shipping path, not just the helper: the probes stage once and hand that copy to the host.
+  const probeSource = await readFile(join(repoRoot, 'server/test/smoke/probes.mjs'), 'utf8');
+  assert.equal((probeSource.match(/stageProviderConfig\(/g) ?? []).length, 2, 'probes.mjs defines the staging step and calls it once');
+  assert.match(probeSource, /configDir: config\.configDir/, 'the host spawn takes the staged copy, never the installed dir');
 });

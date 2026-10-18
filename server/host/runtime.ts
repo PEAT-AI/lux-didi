@@ -1,6 +1,8 @@
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
+import { configureDebugJournal } from './journal.js';
+import { supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
@@ -37,12 +39,27 @@ export interface LiveToolsComposition {
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
 }
 
-export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean }
+export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean; supervised?: boolean }
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
   if (platform() === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
 }
+/** The installed app's per-user application support folder: its own state and provider config live here. */
+export function installedAppFolder(): string { return join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi'); }
+/**
+ * #397: one loud line when a host outside the installed app would take the installed app's own config dir.
+ * The supervised host the app itself spawns is the one exception; every other start is told the flag that
+ * gives it a state of its own. Undefined means the start may proceed.
+ */
+export function installedConfigDirRefusal(configDir: string, supervised: boolean): string | undefined {
+  if (supervised) return undefined;
+  const installed = installedAppFolder();
+  if (configDir !== installed && !configDir.startsWith(installed + sep)) return undefined;
+  return `Refusing --config-dir ${configDir}: it is the installed app's own folder, which only the app's supervised host may open; run this host with --data-dir <your own state folder> and copy the provider config there instead.`;
+}
+/** The app's own supervision marker (server/host/supervision.ts) decides the one exception to the refusal. */
+function supervisedHost(config: HostConfig): boolean { return config.supervised ?? supervisionRequested(); }
 export interface RuntimeDescriptor {
   schemaVersion: 1; origin: string; authorityEpoch: string; assistantId: string; pid: number; startedAt: string;
 }
@@ -163,6 +180,13 @@ export async function startHost(config: HostConfig) {
     if (typeof manifest.releaseCommit === 'string' && /^[0-9a-f]{40}$/.test(manifest.releaseCommit)) releaseCommit = manifest.releaseCommit;
   } catch { /* Development starts have no installed release metadata. */ }
   const effectiveConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
+  // #397: another installation's folder is not this host's config source. Only the app's own supervised
+  // host may open its folder; every other start gets one loud line and exits before any state is created.
+  const refused = installedConfigDirRefusal(effectiveConfigDir, supervisedHost(config));
+  if (refused) throw new Error(refused);
+  // The debug journal is rooted at this host's own --data-dir, never beside the --config-dir it was handed;
+  // the live config keeps this root once it is installed here.
+  configureDebugJournal(dataDir, true);
   let endpoints = 0;
   let configKind: 'effective' | 'seeded' = config.configDir === undefined ? 'seeded' : 'effective';
   try {

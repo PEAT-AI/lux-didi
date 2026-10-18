@@ -1,15 +1,16 @@
 // The declared host check also exercises the real installer's isolated seed block (R5).
 import './install-template.test.js';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { installedConfigDirRefusal, pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
@@ -671,4 +672,52 @@ test('host close kills a stdio MCP child that ignores close within the bound', a
     assert.ok(Date.now() - started < 1500, 'close must return within its bound even when the child ignores it');
     assert.equal(await childDead(pid, 800), true, 'the child is killed after the bound, so the host can exit');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// #397: a host started with another --config-dir must journal into its own --data-dir, and a host outside
+// the installed app must never adopt the installed app's folder as its config source.
+test('a host journals under its own --data-dir, never beside the --config-dir it was given', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-journal-root-'));
+  const dataDir = join(dir, 'state');
+  const configDir = join(dir, 'other-install', 'provider-config');
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  await chmod(configDir, 0o700);
+  const host = await startHost({ dataDir, configDir, webRoot, port: 0 });
+  try {
+    assert.equal((await stat(join(dataDir, 'debug'))).isDirectory(), true, 'the journal root is this host own data dir');
+    await assert.rejects(stat(join(dir, 'other-install', 'debug')), /ENOENT/, 'nothing is written beside the borrowed config dir');
+  } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('the installed app config dir is refused with one line naming --data-dir, and supervision lifts it', () => {
+  const installed = join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi', 'provider-38');
+  const refusal = installedConfigDirRefusal(installed, false);
+  assert.equal(typeof refusal, 'string');
+  assert.ok(!refusal!.includes('\n'), 'one line, not a paragraph');
+  assert.match(refusal!, /--data-dir/);
+  assert.match(refusal!, /installed app/);
+  assert.equal(installedConfigDirRefusal(join(installed, 'nested'), false), refusal!.replace(installed, join(installed, 'nested')));
+  assert.equal(installedConfigDirRefusal(installed, true), undefined, 'the installed app supervised host keeps its own config dir');
+  assert.equal(installedConfigDirRefusal('/tmp/synthetic/provider-config', false), undefined, 'any other config dir stays allowed');
+  assert.equal(installedConfigDirRefusal(join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi-other'), false), undefined);
+  // The refusal is keyed off the named supervision marker, not a literal repeated in this file.
+  assert.equal(supervisionRequested(['node', 'host/index.js', SUPERVISION_FLAG]), true);
+  assert.equal(supervisionRequested(['node', 'host/index.js', '--data-dir', '/tmp/x']), false);
+});
+
+test('the entry refuses to start an unsupervised host on the installed app config dir', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-refuse-'));
+  const dataDir = join(dir, 'state');
+  try {
+    const child = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--data-dir', dataDir, '--web-root', webRoot, '--port', '0',
+      '--config-dir', join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi', 'provider-38')], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = ''; child.stderr!.on('data', chunk => { stderr += String(chunk); });
+    const [code] = await once(child, 'exit');
+    assert.equal(code, 1);
+    assert.match(stderr, /--data-dir/, 'the refusal names the flag to use instead');
+    assert.match(stderr, /installed app/);
+    assert.equal(stderr.trimEnd().split('\n').length, 1, 'the refusal is one loud line');
+    await assert.rejects(stat(join(dataDir, 'state.sqlite')), /ENOENT/, 'the refused start opens no state');
+    await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the refused start installs no journal');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

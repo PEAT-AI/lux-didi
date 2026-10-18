@@ -19,12 +19,15 @@ const FILE_ROWS: [string, string][] = [
 /** The selectable voice providers, in switch order, with the first voice of each list as its default. */
 export const LIVE_PROVIDERS: readonly { provider: string; label: string; voices: readonly string[] }[] = [
   // OV1-R6: the gpt-live-1 English voice table, in its own order, marin first as the default. Cedar is a
-  // Realtime voice and is deliberately absent; nira is never listed.
+  // Realtime voice and is deliberately absent; nira is the documented Hindi voice, offered since PV2.
   { provider: 'openai', label: 'OpenAI GPT-Live', voices: [
-    'marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder',
+    'marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder', 'nira',
   ] },
   { provider: 'gemini', label: 'Gemini 3.8 Live', voices: ['Aoede'] },
 ];
+/** Whether one voice is a prompt-designed custom voice id (`voice_` plus 16 to 64 lowercase hex
+ *  characters) rather than a preset name. The config CLI stores one; the picker only shows it. */
+export function isCustomVoiceId(voice: string): boolean { return /^voice_[0-9a-f]{16,64}$/.test(voice); }
 /**
  * The accent selections the host composes with, in order, with the value an absent setting means. The
  * labels are the owner's words for the three choices; the server validates the values.
@@ -189,19 +192,21 @@ function liveSwitch(summary: unknown, summaryUnavailable: boolean, saved?: Setti
   // The switch shows the saved choice when there is one, because that is what the next start will use;
   // the running values above it say what a call in flight actually ran with.
   const current = text(saved?.provider, 40) ?? text(row?.provider, 40) ?? LIVE_PROVIDERS[0]!.provider;
-  const voice = text(saved?.voice, 64) ?? text(row?.voice, 64) ?? voicesOf(current)[0]!;
+  const voice = text(saved?.voice, 70) ?? text(row?.voice, 70) ?? voicesOf(current)[0]!;
   // The accent applies from the next session start, so the running summary already names what will run.
   const accent = text(saved?.accent, 40) ?? text(row?.accent, 40) ?? LIVE_ACCENTS[0]!.value;
   const accentOptions = LIVE_ACCENTS.map(choice =>
     `<option value="${escapeHtml(choice.value)}"${choice.value === accent ? ' selected' : ''}>${escapeHtml(choice.label)}</option>`).join('');
   const options = LIVE_PROVIDERS.map(choice =>
     `<option value="${escapeHtml(choice.provider)}"${choice.provider === current ? ' selected' : ''}>${escapeHtml(choice.label)}</option>`).join('');
-  const voices = [...new Set([...voicesOf(current), voice])].map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
+  const voices = [...new Set([...voicesOf(current), voice])]
+    .map(name => `<option value="${escapeHtml(name)}">${isCustomVoiceId(name) ? 'Custom voice' : ''}</option>`).join('');
   return `<form id="live-settings-form" class="live-settings">
 <label for="live-provider">Provider</label>
 <select id="live-provider" name="provider">${options}</select>
 <label for="live-voice">Voice</label>
 <input id="live-voice" name="voice" value="${escapeHtml(voice)}" list="live-voices" autocomplete="off">
+${isCustomVoiceId(voice) ? `<p class="muted">Custom voice: <code>${escapeHtml(voice)}</code></p>` : ''}
 <datalist id="live-voices">${voices}</datalist>
 <label for="live-accent">Accent</label>
 <select id="live-accent" name="accent">${accentOptions}</select>

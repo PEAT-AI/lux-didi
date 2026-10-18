@@ -20,7 +20,7 @@ export type LiveErrorCode =
 export type LiveConfigErrorCode =
   | 'invalid_object' | 'invalid_provider' | 'invalid_model' | 'invalid_voice' | 'invalid_key_reference'
   | 'invalid_route' | 'invalid_classes' | 'invalid_prompt' | 'invalid_limit' | 'invalid_language'
-  | 'invalid_accent';
+  | 'invalid_accent' | 'invalid_voice_description';
 
 export class LiveError extends Error {
   constructor(readonly code: LiveErrorCode, message: string = code) { super(message); this.name = 'LiveError'; }

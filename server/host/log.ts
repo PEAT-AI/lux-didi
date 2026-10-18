@@ -134,9 +134,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'live_started' && (value.provider === 'openai' || value.provider === 'gemini')
     && typeof value.modelId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value.modelId)
-    && typeof value.voice === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value.voice)) {
+    // A custom voice id is `voice_` plus up to 64 hex characters (PV2); ids are not secret.
+    && typeof value.voice === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,69}$/.test(value.voice)
+    && (value.voiceKind === 'preset' || value.voiceKind === 'custom')) {
     // Names only: what the running Live service will call, never a key, reference or prompt.
-    return { event: 'live_started', provider: value.provider, modelId: value.modelId, voice: value.voice };
+    return { event: 'live_started', provider: value.provider, modelId: value.modelId, voice: value.voice, voiceKind: value.voiceKind };
   }
   if (value.event === 'host_exit' && ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'].includes(String(value.stage))
     && (value.reason === 'close' || value.reason === 'exit')

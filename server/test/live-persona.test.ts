@@ -11,6 +11,7 @@ import {
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
 } from '../prompt/live-persona.js';
+import { safeEvent } from '../host/log.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
 /**
@@ -168,12 +169,14 @@ test('the target budget yields memory first and never drops the base, overlay or
   // that yields; the rule under test is the yield order, not the size that used to reach it.
   const ownerProfile = syntheticOwner('S'.repeat(8_000), 'OWNER LORE BLOCK');
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(16_000) };
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', memory: 'M'.repeat(20_000) });
+  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', memory: 'M'.repeat(20_000),
+    runtimeContext: 'R'.repeat(20_000) });
   assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `composed text ${result.text.length} must fit the hard limit`);
   assert.ok(result.text.includes(NAYA_LIVE_BASE), 'base never yields');
   assert.ok(result.text.includes('O'.repeat(16_000)), 'overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
-  assert.equal(result.sections.some(section => section.id === 'memory'), false, 'memory yields first');
+  // PV2: a yielded section is reported with a zero size, so the size line names exactly what was dropped.
+  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
   assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), language: 'en' }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
@@ -240,17 +243,25 @@ test('declarations add the tools section verbatim between base and overlay with 
   assert.equal(again.sha256, result.sha256, 'hash stability for the same declaration names');
 });
 
-test('the target budget trims the tools conduct after memory yields and never drops the overlay', () => {
-  // PV1: with the 30,000 target this needs a bigger overlay before the tools conduct is the trimmed section.
+test('PV2: the target budget yields memory whole and then the tools conduct whole, and never drops the overlay', () => {
+  // Under the target nothing yields at all.
   const ownerProfile = syntheticOwner('S'.repeat(6_000), 'OWNER LORE BLOCK');
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(20_000) };
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(20_000) });
-  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `composed text ${result.text.length} must fit the hard limit`);
+  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(20_000) });
+  assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
+  assert.equal(roomy.sections.some(section => section.chars === 0), false, 'nothing yields under the target');
+  // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
+  // runtime context is sized from the target so that yielding the memory alone brings the text back under it.
+  const base = { base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en' as const };
+  const withoutMemory = composeLiveInstruction({ ...base, tools: ['search_knowledge'] });
+  const result = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500),
+    runtimeContext: 'R'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - withoutMemory.text.length - 1_000) });
+  assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${result.text.length} must fit the target`);
   assert.ok(result.text.includes('O'.repeat(20_000)), 'the overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
-  assert.equal(result.sections.some(section => section.id === 'memory'), false, 'memory yields first');
+  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
   const toolsSection = result.sections.find(s => s.id === 'tools');
-  assert.ok(!toolsSection || toolsSection.chars <= NAYA_TOOLS.length, 'the tools conduct is trimmed, not expanded');
+  assert.equal(toolsSection?.chars, NAYA_TOOLS.length, 'a surviving tools conduct is complete, never a prefix');
   assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), language: 'en', tools: ['search_knowledge'] }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
@@ -319,7 +330,7 @@ test('session composition places bounded whole memory records and pickup before 
   // PV1: the target moved to 30,000, so the overlay is sized from the target itself rather than a fixed number.
   const yieldingSize = LIVE_INSTRUCTION_TARGET_CHARS - baseline.text.length + 1;
   const yielding = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay: { schemaVersion: 1, text: 'O'.repeat(yieldingSize) }, memory: 'x'.repeat(BUDGET) });
-  assert.ok(!yielding.sections.some(section => section.id === 'memory'), 'memory yields before the overlay and the base');
+  assert.equal(yielding.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields before the overlay and the base');
   assert.ok(yielding.text.includes('O'.repeat(yieldingSize)), 'memory yields before the overlay');
 });
 
@@ -391,8 +402,8 @@ test('P1: owner lore survives while memory yields under the budget', () => {
   const lore = `OWNER LORE ${'L'.repeat(4_000)}`;
   // PV1: the 30,000 target needs a larger overlay before memory is the section that yields.
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('S'.repeat(5_500), lore),
-    overlay: { schemaVersion: 1, text: 'O'.repeat(20_000) }, language: 'en', memory: `MEMORY ${'m'.repeat(20_000)}` });
-  assert.equal(result.sections.some(section => section.id === 'memory'), false, 'memory yields first');
+    overlay: { schemaVersion: 1, text: 'O'.repeat(30_000) }, language: 'en', memory: `MEMORY ${'m'.repeat(20_000)}` });
+  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
   const loreSection = result.sections.find(section => section.id === 'owner-lore');
   assert.ok(loreSection && loreSection.chars > 0, 'owner lore is never dropped before memory');
   assert.equal(result.text.split(lore).length - 1, 1, 'the dense lore is present exactly once');
@@ -423,10 +434,102 @@ test('P1: exactly one LANGUAGE line, the accent leads the head block and is rest
   assert.doesNotMatch(result.text, /ACCENT: /);
 });
 
-test('P1: the target and hard limits are the declared 30000 and 36000 characters', () => {
-  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 30_000);
-  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 36_000);
-  assert.equal(OWNER_LORE_CHAR_LIMIT, 5_000);
+test('P1: the target and hard limits are the declared 44000 and 52000 characters (PV2)', () => {
+  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 44_000);
+  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
+  assert.equal(OWNER_LORE_CHAR_LIMIT, 14_000);
+});
+
+test('PV2: a 14,000 character owner lore survives intact, inside its own section budget', () => {
+  const lore = 'L'.repeat(14_000);
+  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', lore), language: 'en' });
+  assert.equal(result.text.split(lore).length - 1, 1, 'the whole 14k lore is present exactly once');
+  const loreSection = result.sections.find(section => section.id === 'owner-lore');
+  assert.ok(loreSection && loreSection.chars > lore.length, 'the whole lore plus its leader and closing marker');
+  assert.ok(result.text.includes('End authored background.'), 'and the closing marker is never cut');
+  assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
+  // Past that budget the lore section is clipped at its own limit, which is not a target-budget yield.
+  const clipped = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'L'.repeat(14_001)), language: 'en' });
+  assert.equal(clipped.text.includes('L'.repeat(14_001)), false);
+  assert.ok(clipped.text.includes(lore));
+});
+
+test('PV2: a composition over the target drops whole lower-priority sections, never cutting one mid-text', () => {
+  const base = { base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'L'.repeat(14_000)), accent: 'strong Indian accent', language: 'en' };
+  // A composition well past the target yields all three, whole each time, in priority order.
+  const full = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500), runtimeContext: 'R'.repeat(30_000) });
+  assert.ok(full.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
+  assert.deepEqual(full.sections.filter(section => section.chars === 0).map(section => section.id), ['memory', 'tools', 'runtime']);
+  assert.equal(full.text.split(NAYA_TOOLS).length - 1, 0, 'not even a prefix of the tools conduct survives');
+  assert.equal(full.text.includes('RRRR'), false);
+  // Never dropped: the base, the owner style, the whole owner lore and both accent blocks.
+  assert.ok(full.text.includes(NAYA_LIVE_BASE), 'the base never yields');
+  assert.ok(full.text.includes('OWNER STYLE BLOCK'), 'the owner style never yields');
+  assert.ok(full.text.includes('L'.repeat(14_000)), 'the owner lore never yields');
+  assert.ok(full.text.includes('FINAL VOICE ANCHOR') && full.text.includes('Begin speaking now as Naya.'), 'the accent tail never yields');
+  assert.ok(full.text.includes('strong Indian accent'), 'the accent blocks never yield');
+});
+
+test('P9-R2 F1: the session composition carries one accent tail, gives the description once, and logs it', () => {
+  const description = 'Warm Indian English, unhurried.';
+  const stays = (text: string): number => text.split('Stay in this accent').length - 1;
+  const plain = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en' });
+  const described = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en', voiceDescription: description });
+  const session = (text: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, accentSelection: 'indian-strong' });
+  const withoutDescription = session(plain.text);
+  const composed = session(described.text);
+  // The head block and the tail block, never a third: the description adds no accent tail.
+  assert.equal(stays(withoutDescription.text), 2, 'the head and the tail, in the text that has no description');
+  assert.equal(stays(composed.text), stays(withoutDescription.text), 'the description adds no accent tail');
+  assert.equal(composed.text.split('Voice description:').length - 1, 1, 'the description appears once');
+  assert.ok(composed.text.trimEnd().endsWith(description), 'and it is the last thing the model reads');
+  // The sizes line the session start emits carries the description as its own section.
+  const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
+  const line = `Voice description: ${description}`;
+  assert.equal(sections['voice-description'], line.length);
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, sections,
+    languageCode: 'en', voice: 'marin' });
+  assert.ok(logged, 'the session size line stays inside the closed shape');
+  assert.equal((logged.sections as Record<string, number>)['voice-description'], line.length);
+  // A second pass over an already composed session text keeps one tail and one description.
+  const again = session(composed.text);
+  assert.equal(stays(again.text), 2);
+  assert.equal(again.text.split('Voice description:').length - 1, 1);
+  assert.equal(again.sections.filter(section => section.id === 'voice-description').length, 1);
+  // A description that holds a blank line is legal (two paragraphs, or a file with a trailing empty line),
+  // so the split must never depend on the description being one paragraph.
+  for (const varied of ['Warm Indian English.\n\nDeep and calm.', 'Warm Indian English.\n']) {
+    const describedMore = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en', voiceDescription: varied });
+    const shaped = session(describedMore.text);
+    assert.equal(stays(shaped.text), 2, 'still one accent tail');
+    assert.equal(shaped.text.split('Voice description:').length - 1, 1, 'still one description');
+    assert.ok(shaped.text.endsWith(varied), 'still the last thing the model reads');
+    const sized = Object.fromEntries(shaped.sections.map(section => [section.id, section.chars]));
+    assert.equal(sized['voice-description'], `Voice description: ${varied}`.length, 'and still its own section');
+  }
+});
+
+test('PV2: the voice description is appended once inside the accent tail and logs as its own section', () => {
+  const description = 'Warm Indian English, unhurried, clear consonants, a light lilt.';
+  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: 'strong Indian accent', language: 'en', voiceDescription: description });
+  const line = `Voice description: ${description}`;
+  assert.equal(result.text.split('Voice description:').length - 1, 1, 'the description appears exactly once');
+  assert.ok(result.text.indexOf('Begin speaking now as Naya.') < result.text.indexOf(line), 'it follows the accent anchor');
+  assert.ok(result.text.trimEnd().endsWith(description), 'and it closes the accent tail');
+  const section = result.sections[result.sections.length - 1]!;
+  assert.equal(section.id, 'voice-description');
+  assert.equal(section.chars, line.length);
+  // It is on the closed section allowlist, so the size line carries its own count.
+  assert.ok((LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes('voice-description'));
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: result.text.length,
+    sections: Object.fromEntries(result.sections.map(entry => [entry.id, entry.chars])), languageCode: 'en', voice: 'marin' });
+  assert.ok(logged, 'the size line stays inside the closed shape');
+  assert.equal((logged.sections as Record<string, number>)['voice-description'], line.length);
+  // No description, no section: the composition is exactly what it was.
+  const plain = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: 'strong Indian accent', language: 'en' });
+  assert.equal(plain.sections.some(entry => entry.id === 'voice-description'), false);
+  assert.equal(plain.text.includes('Voice description:'), false);
 });
 
 test('P3-R2: a full owner layer, session memory and earlier conversations all survive under the raised limits', () => {
@@ -679,15 +782,15 @@ test('# Memory keeps its own budget when a standing set is present', () => {
   assert.ok(composed.sections.some(section => section.id === 'standing-memory'));
 });
 
-test('PV1: the budget numbers are the wire-tested ones and a 25,000-char composition fits while 37,000 throws', () => {
-  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 30_000);
-  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 36_000);
-  // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, so the
-  // smaller earlier-conversations block no longer has to compete with the persona for a 20,000-char ceiling.
-  const fits = composeLiveInstruction({ base: 'B'.repeat(24_900), language: 'en' });
-  assert.ok(fits.text.length >= 25_000, `the composition is at least 25,000 chars (${fits.text.length})`);
+test('PV2: the budget numbers are the wire-tested ones and a 43,000-char composition fits while 53,000 throws', () => {
+  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 44_000);
+  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
+  // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, and the
+  // model's 16,384 instruction tokens hold about 60,000 characters; the host targets 44,000 of them.
+  const fits = composeLiveInstruction({ base: 'B'.repeat(42_000), language: 'en' });
+  assert.ok(fits.text.length >= 43_000, `the composition is at least 43,000 chars (${fits.text.length})`);
   assert.ok(fits.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `and stays under the target (${fits.text.length})`);
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(37_000), language: 'en' }),
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(53_000), language: 'en' }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 

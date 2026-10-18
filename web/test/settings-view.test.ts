@@ -160,16 +160,29 @@ test('the OpenAI voice list is the gpt-live-1 table in its own order, marin firs
   const html = settingsMarkup({ summary: { ...summary, provider: 'openai', voice: 'marin' } });
   const list = html.slice(html.indexOf('<datalist id="live-voices">'), html.indexOf('</datalist>'));
   const voices = [...list.matchAll(/<option value="([a-z]+)"><\/option>/g)].map(match => match[1]!);
-  // OV1-R6: exactly this order; cedar is a Realtime voice and nira never appears.
-  assert.deepEqual(voices, ['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder']);
+  // OV1-R6: exactly this order; cedar is a Realtime voice and is absent. nira, the documented Hindi
+  // voice, joins the list last in PV2.
+  assert.deepEqual(voices, ['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder', 'nira']);
   assert.equal(voices[0], 'marin', 'marin is the default and comes first');
   assert.equal(voices.includes('cedar'), false);
-  assert.equal(voices.includes('nira'), false);
+  assert.equal(voices.includes('nira'), true);
   assert.equal(html.includes('"marin" selected') || html.includes('value="marin"'), true);
   // Gemini keeps its own list.
   const gemini = settingsMarkup({ summary: { ...summary, provider: 'gemini', voice: 'Aoede' } });
   const geminiList = gemini.slice(gemini.indexOf('<datalist'), gemini.indexOf('</datalist>'));
   assert.deepEqual([...geminiList.matchAll(/<option value="([A-Za-z]+)"><\/option>/g)].map(match => match[1]), ['Aoede']);
+});
+
+test('PV2: a stored custom voice id shows as "Custom voice" plus the id, and a preset never does', () => {
+  const custom = 'voice_0123456789abcdef';
+  const html = settingsMarkup({ status, summary: { ...summary, provider: 'openai', voice: custom } });
+  const input = html.slice(html.indexOf('id="live-voice"'), html.indexOf('>', html.indexOf('id="live-voice"')));
+  assert.ok(input.includes(`value="${custom}"`), 'the whole id is the switch value, never truncated away');
+  assert.ok(html.includes(`Custom voice: <code>${custom}</code>`), 'the label names it a custom voice and shows the id');
+  const list = html.slice(html.indexOf('<datalist id="live-voices">'), html.indexOf('</datalist>'));
+  assert.ok(list.includes(`<option value="${custom}">Custom voice</option>`), 'the picker offers it as a custom voice');
+  const preset = settingsMarkup({ status, summary: { ...summary, provider: 'openai', voice: 'nira' } });
+  assert.equal(preset.includes('Custom voice'), false, 'a preset is never labelled a custom voice');
 });
 
 test('PV1: the Accent row renders the three choices and selects the running one', () => {

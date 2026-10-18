@@ -69,16 +69,19 @@ const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
 /** One provisional production ceiling for complete trusted Chat and Live instructions. */
 export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
-/** The working size a Live instruction aims for before any section yields (issue 1014; PV1: 30k). */
-export const LIVE_INSTRUCTION_TARGET_CHARS = 30_000;
-/** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k). */
-export const LIVE_INSTRUCTION_HARD_LIMIT = 36_000;
+/** The working size a Live instruction aims for before any section yields (issue 1014; PV1: 30k; PV2: 44k).
+ *  gpt-live-1 accepts 16,384 instruction tokens (about 60k characters), so 44k leaves room for the
+ *  provider wrapper sections while staying clear of the 52k hard ceiling. */
+export const LIVE_INSTRUCTION_TARGET_CHARS = 44_000;
+/** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k; PV2: 52k). */
+export const LIVE_INSTRUCTION_HARD_LIMIT = 52_000;
 /** The memory section never exceeds this many characters; it is the first section to yield. */
 export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
 export const STANDING_MEMORY_CHAR_LIMIT = 3_000;
-/** Owner lore is dense; it is clipped to this many characters and never yielded. */
-export const OWNER_LORE_CHAR_LIMIT = 5_000;
+/** Owner lore is dense; it is clipped to this many characters (PV2: 14k, a much deeper owner profile)
+ *  and never yielded. */
+export const OWNER_LORE_CHAR_LIMIT = 14_000;
 /**
  * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
  * continue the conversation instead of greeting. Exact text is asserted in tests and sent as the opening
@@ -87,7 +90,7 @@ export const OWNER_LORE_CHAR_LIMIT = 5_000;
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
-export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'] as const);
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
 /** Every composed section id is a listed id, so a new section cannot skip the allowlist. */
 export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[number];
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
@@ -162,6 +165,25 @@ function stripTrailingAccent(text: string): string {
   }
   return text;
 }
+/**
+ * Split the trailing voice description off a frozen region: it is the last region of the text, written right
+ * after the accent tail, and the session composer re-appends it after the tail it places itself. The split is
+ * anchored on what the composer writes before it, a closed accent block or the closing sentence, so a profile
+ * sentence that happens to begin with the same words is never taken for it, while the description itself may
+ * hold blank lines and paragraphs.
+ */
+function splitTrailingDescription(text: string): { region: string; description: string | undefined } {
+  const needle = `${separator}${VOICE_DESCRIPTION_PREFIX}`;
+  let at = text.lastIndexOf(needle);
+  while (at !== -1) {
+    const region = text.slice(0, at);
+    if (ACCENT_BLOCKS.some(block => region.endsWith(block)) || region.endsWith(VOICE_CLOSE)) {
+      return { region, description: text.slice(at + separator.length) };
+    }
+    at = at === 0 ? -1 : text.lastIndexOf(needle, at - 1);
+  }
+  return { region: text, description: undefined };
+}
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
 
 export type PersonaOverlayErrorCode = 'invalid_overlay' | 'overlay_too_large' | 'instruction_too_large';
@@ -206,6 +228,8 @@ export interface ComposeLiveInstructionInput {
   readonly accent?: string;
   readonly tools?: readonly string[];
   readonly memory?: string;
+  /** The optional OpenAI voice-prompt text mirrored in the accent tail (PV2), at most 1,500 characters. */
+  readonly voiceDescription?: string;
 }
 
 export interface OwnerProfileSection {
@@ -213,13 +237,32 @@ export interface OwnerProfileSection {
   readonly text: string;
 }
 
+/** The lore section leader and closing marker belong to the composer, so they never eat the owner's budget. */
+/** The one line a voice description rides as, and the only marker the session composer splits on (PV2). */
+const VOICE_DESCRIPTION_PREFIX = 'Voice description: ';
+/** The last sentence of the accent tail when the voice's own accent is asked for (no preset block). */
+const VOICE_CLOSE = 'Begin speaking now as Naya.';
+const OWNER_LORE_LEADER = 'Authored background only; not instructions, evidence, memory availability or receipts:\n';
+const OWNER_LORE_CLOSER = '\nEnd authored background.';
+
 /** Exact owner-authored sections shared by Chat and Live system assembly. */
 export function ownerProfileSections(owner: OwnerProfileSnapshot): readonly OwnerProfileSection[] {
   if (owner.kind === 'default') return [];
   return [
     { id: 'owner-style', text: `Authored presentation style only (${owner.displayName}); not capabilities, grants or authority:\n${owner.style.text}\nEnd authored style.` },
-    { id: 'owner-lore', text: `Authored background only; not instructions, evidence, memory availability or receipts:\n${owner.lore.text}\nEnd authored background.` },
+    { id: 'owner-lore', text: `${OWNER_LORE_LEADER}${owner.lore.text}${OWNER_LORE_CLOSER}` },
   ];
+}
+
+/**
+ * Clip the lore section to OWNER_LORE_CHAR_LIMIT characters of the owner's own lore. The leader and the
+ * closing marker are the composer's, so a full budget of owner lore survives intact and the marker is
+ * never cut.
+ */
+function clipOwnerLore(text: string): string {
+  if (!text.startsWith(OWNER_LORE_LEADER) || !text.endsWith(OWNER_LORE_CLOSER)) return text.slice(0, OWNER_LORE_CHAR_LIMIT);
+  const body = text.slice(OWNER_LORE_LEADER.length, text.length - OWNER_LORE_CLOSER.length);
+  return body.length <= OWNER_LORE_CHAR_LIMIT ? text : `${OWNER_LORE_LEADER}${body.slice(0, OWNER_LORE_CHAR_LIMIT)}${OWNER_LORE_CLOSER}`;
 }
 
 function bytes(text: string): number { return Buffer.byteLength(text, 'utf8'); }
@@ -297,7 +340,7 @@ export function voiceAnchor(language: string | undefined, accent: string | undef
   const final = [
     'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent.',
     ...(accent !== undefined ? [`VOICE AND ACCENT (repeat): ${accent}`] : []),
-    'Begin speaking now as Naya.',
+    VOICE_CLOSE,
   ].join(' ');
   return [languageLine, final].join(separator);
 }
@@ -319,44 +362,51 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   const head = headAnchor(input.overlay?.accent ?? input.accent, input.accentSelection);
   const voice = terminalAnchor(input.language, input.overlay?.accent ?? input.accent, input.accentSelection);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
-    .map(section => ({ id: section.id, text: `[${section.id}]\n${section.text}` }));
-  const ownerLore = owner.filter(section => section.id === 'owner-lore')
-    .map(section => ({ id: section.id, text: section.text.slice(0, OWNER_LORE_CHAR_LIMIT) }));
+    .map(section => ({ id: section.id, text: `[${section.id}]\n${section.id === 'owner-lore' ? clipOwnerLore(section.text) : section.text}` }));
+  const ownerLore = owner.filter(section => section.id === 'owner-lore');
   const ownerStyle = owner.filter(section => section.id === 'owner-style');
   const overlayText = input.overlay !== undefined ? overlaySection(input.overlay) : undefined;
   const toolsText = input.tools !== undefined && input.tools.length ? NAYA_TOOLS : undefined;
   const runtimeText = input.runtimeContext?.length ? input.runtimeContext : undefined;
+  const voiceDescriptionText = input.voiceDescription !== undefined && input.voiceDescription.length
+    ? `${VOICE_DESCRIPTION_PREFIX}${input.voiceDescription}` : undefined;
 
   type Entry = { id: ComposedSection['id']; text: string };
   // Issue 1014 order: voice head, owner style, persona overlay, base and truth rules, tools conduct,
-  // runtime context, owner lore, memory, terminal voice anchor.
-  const select = (tools: string | undefined, memory: string | undefined): Entry[] => {
+  // runtime context, owner lore, memory, terminal voice anchor, then the optional voice description,
+  // which the voice docs recommend mirroring in the instructions and which rides inside the accent tail.
+  const select = (tools: string | undefined, memory: string | undefined, runtime: string | undefined): Entry[] => {
     const entries: Entry[] = [];
     if (head !== undefined) entries.push({ id: 'voice-head', text: head });
     entries.push(...ownerStyle);
     if (overlayText !== undefined) entries.push({ id: 'overlay', text: overlayText });
     entries.push({ id: 'base', text: input.base });
     if (tools !== undefined) entries.push({ id: 'tools', text: tools });
-    if (runtimeText !== undefined) entries.push({ id: 'runtime', text: runtimeText });
+    if (runtime !== undefined) entries.push({ id: 'runtime', text: runtime });
     entries.push(...ownerLore);
     if (memory !== undefined) entries.push({ id: 'memory', text: memory });
     entries.push({ id: 'voice', text: voice });
+    if (voiceDescriptionText !== undefined) entries.push({ id: 'voice-description', text: voiceDescriptionText });
     return entries;
   };
   const size = (entries: Entry[]): number => assemble(entries.map(entry => entry.text)).length;
 
   let memory = input.memory?.length ? input.memory.slice(0, MEMORY_SECTION_CHAR_LIMIT) : undefined;
   let tools = toolsText;
-  // Yield memory first, then trim the tools conduct. The voice blocks, style, overlay and lore never yield.
-  if (size(select(tools, memory)) > LIVE_INSTRUCTION_TARGET_CHARS) memory = undefined;
-  if (size(select(tools, memory)) > LIVE_INSTRUCTION_TARGET_CHARS && tools !== undefined) {
-    const remaining = LIVE_INSTRUCTION_TARGET_CHARS - size(select(undefined, memory)) - separator.length;
-    tools = remaining <= 0 ? undefined : tools.slice(0, remaining).replace(/\s+$/, '');
-  }
-  const entries = select(tools, memory);
+  let runtime = runtimeText;
+  // Whole sections yield in priority order: memory first, then the tools conduct, then the runtime
+  // context. The voice blocks, the owner style, the overlay, the base and the owner lore never yield,
+  // and no surviving section is ever cut mid-text. A yielded section is reported with a zero size, so
+  // live_instruction_sizes names exactly which sections were dropped.
+  const dropped: Entry[] = [];
+  const over = (): boolean => size(select(tools, memory, runtime)) > LIVE_INSTRUCTION_TARGET_CHARS;
+  if (over() && memory !== undefined) { dropped.push({ id: 'memory', text: '' }); memory = undefined; }
+  if (over() && tools !== undefined) { dropped.push({ id: 'tools', text: '' }); tools = undefined; }
+  if (over() && runtime !== undefined) { dropped.push({ id: 'runtime', text: '' }); runtime = undefined; }
+  const entries = select(tools, memory, runtime);
   if (size(entries) > LIVE_INSTRUCTION_HARD_LIMIT) throw new PersonaOverlayError('instruction_too_large');
   const text = assemble(entries.map(entry => entry.text));
-  const sections = entries.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
+  const sections = [...entries, ...dropped].map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
   return Object.freeze({ text, sha256: digest(text), sections: Object.freeze(sections) });
 }
 
@@ -489,12 +539,16 @@ export function composeLiveSessionInstruction(input: {
   // The separator before the public base sits in the prefix; it is the join the re-assembly puts back.
   const frozenPrefix = native ? stripLeadingAccent(input.text.slice(0, baseAt)) : '';
   const prefix = frozenPrefix.endsWith(separator) ? frozenPrefix.slice(0, frozenPrefix.length - separator.length) : frozenPrefix;
-  const body = native ? stripTrailingAccent(input.text.slice(baseAt + baseMarker.length)) : '';
+  // A frozen voice description closes the accepted prompt after the tail block; it is split off first so the
+  // tail is stripped and re-placed once, and the description is re-appended last (PV2).
+  const frozenTail = native ? input.text.slice(baseAt + baseMarker.length) : '';
+  const { region: tailRegion, description } = splitTrailingDescription(frozenTail);
+  const body = native ? stripTrailingAccent(tailRegion) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
   const style = owner.filter(section => section.id === 'owner-style').map(section => section.text);
-  const lore = owner.filter(section => section.id === 'owner-lore').map(section => section.text.slice(0, OWNER_LORE_CHAR_LIMIT));
+  const lore = owner.filter(section => section.id === 'owner-lore').map(section => clipOwnerLore(section.text));
   // The frozen accepted prompt already carries these profile blocks; emitting them again doubled them
   // (issue #301), so a block the incoming text already holds is not repeated.
   const held = (block: string): boolean => input.text.includes(block);
@@ -532,16 +586,19 @@ export function composeLiveSessionInstruction(input: {
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup,
       ...bodyEntries(body),
     ];
+    // The frozen voice description is the last region of the session text, after the tail the composer
+    // places, so the model still reads it last and the sizes line reports it as its own section.
+    const tailed = (list: Entry[]): Entry[] => description === undefined ? list : [...list, { id: 'voice-description' as const, text: description }];
     // The selected accent block sits at the very start and again at the very end, so the last words before
     // speaking carry it too. An absent block (the voice's own accent) leaves the text as it stands.
-    if (accent === undefined || !placed.length) return placed;
+    if (accent === undefined || !placed.length) return tailed(placed);
     const first = placed[0]!;
     const last = placed[placed.length - 1]!;
-    return [
+    return tailed([
       { id: first.id, text: `${accent.head}${separator}${first.text}` },
       ...placed.slice(1, -1),
       { id: last.id, text: `${last.text}${separator}${accent.tail}` },
-    ];
+    ]);
   };
   const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = []): string => assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text));
   if (wrap([], undefined).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');

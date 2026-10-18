@@ -19,7 +19,9 @@ node_test_files --test-concurrency=1 --test-reporter=tap --test-timeout=30000 di
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live gateway tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live gateway tests failed' >&2; exit 1; }
 # Bounded host runtime file; no browser is launched.
-node_test_files --test-concurrency=1 --test-reporter=tap --test-timeout=60000 test/host.test.js test/host-entry.test.mjs | tee "$work/host.log"
+# The host-entry migration/reopen ring only: d3212dd1 moved this block off the web-dependent full host
+# ring (check-host owns that), and the old JS-era test/host.test.js path it left behind never existed.
+node_test_files --test-concurrency=1 --test-reporter=tap --test-timeout=60000 test/host-entry.test.mjs | tee "$work/host.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/host.log" || { echo 'Zero selected host runtime tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/host.log" || { echo 'Selected host runtime tests failed' >&2; exit 1; }
 # The canonical files inventory must publish the gateway production roots, offline.

@@ -190,7 +190,9 @@ struct NativePlaybackQueue {
     /// Audible milliseconds for a frame count. At rate 1.0 this is the integer arithmetic it always
     /// was, so today's numbers stay byte-identical.
     static func ms(_ frames: Int, rate: Double = 1) -> Int {
-        rate == 1 ? frames * 1000 / frameRate : Int((Double(frames) * 1000 / frameRate / rate).rounded())
+        if rate == 1 { return frames * 1000 / frameRate }
+        let sourceMs = Double(frames) * 1000.0 / Double(frameRate)
+        return Int((sourceMs / rate).rounded())
     }
 }
 /// Contract C1: deterministic wait-cue scheduler. A tool marker and the playback queue's drain

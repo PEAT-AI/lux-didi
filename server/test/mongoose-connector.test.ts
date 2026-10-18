@@ -418,7 +418,7 @@ test('an OAuth record carries the bearer through one tool call and logs no crede
 
 
 test('one widened read tool call carries the bearer resolved from the OAuth record', async () => {
-  const f = await fixture();
+  const f = await fixture({ tools: [{ name: 'get_schema', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }] });
   const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-oauth-call-'));
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });

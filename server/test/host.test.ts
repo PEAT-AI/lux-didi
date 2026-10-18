@@ -849,12 +849,12 @@ test('the warm calendar digest renders the day in the host time zone', async () 
 
 // 338: the receipt the host log keeps is two ages and one flag, never the calendar it read.
 test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried', () => {
-  const receipt = { event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true, reason: 'sections' as const };
+  const receipt = { event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true };
   assert.deepEqual(safeEvent(receipt), receipt);
-  assert.deepEqual(safeEvent({ event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'sources' }),
-    { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'sources' }, 'no assembly yet is a valid receipt');
-  assert.equal(safeEvent({ ...receipt, reason: 'warmish' }), undefined, 'the reason set is closed');
-  assert.equal(safeEvent({ event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true }), undefined, 'the reason is always present');
+  assert.deepEqual(safeEvent({ event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }),
+    { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no assembly yet is a valid receipt');
+  assert.equal(safeEvent({ event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true, reason: 'sources' }), undefined,
+    'the closed reason is on the receipt the caller holds, not on this line');
   assert.equal(safeEvent({ ...receipt, digest: '10:00 standup with the board' }), undefined, 'the calendar text never reaches the log');
   assert.equal(safeEvent({ ...receipt, ageAfterMs: -1 }), undefined, 'a negative age is refused');
   assert.equal(safeEvent({ ...receipt, assembled: 'yes' }), undefined, 'the flag is a boolean');

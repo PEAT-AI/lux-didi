@@ -621,8 +621,9 @@ export class LiveSessionOwner {
     if (refreshed !== undefined) this.#sections = refreshed.sections;
     const receipt: WarmPrewarmReceipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined,
       reason: refreshed === undefined ? 'too_large' : previous === undefined ? 'sources' : 'sections' };
-    // One closed metadata line per instruction, whichever route asked for it.
-    this.#summaryLog?.({ event: 'warm_prewarm', ...receipt });
+    // One closed metadata line per instruction, whichever route asked for it. The log keeps the 338 shape
+    // (two ages and the flag); the closed reason is on the receipt the caller holds.
+    this.#summaryLog?.({ event: 'warm_prewarm', ageBeforeMs: receipt.ageBeforeMs, ageAfterMs: receipt.ageAfterMs, assembled: receipt.assembled });
     return receipt;
   }
   profileProjection(): LiveProfileProjection {

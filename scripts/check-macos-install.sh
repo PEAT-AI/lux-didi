@@ -513,7 +513,97 @@ if [ -z "$assets" ]; then
   bash scripts/build-asset-bundle.sh "$assets"
 fi
 app="$work/Lux Didi.app"
-bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)"
+bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)" 2>&1 | tee "$work/build-macos-app.log"
+
+# Stable signing (#382): the designated requirement is what macOS keys the
+# Accessibility grant to, so the build either carries a certificate-backed one or
+# says out loud that it fell back to an ad-hoc cdhash that changes every build.
+app_requirement="$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p' | head -1)"
+printf 'APP-DESIGNATED-REQUIREMENT %s\n' "$app_requirement"
+case "$app_requirement" in
+  *'certificate leaf = H"'*|*'certificate root = H"'*)
+    grep -q "signing with identity" "$work/build-macos-app.log" \
+      || { echo 'MACOS-INSTALL FAIL: certificate-signed app without the identity the build reported' >&2; exit 1; };;
+  *'cdhash H"'*)
+    grep -q 'WARNING no valid code-signing identity' "$work/build-macos-app.log" \
+      || { echo 'MACOS-INSTALL FAIL: ad-hoc app without the fallback warning' >&2; exit 1; };;
+  *)
+    echo "MACOS-INSTALL FAIL: unrecognized designated requirement: $app_requirement" >&2; exit 1;;
+esac
+echo 'MACOS-INSTALL: designated requirement and its signing branch agree'
+
+# The local identity producer, in a temporary keychain only: dry run writes
+# nothing, the real run makes a code-signing certificate whose signature gives a
+# stable requirement, and a second run is idempotent. The login keychain and the
+# network are never touched.
+signing_work="$work/signing"
+mkdir -p "$signing_work"
+local_keychain="$signing_work/local-signing.keychain"
+LUX_DIDI_SIGNING_STATE_DIR="$signing_work/state" bash scripts/create-signing-identity.sh \
+  --dry-run --keychain "$local_keychain" > "$signing_work/dry-run.log"
+grep -qF "$local_keychain" "$signing_work/dry-run.log" \
+  || { echo 'MACOS-INSTALL FAIL: the dry run does not name the keychain it would use' >&2; exit 1; }
+grep -qF 'add-trusted-cert' "$signing_work/dry-run.log" \
+  || { echo 'MACOS-INSTALL FAIL: the dry run does not print the one trust command' >&2; exit 1; }
+[ ! -e "$signing_work/state" ] && [ ! -e "$local_keychain" ] \
+  || { echo 'MACOS-INSTALL FAIL: the dry run wrote something' >&2; exit 1; }
+if grep -q 'PRIVATE KEY' "$signing_work/dry-run.log"; then
+  echo 'MACOS-INSTALL FAIL: the dry run printed key material' >&2; exit 1
+fi
+security create-keychain -p lux-didi-local-check "$local_keychain"
+LUX_DIDI_SIGNING_STATE_DIR="$signing_work/state" bash scripts/create-signing-identity.sh \
+  --keychain "$local_keychain" > "$signing_work/create.log"
+grep -q "created identity 'Lux Didi Local Signing'" "$signing_work/create.log" \
+  || { echo 'MACOS-INSTALL FAIL: the identity was not created' >&2; exit 1; }
+security find-identity -p codesigning "$local_keychain" 2>/dev/null | grep -qF '"Lux Didi Local Signing"' \
+  || { echo 'MACOS-INSTALL FAIL: the created identity is not in the keychain' >&2; exit 1; }
+LUX_DIDI_SIGNING_STATE_DIR="$signing_work/state" bash scripts/create-signing-identity.sh \
+  --keychain "$local_keychain" > "$signing_work/create-again.log"
+grep -q 'already exists' "$signing_work/create-again.log" \
+  || { echo 'MACOS-INSTALL FAIL: the identity producer is not idempotent' >&2; exit 1; }
+if grep -q 'PRIVATE KEY' "$signing_work/create.log" "$signing_work/create-again.log"; then
+  echo 'MACOS-INSTALL FAIL: the identity producer printed key material' >&2; exit 1
+fi
+echo 'MACOS-INSTALL: identity producer is idempotent and prints no key material'
+
+# The two requirement shapes, through the real installer: the ad-hoc cdhash is
+# refused once an identity is configured, the certificate-backed one installs.
+guard_dir="$HOME/Library/Caches/lux-didi-q1-signing-$$"
+mkdir -p "$guard_dir"
+adhoc_app="$signing_work/adhoc/Lux Didi.app"
+mkdir -p "$adhoc_app/Contents/MacOS"
+cp "$app/Contents/Info.plist" "$adhoc_app/Contents/Info.plist"
+cp /bin/echo "$adhoc_app/Contents/MacOS/LuxDidi"
+codesign --force --sign - "$adhoc_app"
+if LUX_DIDI_SIGNING_IDENTITY='Lux Didi Local Signing' bash scripts/install-macos-app.sh "$adhoc_app" --to "$guard_dir" \
+   > "$signing_work/adhoc-install.log" 2>&1; then
+  echo 'MACOS-INSTALL FAIL: an ad-hoc app was installed while an identity is configured' >&2; exit 1
+fi
+grep -q 'refusing an ad-hoc install' "$signing_work/adhoc-install.log" \
+  || { echo 'MACOS-INSTALL FAIL: the ad-hoc refusal has no clear line' >&2; exit 1; }
+stable_app="$signing_work/stable/Lux Didi.app"
+mkdir -p "$stable_app/Contents/MacOS"
+cp "$app/Contents/Info.plist" "$stable_app/Contents/Info.plist"
+cp /bin/echo "$stable_app/Contents/MacOS/LuxDidi"
+codesign --force --sign 'Lux Didi Local Signing' --keychain "$local_keychain" "$stable_app"
+stable_requirement="$(codesign -d -r- "$stable_app" 2>&1 | sed -n 's/^designated => //p' | head -1)"
+printf 'IDENTITY-DESIGNATED-REQUIREMENT %s\n' "$stable_requirement"
+case "$stable_requirement" in
+  *'cdhash H"'*)
+    echo 'MACOS-INSTALL FAIL: the identity still produced an ad-hoc requirement' >&2; exit 1;;
+  *'certificate leaf = H"'*|*'certificate root = H"'*) ;;
+  *)
+    echo "MACOS-INSTALL FAIL: unexpected requirement from the identity: $stable_requirement" >&2; exit 1;;
+esac
+LUX_DIDI_SIGNING_IDENTITY='Lux Didi Local Signing' bash scripts/install-macos-app.sh "$stable_app" --to "$guard_dir" \
+  > "$signing_work/stable-install.log"
+grep -q 'INSTALL-MACOS-APP PASS' "$signing_work/stable-install.log" \
+  || { echo 'MACOS-INSTALL FAIL: the certificate-backed app did not install' >&2; exit 1; }
+grep -q 'designated requirement:' "$signing_work/stable-install.log" \
+  || { echo 'MACOS-INSTALL FAIL: the install did not print the designated requirement' >&2; exit 1; }
+rm -rf "$guard_dir"
+security delete-keychain "$local_keychain" 2>/dev/null || true
+echo 'MACOS-INSTALL: cdhash requirement refused, certificate requirement installed'
 
 # Separately composed signed fixture app: the SAME compiled native payload with the
 # accepted service host entry replaced by the test-only fixture entry (R8/R10).

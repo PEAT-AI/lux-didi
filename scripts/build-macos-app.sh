@@ -42,6 +42,19 @@ cache="${cache:-$(mktemp -d "${TMPDIR:-/tmp}/didi-macos-build.XXXXXX")}"
 mkdir -p "$cache"
 cd "$root"
 
+# The signing identity is what macOS keys the Accessibility grant to: a stable
+# certificate-backed requirement survives a reinstall, an ad-hoc cdhash does not
+# (issue #382). Fall back to ad-hoc, loudly, so CI and a fresh clone still build.
+signing_identity="${LUX_DIDI_SIGNING_IDENTITY:-Lux Didi Local Signing}"
+sign_args=(--sign -)
+if security find-identity -p codesigning -v 2>/dev/null | grep -qF "\"$signing_identity\""; then
+  sign_args=(--sign "$signing_identity")
+  echo "build-macos-app.sh: signing with identity '$signing_identity'" >&2
+else
+  echo "build-macos-app.sh: WARNING no valid code-signing identity '$signing_identity'; signing ad-hoc," >&2
+  echo "build-macos-app.sh: WARNING so macOS drops the Accessibility grant on the next install; run scripts/create-signing-identity.sh" >&2
+fi
+
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/Info.plist "$app/Contents/Info.plist"
@@ -113,11 +126,11 @@ while IFS= read -r -d '' candidate; do
   magic="$(xxd -p -l 4 "$candidate" 2>/dev/null || true)"
   case "$magic" in
     cffaedfe|cefaedfe|cafebabe|bebafeca|feedface|feedfacf)
-      codesign --force --sign - "$candidate"
+      codesign --force "${sign_args[@]}" "$candidate"
       ;;
   esac
 done < <(find "$app" -type f -print0)
 
-codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
+codesign --force "${sign_args[@]}" --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --deep --strict "$app"
 printf 'BUILD-MACOS-APP PASS app=%s assets=%s libs=%s\n' "$app" "${assets:-none}" "$(ls "$app/Contents/MacOS"/*.dylib 2>/dev/null | wc -l | tr -d ' ')"

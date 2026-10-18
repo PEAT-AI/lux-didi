@@ -11,10 +11,11 @@ const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
 const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory'];
-const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient'];
-const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop'];
+const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
+const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
-const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
+// #280: `routed` is the routed start's own driver; it never goes through the selector loop.
+const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
@@ -515,12 +516,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // never question text, evidence or item ids.
     const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars'];
     // #260: the run's own driver is optional (a stop line makes no selection) but is admitted only as
-    // one of the three; any other value refuses the whole event, as the closed sets above do.
+    // one of the four; any other value refuses the whole event, as the closed sets above do. #280:
+    // a routed start writes its own line and names `routed`.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
     if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
     if (Object.keys(value).sort().join(',') !== (hasDriver ? [...keys, 'driver'] : keys).sort().join(',')) return;
     if (!isSafeId(value.researchId) || !isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
-    if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable'])) return;
+    if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
     if (typeof value.fallbackUsed !== 'boolean') return;
     if (!isSafeCount(value.rounds) || !isSafeCount(value.ops) || !isSafeCount(value.elapsedMs) || !isSafeCount(value.deadAirMs) || !isSafeCount(value.selectorMs) || !isSafeCount(value.replyBytes)) return;
     const pUseful = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
@@ -591,7 +593,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
-    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
+    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
     return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
   }
   if (value.event === 'conversation_summary_recovery') {

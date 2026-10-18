@@ -47,7 +47,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -3799,4 +3799,27 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is journaled by typed code');
   attachment.close();
   await attachment.done;
+});
+
+test('S5: a failed backend turn settles typed, says one honest line, and is never rebuilt', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { session } = await openPort(h, 'failed-turn');
+  fake.emit({ type: 'turnFailed', code: 'backend_unavailable' });
+  await settlePort();
+  // The typed disposition is immediate and metadata only.
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', code: 'backend_unavailable' }]);
+  assert.deepEqual(fake.commentary, [TURN_FAILED_LINE], 'one honest line: lost the thread, asked to repeat, offered the retry');
+  assert.equal(fake.sessionsOpened, 1, 'a backend turn failure is never a rebuild');
+  // The line never becomes audible here, so the turn is settled failed instead of left owing, and no rebuild follows.
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(h.owner.get(session.liveSessionId).lifecycle, 'terminal', 'an unanswered turn failure settles instead of owing forever');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'backend_failed' },
+    'the terminal disposition is typed, and it names the failure class the receipt details');
+  assert.equal(fake.sessionsOpened, 1, 'still no rebuild');
+  assert.deepEqual(fake.texts, [], 'no Continue. user turn on the failure path either');
 });

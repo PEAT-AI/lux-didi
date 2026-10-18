@@ -88,7 +88,7 @@ test('a calendar window is asked for, and one merged event read covers every sel
 
 test('candidateSubs uses the authored query and the per-source limits', () => {
   const knowledge = candidateSubs('knowledge_search', { question: 'raw sentence here', configured: CONFIGURED, evidence: new Map(), query: 'lux didi' });
-  assert.equal(knowledge[0]?.args['limit'], RESEARCH.knowledgeLines);
+  assert.equal(knowledge[0]?.args['limit'], RESEARCH.knowledgeHits, 'P5-R1: eight hits with whole bodies');
   assert.equal(knowledge[0]?.args['query'], 'lux didi');
   const chat = candidateSubs('chat_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'after:2026-10-15 release' });
   assert.equal(chat[0]?.args['limit'], RESEARCH.chatLines);
@@ -125,6 +125,14 @@ test('shapeBlock collapses knowledge headings to id and title and caps the block
   assert.equal(block.lines.length, Math.min(8, RESEARCH.knowledgeLines));
   assert.equal(block.total, 8);
   assert.match(block.lines[0]!, /^#1 Insight 0 .*\| some body text/);
+});
+
+test('P5-R1: a knowledge hit keeps its whole body, never a 1,200 character snippet', () => {
+  const long = 'x'.repeat(4_000);
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${long}`)]);
+  assert.equal(block.lines.length, 1);
+  assert.ok(block.lines[0]!.endsWith(long), 'the body the connector sent is kept whole');
+  assert.equal(RESEARCH.knowledgeHits, 8, 'up to eight hits, each with the body the connector returns');
 });
 
 // --- Evidence ids reach the second hops ------------------------------------------------------

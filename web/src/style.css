@@ -404,6 +404,9 @@ html,body{height:100%;overflow:hidden}
 /* FE1: the keeper turn row, headline sentence visible, the full answer and the owner's lines in a
    closed detail (spec 2.2 item 1). */
 .entry[data-feed="turn"] > .markdown{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* P7-R1: the clamp is for a headline. A bubble that is still growing, and a closed answer short enough to
+   need no disclosure, show their whole text. */
+.entry[data-feed="turn"][data-growing] > .markdown,.entry[data-feed="turn"][data-short] > .markdown{display:block;-webkit-line-clamp:unset;overflow:visible}
 .feed-turn-detail{align-self:flex-start;max-width:100%}
 .feed-turn-detail>summary{cursor:pointer;list-style:none;font-size:12px;color:var(--muted)}
 .feed-turn-detail>summary::-webkit-details-marker{display:none}

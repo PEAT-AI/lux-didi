@@ -32,13 +32,14 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -548,12 +549,14 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   for (const fragment of page.fragments) assert.deepEqual(Object.keys(fragment).sort(), keys);
   attachment.close();
   const terminal = await attachment.done;
-  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'closed' });
+  // 3p: the client closing the session is the Stop, and the Stop has its own reason.
+  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'user_stop' });
   assert.equal(terminal.journal.complete, true);
 });
 
 // 3o: the app let go at 19:23:49Z and the host kept the model speaking to a detached client for 62 s.
-test('a consumer detached for five seconds ends the session cleanly and keeps its journal', async t => {
+// 3p: a socket that closed with no Stop is a call that ended, so the end is one second, not five.
+test('a consumer whose socket closed ends the session within one second as consumer_closed and keeps its journal', async t => {
   const scheduler = new DeadlineClock();
   const receipts: Record<string, unknown>[] = [];
   const detachSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
@@ -562,17 +565,47 @@ test('a consumer detached for five seconds ends the session cleanly and keeps it
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   const { session, attachment } = await attached(h);
   attachment.detach();
-  h.advance(4_999); scheduler.runDue();
-  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a detach on its own is not an end');
+  h.advance(999); scheduler.runDue();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a re-attach still has its second');
   h.advance(1); scheduler.runDue();
   const terminal = await attachment.done;
-  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_gone' });
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_closed' });
   assert.equal(terminal.journal.complete, true, 'the journal is kept');
   assert.ok(terminal.journal.events > 0, 'and it still holds what was said');
-  const gone = receipts.filter(record => record.event === 'consumer_gone_end');
-  assert.equal(gone.length, 1, 'one receipt for the end');
-  assert.equal(gone[0]!['detachedMs'], 5_000);
-  assert.ok(safeEvent(gone[0]), 'the host log whitelist accepts the end receipt');
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.equal(end.length, 1, 'one receipt for the end');
+  assert.deepEqual(end[0], { event: 'session_end', reason: 'consumer_closed', msAfterStop: 1_000 });
+  assert.ok(safeEvent(end[0]), 'the host log whitelist accepts the end receipt');
+  // The five second rule stays behind it as the last net and never fires once the session is settled.
+  h.advance(10_000); scheduler.runDue();
+  assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'no second end');
+  assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
+});
+
+test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const stopSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => stopSink());
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session, attachment } = await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
+  await drain(h, session.liveSessionId, 2);
+  // No clock advance: a Stop is felt now, not after a countdown.
+  attachment.close();
+  const terminal = await attachment.done;
+  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'user_stop' });
+  assert.equal(terminal.journal.complete, true, 'the journal is kept');
+  assert.ok(terminal.journal.events > 0, 'and it still holds what was said');
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.equal(end.length, 1, 'one receipt for the end');
+  assert.deepEqual(end[0], { event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
+  assert.ok(safeEvent(end[0]), 'the host log whitelist accepts the end receipt');
+  // The socket closing right behind the Stop is the same end, never a second one.
+  attachment.detach();
+  h.advance(10_000); scheduler.runDue();
+  assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'user_stop' }, 'the first reason stands');
 });
 
 test('excluded transport facts and raw secrets never persist; Domain and CHAT stay untouched', async t => {
@@ -700,7 +733,8 @@ test('single attach, idempotent create replay, conflict, and a terminal session 
   const after = h.owner.create({ idempotencyKey: 'dup', inputClass: 'ordinary' }, h.ctx);
   assert.equal(after.lifecycle, 'terminal');
   assert.equal(after.dispatchIntent, true);
-  assert.deepEqual(after.terminal, { state: 'closed', code: 'closed' });
+  // 3p: the client closing the session is the Stop, and the Stop has its own reason.
+  assert.deepEqual(after.terminal, { state: 'closed', code: 'user_stop' });
   assert.equal(h.f.attempts, 1, 'replaying a terminal create never dispatches');
   assert.throws(() => h.owner.attach({ liveSessionId: first.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'terminal');
 });
@@ -2286,6 +2320,40 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
 });
 
 
+/** Read the output stream until one marker of `kind` arrives, and return the sequence the Mac sees. */
+async function markerSequence(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, kind: string): Promise<number> {
+  for (;;) {
+    const item = await output.next();
+    assert.equal(item.done, false, 'consumer remains attached across the rebuild');
+    const chunk = item.value;
+    if (chunk.kind === 'marker' && chunk.marker.kind === kind && chunk.marker.sequence !== null) return chunk.marker.sequence;
+  }
+}
+
+test('a provider rebuild never lowers the marker sequence the Mac sees', async t => {
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'resume-sequence');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ serverContent: { inputTranscription: { text: 'before the rebuild', finished: true } } });
+  const before = await markerSequence(output, 'inputTranscription');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-sequence-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  // The rebuilt provider session counts its own events from one again; the sequence the Mac sees must not.
+  h.f.send({ serverContent: { inputTranscription: { text: 'after the rebuild', finished: true } } });
+  const after = await markerSequence(output, 'inputTranscription');
+  assert.ok(after > before, `marker sequence ${after} after the rebuild must exceed ${before}`);
+  attachment.close(); await attachment.done;
+});
+
+test('a judged no_pong receipt is a closed metadata-only host log shape', () => {
+  const accepted = safeEvent({ event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 49_450 });
+  assert.deepEqual(accepted, { event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 49_450 });
+  assert.equal(safeEvent({ event: 'live_no_pong', lastInboundAgeMs: -1, missedPongs: 2, bufferedAmount: 0 }), undefined, 'a negative age is refused');
+  assert.equal(safeEvent({ event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 0, text: 'leak' }), undefined, 'the shape stays closed');
+});
+
 test('an exhausted original budget never opens a replacement connection', async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { sessionMs: 100, idleMs: 1000 } });
@@ -2450,6 +2518,14 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
   assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel name or display name; no channel list needed/);
   assert.match(descriptions.get('mattermost_get_channel_history')!, /newest first/);
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
+});
+
+// 3p: a list-first read went out before the real calendar lookup on the owner's morning call.
+test('the calendar declarations never invite a list before an event read', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
+  const descriptions = new Map(CONNECTOR_DESCRIPTORS['google']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
+  assert.match(descriptions.get('gcal_calendars')!, /Call it only when the owner asks which calendars exist; an event read needs no calendar list\./);
+  assert.match(descriptions.get('gcal_list')!, /Omit both for today in the host timezone\./);
 });
 
 function toolResponseCount(h: Harness): number {
@@ -3036,3 +3112,38 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
+
+// P3: gpt-live-1 streams output frames for the whole call (48 kB/s in session 1018), so a frame is speech only
+// when its level says so; a silent frame must leave the orb alone, and its playback milliseconds belong in the
+// turn receipt.
+test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn receipt counts it', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  configureDebugJournal(h.dir, true);
+  t.after(() => resetDebugJournal());
+  const session = h.owner.create({ idempotencyKey: 'p3-inaudible', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  assert.equal(h.owner.current().state, 'listening');
+  // The fill that arrives before any word: 100 ms of digital silence.
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.equal(h.owner.current().state, 'listening', 'a silent fill frame never puts the orb in SPEAKING');
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.equal(h.owner.current().state, 'speaking', 'her first audible frame is the start');
+  fake.emit({ type: 'turnComplete' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  attachment.close();
+  for (let attempt = 0; attempt < 100 && !journalRecords(h.dir).some(line => line['event'] === 'turn_end'); attempt += 1) await tick();
+  const turnEnd = journalRecords(h.dir).find(line => line['event'] === 'turn_end' && line['speaker'] === 'model')!;
+  assert.equal(turnEnd['inaudibleMs'], 100, 'the fill frame is counted in playback milliseconds');
+});
+
+/** Every journal line this data dir holds, fixture data only: the day directory is not pinned to a test clock. */
+function journalRecords(dir: string): Record<string, unknown>[] {
+  const root = join(dir, 'debug');
+  if (!existsSync(root)) return [];
+  return readdirSync(root).flatMap(day => readdirSync(join(root, day)).flatMap(file =>
+    readFileSync(join(root, day, file), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)));
+}

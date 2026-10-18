@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
+import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
+import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 
@@ -29,6 +30,8 @@ const completions = (captured: Captured) => captured.events.filter(event => even
 /** Let every queued event reach the collector, so a "nothing was emitted" assertion is not a race. */
 const quiet = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
 const sendAudio = (f: { send: (value: unknown) => void }, samples: number) => f.send({ type: 'session.output_audio.delta', delta: b64(pcm16(samples)) });
+/** One 100 ms frame of the provider's continuous silent output fill, 4800 bytes of 24 kHz s16 mono. */
+const silentFrame = (f: { send: (value: unknown) => void }) => f.send({ type: 'session.output_audio.delta', delta: b64(silence(2_400)) });
 /** 9600 samples at 16 kHz is 19200 bytes of 24 kHz s16 mono, exactly the 400 ms head start a stretch must fill. */
 const speak = (f: { send: (value: unknown) => void }, samples = 9_600) => sendAudio(f, samples);
 const tools = () => [{ name: 'research', description: 'Look something up', parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false } }];
@@ -46,15 +49,44 @@ describe('openai gpt-live adapter', () => {
     assert.equal(adapter.capabilities.thinking, 'provider_default');
   });
 
-  test('the default voice is marin, the Hindi voice is refused, and no OpenAI voice falls back to marin', async t => {
+  test('the default voice is marin and no OpenAI voice falls back to another name', async t => {
     assert.equal(OPENAI_DEFAULT_VOICE, 'marin');
-    assert.throws(() => new OpenAiLiveVoiceAdapter(options({ voice: 'nira' })), code('invalid_settings'));
     const f = await fixture(t);
     const session = new OpenAiLiveVoiceAdapter(options({ voice: '', socketFactory: f.socketFactory })).open(request(), control());
     t.after(() => session.close());
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
     assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: 'marin' });
+  });
+
+  test('PV2: nira, the documented Hindi voice, is selectable and travels as a preset string', async t => {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ voice: 'nira', socketFactory: f.socketFactory })).open(request(), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: 'nira' });
+  });
+
+  test('PV2: a custom voice id is sent as an id object, a preset stays a string', async t => {
+    const custom = 'voice_0123456789abcdef';
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ voice: custom, socketFactory: f.socketFactory })).open(request(), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    // GPT-Live references a prompt-designed voice as { id }, never as its name.
+    assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: { id: custom } });
+    // The documented id form is voice_ plus 16 to 64 lowercase hex characters; a `voice_` name that is
+    // not one is refused rather than sent as a preset.
+    for (const bad of ['voice_0123456789ABCDEF', 'voice_0123', 'voice_0123456789abcdef'.padEnd(71, 'a')]) {
+      assert.throws(() => new OpenAiLiveVoiceAdapter(options({ voice: bad })), code('invalid_settings'), bad);
+    }
+    const preset = await fixture(t);
+    const named = new OpenAiLiveVoiceAdapter(options({ voice: 'cinder', socketFactory: preset.socketFactory })).open(request(), control());
+    t.after(() => named.close());
+    await preset.frame(1);
+    assert.deepEqual(((preset.frames[0] as unknown as Start).session['audio'] as Record<string, unknown>)['output'], { voice: 'cinder' });
   });
 
   test('the start barrier sends session.start before any audio, with the persona wrapper and wire facts', async t => {
@@ -632,7 +664,7 @@ describe('openai gpt-live turn states', () => {
     const states = ['listening'];
     for (const event of events) {
       if (event.type === 'modelTurnStarted' && !speaking) thinking = true;
-      else if (event.type === 'audio') { thinking = false; speaking = true; }
+      else if (event.type === 'audio' && event.audible !== false) { thinking = false; speaking = true; }
       else if (event.type === 'waitingForInput' && event.value) { thinking = false; speaking = false; }
       else if (event.type === 'turnComplete' || event.type === 'interrupted') { thinking = false; speaking = false; }
       const state = thinking ? 'thinking' : speaking ? 'speaking' : 'listening';
@@ -696,6 +728,72 @@ describe('openai gpt-live turn states', () => {
     assert.equal(completions(opened.captured), 0);
     assert.equal(audioOf(opened.captured).length, 0);
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking']);
+  });
+
+  test('the output level puts digital silence and near-silent fill below the audible threshold, and speech above it', () => {
+    assert.equal(pcm16RmsDbfs(silence(2_400)), SILENT_RMS_DBFS, 'digital silence is the floor, never -Infinity');
+    const speech = pcm16RmsDbfs(pcm16(2_400));
+    assert.ok(speech > -20, `a conversational tone is well above the threshold, measured ${speech.toFixed(1)} dBFS`);
+    assert.ok(speech > AUDIBLE_RMS_DBFS, 'and the same fixture counts as audible');
+    // The fill a provider can stream for minutes: 30 counts of 32767, about -68 dBFS, heard as nothing.
+    const fill = pcm16RmsDbfs(pcm16(2_400, 30));
+    assert.ok(fill < AUDIBLE_RMS_DBFS, `near-silent fill stays inaudible, measured ${fill.toFixed(1)} dBFS`);
+    assert.ok(fill > SILENT_RMS_DBFS, 'and is still not digital silence');
+  });
+
+  test('a stream of silent frames after her last word ends SPEAKING on the silence rule, and every byte plays', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    // gpt-live-1 keeps sending output frames at 48 kB/s; after the last word they are all digital silence.
+    for (let index = 0; index < 12; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
+    // The last stretch may still be inside the 400 ms head start: the cushion times out and plays it too.
+    clock.advance(400);
+    await until(() => audioBytes(opened.captured) === 19_200 + 12 * 4_800);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'speaking', 'listening'], 'silence ends SPEAKING');
+    assert.equal(audioBytes(opened.captured), 19_200 + 12 * 4_800, 'not one silent byte is dropped');
+    const audio = opened.captured.events.filter(event => event.type === 'audio');
+    assert.equal(audio[0]!.audible, true, 'her words are audible');
+    assert.ok(audio.slice(1).every(event => event.audible === false), 'the fill frames are not');
+  });
+
+  test('three silent seconds after her question stay THINKING until the first audible frame', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'what is on my plate' });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
+    clock.advance(700);
+    await until(() => starts(opened.captured) === 1);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking']);
+    for (let index = 0; index < 30; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking'], 'three silent seconds are still think time');
+    const fill = opened.captured.events.filter(event => event.type === 'audio');
+    assert.ok(fill.length > 0, 'the fill frames still reach playback');
+    assert.ok(fill.every(event => event.audible === false), 'and none of them counts as speech');
+    assert.equal(completions(opened.captured), 0, 'a silent stream never completes the turn');
+    speak(opened.f);
+    await until(() => audioBytes(opened.captured) === 30 * 4_800 + 19_200);
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'her first audible frame is the start');
+    assert.equal(audioBytes(opened.captured), 30 * 4_800 + 19_200, 'every byte of the stream is conserved');
+  });
+
+  test('a tool call during the silent think holds THINKING across it', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock }, { tools: tools() });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'look up the weather' });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
+    clock.advance(700);
+    await until(() => starts(opened.captured) === 1);
+    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
+      item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{"q":"india weather"}' } } });
+    await until(() => opened.captured.events.some(event => event.type === 'toolCall'));
+    for (let index = 0; index < 10; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking'], 'the tool turn is think time, not speech');
+    speak(opened.f);
+    await until(() => project(opened.captured.events).includes('speaking'));
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'the answer starts on her first audible frame');
   });
 
   test('background speech while the server keeps talking flips no state and forwards every byte', async t => {
@@ -798,6 +896,24 @@ describe('openai gpt-live turn states', () => {
     }
     assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'a lossy uplink is not a teardown');
     assert.equal(receipts().filter(record => record.event === 'live_stall').length, 0, 'and never writes a stall receipt');
+    session.close();
+  });
+
+  test('pongs go missing while provider frames keep arriving: the session is not dropped', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    // 3o: the peer answered no ping for the whole call while the provider never stopped sending, which is
+    // inbound traffic and not a dead transport.
+    socket.answersPings = false;
+    for (let window = 0; window < 3; window += 1) {
+      t.mock.timers.tick(5_000);
+      socket.deliver({ type: 'session.usage.updated' });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(socket.pings, 3, 'a ping every five seconds');
+    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'inbound frames are a live transport');
+    assert.equal(receipts().filter(record => record.event === 'live_upstream_drop').length, 0, 'and no drop receipt');
     session.close();
   });
 

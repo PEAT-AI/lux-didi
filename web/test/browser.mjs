@@ -201,6 +201,18 @@ try {
   });
 
   await step('live projection drives orb state, transcript and markdown sources',async()=>{
+    // P2 OUTCOME 1 (release 3p): while the live machine is idle the machine wins. A projection alone must
+    // not move the orb, must not raise the machine-gated live pill, and must not offer a mute control.
+    fixture.setLive({state:'speaking',since:'2026-10-11T15:59:00Z',cursor:0,entries:[]});
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.posture==='idle',{timeout:8000});
+    assert.equal(await page.locator('#pill-mute').count(),0,'the live-pill Mute (main.ts:213) is machine-live gated, so absent for a projection');
+    assert.equal(await page.getByRole('button',{name:/mute/i}).count(),0,'no mute control exists while only a projection speaks and the machine is idle');
+    // The machine is brought live here: that is what lets the projection drive the orb.
+    fixture.setLive({state:'listening',since:'2026-10-11T15:59:30Z',cursor:0,entries:[]});
+    await page.locator('#voice-start').click();
+    const liveAllow=page.locator('#consent-allow');
+    if(await liveAllow.count())await liveAllow.click();
+    await page.waitForFunction(()=>document.querySelector('.voice-state')?.textContent==='Listening',{timeout:8000});
     fixture.setLive({state:'speaking',since:'2026-10-11T16:00:00Z',cursor:3,entries:[
       {seq:1,kind:'inputTranscription',text:'what is lux 123'},
       {seq:2,kind:'outputTranscription',text:'Here is the answer.'},
@@ -231,9 +243,9 @@ try {
     assert.equal((await page.locator('.orb-stage .voice-state').textContent()).trim(),'Listening');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0,'no push-to-talk control');
-    assert.equal(await page.getByRole('button',{name:/mute/i}).count(),1,'exactly the intended Mute control');
     assert.equal(await page.locator('#voice-mute').count(),1,'the voice-lane Mute is the stage control (main.ts:124-127)');
-    assert.equal(await page.locator('#pill-mute').count(),0,'the live-pill Mute (main.ts:213) is machine-live gated, so absent for a projection');
+    assert.equal(await page.locator('#pill-mute').count(),1,'the live-pill Mute (main.ts:213) is present once the machine is live');
+    assert.equal(await page.getByRole('button',{name:/mute/i}).count(),2,'exactly the intended Mute controls: the stage Mute and the live pill');
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
   });

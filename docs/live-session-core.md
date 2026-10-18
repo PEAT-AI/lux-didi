@@ -94,6 +94,10 @@ store.close();
   (default four hours); omitted limits use the core defaults. Installation supplies
   no timer profile.
 - Audio goes to a single bounded consumer channel; an undrained consumer terminates visibly.
+- The client's `close` control is the owner's Stop: the session settles at once as `closed`/`user_stop`, the
+  journal is kept, and the host log carries one `session_end` receipt naming the reason. A consumer socket that
+  closes with no stop control settles as `cancelled`/`consumer_closed` after one second, and the five second
+  consumer-gone rule stays behind it as the last net.
 - A failed store write aborts the adapter and never fabricates a durable outcome.
 
 ## Not claimed

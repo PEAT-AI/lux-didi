@@ -32,8 +32,14 @@ const DELEGATION_PARALLEL_TOOL_CALLS = true;
 const DELEGATION_REASONING_EFFORT = 'low';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
-/** `nira` is the documented Hindi voice (guides/live-conversations voice table), which the persona forbids. */
-const REFUSED_VOICES: readonly string[] = ['nira'];
+/** The documented form of a prompt-designed custom voice (`POST /v1/audio/voices`, type prompt):
+ *  `voice_` plus 16 to 64 lowercase hex characters. GPT-Live is the one surface that can speak it, and the
+ *  session start frame references it as `audio.output.voice = { id }` rather than by name (PV2). */
+const CUSTOM_VOICE_ID = /^voice_[0-9a-f]{16,64}$/;
+/** Whether one voice name is a custom voice id rather than a preset name. */
+export function isCustomVoiceId(voice: string): boolean { return CUSTOM_VOICE_ID.test(voice); }
+/** The voice the session start frame asks for: a preset stays a string, a custom voice travels as an id. */
+function voicePayload(voice: string): string | { id: string } { return isCustomVoiceId(voice) ? { id: voice } : voice; }
 // PV1: the Language line is gone, because the host's accent block carries the accent and this line competed with it.
 export const OPENAI_TOOLS_SECTION = 'Tools: before a lookup, say one short natural line that you are checking; never go silent for more than a few seconds.';
 export const OPENAI_DELIVERY_SECTION = 'Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.';
@@ -77,6 +83,27 @@ const POST_FLUSH_DROP_LIMIT_MS = 2_500;
 const SERVER_YIELD_GAP_MS = 350;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
+/** Audible speech, in dBFS RMS against 16-bit full scale. -50 dBFS is a peak amplitude of about 100 counts of
+ *  32767, far below any intelligible speech (conversational RMS sits around -35 to -12 dBFS) and far above the
+ *  all-zero frames gpt-live-1 streams to fill its continuous output (session 1018 kept 48 kB/s for 98.5% of a
+ *  339 s call while the state never left SPEAKING). A frame below it is forwarded and heard as nothing. */
+export const AUDIBLE_RMS_DBFS = -50;
+/** A digital-silent frame measures zero power: -Infinity is clamped here so the level stays a JSON number. */
+export const SILENT_RMS_DBFS = -120;
+
+/** The level of one PCM16 little-endian chunk in dBFS RMS, one pass and no per-sample allocation. */
+export function pcm16RmsDbfs(pcm: Uint8Array): number {
+  const samples = Math.floor(pcm.byteLength / 2);
+  if (samples === 0) return SILENT_RMS_DBFS;
+  const view = new DataView(pcm.buffer, pcm.byteOffset, samples * 2);
+  let sum = 0;
+  for (let index = 0; index < samples; index += 1) {
+    const sample = view.getInt16(index * 2, true) / 32_768;
+    sum += sample * sample;
+  }
+  const power = sum / samples;
+  return power <= 0 ? SILENT_RMS_DBFS : Math.max(SILENT_RMS_DBFS, 10 * Math.log10(power));
+}
 /** Standing cushion (3o): 400 ms of audio held back at the start of a stretch and again after every drain, so the
  *  native 80 ms jitter buffer never underruns while the server sends at about real time. Measured on the 163
  *  underruns of session 82ab994a: a 400 ms cushion covers 162 of them (300 ms leaves 6). */
@@ -150,7 +177,10 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       || (options.socketFactory !== undefined && typeof options.socketFactory !== 'function')
       || (options.clock !== undefined && (typeof options.clock.now !== 'function' || typeof options.clock.setTimer !== 'function' || typeof options.clock.clearTimer !== 'function'))) fail('invalid_settings');
     const voice = options.voice === undefined || options.voice === '' ? OPENAI_DEFAULT_VOICE : options.voice;
-    if (typeof voice !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(voice) || REFUSED_VOICES.includes(voice)) fail('invalid_settings');
+    // A `voice_` name is a custom id and must be a well-formed one; every other name is a preset name
+    // by shape, and the provider's own list is what decides whether it exists (PV2).
+    if (typeof voice !== 'string' || (voice.startsWith('voice_')
+      ? !isCustomVoiceId(voice) : !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(voice))) fail('invalid_settings');
     if (options.limits !== undefined && !object(options.limits)) fail('invalid_settings');
     const limits = { ...DEFAULTS, ...options.limits };
     for (const name of Object.keys(limits)) if (!(name in DEFAULTS)) fail('invalid_settings');
@@ -202,7 +232,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       session: {
         model: settings.modelId,
         instructions,
-        audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: settings.voice } },
+        audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: voicePayload(settings.voice) } },
         ...(seed.items.length ? { input: seed.items } : {}),
         delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
           parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT } } },
@@ -265,6 +295,8 @@ class Session implements LiveVoiceSession {
   /** Head starts re-armed after a drain in the current turn (3o receipt `playback_rearm`). */
   private playbackRearms = 0;
   private awaitingPong = false;
+  /** Whether any inbound frame arrived inside the ping window that is now closing (3o `no_pong`). */
+  private inboundThisPing = false;
   private missedPongs = 0;
   private pingTimer: ReturnType<typeof setTimeout> | undefined;
   private lastQueueLogAt: number | undefined;
@@ -415,11 +447,18 @@ class Session implements LiveVoiceSession {
       if (socket.readyState !== WebSocket.OPEN) return;
       try { socket.ping(); } catch { return; }
       this.watchUpstreamStall(socket);
-      if (this.awaitingPong) {
+      if (this.awaitingPong && !this.inboundThisPing) {
         this.missedPongs += 1;
-        if (this.missedPongs >= PING_MISSED_LIMIT) { this.dropUpstream('no_pong', socket); return; }
+        if (this.missedPongs >= PING_MISSED_LIMIT) {
+          // The inbound age is the number that decides this: a pongless window that still carried provider
+          // frames is a live transport, and the 3o call was dropped for exactly that reason.
+          hostLogEvent({ event: 'live_no_pong', lastInboundAgeMs: Math.max(0, Date.now() - this.lastInboundAt), missedPongs: this.missedPongs, bufferedAmount: socket.bufferedAmount });
+          this.dropUpstream('no_pong', socket);
+          return;
+        }
       }
       this.awaitingPong = true;
+      this.inboundThisPing = false;
       this.schedulePing(socket);
     }, PING_INTERVAL_MS);
     this.timers.add(this.pingTimer);
@@ -478,6 +517,7 @@ class Session implements LiveVoiceSession {
     catch { this.finish('protocol_error'); return; }
     if (!object(message) || typeof message.type !== 'string') { this.finish('protocol_error'); return; }
     this.lastInboundAt = Date.now();
+    this.inboundThisPing = true;
     // Every provider frame is untrusted: a shape refusal becomes a typed outcome, never an uncaught throw.
     try { this.dispatch(message); } catch { this.finish('protocol_error'); }
   };
@@ -526,12 +566,17 @@ class Session implements LiveVoiceSession {
     const pcm = this.audioDelta(message);
     if (!pcm) return;
     const now = this.clock.now();
+    // Only speech is model output: a frame whose level is below the audible threshold is a fill frame, and it
+    // neither counts as the server talking for a barge-in (session 1018 sent 48 kB/s for the whole call) nor
+    // resets any window that is waiting for the answer to end.
+    const level = pcm16RmsDbfs(pcm);
+    const audible = level >= AUDIBLE_RMS_DBFS;
     // The arrival clock every post-flush gap is read on: the frames of the cut answer arrive back to back, so a
     // gap this long means the answer that replay would cut is over.
     const gap = now - this.lastOutputDeltaAt;
-    this.lastOutputDeltaAt = now;
+    if (audible) this.lastOutputDeltaAt = now;
     // A delta during an open episode is the server still talking, so the yield is measured again from this frame.
-    if (!this.flushed && this.inputEpisode.length) this.armYield();
+    if (audible && !this.flushed && this.inputEpisode.length) this.armYield();
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
     // Contract invariant: no permanent frame dropping. Output audio of an open session is forwarded, and an input
@@ -549,8 +594,6 @@ class Session implements LiveVoiceSession {
         return;
       }
     }
-    this.audioSinceCompletion = true;
-    this.silenceSent = false;
     // Standing cushion: the hold is armed at the first audio of a stretch and re-armed whenever the modelled native
     // queue has drained, because after any dry the 80 ms native prebuffer is below one 100 ms delta.
     const drained = this.stretchOpen && !this.holding && now >= this.playbackUntil;
@@ -567,11 +610,27 @@ class Session implements LiveVoiceSession {
       this.touch();
       return;
     }
-    this.queuePlayback(pcm.byteLength);
-    this.emit({ type: 'audio', pcm, rate: 24_000 });
+    this.emitOutput(pcm, level);
+    this.touch();
+  }
+
+  /**
+   * Forward one output chunk to playback. Every byte goes, audible or not: a silent frame still has to play, so
+   * nothing is dropped. Only audible speech enters the state machine (SPEAKING, the 500 ms silence rule, the
+   * modelled playback queue and the 2000 ms turn idle), which is what lets LISTENING and THINKING appear while the
+   * provider keeps streaming.
+   */
+  private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
+    const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
+    if (audible) {
+      this.audioSinceCompletion = true;
+      this.silenceSent = false;
+      this.queuePlayback(pcm.byteLength);
+    }
+    this.emit({ type: 'audio', pcm, rate: 24_000, audible, rmsDbfs });
+    if (!audible) return;
     this.armOutputSilence();
     this.settleTurn();
-    this.touch();
   }
 
   /** Forward the held audio as one event, or nothing when the stretch was cut before it filled. */
@@ -584,10 +643,7 @@ class Session implements LiveVoiceSession {
     for (const part of this.held) { pcm.set(part, offset); offset += part.byteLength; }
     this.held = [];
     this.heldBytes = 0;
-    this.queuePlayback(pcm.byteLength);
-    this.emit({ type: 'audio', pcm, rate: 24_000 });
-    this.armOutputSilence();
-    this.settleTurn();
+    this.emitOutput(pcm);
   }
 
   /** A barge-in, a provider error or a close discards the head start: that audio is never played. */

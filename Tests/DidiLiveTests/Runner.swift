@@ -120,6 +120,12 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
     }
 }
 
+/// A one way flag a probe task sets when it has reached its point.
+actor Flag {
+    private(set) var set = false
+    func mark() { set = true }
+}
+
 actor Gate {
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private(set) var arrivals = 0
@@ -272,10 +278,43 @@ struct GatedSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
+/// 3p: a socket that serves queued frames, holds PCM so a Stop can be sent mid-send, and records the control frames a
+/// stop put on the wire.
+actor StopProbeSocket: LiveSocket {
+    private var frames: [LiveFrame]
+    private let gate: Gate
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private(set) var controls: [LiveControl] = []
+    private var closed = false
+    init(_ frames: [LiveFrame], _ gate: Gate) { self.frames = frames; self.gate = gate }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) async throws {
+        await gate.wait()
+        guard !closed else { throw LiveClientError.unavailable }
+    }
+    func sendControl(_ command: LiveControl) throws {
+        guard !closed else { throw LiveClientError.unavailable }
+        controls.append(command)
+    }
+    func cancel() async {
+        closed = true
+        waiter?.resume(throwing: LiveClientError.transport); waiter = nil
+        await gate.release()
+    }
+}
+struct ProbeSockets: LiveSocketConnecting {
+    let socket: StopProbeSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
+
 actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
     private var frames: [LiveFrame] = []
     private var waiter: CheckedContinuation<LiveFrame, Error>?
     private(set) var inputs: [Data] = []
+    private(set) var controls: [LiveControl] = []
     private(set) var connections = 0
     func connect(_ binding: LiveSocketBinding) -> any LiveSocket { connections += 1; return self }
     func push(_ frame: LiveFrame) {
@@ -287,7 +326,7 @@ actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
     func sendPCM(_ data: Data) { inputs.append(data) }
-    func sendControl(_ command: LiveControl) {}
+    func sendControl(_ command: LiveControl) { controls.append(command) }
     func cancel() { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
 }
 
@@ -643,6 +682,47 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await continuitySocket.connections == 1, "terminal resume failure never reconnects")
             print("PASS continuity rebuilding flush/drop/resume identity + unknown event + terminal no restart")
 
+            // 3o: a rebuilt provider session counts its markers again. The Mac re-bases on the first marker after
+            // `continuity resumed`, so the call keeps its mic and its playback instead of going outcomeUnknown.
+            let rebaseHTTP = TestHTTP(fixture), rebaseSocket = ContinuitySocket(), rebaseSink = SilentSink()
+            let rebase = LiveSessionCoordinator(http: rebaseHTTP, sockets: rebaseSocket, sink: rebaseSink)
+            await rebaseSocket.push(.marker(LiveMarker(kind: .ready, sequence: 313, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await rebase.begin(frozen)
+            try await until { await rebase.state == .active }
+            await rebaseSocket.push(.continuity(event: "rebuilding"))
+            try await until { await rebase.state == .rebuilding }
+            await rebaseSocket.push(.continuity(event: "resumed"))
+            try await until { await rebase.state == .active }
+            await rebaseSocket.push(.marker(LiveMarker(kind: .inputTranscription, sequence: 2, journalSequence: 0, text: "after the rebuild", finished: true, value: nil)))
+            await rebaseSocket.push(.pcm(Data([8, 0])))
+            try await until { await rebaseSink.queued.count == 1 }
+            try require(await rebase.state == .active, "a lower sequence after continuity resumed re-bases instead of failing")
+            try require(await rebase.frameRejection == nil, "a re-base is not a refused frame")
+            try await rebase.sendPCM(Data(repeating: 0, count: 640))
+            try require(await rebaseSocket.inputs.count == 1, "the mic keeps flowing after the re-base")
+            try require(await rebaseSocket.controls.isEmpty, "a re-base never ends the host session")
+            await rebase.stop(); await rebaseHTTP.finish()
+            print("PASS a resumed rebuild re-bases the marker sequence and keeps mic and playback")
+
+            // A frame the protocol genuinely refuses is recorded for the native log and ends the host session
+            // through the 3p Stop path, so the provider never keeps talking to a Mac that stopped listening.
+            let rejectHTTP = TestHTTP(fixture), rejectSocket = ContinuitySocket(), rejectSink = SilentSink()
+            let rejectClient = LiveSessionCoordinator(http: rejectHTTP, sockets: rejectSocket, sink: rejectSink)
+            await rejectSocket.push(.marker(LiveMarker(kind: .ready, sequence: 5, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await rejectClient.begin(frozen)
+            try await until { await rejectClient.state == .active }
+            await rejectSocket.push(.marker(LiveMarker(kind: .turnComplete, sequence: 5, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            try await until { await rejectClient.frameRejection != nil }
+            let rejection = await rejectClient.takeFrameRejection()
+            try require(rejection == LiveFrameRejection(sequence: 5, previous: 5, kind: "turnComplete"),
+                        "the refused frame is recorded with its sequence, its predecessor and its kind")
+            try await until { await rejectSocket.controls.contains(.close) }
+            // The close itself settles last, so the final state is the refusal, not the Stop's own closing state.
+            try await until { await rejectClient.state == .outcomeUnknown(.invalidFrame) }
+            try require(await rejectSocket.connections == 1, "a refused frame never reconnects")
+            await rejectHTTP.finish()
+            print("PASS a refused marker is recorded and ends the host session")
+
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()
             let client = LiveSessionCoordinator(http: http, sockets: sockets, sink: sink)
@@ -858,6 +938,36 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             }
             print("PASS exact marker/control grammar and bounded strict decode")
             record("grammar")
+
+            // 3p: the wire is one send at a time; audio sheds under backpressure and a control frame is never shed.
+            let wire = LiveSendQueue()
+            try require(await wire.acquireAudio(), "audio takes a free wire")
+            try require(!(await wire.acquireAudio()), "a second audio frame sheds instead of queueing")
+            let acquired = Flag()
+            let queuedControl = Task { await wire.acquireControl(); await acquired.mark() }
+            await wire.release()
+            await queuedControl.value
+            try require(await acquired.set, "the control frame that found the wire busy was queued, never refused")
+            try require(!(await wire.acquireAudio()), "the queued control holds the wire ahead of audio")
+            await wire.release()
+            try require(await wire.acquireAudio(), "the wire is free again once the control has gone")
+            await wire.release()
+
+            // 3p: a Stop during a send still reaches the host, and the receipt names what pressed it.
+            let stopHTTP = TestHTTP(fixture), stopGate = Gate()
+            let stopSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], stopGate)
+            let stop = LiveSessionCoordinator(http: stopHTTP, sockets: ProbeSockets(socket: stopSocket), sink: SilentSink())
+            await stop.begin(frozen); try await until { await stop.state == .active }
+            let inFlight = Task { try? await stop.sendPCM(Data([1, 0])) }
+            try await until { await stopGate.arrivals == 1 }
+            let receipt = await stop.close(trigger: .button)
+            try require(receipt?.trigger == .button, "the stop receipt names the press")
+            try require((receipt?.socketCloseSentMs ?? -1) >= 0, "the receipt measures the wire")
+            try require(await stopSocket.controls.contains(.close), "the stop control reached the socket while audio was in flight")
+            await inFlight.value
+            await stopHTTP.finish()
+            print("PASS stop control survives a busy send queue and its receipt names the press")
+            record("stop-control")
             if CommandLine.arguments.contains("--durations=10") {
                 for (name, duration) in durations.sorted(by: { $0.1 > $1.1 }).prefix(10) {
                     let parts = duration.components

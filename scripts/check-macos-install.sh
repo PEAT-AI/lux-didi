@@ -496,6 +496,34 @@ fi
 
 # Prepare: build synthetic accepted assets and compose the production app. Native
 # compilation and bundling stay outside the browser lease.
+
+# The index/asset consistency predicate, driven by fixture directories: a fresh
+# shell passes; a nested dist, a missing asset and a missing index must be refused.
+fixtures="$(mktemp -d "${TMPDIR:-/tmp}/didi-web-shell.XXXXXX")"
+mkdir -p "$fixtures/fresh/assets"
+printf '<link rel="stylesheet" href="/assets/index-FRESH.css">\n<script src="/assets/index-FRESH.js"></script>\n' > "$fixtures/fresh/index.html"
+: > "$fixtures/fresh/assets/index-FRESH.css"
+: > "$fixtures/fresh/assets/index-FRESH.js"
+bash scripts/build-macos-app.sh --check-web-shell "$fixtures/fresh" > "$fixtures/fresh.log" || { echo 'MACOS-INSTALL FAIL: a fresh shell was refused' >&2; cat "$fixtures/fresh.log" >&2; exit 1; }
+cp -R "$fixtures/fresh" "$fixtures/nested"
+mkdir -p "$fixtures/nested/dist/assets"
+printf '<script src="/assets/index-STALE.js"></script>\n' > "$fixtures/nested/dist/index.html"
+: > "$fixtures/nested/dist/assets/index-STALE.js"
+cp -R "$fixtures/fresh" "$fixtures/missing-asset"
+rm "$fixtures/missing-asset/assets/index-FRESH.js"
+mkdir -p "$fixtures/no-index/assets"
+: > "$fixtures/no-index/index.tmp"
+for rejected in nested missing-asset no-index; do
+  if bash scripts/build-macos-app.sh --check-web-shell "$fixtures/$rejected" > "$fixtures/$rejected.log" 2>&1; then
+    echo "MACOS-INSTALL FAIL: the web shell predicate accepted the $rejected fixture" >&2
+    cat "$fixtures/$rejected.log" >&2
+    rm -rf "$fixtures"
+    exit 1
+  fi
+done
+rm -rf "$fixtures"
+printf 'MACOS-INSTALL: web shell predicate accepts a fresh shell and refuses nested, missing-asset and no-index fixtures\n'
+
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-macos-install.XXXXXX")"
 work="$(cd "$work" && pwd -P)"
 cleanup_prepared() { status=$?; trap - EXIT INT TERM; rm -rf "$work"; exit "$status"; }
@@ -512,8 +540,46 @@ if [ -z "$assets" ]; then
   assets="$work/assets"
   bash scripts/build-asset-bundle.sh "$assets"
 fi
+# A second bundle build into the same output path must replace the shell, never
+# nest it: `cp -R src dst` into an existing dst leaves the previous index.html
+# served while the fresh bundles sit in Resources/web/dist/dist.
+bash scripts/build-asset-bundle.sh "$assets"
+[ ! -e "$assets/Resources/web/dist/dist" ] || { echo 'MACOS-INSTALL FAIL: the second bundle build nested the shell under Resources/web/dist/dist' >&2; exit 1; }
+bash scripts/build-macos-app.sh --check-web-shell "$assets/Resources/web/dist" || { echo 'MACOS-INSTALL FAIL: the rebuilt bundle shell does not match the assets beside it' >&2; exit 1; }
+printf 'MACOS-INSTALL: second bundle build into one output path replaced the shell without nesting\n'
 app="$work/Lux Didi.app"
 bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)"
+
+# Double build into the same output path. The compose step must replace the
+# served shell, never nest it: a cp -R into an existing dist nests the tree and
+# keeps the older index.html served. The second build composes a marked shell at
+# the same app path, and the rest of this check exercises that second build.
+marker='<!-- didi-web-shell-build-2 -->'
+first_sha="$(shasum -a 256 "$app/Contents/Resources/web/dist/index.html" | cut -d' ' -f1)"
+assets2="$work/assets-2"
+mkdir -p "$assets2/Resources/node/bin" "$assets2/Resources/web" "$assets2/server/node_modules/@lux-didi"
+cp -R -l "$assets/Resources/node/bin/node" "$assets2/Resources/node/bin/node" 2>/dev/null || cp "$assets/Resources/node/bin/node" "$assets2/Resources/node/bin/node"
+cp -R -l "$assets/server/node_modules/@lux-didi/service" "$assets2/server/node_modules/@lux-didi/service" 2>/dev/null || cp -R "$assets/server/node_modules/@lux-didi/service" "$assets2/server/node_modules/@lux-didi/service"
+cp -R "$assets/Resources/web/dist" "$assets2/Resources/web/dist"
+{ cat "$assets/Resources/web/dist/index.html"; printf '%s\n' "$marker"; } > "$assets2/Resources/web/dist/index.html"
+bash scripts/build-macos-app.sh "$app" --assets "$assets2" --release-commit "$(git rev-parse HEAD)"
+second_sha="$(shasum -a 256 "$app/Contents/Resources/web/dist/index.html" | cut -d' ' -f1)"
+[ "$second_sha" != "$first_sha" ] || { echo 'MACOS-INSTALL FAIL: the second build did not replace the served index.html' >&2; exit 1; }
+[ ! -e "$app/Contents/Resources/web/dist/dist" ] || { echo 'MACOS-INSTALL FAIL: the second build nested the web shell under web/dist/dist' >&2; exit 1; }
+grep -qF "$marker" "$app/Contents/Resources/web/dist/index.html" || { echo 'MACOS-INSTALL FAIL: the composed shell is not the second build shell' >&2; exit 1; }
+# The manifest webRoot must resolve to that same file, so the served path carries the second build.
+python3 - "$app" <<'PY'
+import json, os, sys
+app = sys.argv[1]
+manifest = json.load(open(os.path.join(app, 'Contents', 'Resources', 'didi-runtime.json')))
+web = os.path.join(app, 'Contents', 'Resources', manifest['webRoot'])
+index = os.path.join(web, 'index.html')
+assert os.path.isfile(index), index
+assert 'didi-web-shell-build-2' in open(index).read(), 'the served index.html is not the second build shell'
+assert not os.path.exists(os.path.join(web, 'dist')), 'a nested dist sits beside the served shell'
+print('MACOS-INSTALL WEB_SHELL served=%s index_to_build=second' % manifest['webRoot'])
+PY
+printf 'MACOS-INSTALL: double build replaces the served web shell (index %s -> %s)\n' "$first_sha" "$second_sha"
 
 # Separately composed signed fixture app: the SAME compiled native payload with the
 # accepted service host entry replaced by the test-only fixture entry (R8/R10).

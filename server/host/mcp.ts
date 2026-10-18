@@ -7,7 +7,8 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
-import { mongooseFailureStage } from '../connectors/mongoose.js';
+import { mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
+import { mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -74,8 +75,10 @@ export interface McpRuntimeComposition {
   refresh(): Promise<void>;
   close(): Promise<void>;
 }
-/** The local read envelope is the Didi connector's own classification, never the remote readOnlyHint. */
+/** The local read candidate list per connector; the Mongoose classifier narrows it at discovery. */
 const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTOR_ENVELOPES;
+/** Connectors that classify one discovered tool themselves, instead of trusting a static name list. */
+const readClassifiers: Readonly<Record<string, (tool: ToolDefinition) => boolean>> = { mongoose: mongooseReadOnly };
 /**
  * A registry that also admits exactly one bounded identity probe per endpoint before any read
  * grant exists: the connector, its tool and its generation, never a model-facing tool. The
@@ -141,7 +144,25 @@ export async function composeMcpRuntime(options: {
   const callDeadlineMs = options.callDeadlineMs ?? ENDPOINT_CALL_DEADLINE_MS;
   const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
     ? selection.catalog.endpoints.map(entry => [entry.id, callDeadlineMs] as const) : []);
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential: async reference => readMcpCredential(configDir, reference) });
+  // One credential seam for both shapes: a schemaVersion 1 pasted bearer, or the schemaVersion 2
+  // OAuth record this host owns and refreshes lazily. A v2 record is never read as a bearer token.
+  const credentialOwners = new Map(selection.state === 'configured'
+    ? selection.catalog.endpoints.filter(entry => entry.credentialRef).map(entry => [entry.credentialRef!, entry] as const) : []);
+  const resolveCredential = async (reference: string): Promise<string> => {
+    if (!readMongooseOAuth(configDir, reference)) return readMcpCredential(configDir, reference);
+    const owner = credentialOwners.get(reference);
+    try {
+      return await mongooseAccessToken(configDir, reference, {
+        now,
+        notify: reason => { if (owner) options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
+      });
+    } catch {
+      // One owner line: the browser surfaces this exact text as the credential status and renders the
+      // "reconnect Mongoose" next step. The closed refresh code stayed in the connector log above.
+      throw Error(`credential ${reference} missing or invalid`);
+    }
+  };
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential });
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
@@ -186,8 +207,9 @@ export async function composeMcpRuntime(options: {
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return { retryable: false };
     }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
+    // A schemaVersion 2 OAuth record counts as present on its refresh token alone: no refresh happens here.
     if (entry.credentialRef) {
-      try { readMcpCredential(configDir, entry.credentialRef); }
+      try { if (!mongooseCredentialPresent(configDir, entry.credentialRef)) readMcpCredential(configDir, entry.credentialRef); }
       catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
     try {
@@ -202,8 +224,9 @@ export async function composeMcpRuntime(options: {
         return { retryable: stage === 'first_call' };
       }
       const envelope = connectorEnvelopes[entry.connector] ?? [];
+      const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
-        ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()
+        ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
         : [];
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {

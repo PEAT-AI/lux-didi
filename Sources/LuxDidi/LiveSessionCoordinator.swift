@@ -132,6 +132,30 @@ struct LiveCaptureDiagnosticSnapshot: Sendable {
     let pendingFrames: Int
 }
 
+/// Every way a call can be stopped by its owner. Closed set, so a receipt can never carry free text.
+public enum LiveStopTrigger: String, CaseIterable, Sendable { case button, hotkey, menu, other }
+
+/// What a Stop did, so the native log can prove it: what was pressed, when, and how long the wire took to close.
+public struct LiveStopReceipt: Sendable, Equatable {
+    public let trigger: LiveStopTrigger
+    public let stopRequestedAt: Date
+    public let socketCloseSentMs: Int
+    public init(trigger: LiveStopTrigger, stopRequestedAt: Date, socketCloseSentMs: Int) {
+        self.trigger = trigger; self.stopRequestedAt = stopRequestedAt; self.socketCloseSentMs = socketCloseSentMs
+    }
+}
+
+/// One native frame the protocol refused, kept so the native log proves why a call went outcomeUnknown:
+/// the sequence the marker carried, the highest sequence already accepted, and the marker kind.
+public struct LiveFrameRejection: Sendable, Equatable {
+    public let sequence: Int
+    public let previous: Int
+    public let kind: String
+    public init(sequence: Int, previous: Int, kind: String) {
+        self.sequence = sequence; self.previous = previous; self.kind = kind
+    }
+}
+
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
 public actor LiveSessionCoordinator {
     public let events: AsyncStream<LiveClientState>
@@ -162,6 +186,9 @@ public actor LiveSessionCoordinator {
     /// E1: whether the provider's turnComplete for the live turn arrived before a barge-in marker.
     private var turnCompleteSeen = false
     public private(set) var captureEpoch: UInt64 = 0
+    /// The last frame this client refused, taken by the presentation so the rejection is never a silent throw.
+    public private(set) var frameRejection: LiveFrameRejection?
+    public func takeFrameRejection() -> LiveFrameRejection? { defer { frameRejection = nil }; return frameRejection }
     private var captureMuted = false
     private var captureDiagnosticOwner: UInt64?
     private var captureDiagnostics = LiveCaptureDiagnostics()
@@ -287,6 +314,10 @@ public actor LiveSessionCoordinator {
 
     private func receive(_ connection: any LiveSocket, token: UInt64) async {
         var previousSequence = 0
+        // Set by `continuity resumed`, cleared by the first marker after it. A rebuild opens a provider
+        // session that counts its own events again, so one non-increasing sequence right after a resume
+        // re-bases the high water mark instead of failing an otherwise healthy call (3o).
+        var rebased = false
         do {
             while !Task.isCancelled {
                 let frame = try await connection.receive()
@@ -298,6 +329,7 @@ public actor LiveSessionCoordinator {
                         try await sink.flush()
                     } else if event == "resumed", state == .rebuilding {
                         state = .active
+                        rebased = true
                     }
                 case .pcm(let pcm):
                     if state == .rebuilding { continue }
@@ -307,8 +339,14 @@ public actor LiveSessionCoordinator {
                     guard generation == token, !Task.isCancelled else { return }
                 case .marker(let marker):
                     if state == .rebuilding { continue }
-                    guard marker.sequence > previousSequence else { throw LiveClientError.invalidFrame }
+                    if marker.sequence <= previousSequence {
+                        guard rebased else {
+                            frameRejection = LiveFrameRejection(sequence: marker.sequence, previous: previousSequence, kind: marker.kind.rawValue)
+                            throw LiveClientError.invalidFrame
+                        }
+                    }
                     previousSequence = marker.sequence
+                    rebased = false
                     if marker.kind == .ready {
                         guard state == .attaching else { throw LiveClientError.invalidFrame }
                         state = .active
@@ -336,9 +374,16 @@ public actor LiveSessionCoordinator {
             }
         } catch {
             guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
-            state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil
+            let reason = safe(error, fallback: .transport)
+            state = .outcomeUnknown(reason)
             try? await sink.flush()
-            await connection.cancel()
+            // 3p P1: an outcome that is unknown still ends the call on the host, through the Stop path, so a
+            // refused frame never leaves the provider session talking to a Mac that stopped listening. close()
+            // takes the socket and sends the close control itself, so nothing cancels that socket before it,
+            // and it runs in its own task because this receive task is cancelled on the way.
+            await Task { _ = await self.close(trigger: .other) }.value
+            if case .terminal = state { return }
+            state = .outcomeUnknown(reason)
         }
     }
 
@@ -431,29 +476,36 @@ public actor LiveSessionCoordinator {
         }
     }
 
-    public func close() async {
+    @discardableResult
+    public func close(trigger: LiveStopTrigger = .other) async -> LiveStopReceipt? {
         freezeCaptureDiagnostics()
-        guard state != .idle, !settled else { return }
+        let stopRequestedAt = Date()
+        guard state != .idle, !settled else { return nil }
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
             state = .outcomeUnknown(.unavailable)
             try? await sink.flush()
-            return
+            return nil
         }
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
         try? await sink.flush()
-        guard current(token, op) else { await connection?.cancel(); return }
-        do { try await connection?.sendControl(.close) } catch { /* snapshot remains authoritative */ }
+        guard current(token, op) else { await connection?.cancel(); return nil }
+        // The Stop itself: a control frame the socket layer never sheds, so the host learns the call is over even
+        // when the queue is full. The teardown below is the second signal, for a host that only sees the socket go.
+        do { try await connection?.sendControl(.close) } catch { /* the socket teardown is the second signal */ }
         await connection?.cancel()
-        guard current(token, op) else { return }
+        let receipt = LiveStopReceipt(trigger: trigger, stopRequestedAt: stopRequestedAt,
+                                      socketCloseSentMs: Int(Date().timeIntervalSince(stopRequestedAt) * 1000))
+        guard current(token, op) else { return receipt }
         do {
             let snapshot = try await http.snapshot(sessionID: id, for: frozen)
-            guard current(token, op), let key = createKey else { return }
+            guard current(token, op), let key = createKey else { return receipt }
             try validate(snapshot, frozen, key)
             state = snapshot.terminal.map(LiveClientState.terminal) ?? .outcomeUnknown(.transport)
         } catch { if current(token, op) { state = .outcomeUnknown(.unavailable) } }
+        return receipt
     }
 
     public func revoke() async {

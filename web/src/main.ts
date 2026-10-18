@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySum
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -83,14 +83,16 @@ function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}
 function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
-  if(live && live.state!=='idle')return liveVoiceState(live.state);
+  // The machine owns the look while it is stopping, idle or error, so a Stop press changes it at once (3p).
+  if(!machineOwnsOrb(liveMachine.view) && live && live.state!=='idle')return liveVoiceState(live.state);
+  if(liveMachine.view.state==='error')return 'ERROR';
   if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';
   return 'CONNECTED';
 }
 function orbLabel() {
   const state=orbState();
-  return live?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
+  return live&&!machineOwnsOrb(liveMachine.view)?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
 }
 // The honesty line is true only when the projection is idle, the native app reports muted, or there is no projection.
 // The activity row lives once, in the feed (spec 2.2 item 2); the orb caption keeps the state word only.
@@ -119,17 +121,22 @@ function orbStateLineMarkup(): string {
   if (lookup) return lookup;
   // The projection names what Naya is doing (Listening, Speaking, Thinking); with no live projection
   // the native state keeps the honest one line (Live is off, Starting, Muted, Needs your attention).
-  const projection = live && live.state !== 'idle' ? liveLabel(live) : undefined;
+  // Release 3p: stopping, idle and error belong to the machine, so a Stop press is on screen at once.
+  const projection = !machineOwnsOrb(liveMachine.view) && live && live.state !== 'idle' ? liveLabel(live) : undefined;
   return e(projection ?? liveStateCopy(liveMachine.view.state));
 }
 function orbControlsMarkup(): string {
   const view = liveMachine.view;
-  // The control reflects the state: a live projection (listening, speaking, thinking) is a live
-  // session, so it offers Stop and Mute; Start belongs to Live is off alone (V3-R4 item 4).
-  const projectionLive = !!live && ['listening', 'speaking', 'thinking'].includes(live.state);
-  const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting' || projectionLive;
+  // The control reads the machine alone, so the press flips it at once rather than on the server
+  // reply: Stop while a session is on, Stopping from the press, Start once the machine is off (3p).
+  const control = liveControl(view);
   const error = liveErrorText(view.error, view.reason);
-  return `${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
+  const button = control === 'start'
+    ? `<button id="voice-start" class="start-pill" aria-pressed="false" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`
+    : control === 'stopping'
+      ? `<button id="voice-stop" class="stop-pill" aria-pressed="false">Stopping</button>`
+      : `<button id="voice-stop" class="stop-pill" aria-pressed="true">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>`;
+  return `${button}${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function orbCaptionMarkup(): string {
   return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>`;
@@ -636,7 +643,13 @@ function renderTranscript(list: HTMLElement) {
     segments.forEach((segment, index) => {
       const child = children[index]!;
       const html = restoreOpen(segment.html, openBySeg.get(segment.key) ?? []);
-      if (child.outerHTML !== html) child.outerHTML = html;
+      if (child.outerHTML === html) return;
+      // A bubble still growing keeps its node: only its text node is rewritten, so the 250 ms poll
+      // never replaces the row the listener is reading (P7 item 4).
+      const text = 'growing' in child.dataset ? growingText(html) : undefined;
+      const target = text === undefined ? null : child.querySelector('[data-live-text]');
+      if (target && text !== undefined) { if (target.innerHTML !== text) target.innerHTML = text; return; }
+      child.outerHTML = html;
     });
     return;
   }

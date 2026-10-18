@@ -8,7 +8,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, chooseStartContext } from './warm-context.js';
@@ -56,7 +56,10 @@ const DEAD_AIR_NUDGE_MS = 8_000;
 // 3o: a client that detached is gone, not paused. This much detached and the session ends cleanly (the journal
 // stays); the countdown is cancelled by a re-attach. Measured: the app let go at 19:23:49Z and the model kept
 // speaking to nobody for 62 s.
-const CONSUMER_GONE_MS = 5_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+const CONSUMER_GONE_MS = 5_000;
+// 3p: a socket that closed and sent no Stop is a call that ended, not a pause. One second is the longest a Stop may
+// take to be felt by the owner; the 5 s rule above stays behind it as the last net.
+const CONSUMER_CLOSED_MS = 1_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
 // 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
 // that ended, or a model turn left open, owes a reply, and only a deadline on that debt recovers it. One nudge
 // at RESPONSE_WATCHDOG_NUDGE_MS, then the fresh-seeded recovery at RESPONSE_WATCHDOG_RECOVERY_MS after it.
@@ -139,6 +142,8 @@ interface ActiveSession {
   /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
   callStartedAt: Map<string, number>;
   speaking: boolean;
+  /** Output audio that arrived below the audible threshold this turn, in playback milliseconds. */
+  inaudibleMs: number;
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
   lastModelAudioAt?: number;
   turnCompleteSeen: boolean;
@@ -156,6 +161,9 @@ interface ActiveSession {
   consumerState: LiveConsumerState;
   journalEvents: number;
   journalBytes: number;
+  /** The sequence the Mac sees, counted once for the whole session: a provider rebuild opens a new adapter
+   *  session whose own counter starts again at 1, and the Mac refuses a marker that does not advance. */
+  markerSequence: number;
   adapterOutcome: LiveVoiceOutcome | undefined;
   diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
   ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
@@ -202,7 +210,7 @@ function countTurnScript(handle: ActiveSession, text: string): void {
 
 function resetTurnScript(handle: ActiveSession): void {
   handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
-  handle.turnAfterTool = false; handle.turnInterrupted = false;
+  handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0;
 }
 
 /** One metadata-only record per turn. A turn with no spoken output reports nothing. */
@@ -215,9 +223,9 @@ function logTurnScript(handle: ActiveSession): void {
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
 // once, marked after_barge_in so the UI can show why the answer may not match the pending turn.
-function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number): LivePublicMarker {
+function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number, sequence: number): LivePublicMarker {
   return {
-    kind, sequence: event.sequence, journalSequence,
+    kind, sequence, journalSequence,
     text: 'text' in event ? event.text : null,
     finished: 'finished' in event && event.finished !== undefined ? event.finished : null,
     value: event.type === 'waitingForInput' ? event.value : null,
@@ -405,26 +413,31 @@ function jobRow(job: ToolJob): import('./types.js').PendingLiveJob {
 }
 
 // Per-second audio counters. Numbers only: the journal never sees a sample. One bucket per second
-// per session, flushed on the next bucket so a stall shows as a second with no output.
-const audioBuckets = new WeakMap<ActiveSession, { second: number; input: number; output: number; silent: number }>();
+// per session, flushed on the next bucket so a stall shows as a second with no output. Each output chunk also
+// contributes its level (dBFS RMS, computed by the adapter) so a silent stream is visible as a number, not a guess.
+const audioBuckets = new WeakMap<ActiveSession, { second: number; input: number; output: number; silent: number; rmsMax: number; rmsPower: number; rmsChunks: number }>();
 const audioTotals = new WeakMap<ActiveSession, number>();
-function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: number): void {
-  const now = Date.now(), second = Math.floor(now / 1000);
+/** Output PCM is 24 kHz s16 mono: 48 bytes per millisecond, the same clock the adapter models its queue on. */
+const OUTPUT_PCM_BYTES_PER_MS = 48;
+function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: number, now: number, rmsDbfs?: number): void {
+  const second = Math.floor(now / 1000);
   const bucket = audioBuckets.get(handle);
-  if (bucket === undefined) { audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: 0 }); return; }
+  if (bucket === undefined) { audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: 0, rmsMax: rmsDbfs ?? -Infinity, rmsPower: rmsDbfs === undefined ? 0 : 10 ** (rmsDbfs / 10), rmsChunks: rmsDbfs === undefined ? 0 : 1 }); return; }
   if (bucket.second === second) {
     if (channel === 'input') bucket.input += bytes; else bucket.output += bytes;
+    if (rmsDbfs !== undefined) { bucket.rmsMax = Math.max(bucket.rmsMax, rmsDbfs); bucket.rmsPower += 10 ** (rmsDbfs / 10); bucket.rmsChunks += 1; }
     return;
   }
   journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio',
-    at: bucket.second, inputBytes: bucket.input, outputBytes: bucket.output });
+    at: bucket.second, inputBytes: bucket.input, outputBytes: bucket.output,
+    ...(bucket.rmsChunks ? { outputRms: { max: Math.round(bucket.rmsMax * 10) / 10, mean: Math.round(10 * Math.log10(bucket.rmsPower / bucket.rmsChunks) * 10) / 10 } } : {}) });
   if (bucket.output > 0) audioTotals.set(handle, (audioTotals.get(handle) ?? 0) + bucket.output);
   // A stall marker needs a speaking second followed by three with no playback at all.
   if (bucket.output === 0 && handle.speaking) bucket.silent += 1; else bucket.silent = 0;
   if (bucket.silent === 3) {
     journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio_marker', marker: 'stall', silentSeconds: bucket.silent });
   }
-  audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent });
+  audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent, rmsMax: rmsDbfs ?? -Infinity, rmsPower: rmsDbfs === undefined ? 0 : 10 ** (rmsDbfs / 10), rmsChunks: rmsDbfs === undefined ? 0 : 1 });
 }
 
 export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: number): import('./types.js').PendingLiveJob[] {
@@ -908,10 +921,10 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
-      consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
+      consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
       diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, terminalOutcome: null,
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
@@ -953,7 +966,7 @@ export class LiveSessionOwner {
       done: handle.done.promise,
       sendAudio: ({ pcm }) => this.#sendAudio(handle, pcm),
       endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
-      close: () => { handle.session.close(); },
+      close: () => this.#stop(handle),
       detach: () => this.#detach(handle),
       overflow: () => {
         if (handle.terminal) return;
@@ -1252,7 +1265,7 @@ export class LiveSessionOwner {
     this.#armIdle(handle, this.#profile.limits.idleMs);
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
-    this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence) });
+    this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });
   }
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
@@ -1268,7 +1281,7 @@ export class LiveSessionOwner {
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     // 3j: a mic frame is not conversation. Idle measures silence, so frames keep flowing without resetting it.
-    countAudio(handle, 'input', pcm.byteLength);
+    countAudio(handle, 'input', pcm.byteLength, this.#now());
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
   }
 
@@ -1340,11 +1353,33 @@ export class LiveSessionOwner {
     // A session whose consumer stayed away is ended cleanly: the journal is kept, only the spend of talking to
     // nobody stops. A re-attach inside the window flips consumerState back and cancels this by its guard.
     const detachedAt = this.#now();
+    // The socket that carried the conversation is gone and no Stop reached us: the session is over. One second is
+    // the grace a re-attach needs; before it the app could only have been paused. The five second rule stays as the
+    // last net, for a handle whose first timer could not settle it.
+    this.#schedule(() => {
+      if (handle.consumerState === 'attached') return;
+      this.#endAway(handle, 'consumer_closed', Math.max(0, this.#now() - detachedAt));
+    }, CONSUMER_CLOSED_MS);
     this.#schedule(() => {
       if (this.#settled(handle) || handle.consumerState === 'attached') return;
       hostLogEvent({ event: 'consumer_gone_end', detachedMs: Math.max(0, this.#now() - detachedAt) });
       this.#settle(handle, { state: 'cancelled', code: 'consumer_gone' }, true, 'ended', null);
     }, CONSUMER_GONE_MS);
+  }
+
+  /** One end, one receipt: the journal is kept and the host log names why the call stopped and how long it took. */
+  #endAway(handle: ActiveSession, reason: 'consumer_closed' | 'user_stop', msAfterStop: number): void {
+    if (this.#settled(handle)) return;
+    this.#settle(handle, { state: 'cancelled', code: reason }, true, 'ended', null);
+    hostLogEvent({ event: 'session_end', reason, msAfterStop });
+  }
+
+  /** The client's explicit Stop: the app released the microphone and wants the call over now, not in five seconds.
+   * The owner ended it, so the state is a plain close and the code names the reason. */
+  #stop(handle: ActiveSession): void {
+    if (this.#settled(handle)) return;
+    this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
+    hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
   }
 
   async #consume(handle: ActiveSession): Promise<void> {
@@ -1454,7 +1489,7 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete' }); handle.speaking = false; handle.turnCompleteSeen = true; handle.awaitingDelegated = false; handle.thinking = handle.pendingCallIds.size > 0;
+        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete', inaudibleMs: Math.round(handle.inaudibleMs) }); handle.speaking = false; handle.turnCompleteSeen = true; handle.awaitingDelegated = false; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
@@ -1463,7 +1498,13 @@ export class LiveSessionOwner {
         }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; this.#noteState(handle, event.value ? 'silence' : 'input'); }
         if (event.type === 'audio') {
-          countAudio(handle, 'output', event.pcm.byteLength);
+          countAudio(handle, 'output', event.pcm.byteLength, this.#now(), event.rmsDbfs);
+          // Only audible speech is SPEAKING (release 3p): the provider streams output frames non-stop, so a frame
+          // is model output only when the adapter measured it above the audible threshold.
+          if (event.audible === false) {
+            handle.inaudibleMs += event.pcm.byteLength / OUTPUT_PCM_BYTES_PER_MS;
+            this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
+          }
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
@@ -1509,7 +1550,7 @@ export class LiveSessionOwner {
           handle.inputJournalId = persisted;
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
         }
-        this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted) });
+        this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted, ++handle.markerSequence) });
       }
     } catch (error) {
       handle.persistFailure = error;
@@ -1590,11 +1631,20 @@ export class LiveSessionOwner {
     }
   }
 
-  #unreachableSources(): ResearchSourceKind[] {
-    const sources: ResearchSourceKind[] = [];
-    for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
+  #unreachableSources(): (ResearchSourceKind | UnavailableSource)[] {
+    const sources: (ResearchSourceKind | UnavailableSource)[] = [];
+    // P5-R5 (F3): the endpoint report carries why it is not connected, and the owner's reply names it.
+    // Codes and closed enums only: never the free-text `error`, so no connector text can reach a reply.
+    const endpoints = (this.#tools?.status?.().endpoints ?? []) as unknown as readonly {
+      connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
+    }[];
+    for (const endpoint of endpoints) {
       if (endpoint.state === 'connected') continue;
-      for (const source of researchSourcesForConnector(endpoint.connector)) if (!sources.includes(source)) sources.push(source);
+      const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+      for (const source of researchSourcesForConnector(endpoint.connector)) {
+        if (sources.some(entry => (typeof entry === 'string' ? entry : entry.source) === source)) continue;
+        sources.push({ source, reason });
+      }
     }
     return sources;
   }

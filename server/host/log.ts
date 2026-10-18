@@ -134,9 +134,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'live_started' && (value.provider === 'openai' || value.provider === 'gemini')
     && typeof value.modelId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value.modelId)
-    && typeof value.voice === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value.voice)) {
+    // A custom voice id is `voice_` plus up to 64 hex characters (PV2); ids are not secret.
+    && typeof value.voice === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,69}$/.test(value.voice)
+    && (value.voiceKind === 'preset' || value.voiceKind === 'custom')) {
     // Names only: what the running Live service will call, never a key, reference or prompt.
-    return { event: 'live_started', provider: value.provider, modelId: value.modelId, voice: value.voice };
+    return { event: 'live_started', provider: value.provider, modelId: value.modelId, voice: value.voice, voiceKind: value.voiceKind };
   }
   if (value.event === 'host_exit' && ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'].includes(String(value.stage))
     && (value.reason === 'close' || value.reason === 'exit')
@@ -244,6 +246,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.rebuilt !== true && value.rebuilt !== false) return;
     return { event: 'live_upstream_drop', errorKind: value.errorKind, closeCode: value.closeCode, bufferedAmount: value.bufferedAmount, writesFailed: value.writesFailed, sessionMs: value.sessionMs, rebuilt: value.rebuilt };
   }
+  if (value.event === 'live_no_pong') {
+    // Closed shape: the pong gap an adapter judged fatal, with the inbound traffic it measured against it, so
+    // a `no_pong` in the log is readable as a real silence rather than a dropped socket frame (3o).
+    if (Object.keys(value).sort().join(',') !== ['event', 'lastInboundAgeMs', 'missedPongs', 'bufferedAmount'].sort().join(',')) return;
+    const numeric: readonly [string, number][] = [['lastInboundAgeMs', 24 * 60 * 60 * 1000], ['missedPongs', 1_000], ['bufferedAmount', 64 * 1024 * 1024]];
+    for (const [name, max] of numeric) {
+      const field = value[name];
+      if (!Number.isSafeInteger(field) || Number(field) < 0 || Number(field) > max) return;
+    }
+    return { event: 'live_no_pong', lastInboundAgeMs: value.lastInboundAgeMs, missedPongs: value.missedPongs, bufferedAmount: value.bufferedAmount };
+  }
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
@@ -293,6 +306,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'detachedMs'])) return;
     if (!isSafeCount(value.detachedMs)) return;
     return { event: 'consumer_gone_end', detachedMs: value.detachedMs };
+  }
+  if (value.event === 'session_end') {
+    // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
+    if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
+    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed') return;
+    if (!isSafeCount(value.msAfterStop)) return;
+    return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }
   if (value.event === 'live_context_usage') {
     // Closed shape: provider-neutral token counts only; no behaviour reads them yet (release 3g-c).
@@ -506,14 +526,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
     return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
   }
-  if (value.event === 'research_lookup') {
-    // N3: one receipt per routed lookup: the layer, its outcome and its wall time. Never a query.
-    const keys = ['event', 'researchId', 'source', 'outcome', 'ms'];
+  if (value.event === 'research_source') {
+    // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
+    // given, so a read cut short can be judged against the time the source really had. Never a query.
+    const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs'];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
-    if (!isSafeCount(value.ms)) return;
-    return { event: 'research_lookup', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms };
+    if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs)) return;
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

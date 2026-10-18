@@ -7,7 +7,7 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
-import { createMongooseReader, MONGOOSE_TOOLS } from './mongoose.js';
+import { createMongooseReader, MONGOOSE_READ_TOOLS } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_TOOLS } from './mattermost.js';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
@@ -20,13 +20,14 @@ export * from './mongoose.js';
 export * from './mattermost.js';
 
 /**
- * The locally maintained read envelope per connector. The host approves exactly these names
- * under owner-trusted-reads, never the remote's readOnlyHint. One line per connector.
+ * The locally maintained read candidate list per connector. The host approves exactly these names
+ * under owner-trusted-reads, and for Mongoose the discovery-time annotation classifier narrows the
+ * list further. One line per connector.
  */
 export const CONNECTOR_ENVELOPES: Readonly<Record<string, readonly string[]>> = {
   'lux-knowledge': LUX_KNOWLEDGE_TOOLS,
   'google': GOOGLE_TOOLS,
-  'mongoose': MONGOOSE_TOOLS,
+  'mongoose': MONGOOSE_READ_TOOLS,
   'mattermost': MATTERMOST_TOOLS,
 };
 
@@ -246,7 +247,7 @@ const googleDescriptor: ConnectorDescriptor = {
       { name: 'gmail_get_profile', description: 'Read the Gmail profile of the selected binding.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: {} }, validate: args => isRecord(args) && Object.keys(args).length === 0 },
       { name: 'gmail_list', description: 'List Gmail messages matching a Gmail query, newest first. q uses Gmail operators, for example from:name after:2026/10/07 or subject:(board deck) is:unread. Returns message ids; read the full message with gmail_read. Returns at most 5 messages with 300-character excerpts.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, q: { type: 'string', minLength: 1, description: 'Gmail search query using Gmail operators.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
       { name: 'gmail_read', description: 'Read one full Gmail message by id from gmail_list: subject, from, date and body. Returns the body up to 1500 characters.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
-      { name: 'gcal_calendars', description: 'List the calendars visible to the selected binding. Returns names only, no events.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: listProps }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken'].includes(key)) },
+      { name: 'gcal_calendars', description: 'List the calendars visible to the selected binding. Returns names only, no events. Call it only when the owner asks which calendars exist; an event read needs no calendar list.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: listProps }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken'].includes(key)) },
       { name: 'gcal_list', description: 'List events on one calendar in a time window. timeMin and timeMax are RFC3339 timestamps with the offset from the runtime context; pass exact start and end instead of asking for a date. Omit both for today in the host timezone. Returns time, title and location. Returns at most 8 events of 150 characters, without dial-in text.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, calendarId: { type: 'string', minLength: 1, description: 'Calendar id; defaults to the primary calendar.' }, timeMin: { type: 'string', minLength: 1, description: 'Window start, RFC3339 with the runtime timezone offset.' }, timeMax: { type: 'string', minLength: 1, description: 'Window end, RFC3339 with the runtime timezone offset.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'calendarId', 'timeMin', 'timeMax'].includes(key)) },
     ];
   },
@@ -373,9 +374,20 @@ const mattermostDescriptor: ConnectorDescriptor = {
   project(evidence, port, policy) { return companyProjection(evidence, policy, projectMattermostResult(port, evidence)); },
   identity() { return { tool: 'mattermost_whoami', args: {}, values: mattermostIdentityValues }; },
 };
-const mongooseDescriptor: ConnectorDescriptor = {
-  id: 'mongoose', envelope: MONGOOSE_TOOLS,
-  declarations(policy) {
+/**
+ * One pass-through model declaration for a read tool this connector carries no typed shape for.
+ * The argument schema belongs to the Mongoose server and the reader validates against it.
+ */
+function mongooseForwardDeclaration(name: string): ConnectorToolDeclaration {
+  return {
+    name,
+    description: `Read company knowledge with the Mongoose tool ${name}. Pass the arguments that tool defines.`,
+    effect: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate(args) { return isRecord(args) && JSON.stringify(args).length <= 4000; },
+  };
+}
+const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly ConnectorToolDeclaration[] => {
     const text = Math.min(500, policy.bounds.maxQueryChars);
     const search = Math.min(50, policy.bounds.maxSearchLimit);
     const list = Math.min(100, policy.bounds.maxSearchLimit);
@@ -388,6 +400,18 @@ const mongooseDescriptor: ConnectorDescriptor = {
       companyDeclaration('list_tickets', 'List bounded company tickets.', text, undefined, list),
       companyDeclaration('get_ticket', 'Read a company ticket by id.', text, 'id'),
     ];
+};
+const mongooseDescriptor: ConnectorDescriptor = {
+  id: 'mongoose', envelope: MONGOOSE_READ_TOOLS,
+  declarations(policy) {
+    // The typed seven first, then one pass-through declaration for every other tool of the read
+    // envelope: the model table in tools/index.ts keeps only the granted names, and the reader
+    // validates each call's arguments against the schema the server discovered.
+    const typed = mongooseTypedDeclarations(policy);
+    const other = MONGOOSE_READ_TOOLS
+      .filter(name => !typed.some(declaration => declaration.name === name))
+      .map(name => mongooseForwardDeclaration(name));
+    return [...typed, ...other];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
     const reader = createMongooseReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxSearchLimit: Math.min(50, policy.bounds.maxSearchLimit), maxListLimit: Math.min(100, policy.bounds.maxSearchLimit), queryChars: Math.min(500, policy.bounds.maxQueryChars) } });
@@ -400,7 +424,7 @@ const mongooseDescriptor: ConnectorDescriptor = {
         case 'get_company_profile': return reader.companyProfile(signal);
         case 'list_tickets': return reader.listTickets(args, signal);
         case 'get_ticket': return reader.getTicket(args as { id: string }, signal);
-        default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mongoose');
+        default: return reader.call(tool, args, signal);
       }
     } };
   },

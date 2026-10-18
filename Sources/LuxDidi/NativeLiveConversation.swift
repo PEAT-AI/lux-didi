@@ -177,6 +177,13 @@ enum State: String, CaseIterable {
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
+                    // 3o: a refused frame is never a silent throw; the sequence, the one it had to exceed and the
+                    // kind land in native-live.log before the presentation moves to outcomeUnknown.
+                    if let rejection = await coordinator.takeFrameRejection() {
+                        self.appendLocalDiagnostic(["event": "native_frame_rejected",
+                            "timestamp": ISO8601DateFormatter().string(from: Date()),
+                            "sequence": rejection.sequence, "previous": rejection.previous, "kind": rejection.kind])
+                    }
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     if case .socketClosed(let code, _) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.providerClosed, detail: NativeLiveEndDetail.providerClosed(closeCode: code)) }
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
@@ -293,11 +300,16 @@ enum State: String, CaseIterable {
         stopAudioAndSummarize()
         state = .ended
     }
-    func stop(reason: NativeLiveEndReason = .userStop) async {
+    func stop(reason: NativeLiveEndReason = .userStop, trigger: LiveStopTrigger = .other) async {
         stopCapture()
         if !endRecorded { endRecorded = true; journal.append(reason) }
         let token = generation
-        await coordinator.close()
+        if let receipt = await coordinator.close(trigger: trigger) {
+            // 3p: the two native receipts that make a Stop readable: what pressed it, and when the wire closed behind it.
+            journal.append(["event": "live_stop", "trigger": receipt.trigger.rawValue,
+                            "stopRequestedAt": ISO8601DateFormatter().string(from: receipt.stopRequestedAt)])
+            journal.append(["event": "socket_close_sent", "msAfterStop": receipt.socketCloseSentMs])
+        }
         await captureSummaryTask?.value
         guard generation == token else { return }
         let outcome = await coordinator.state

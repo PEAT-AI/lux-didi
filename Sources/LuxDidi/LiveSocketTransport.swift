@@ -247,13 +247,33 @@ private final class BoundSessionDelegate: NSObject, URLSessionTaskDelegate, Send
     }
 }
 
+/// One send at a time on one socket. Audio that finds the wire busy gives up at once, which the caller already reads
+/// as backpressure, but a control frame is never shed: it takes its turn as soon as the wire is free and is served
+/// before any audio waiting behind it.
+actor LiveSendQueue {
+    private var busy = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    func acquireControl() async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    func acquireAudio() -> Bool {
+        if busy { return false }
+        busy = true
+        return true
+    }
+    func release() {
+        if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
+    }
+}
+
 private actor FoundationLiveSocket: LiveSocket {
     private let session: URLSession
     private let task: URLSessionWebSocketTask
     private let nativeActions: any NativeActionExecuting
+    private let sends = LiveSendQueue()
     private var closed = false
     private var receiving = false
-    private var sending = false
     init(request: URLRequest, nativeActions: any NativeActionExecuting) {
         self.nativeActions = nativeActions
         let configuration = URLSessionConfiguration.ephemeral
@@ -294,14 +314,19 @@ private actor FoundationLiveSocket: LiveSocket {
     }
     func sendPCM(_ data: Data) async throws {
         try LiveSocketTransport.validatePCM(data)
-        try await send(.data(data))
+        guard await sends.acquireAudio() else { throw LiveClientError.queueOverflow }
+        do { try await send(.data(data)) } catch { await sends.release(); throw error }
+        await sends.release()
     }
-    func sendControl(_ control: LiveControl) async throws { try await send(.string(control.json)) }
+    /// A control frame is never shed: it waits for the wire and then goes ahead of any audio behind it, so a Stop
+    /// that arrives while the microphone is sending still reaches the host.
+    func sendControl(_ control: LiveControl) async throws {
+        await sends.acquireControl()
+        do { try await send(.string(control.json)) } catch { await sends.release(); throw error }
+        await sends.release()
+    }
     private func send(_ message: URLSessionWebSocketTask.Message) async throws {
         guard !closed else { throw LiveClientError.unavailable }
-        guard !sending else { throw LiveClientError.queueOverflow }
-        sending = true
-        defer { sending = false }
         do { try await task.send(message) }
         catch { throw LiveClientError.transport }
     }

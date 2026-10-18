@@ -1,4 +1,5 @@
 import { loadMcpEndpoints } from '../config/mcp.js';
+import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
@@ -220,7 +221,8 @@ export async function startHost(config: HostConfig) {
     // voice served it. The status projection carries no key, reference or prompt.
     const liveNow = live.status();
     if (liveNow.status === 'configured' && liveNow.provider !== undefined && liveNow.model !== undefined && liveNow.voice !== undefined) {
-      log.event({ event: 'live_started', provider: liveNow.provider, modelId: liveNow.model, voice: liveNow.voice });
+      log.event({ event: 'live_started', provider: liveNow.provider, modelId: liveNow.model, voice: liveNow.voice,
+        voiceKind: isCustomVoiceId(liveNow.voice) ? 'custom' : 'preset' });
     }
     void summarizer.reconcile().catch(error => log.error(error));
     void summarizer.requeueFailed().catch(error => log.error(error));

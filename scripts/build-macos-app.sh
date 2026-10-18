@@ -9,6 +9,7 @@
 # Usage:
 #   scripts/build-macos-app.sh <app-dir> [--assets DIR] [--install-id UUID]
 #                              [--release-commit SHA] [--cache DIR]
+#   scripts/build-macos-app.sh --check-web-shell DIR   (assert one shell tree only)
 #
 # Asset bundle layout (accepted producer output, scripts/build-asset-bundle.sh):
 #   DIR/Resources/node/bin/node                                  -> Contents/MacOS/node
@@ -26,17 +27,42 @@ assets=""
 install_id=""
 release_commit=""
 cache=""
+web_shell_check=""
+
+# The composed shell must be self-consistent: index.html present, every /assets/
+# entry it references present beside it, and no nested dist/. A cp -R into an
+# existing destination nests the tree and keeps the older index.html in place,
+# so the app serves a stale shell while the fresh bundles sit one level deeper.
+verify_web_shell() {  # verify_web_shell <web-root>
+  local root="$1" index="$1/index.html" refs ref
+  [ -f "$index" ] || { echo "web shell: $index is missing" >&2; return 1; }
+  [ ! -e "$root/dist" ] || { echo "web shell: $root/dist is a nested copy" >&2; return 1; }
+  refs="$(grep -o '/assets/[A-Za-z0-9._-]*' "$index" | sort -u || true)"
+  [ -n "$refs" ] || { echo 'web shell: index.html references no /assets/ entry' >&2; return 1; }
+  for ref in $refs; do
+    [ -f "$root$ref" ] || { echo "web shell: index.html references a missing asset $ref" >&2; return 1; }
+  done
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --assets) assets="${2:?--assets needs a directory}"; shift 2;;
     --install-id) install_id="${2:?--install-id needs a uuid}"; shift 2;;
     --release-commit) release_commit="${2:?--release-commit needs a sha}"; shift 2;;
     --cache) cache="${2:?--cache needs a directory}"; shift 2;;
+    --check-web-shell) web_shell_check="${2:?--check-web-shell needs a directory}"; shift 2;;
     -h|--help) sed -n '2,20p' "$0"; exit 0;;
     -*) echo "build-macos-app.sh: unknown option $1" >&2; exit 2;;
     *) app="$1"; shift;;
   esac
 done
+# Fixture mode: assert one shell tree's index/asset consistency and stop.
+if [ -n "$web_shell_check" ]; then
+  verify_web_shell "$web_shell_check" || { echo 'build-macos-app.sh: web shell is inconsistent' >&2; exit 1; }
+  printf 'WEB-SHELL PASS dir=%s\n' "$web_shell_check"
+  exit 0
+fi
+
 [ -n "$app" ] || { echo "build-macos-app.sh: an app output path is required" >&2; exit 2; }
 cache="${cache:-$(mktemp -d "${TMPDIR:-/tmp}/didi-macos-build.XXXXXX")}"
 mkdir -p "$cache"
@@ -61,11 +87,19 @@ if [ -n "$assets" ]; then
   [ -f "$assets/server/node_modules/@lux-didi/service/dist/host/index.js" ] || { echo "build-macos-app.sh: accepted service host entry missing" >&2; exit 2; }
   [ -f "$assets/Resources/web/dist/index.html" ] || { echo "build-macos-app.sh: accepted web shell missing" >&2; exit 2; }
 
+  verify_web_shell "$assets/Resources/web/dist" || { echo 'build-macos-app.sh: accepted web shell is inconsistent' >&2; exit 2; }
+
   install -m 0755 "$assets/Resources/node/bin/node" "$app/Contents/MacOS/node"
   rm -rf "$app/Contents/Resources/server" "$app/Contents/Resources/web"
   mkdir -p "$app/Contents/Resources/server/node_modules/@lux-didi" "$app/Contents/Resources/web"
   cp -R "$assets/server/node_modules/@lux-didi/service" "$app/Contents/Resources/server/node_modules/@lux-didi/service"
-  cp -R "$assets/Resources/web/dist" "$app/Contents/Resources/web/dist"
+  # Copy through a sibling staging path and move it into place, so the shell is
+  # replaced atomically and never nested under a pre-existing dist.
+  web_stage="$app/Contents/Resources/web/.dist-incoming"
+  rm -rf "$web_stage"
+  cp -R "$assets/Resources/web/dist" "$web_stage"
+  mv "$web_stage" "$app/Contents/Resources/web/dist"
+  verify_web_shell "$app/Contents/Resources/web/dist" || { echo 'build-macos-app.sh: composed web shell is inconsistent' >&2; exit 2; }
   # The official node is self-contained; assert no unresolved non-system dependency.
   python3 - "$app/Contents/MacOS/node" <<'PY'
 import subprocess, sys

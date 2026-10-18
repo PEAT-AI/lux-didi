@@ -37,9 +37,10 @@ menu (it is on by default). A short tap of the right Command key starts or stops
 Naya exactly like Control Option Space: it ignores the key while you are using it in
 a chord such as Cmd+C, and it ignores a press held longer than 300 milliseconds, so
 ordinary typing never triggers it. The first time you launch Naya by hand, macOS
-asks once for Accessibility (or Input Monitoring) permission with a one-line
-explanation; the chord keeps working whether or not you allow it, and the settings
-page says when the key is inactive and why. Right Option belongs to SuperWhisper, so
+asks for Accessibility (or Input Monitoring) permission with a one-line
+explanation, and asks again once after each update, because macOS can drop the grant
+when the app is replaced; the chord keeps working whether or not you allow it, and
+the settings page and the menu bar say when the key is inactive and why. Right Option belongs to SuperWhisper, so
 Naya never uses it.
 
 Use the menu if a shortcut is unavailable.
@@ -86,8 +87,21 @@ for connected chat, [Live configuration](provider-configuration.md#live-profile-
 for Live, and [MCP configuration](mcp-configuration.md) for connector endpoints,
 classification and explicit network approval.
 
-Use the connector server's own documented account sign-in procedure. Lux Didi
-ships no universal Calendar sign-in command. Endpoint commands, account identities
+Mongoose is the one connector Lux Didi can sign in to for you. Run the host once,
+then restart Lux Didi:
+
+```sh
+node /path/to/your/install/server/dist/host/index.js --mongoose-login
+```
+
+Your default browser opens the Mongoose consent page, where you sign in with
+Google. The window closes when the session is saved; no token is ever copied,
+pasted or printed. The session refreshes itself while you use it. If it ever
+goes stale, the connector next step says **Mongoose session expired, reconnect
+Mongoose** with the same command.
+
+Use the connector server's own documented account sign-in procedure for every
+other connector. Lux Didi ships no universal Calendar sign-in command. Endpoint commands, account identities
 and credential references must match the connector you installed. Credential files
 belong in the selected directory with owner-only permissions. Do not paste secrets
 into Didi, chat or diagnostics. Restart Lux Didi after changing configuration.

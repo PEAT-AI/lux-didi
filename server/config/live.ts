@@ -1,6 +1,7 @@
 import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_LIVE_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, type LiveAccent, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { dirname, join } from 'node:path';
 import { isLiveVoiceProvider, type DataClass, type LiveVoiceProvider } from '../adapters/live-voice/index.js';
+import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
@@ -10,7 +11,11 @@ import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
 const liveLimit = 16 * 1024;
-const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'keyReference', 'dataClasses', 'preferences', 'limits'];
+/** The longest accepted voice: a custom id is `voice_` plus 64 hex characters. */
+const MAX_VOICE_CHARS = 70;
+/** The documented ceiling for the optional voice description; it mirrors one voice prompt. */
+const MAX_VOICE_DESCRIPTION_CHARS = 1_500;
+const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'voiceDescription', 'keyReference', 'dataClasses', 'preferences', 'limits'];
 // PV1: the owner's accent selection is its own live.json field, beside provider and voice. It applies from the
 // next session start, so it is kept as a process-current value rather than only inside the frozen profile.
 let currentAccent: LiveAccent = LIVE_DEFAULT_ACCENT;
@@ -23,6 +28,16 @@ export function liveAccent(value: unknown): LiveAccent {
   if (value === undefined) return LIVE_DEFAULT_ACCENT;
   if (typeof value !== 'string' || !(LIVE_ACCENTS as readonly string[]).includes(value)) throw new LiveConfigError('invalid_accent');
   return value as LiveAccent;
+}
+/**
+ * The optional voice description (PV2): the voice-prompt text the owner asked for, mirrored in the
+ * instructions under a `Voice description:` line. Absent or empty means none; present is a non-empty
+ * string of at most 1,500 characters.
+ */
+export function liveVoiceDescription(value: unknown): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (typeof value !== 'string' || value.length > MAX_VOICE_DESCRIPTION_CHARS) throw new LiveConfigError('invalid_voice_description');
+  return value;
 }
 // The debug journal is a host setting that lives beside the prompt preferences: owner content
 // stays on this computer, on by default. It is stripped before the prompt preferences validate.
@@ -73,7 +88,7 @@ function modelId(provider: LiveVoiceProvider, value: unknown): string {
   return value;
 }
 function voice(value: unknown): string {
-  if (typeof value !== 'string' || !value.length || value.length > 64) throw new LiveConfigError('invalid_voice');
+  if (typeof value !== 'string' || !value.length || value.length > MAX_VOICE_CHARS) throw new LiveConfigError('invalid_voice');
   return value;
 }
 
@@ -82,10 +97,25 @@ function voice(value: unknown): string {
  * provider's own list is refused rather than stored, so a Gemini session can never be saved with marin.
  */
 const providerVoices: Readonly<Record<LiveVoiceProvider, readonly string[]>> = Object.freeze({
-  openai: Object.freeze(['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder']),
+  openai: Object.freeze(['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder', 'nira']),
   gemini: Object.freeze(['Aoede']),
 });
+/** A stored voice: any preset name the file holds, and a custom id only for the OpenAI provider. */
+function storedVoice(provider: LiveVoiceProvider, value: unknown): string {
+  const chosen = voice(value);
+  if (isCustomVoiceId(chosen) && provider !== 'openai') throw new LiveConfigError('invalid_voice');
+  return chosen;
+}
+/**
+ * One voice a provider can serve: a listed preset, or (PV2) an OpenAI custom voice id stored as is. The
+ * custom form is the documented `voice_` plus 16 to 64 lowercase hex characters, so it is 22 to 70
+ * characters; every other provider and every unknown name stay refused.
+ */
 function providerVoice(provider: LiveVoiceProvider, value: unknown): string {
+  if (typeof value === 'string' && isCustomVoiceId(value)) {
+    if (provider !== 'openai') throw new LiveConfigError('invalid_voice');
+    return value;
+  }
   const chosen = voice(value);
   if (!providerVoices[provider].includes(chosen)) throw new LiveConfigError('invalid_voice');
   return chosen;
@@ -134,7 +164,8 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const reference = input['keyReference'];
     if (reference !== undefined && reference !== slot.keyReference) fail('invalid_reference');
     const model = modelId(provider, input['modelId'] ?? slot.defaultLiveModelId);
-    const chosenVoice = input['voice'] === undefined ? slot.defaultVoice : voice(input['voice']);
+    const chosenVoice = input['voice'] === undefined ? slot.defaultVoice : storedVoice(provider, input['voice']);
+    const description = liveVoiceDescription(input['voiceDescription']);
     // The accent selection is read here and published as the process-current value: the next session start
     // composes its anchors from it, so a later save needs no restart.
     const chosenAccent = liveAccent(input['accent']);
@@ -163,10 +194,12 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const setupLanguage = liveSetupLanguage(preferences.language);
     if (input['enabled'] === false) return { status: 'disabled', config };
     // Freeze the Naya baseline and voice anchor; the validated overlay joins at session CREATE.
+    // The optional voice description rides inside the accent tail of both compositions (PV2).
     const composed = composeLiveInstruction({
       base: NAYA_LIVE_BASE,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
+      ...(description !== undefined ? { voiceDescription: description } : {}),
       accentSelection: chosenAccent,
     });
     const ownerProfile = options.ownerProfile ?? publicOwnerProfile(options.ownerId);
@@ -178,6 +211,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       base: NAYA_LIVE_BASE, ownerProfile,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
+      ...(description !== undefined ? { voiceDescription: description } : {}),
       accentSelection: chosenAccent,
     });
     const profile = validateLiveProfile({
@@ -216,7 +250,7 @@ function slotChoice(provider: LiveVoiceProvider): { modelId: string; voice: stri
  * reaches a call in flight. Only the three selection fields are rewritten; limits, classes and persona
  * preferences survive byte for byte.
  */
-export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown; accent?: unknown }): {
+export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown; accent?: unknown; voiceDescription?: unknown }): {
   provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent;
 } {
   try {
@@ -233,8 +267,15 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     // A saved accent takes the next session start, so the process-current value moves with the file. A save
     // that names no accent keeps the file's own choice instead of resetting it.
     const chosenAccent = options.accent === undefined ? liveAccent(input['accent']) : liveAccent(options.accent);
+    // A save that names no description keeps the file's own one, and the file's one still validates.
+    const description = options.voiceDescription === undefined
+      ? liveVoiceDescription(input['voiceDescription'])
+      : liveVoiceDescription(options.voiceDescription);
     const model = modelId(provider, slot.defaultLiveModelId);
-    const next: Record<string, unknown> = { ...input, provider, modelId: model, voice: chosenVoice, accent: chosenAccent, keyReference: slot.keyReference };
+    const next: Record<string, unknown> = {
+      ...input, provider, modelId: model, voice: chosenVoice, accent: chosenAccent, keyReference: slot.keyReference,
+      ...(description !== undefined ? { voiceDescription: description } : {}),
+    };
     // Validate the document we are about to publish through the same loader rules, minus prompt composition.
     const allowed = new Set(liveKeys);
     for (const key of Object.keys(next)) if (!allowed.has(key)) fail('invalid_profile');

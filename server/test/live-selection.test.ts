@@ -28,7 +28,7 @@ function fixture(t: TestContext) {
 
 test('a voice outside the provider own list is refused with the typed invalid_voice error', t => {
   const f = fixture(t);
-  for (const [provider, voice] of [['gemini', 'marin'], ['gemini', 'Puck'], ['openai', 'Aoede'], ['openai', 'nira']] as const) {
+  for (const [provider, voice] of [['gemini', 'marin'], ['gemini', 'Puck'], ['openai', 'Aoede'], ['openai', 'marin2']] as const) {
     assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider, voice }), (thrown: unknown) => {
       if (!(thrown instanceof LiveConfigError)) return false;
       assert.equal(thrown.code, 'invalid_voice');
@@ -38,6 +38,55 @@ test('a voice outside the provider own list is refused with the typed invalid_vo
   // A refused save never rewrites what the next start will use.
   assert.equal(f.saved()['provider'], 'gemini');
   assert.equal(f.saved()['voice'], 'Aoede');
+});
+
+test('PV2: nira is selectable for OpenAI and still refused for Gemini', t => {
+  const f = fixture(t);
+  const selected = saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'nira' });
+  assert.equal(selected.voice, 'nira');
+  assert.equal(f.saved()['voice'], 'nira');
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'gemini', voice: 'nira' }),
+    (thrown: unknown) => thrown instanceof LiveConfigError && thrown.code === 'invalid_voice');
+  // The refused save left the OpenAI selection in place.
+  assert.equal(f.saved()['voice'], 'nira');
+});
+
+test('PV2: a custom voice id is stored as is for OpenAI and refused for Gemini', t => {
+  const f = fixture(t);
+  const custom = 'voice_0123456789abcdef';
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: custom }).voice, custom);
+  assert.equal(f.saved()['voice'], custom);
+  // It loads back as the same id, which is what the next session start sends as { id }.
+  const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  assert.equal(loaded.status, 'configured');
+  assert.equal(loaded.status === 'configured' ? loaded.config.voice : undefined, custom);
+  // The documented form is voice_ plus 16 to 64 lowercase hex characters; anything else is refused.
+  for (const bad of ['voice_0123', 'voice_0123456789ABCDEF', 'voice-0123456789abcdef', 'custom-voice', 'voice_0123456789abcdef'.padEnd(71, 'a')]) {
+    assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: bad }),
+      (thrown: unknown) => thrown instanceof LiveConfigError && thrown.code === 'invalid_voice', bad);
+  }
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'gemini', voice: custom }),
+    (thrown: unknown) => thrown instanceof LiveConfigError && thrown.code === 'invalid_voice');
+  assert.equal(f.saved()['voice'], custom);
+});
+
+test('PV2: the optional voice description is stored, validated and carried into the instruction tail', t => {
+  const f = fixture(t);
+  const description = 'A warm Indian English voice, unhurried, with clear consonants and a light lilt.';
+  saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', voiceDescription: description });
+  assert.equal(f.saved()['voiceDescription'], description);
+  // A save that names no description keeps the file's own one, and the composed prompt carries it once.
+  saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'cinder' });
+  assert.equal(f.saved()['voiceDescription'], description);
+  const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  assert.equal(loaded.status, 'configured');
+  const text = loaded.status === 'configured' ? loaded.config.profile.acceptedPrompt?.system ?? '' : '';
+  assert.equal(text.split('Voice description:').length - 1, 1, 'the description appears exactly once');
+  assert.ok(text.trimEnd().endsWith(description), 'the description ends the accent tail');
+  // Over the 1,500 character ceiling is its own typed refusal, and the file is untouched.
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', voiceDescription: 'x'.repeat(1_501) }),
+    (thrown: unknown) => thrown instanceof LiveConfigError && thrown.code === 'invalid_voice_description');
+  assert.equal(f.saved()['voiceDescription'], description);
 });
 
 test('each provider saves its own voice, and the default stays the provider default', t => {

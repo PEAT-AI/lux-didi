@@ -46,15 +46,43 @@ describe('openai gpt-live adapter', () => {
     assert.equal(adapter.capabilities.thinking, 'provider_default');
   });
 
-  test('the default voice is marin, the Hindi voice is refused, and no OpenAI voice falls back to marin', async t => {
+  test('the default voice is marin and no OpenAI voice falls back to another name', async t => {
     assert.equal(OPENAI_DEFAULT_VOICE, 'marin');
-    assert.throws(() => new OpenAiLiveVoiceAdapter(options({ voice: 'nira' })), code('invalid_settings'));
     const f = await fixture(t);
     const session = new OpenAiLiveVoiceAdapter(options({ voice: '', socketFactory: f.socketFactory })).open(request(), control());
     t.after(() => session.close());
     await f.frame(1);
     const start = f.frames[0] as unknown as Start;
     assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: 'marin' });
+  });
+
+  test('PV2: nira, the documented Hindi voice, is selectable and travels as a preset string', async t => {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ voice: 'nira', socketFactory: f.socketFactory })).open(request(), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: 'nira' });
+  });
+
+  test('PV2: a custom voice id is sent as an id object, a preset stays a string', async t => {
+    const custom = 'voice_0123456789abcdef';
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ voice: custom, socketFactory: f.socketFactory })).open(request(), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    // GPT-Live references a prompt-designed voice as { id }, never as its name.
+    assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: { id: custom } });
+    // The documented id form is voice_ plus 16 to 64 lowercase hex characters; anything else is refused.
+    for (const bad of ['voice_0123456789ABCDEF', 'voice_0123', 'nira2', 'voice-0123456789abcdef', 'voice_0123456789abcdef'.padEnd(71, 'a')]) {
+      assert.throws(() => new OpenAiLiveVoiceAdapter(options({ voice: bad })), code('invalid_settings'), bad);
+    }
+    const preset = await fixture(t);
+    const named = new OpenAiLiveVoiceAdapter(options({ voice: 'cinder', socketFactory: preset.socketFactory })).open(request(), control());
+    t.after(() => named.close());
+    await preset.frame(1);
+    assert.deepEqual(((preset.frames[0] as unknown as Start).session['audio'] as Record<string, unknown>)['output'], { voice: 'cinder' });
   });
 
   test('the start barrier sends session.start before any audio, with the persona wrapper and wire facts', async t => {

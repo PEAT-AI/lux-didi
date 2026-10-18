@@ -65,5 +65,5 @@ test('the page offers exactly the provider voice lists the server validates agai
   assert.deepEqual([...providerVoices('gemini')], ['Aoede']);
   assert.equal(providerDefaultVoice('gemini'), 'Aoede');
   assert.equal(providerDefaultVoice('openai'), 'marin');
-  assert.equal(providerVoices('openai').includes('nira'), false);
+  assert.equal(providerVoices('openai').includes('nira'), true);
 });

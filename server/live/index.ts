@@ -1092,7 +1092,9 @@ export class LiveSessionOwner {
         if (handle.watchdogPhase === 'nudged') return;
         // One stall receipt per nudged deadline: how long the answer has been owed and how long since any
         // audible output. Only the answer's own audio re-arms it, so a fill frame never writes a false healthy.
-        if (handle.awaitingAnswer) {
+        // The owed answer is the tool result's own bookkeeping, so progress speech defers the clock without
+        // erasing the obligation (amendment A).
+        if (handle.answerAt !== undefined) {
           hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
             msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
@@ -1455,6 +1457,7 @@ export class LiveSessionOwner {
         const audible = event.type === 'audio' && event.audible !== false;
         // The answer's own audible audio is the one thing that clears the owed reply; progress text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
+        if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
           resetTurnScript(handle);

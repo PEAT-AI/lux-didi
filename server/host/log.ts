@@ -652,6 +652,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeToken(value.code) || !isSafeToken(value.param) || !isSafeMember(value.kind, COMMAND_KINDS)) return;
     return { event: 'command_rejected', code: value.code, param: value.param, kind: value.kind };
   }
+  if (value.event === 'continuation_deferred') {
+    // S5: a continuation is owed but a call of its batch has no output yet. The response it answers and how many
+    // call outputs it waits for, never a call id and never an argument.
+    if (!closedKeys(value, ['event', 'responseKey', 'awaiting'])) return;
+    if (!isSafeToken(value.responseKey) || !isSafeCount(value.awaiting)) return;
+    return { event: 'continuation_deferred', responseKey: value.responseKey, awaiting: value.awaiting };
+  }
+  if (value.event === 'turn_failed') {
+    // S5: a backend response ended failed, incomplete or errored. The provider's code, nothing else.
+    if (!closedKeys(value, ['event', 'code'])) return;
+    if (!isSafeToken(value.code)) return;
+    return { event: 'turn_failed', code: value.code };
+  }
   if (value.event === 'provider_error_unclassified') {
     // S4a-R2 (c): a provider error no disposition map entry claimed. Its own type, code and param, nothing else.
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;

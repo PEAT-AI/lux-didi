@@ -304,7 +304,11 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     async deliver(frame, cause = 'provider') {
       record();
       const call = isFunctionCall(frame);
-      if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], terminal: undefined, continuation: undefined, deliveryAt: undefined });
+      // One obligation per call id per epoch: a duplicated `function_call` frame is the same call, and the
+      // adapter already answered it once, so it earns a second obligation no more than it earns a second output.
+      if (call && !calls.some(entry => entry.callId === call.callId && entry.epoch === epoch)) {
+        calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], terminal: undefined, continuation: undefined, deliveryAt: undefined });
+      }
       f.send(frame);
       await flush();
       record();

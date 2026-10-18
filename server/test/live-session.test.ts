@@ -3500,6 +3500,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['chat']);
   // The owner talks over the answer: the block is context only from here on.
+  h.advance(500); scheduler.runDue(); await settlePort();
   fake.emit({ type: 'inputTranscription', text: 'and what about the other thing', finished: false });
   await settlePort();
   release();
@@ -3527,7 +3528,8 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] } });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
-  assert.equal(toolResponseCount(h), before + 1, 'the first answer still reaches the backend');
+  for (let i = 0; i < 400 && toolResponseCount(h) === before; i++) await tick();
+  assert.equal(toolResponseCount(h), before + 1, `the first answer still reaches the backend: ${JSON.stringify({ calls: h.calls, receipts }).slice(0, 600)}`);
   assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1);
   release();
   for (let i = 0; i < 400; i++) { if (receipts.some(entry => entry['event'] === 'research_late_findings')) break; await tick(); }

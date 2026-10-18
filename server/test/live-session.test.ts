@@ -3118,9 +3118,9 @@ function journalRecords(dir: string): Record<string, unknown>[] {
 
 test('Q5-R4: the opener context names at most two earlier first sentences and stays under 300 chars', () => {
   assert.equal(openersNote([]), undefined, 'no earlier call means no context at all');
-  const one = openersNote(['Morning. The release branch merged cleanly.', 'Second line of the same opener.']);
+  const one = openersNote(['Morning. The release branch merged cleanly. A second line follows.']);
   assert.equal(one!.includes('Morning.'), true, 'the first sentence of the earlier opener is named');
-  assert.equal(one!.includes('Second line'), false, 'the rest of that opener is not carried');
+  assert.equal(one!.includes('A second line'), false, 'the rest of that opener is not carried');
   const two = openersNote(['Morning. Then more.', 'Evening. Then more.', 'Night. A third call.']);
   assert.equal(two!.split('"').length - 1, 4, 'only the two most recent openers are quoted');
   assert.equal(two!.includes('Night.'), false, 'the third call is beyond the two the host passes');
@@ -3134,7 +3134,8 @@ test('Q5-R4: a fresh call carries the previous opener as do-not-repeat context, 
   const first = h.owner.create({ idempotencyKey: 'opener-first', inputClass: 'ordinary' }, h.ctx);
   assert.equal(accepted(h, first.liveSessionId).system.includes('earlier openers'), false, 'the first call has no earlier opener to avoid');
   // The spoken line lives in the owner-local journal, the same row the page reads back.
-  h.store.transaction(tx => tx.run("INSERT INTO live_journal(live_session_id,kind,text) VALUES (?, 'outputTranscription', ?)", [first.liveSessionId, 'Morning. The release branch merged cleanly last night.']));
+  const opener = 'Morning. The release branch merged cleanly last night.';
+  h.store.transaction(tx => tx.run("INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES (?, 'outputTranscription', ?, ?, 0)", [first.liveSessionId, opener, opener.length]));
   const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
   const text = accepted(h, second.liveSessionId).system;
   assert.equal(text.includes('Morning.'), true, 'the earlier opener is named in the start instruction');

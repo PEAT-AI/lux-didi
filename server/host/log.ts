@@ -571,12 +571,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
     // given, so a read cut short can be judged against the time the source really had. Never a query.
+    // K1: a knowledge read also reports the body window it asked for, so a named-layer read can be told
+    // apart from a snippet lookup. Optional, a token and counts only; without this the whole receipt, the
+    // deadline and coalesced count included, was refused and never reached host.log.
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
-    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
     if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs) || !isSafeCount(value.coalesced)) return;
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced };
+    let knowledge: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } | undefined;
+    if (hasKnowledge) {
+      const row = value.knowledge as Record<string, unknown> | null | undefined;
+      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
+      if (Object.keys(row).sort().join(',') !== ['detail', 'maxChars', 'deadlineMs', 'truncated'].sort().join(',')) return;
+      if (!isSafeToken(row['detail']) || !isSafeCount(row['maxChars']) || !isSafeCount(row['deadlineMs']) || typeof row['truncated'] !== 'boolean') return;
+      knowledge = { detail: row['detail'], maxChars: row['maxChars'], deadlineMs: row['deadlineMs'], truncated: row['truncated'] };
+    }
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}) };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

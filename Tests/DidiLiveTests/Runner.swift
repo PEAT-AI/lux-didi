@@ -278,36 +278,37 @@ struct GatedSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
-/// 3p: a socket that records the control frames put on the wire, with audio held by a gate so a stop can be sent
-/// in the middle of a send.
-actor RecordingSocket: LiveSocket {
-    private let underlying: any LiveSocket
+/// 3p: a socket that serves queued frames, holds PCM so a Stop can be sent mid-send, and records the control frames a
+/// stop put on the wire.
+actor StopProbeSocket: LiveSocket {
+    private var frames: [LiveFrame]
     private let gate: Gate
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
     private(set) var controls: [LiveControl] = []
     private var closed = false
-    init(_ underlying: any LiveSocket, _ gate: Gate) { self.underlying = underlying; self.gate = gate }
-    func receive() async throws -> LiveFrame { try await underlying.receive() }
+    init(_ frames: [LiveFrame], _ gate: Gate) { self.frames = frames; self.gate = gate }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
     func sendPCM(_ data: Data) async throws {
         await gate.wait()
         guard !closed else { throw LiveClientError.unavailable }
-        try await underlying.sendPCM(data)
     }
-    func sendControl(_ command: LiveControl) async throws {
+    func sendControl(_ command: LiveControl) throws {
         guard !closed else { throw LiveClientError.unavailable }
         controls.append(command)
     }
-    func cancel() async { closed = true; await underlying.cancel(); await gate.release() }
-}
-struct RecordingSockets: LiveSocketConnecting {
-    let underlying: any LiveSocketConnecting; let gate: Gate; let box: SocketBox
-    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket {
-        let socket = RecordingSocket(try await underlying.connect(binding), gate)
-        box.socket = socket
-        return socket
+    func cancel() async {
+        closed = true
+        waiter?.resume(throwing: LiveClientError.transport); waiter = nil
+        await gate.release()
     }
 }
-/// The last socket a recording connect made, for the assertions after the stop.
-final class SocketBox: @unchecked Sendable { var socket: RecordingSocket? }
+struct ProbeSockets: LiveSocketConnecting {
+    let socket: StopProbeSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
 
 actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
     private var frames: [LiveFrame] = []
@@ -911,16 +912,16 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await wire.release()
 
             // 3p: a Stop during a send still reaches the host, and the receipt names what pressed it.
-            let stopHTTP = TestHTTP(fixture), stopGate = Gate(), stopBox = SocketBox()
-            let stopSockets = RecordingSockets(underlying: CountedSockets(fixture), gate: stopGate, box: stopBox)
-            let stop = LiveSessionCoordinator(http: stopHTTP, sockets: stopSockets, sink: SilentSink())
+            let stopHTTP = TestHTTP(fixture), stopGate = Gate()
+            let stopSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], stopGate)
+            let stop = LiveSessionCoordinator(http: stopHTTP, sockets: ProbeSockets(socket: stopSocket), sink: SilentSink())
             await stop.begin(frozen); try await until { await stop.state == .active }
             let inFlight = Task { try? await stop.sendPCM(Data([1, 0])) }
             try await until { await stopGate.arrivals == 1 }
             let receipt = await stop.close(trigger: .button)
             try require(receipt?.trigger == .button, "the stop receipt names the press")
             try require((receipt?.socketCloseSentMs ?? -1) >= 0, "the receipt measures the wire")
-            try require(await stopBox.socket?.controls.contains(.close) == true, "the stop control reached the socket while audio was in flight")
+            try require(await stopSocket.controls.contains(.close), "the stop control reached the socket while audio was in flight")
             await inFlight.value
             await stopHTTP.finish()
             print("PASS stop control survives a busy send queue and its receipt names the press")

@@ -10,6 +10,7 @@ import {
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
+  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -964,4 +965,98 @@ test('S4b: the accent preset head and tail are byte-identical to the shipped voi
   assert.equal(sha(LIVE_ACCENT_PRESETS['indian-light'].head), '14fc697b526d6d289e65999c36da0a1f4e4efffdcbc39227ddae4057635bdaf2');
   assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].tail), 'f8592a00e9f57bf1fcccd8acceabf1c2488255cda92dcbd1f5397e53100e638e');
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
+});
+
+// --- release 3u: the opening options one start offers, from stored facts only -------------------
+
+const NOW_3U = Date.UTC(2026, 9, 20, 9, 30);
+const pastSummary = (index: number, summary: string) => ({ id: `s${index}`, endedAt: NOW_3U - index * 86_400_000, summary });
+const optionOf = (plan: ReturnType<typeof buildOpeningOptions>, kind: string) => plan.options.find(option => option.kind === kind);
+
+test('3u: with a calendar item the first option is the calendar and the item is kept verbatim', () => {
+  const calendar = '09:00 standup, 15:00 review';
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed.')],
+    now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
+  assert.equal(plan.options[0]?.kind, 'calendar', 'the calendar leads when today has an item');
+  assert.equal(plan.options[0]?.topic, '15:00 review', 'the next item at or after now, not a past one');
+  assert.ok(plan.section.startsWith(OPENING_OPTIONS_TITLE), 'one Opening options section');
+  assert.ok(plan.section.includes('- calendar: 15:00 review'));
+});
+
+test('3u: an empty calendar still composes a plan and offers no calendar kind', () => {
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed.')],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.ok(plan.section.startsWith(OPENING_OPTIONS_TITLE));
+  assert.equal(optionOf(plan, 'calendar'), undefined, 'no digest means no calendar option');
+  assert.ok(plan.options.length >= 1, 'the stored open loop still composes');
+  assert.ok(plan.section.includes('Pick one of these, or open on the moment if he speaks first'), 'the voice surface says pick one, or open on the moment');
+  assert.ok(plan.section.includes('Never invent beyond these options'), 'the plan bounds invention');
+});
+
+test('3u: five successive starts rotate across at least three stored open loops', () => {
+  const shared = 'The owner said the tax form is still to be filed.';
+  const candidates = [pastSummary(0, shared), pastSummary(1, shared), pastSummary(2, shared),
+    pastSummary(3, 'The owner said he still has to call the accountant.'), pastSummary(4, 'The owner said the passport is still to be renewed.')];
+  const offered = new Set<string>();
+  for (let rotation = 0; rotation < 5; rotation += 1) {
+    const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation });
+    const loop = optionOf(plan, 'open-loop');
+    assert.ok(loop !== undefined, 'every start offers an open loop when one exists');
+    offered.add(loop.topic);
+    assert.equal(plan.rotation, rotation, 'the start counter is carried into the receipt');
+  }
+  assert.ok(offered.size >= 3, `five starts offered ${offered.size} different loops, one shared and two others stored`);
+});
+
+test('3u: no candidate text appears that is not in the inputs', () => {
+  const calendar = '09:00 standup, 15:00 review';
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.'),
+    pastSummary(1, 'Naya found the release branch merged cleanly. The owner said he still has to call the accountant.')];
+  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar, rotation: 1 });
+  assert.ok(plan.options.some(option => option.kind === 'calendar') && plan.options.some(option => option.kind === 'open-loop'));
+  for (const option of plan.options) {
+    const source = option.kind === 'calendar' ? calendar : candidates.map(candidate => candidate.summary).join(' ');
+    assert.ok(source.includes(option.topic), `${option.kind} "${option.topic}" is drawn from its own input, never invented`);
+    assert.ok(plan.section.includes(option.topic), 'the section carries the option text as it was read');
+  }
+});
+
+test('3u: health, family and fitness are never an opener kind and never supply a candidate', () => {
+  const plan = buildOpeningOptions({ candidates: [
+    pastSummary(0, 'The owner said his mother is still in hospital and he still has to visit her.'),
+    pastSummary(1, 'He said the gym membership is still to be renewed.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(plan.options.length, 0, 'a family, health or fitness loop is never offered');
+  assert.equal(plan.section, '', 'a plan with no stored opener adds no section');
+  const mixed = buildOpeningOptions({ candidates: [
+    pastSummary(0, 'The owner said his mother is still in hospital. The owner said the tax form is still to be filed.')],
+  now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(mixed, 'open-loop')?.topic, 'the tax form is still to be filed', 'the work loop is offered, its attribution dropped so the line reads as a phrase');
+  assert.ok(!mixed.section.includes('hospital'), 'the health sentence never reaches the plan');
+  assert.ok(mixed.options.every(option => (OPENING_OPTION_KINDS as readonly string[]).includes(option.kind)), 'the kinds stay a closed set');
+});
+
+test('3u: the plan is bounded and the composed session instruction stays under the existing limits', () => {
+  const now = NOW_3U;
+  const candidates = Array.from({ length: 5 }, (_, index) => pastSummary(index,
+    `${'Dense context about the week. '.repeat(20)}The owner said the tax form is still to be filed.`));
+  const plan = buildOpeningOptions({ candidates, now, timeZone: 'UTC', calendar: '09:00 standup, 15:00 review', rotation: 2 });
+  assert.ok(plan.section.length <= OPENING_OPTIONS_CHARS, `the plan is bounded at ${OPENING_OPTIONS_CHARS} chars (${plan.section.length})`);
+  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
+  const earlier = buildEarlierConversationsSection(Array.from({ length: 6 }, (_, index) =>
+    ({ id: `s${index}`, endedAt: now - index * 3_600_000, summary: 'x'.repeat(400) })), { now, timeZone: 'UTC' }).section;
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records: [],
+    trustedChars: LIVE_INSTRUCTION_HARD_LIMIT, earlierConversations: earlier, openingOptions: plan.section });
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `session instruction ${composed.text.length} must fit the hard limit`);
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, 'and the target');
+  assert.equal(composed.sections.find(section => section.id === 'opening-options')?.chars, plan.section.length, 'the plan is measured as its own section');
+  assert.ok(composed.text.indexOf(OPENING_OPTIONS_TITLE) > composed.text.indexOf(EARLIER_CONVERSATIONS_TITLE), 'the plan is read after the stored conversation');
+});
+
+test('3u: the options a call composed can be read back from its own instruction', () => {
+  const calendar = '09:00 standup, 15:00 review';
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed.')],
+    now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
+  const read = openingOptionsTopics(plan.section);
+  assert.deepEqual(read, plan.options.map(option => ({ kind: option.kind, topic: option.topic })), 'the recorded plan yields the topics the next start names');
+  assert.deepEqual(openingOptionsTopics('no plan here'), []);
 });

@@ -135,6 +135,23 @@ struct LiveCaptureDiagnosticSnapshot: Sendable {
 /// Every way a call can be stopped by its owner. Closed set, so a receipt can never carry free text.
 public enum LiveStopTrigger: String, CaseIterable, Sendable { case button, hotkey, menu, other }
 
+/// D12-5: which trigger a Stop carries. `other` is reserved for a stop the app makes itself; every
+/// owner action names its own. A menu stop travels through the web state machine and comes back as a
+/// bridge command, so its trigger is armed here first and consumed exactly once.
+public struct LiveStopTriggerLatch: Sendable {
+    private var pending: LiveStopTrigger?
+    public init() {}
+    /// Arm the trigger of a Stop whose command has not arrived yet.
+    public mutating func arm(_ trigger: LiveStopTrigger) { pending = trigger }
+    /// The trigger this Stop carries: the armed one if any, otherwise the caller's own.
+    public mutating func take(_ fallback: LiveStopTrigger) -> LiveStopTrigger {
+        defer { pending = nil }
+        return pending ?? fallback
+    }
+    /// A start clears an arm that never became a stop, so it can never label a later call.
+    public mutating func clear() { pending = nil }
+}
+
 /// What a Stop did, so the native log can prove it: what was pressed, when, and how long the wire took to close.
 public struct LiveStopReceipt: Sendable, Equatable {
     public let trigger: LiveStopTrigger
@@ -397,6 +414,14 @@ public actor LiveSessionCoordinator {
         if muted, captureSubmissions > 0 {
             await withCheckedContinuation { captureDrainWaiters.append($0) }
         }
+    }
+
+    /// O1b-N: one playback receipt frame, forwarded over the live socket the call already holds. A
+    /// receipt never changes session state: outside an active call it is dropped, and a send failure
+    /// is not a call failure (the audio path owns that decision, not the receipt).
+    public func sendPlaybackReceipt(_ frame: String) async {
+        guard state == .active, let socket else { return }
+        try? await socket.sendReceipt(frame)
     }
 
     public func sendPCM(_ pcm: Data, captureEpoch submittedEpoch: UInt64? = nil, diagnosticOwner: UInt64? = nil) async throws {

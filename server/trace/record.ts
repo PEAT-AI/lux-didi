@@ -1,10 +1,11 @@
 import { performance } from 'node:perf_hooks';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
 import {
-  CALL_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, RESPONSE_STATUSES,
+  CALL_OUTCOMES, COMMAND_KINDS, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
+  RESPONSE_STATUSES,
   RESPONSE_TERMINAL_REASONS, STALL_REASONS, TRACE_DAY_MS, TRACE_RETENTION_DAYS, TRACE_SCHEMA_VERSION,
   TURN_CLOSE_REASONS, TURN_ORIGINS, TURN_OUTCOMES, UTTERANCE_ROLES, isOneOf,
-  type CallOutcome, type EventSource, type PlaybackTerminationReason, type ResponseStatus,
+  type CallOutcome, type CommandKind, type EventSource, type PlaybackTerminationReason, type ProgressReason, type ResponseStatus,
   type ResponseTerminalReason, type StallReason, type TraceEventKind, type TurnCloseReason,
   type TurnOrigin, type TurnOutcome, type UtteranceRole,
 } from './kinds.js';
@@ -53,6 +54,10 @@ export interface TraceDetailMap {
   'playback.drained': { drainedAt: number };
   'playback.interrupted': { interruptedAt: number; terminationReason: PlaybackTerminationReason };
   'playback.terminated': { terminationReason: PlaybackTerminationReason };
+  'progress.commentary': { reason: ProgressReason; sentAt: number; delegationId?: string };
+  'progress.thinking': { sentAt: number; chars: number };
+  'call.ceiling': { ceilingMs: number; hitAt: number };
+  'command.rejected': { rejectedAt: number; code: string; param: string; kind: CommandKind };
 }
 
 export interface TraceWritePort { transaction<T>(body: (tx: Transaction) => T): T }
@@ -83,6 +88,7 @@ const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'playback.received': ['playbackKey'], 'playback.audible': ['playbackKey'], 'playback.enqueued': ['playbackKey'],
   'playback.started': ['playbackKey'], 'playback.drained': ['playbackKey'], 'playback.interrupted': ['playbackKey'],
   'playback.terminated': ['playbackKey'],
+  'progress.commentary': ['turnId'], 'progress.thinking': ['turnId'], 'call.ceiling': ['callKey'], 'command.rejected': ['turnId'],
 };
 
 const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, FieldSpec>>>> = {
@@ -120,6 +126,10 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   'playback.drained': { drainedAt: { check: isCount } },
   'playback.interrupted': { interruptedAt: { check: isCount }, terminationReason: { check: oneOf(PLAYBACK_TERMINATION_REASONS) } },
   'playback.terminated': { terminationReason: { check: oneOf(PLAYBACK_TERMINATION_REASONS) } },
+  'progress.commentary': { reason: { check: oneOf(PROGRESS_REASONS) }, sentAt: { check: isCount }, delegationId: { check: isId, optional: true } },
+  'progress.thinking': { sentAt: { check: isCount }, chars: { check: isCount } },
+  'call.ceiling': { ceilingMs: { check: isCount }, hitAt: { check: isCount } },
+  'command.rejected': { rejectedAt: { check: isCount }, code: { check: isId }, param: { check: isId }, kind: { check: oneOf(COMMAND_KINDS) } },
 };
 
 function validateEvent(kind: TraceEventKind, ids: TraceEventIds, detail: unknown): void {
@@ -320,6 +330,8 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       requireChanged(tx.run('UPDATE trace_playback SET termination_reason=? WHERE playback_key=?', [d.terminationReason, ids.playbackKey!]), `trace_playback:${ids.playbackKey}`);
       return;
     }
+    // S4a progress and command receipts: the causal spine row is the whole record; no projection holds them.
+    case 'progress.commentary': case 'progress.thinking': case 'call.ceiling': case 'command.rejected': return;
     default: {
       const unreachable: never = kind;
       throw new TraceRecordError('UNKNOWN_KIND', `unknown event kind ${String(unreachable)} event ${seq}`);

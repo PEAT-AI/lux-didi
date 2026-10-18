@@ -60,6 +60,24 @@ Retention covers the two content tables only: rows older than 30 days are pruned
 Metadata rows are untouched by that pass. Deletion is logical, so SQLite WAL frames and free pages
 are not forensically erased; see `docs/privacy-and-authority.md`.
 
+## The native logs
+
+`native-live.log` and `audio.log` are the app's own files, so every line carries what a join needs
+and the host's record does not: `source_instance_id` (one per app launch), `source_seq` (strictly
+increasing per instance), `mono_ms` (the app's own monotonic clock) and a fractional wall time in
+`timestamp` plus `wall_ms`. Inside a call every line also carries `liveSessionId`. Both files rotate
+at 5 MiB with two rotations (`<name>`, `<name>.1`, `<name>.2`), the shape `host.log` already uses,
+so neither grows without a bound.
+
+The app forwards its playback receipts (received, enqueued, started, drained, interrupted,
+terminated) to the host over the live socket it already holds. Each is one bounded frame with
+`segment_seq`, `source_instance_id`, `source_seq`, `mono_ms` and `wall_ms`; the host validates it
+against a closed shape, refuses an unknown or free-text field, records it as a `native` trace event
+plus its `trace_playback` row, and dedups on `(source_instance_id, source_seq)`. A refused frame is
+journaled by typed code and never changes session state. `response_key` and `turn_id` on a playback
+row are set only when the host knows them for that segment; a segment the host cannot attribute is
+printed outside every turn with `turn=none`, never guessed into one.
+
 ## The SQL timeline
 
 `scripts/didi-timeline` reads `state.sqlite` only and prints one timeline. It never reads the
@@ -170,6 +188,37 @@ binary, `NAYA_LOG_SUBSYSTEM` the subsystem.
 
 Read content only as far as the question needs it: the point of the ordering is to find the one
 line that matters before reading a transcript.
+
+## Release gates
+
+A gate is a script under `scripts/` that builds first, runs its own compiled suite and refuses to be green on a
+zero test count. Run it before a voice release; it prints its verdict and its own refusals.
+
+```sh
+bash scripts/check-live-session.sh    # the host live session, its summaries, journals, adapters and the voice
+                                      # fault-replay scenarios (release gate F1)
+```
+
+The fault-replay part of that gate drives the real OpenAI adapter and the real host live session together over a
+virtual monotonic clock, against a scriptable fake provider socket, scriptable fake tools and the driver's own
+playback receipts, so no test in it sleeps, opens a provider or reads the owner's data directory. Each scenario
+asserts the six council invariants: one terminal disposition and one output submission per observed call, one
+continuation per ready batch, no write for a settled generation, no repeated uncertain action, no obligation
+dropped because audio went quiet, and an answer or a typed failure inside the scenario's virtual deadline.
+
+A scenario the current code fails is marked `todo` with the assertion it falsifies quoted, and named here with the
+wagon that owes the fix: wagon S4a owns the late-callback repeat, the partial-batch continuation, the duplicate
+terminal event and the failed backend response. A trace is a list of `{at_ms, direction, event}` built by
+`server/test/voice-replay/sanitize.ts` from a recorded provider log of test data only, with every free text field
+replaced by a placeholder.
+
+Fidelity limit: the replay injects `LiveVoiceClock` into the adapter and `now`/`schedule` into the host, so every
+turn-taking window and every host timer runs on virtual time. The adapter's transport timers (handshake, idle,
+deadline, close) are real `setTimeout`s compared against real `Date.now()` (server/adapters/live-voice/openai.ts,
+the `Date.now() >= this.deadlineMs` guard), so they cannot fire in a replay where virtual time outruns the wall
+clock. The driver anchors the virtual origin at `Date.now()` and sets those budgets far beyond any scenario, so
+they never fire and no scenario depends on them; a scenario that must prove the transport deadline needs a
+production seam, not a longer trace.
 
 ## Privacy rule
 

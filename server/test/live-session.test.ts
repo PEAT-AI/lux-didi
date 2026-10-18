@@ -38,7 +38,7 @@ import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceAdapterOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse } from '../adapters/live-voice/index.js';
 import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
@@ -120,6 +120,8 @@ async function harness(t: TestContext, overrides: {
   calendar?: boolean;
   beforeTool?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
+  /** R6: the work one Mattermost read does, so a test can hold a chat source open across a clock advance. */
+  mattermostWork?: () => Promise<void>;
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
@@ -189,8 +191,9 @@ async function harness(t: TestContext, overrides: {
       mattermostSdk = new Server({ name: 'live-mattermost-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       mattermostTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
       mattermostSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mattermostSchemas) }) as never);
-      mattermostSdk.setRequestHandler('tools/call', req => {
+      mattermostSdk.setRequestHandler('tools/call', async req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
+        await overrides.mattermostWork?.();
         const text = req.params.name === 'mattermost_list_channels'
           ? JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] })
           : req.params.name === 'mattermost_whoami'
@@ -276,6 +279,15 @@ async function harness(t: TestContext, overrides: {
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+}
+
+/** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
+async function openPort(h: Harness, key: string) {
+  const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  await settlePort();
+  return { session, attachment };
 }
 
 async function attached(h: Harness, key = 'k1', opening = 'Open the conversation now with one fresh, specific line.') {
@@ -3335,4 +3347,456 @@ test('D6: the adapter silence model between her sentences never drops the orb ou
   await settlePort();
   assert.equal(h.owner.current().state, 'listening', '1,500 ms of audible silence ends it');
   attachment.close();
+});
+
+/**
+ * S4a: a GPT-Live shaped fake port. It records the two appends the host can send (progress commentary and silent
+ * thinking), so the openai path is exercised with no network, no model and no real clock.
+ */
+function progressPort() {
+  const commentary: string[] = [];
+  const thinking: string[] = [];
+  /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
+  const texts: string[] = [];
+  const toolResponses: LiveToolResponse[][] = [];
+  let emit: (event: unknown) => void = () => {};
+  let sessionsOpened = 0;
+  const port: LiveVoicePort = {
+    capabilities: { ...fakeLiveVoicePort().port.capabilities, provider: 'openai', supportsResumption: true },
+    open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+      sessionsOpened += 1;
+      let closed = false;
+      let resolveDone: (value: LiveVoiceOutcome) => void = () => {};
+      const done = new Promise<LiveVoiceOutcome>(resolve => { resolveDone = resolve; });
+      const pending: LiveVoiceEvent[] = [];
+      let waiter: (() => void) | undefined;
+      const wake = () => { const waiting = waiter; waiter = undefined; if (waiting) waiting(); };
+      let sequence = 0;
+      emit = event => { pending.push({ ...(event as Record<string, unknown>), sequence: ++sequence } as unknown as LiveVoiceEvent); wake(); };
+      control.signal.addEventListener('abort', () => {
+        if (closed) return;
+        closed = true; wake(); resolveDone({ status: 'cancelled', code: 'cancelled' });
+      }, { once: true });
+      let readySeen = false;
+      const events: AsyncIterable<LiveVoiceEvent> = {
+        async *[Symbol.asyncIterator]() {
+          while (!closed) {
+            if (!readySeen) { readySeen = true; yield { sequence: ++sequence, type: 'ready' }; continue; }
+            if (!pending.length) { await new Promise<void>(resolve => { waiter = resolve; }); continue; }
+            yield pending.shift()!;
+          }
+        },
+      };
+      return {
+        ready: Promise.resolve(), events, done,
+        sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
+        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendCommentary(input: { text: string }): void { commentary.push(input.text); },
+        sendThinking(input: { text: string }): void { thinking.push(input.text); },
+        close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
+      };
+    },
+  };
+  return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event), get sessionsOpened() { return sessionsOpened; } };
+}
+
+const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 };
+
+test('progress speech fires once about 6 s into an open delegation, and not before', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'progress-first');
+  // The lookup is still running: this is the delegation the owner is waiting on.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.deepEqual(fake.thinking, ['Reading knowledge. Nothing has been sent or booked while that runs.'], 'one silent line says what is running');
+  assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 1);
+  h.advance(5_999); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, [], 'nothing is said before the first deadline');
+  h.advance(1); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, ['Still reading the knowledge.'], 'one factual line, built from the ledger');
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'commentary_sent').map(entry => entry['reason']), ['dead_air']);
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('progress speech is suppressed while the owner speaks', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'progress-suppressed');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'svc2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The owner is talking over the lookup: the line would step on her.
+  h.advance(5_000); scheduler.runDue();
+  fake.emit({ type: 'inputTranscription', text: 'wait a moment', finished: false });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, [], 'no progress speech over a speaking owner');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
+
+
+
+// --- R6: late findings reach the voice model, and are spoken only on a quiet turn -----------------
+
+/** The owner's memory answers in process and the chat read is held, so 4.5 s arrives with one source open. */
+const LATE_LOOKUPS = [{ source: 'memory', query: 'dentist' }, { source: 'chat', query: 'standup' }];
+
+test('R6: a source that settles after the first answer is appended once, and said once on a quiet turn', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
+  const { session } = await openPort(h, 'late-quiet');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the tool output is written with a source still reading');
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source it is still reading: ${JSON.stringify(reply).slice(0, 500)}`);
+  assert.ok((reply['findings'] as unknown[]).length > 0, 'and carries what is already in hand');
+  assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1, 'one receipt for the answer point');
+  assert.deepEqual(fake.thinking.filter(text => text.startsWith('Later findings from')), [], 'nothing is appended before the reader lands');
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1, 'one receipt for the source that landed later');
+  assert.equal(late[0]!['source'], 'chat');
+  assert.equal(late[0]!['delivered'], 'commentary', 'a quiet turn hears it once');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model is always told');
+  assert.deepEqual(fake.commentary.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('R6: a late finding speaks nothing over an owner who has started a new question', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
+  const { session } = await openPort(h, 'late-busy');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['chat']);
+  // The owner talks over the answer: the block is context only from here on.
+  h.advance(500); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'inputTranscription', text: 'and what about the other thing', finished: false });
+  await settlePort();
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1);
+  assert.equal(late[0]!['delivered'], 'thinking', 'silent context only');
+  assert.notEqual(late[0]!['reason'], 'quiet', 'and the receipt says why it stayed silent');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model still carries it');
+  assert.deepEqual(fake.commentary, [], 'the owner hears nothing over herself');
+  h.owner.revoke(session.liveSessionId);
+});
+
+
+test('R6/B1: a late finding stays silent while the owner speech that began before the answer runs on', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
+  const { session } = await openPort(h, 'late-owner-speech');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  await settlePort();
+  // She started talking before any answer could go out, and no turn boundary has arrived yet.
+  h.advance(3_500); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'inputTranscription', text: 'so about that', finished: false });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['chat'], 'the answer went out while she was still speaking');
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1);
+  assert.equal(late[0]!['delivered'], 'thinking', 'silent context only');
+  assert.equal(late[0]!['reason'], 'owner_speaking', 'her own voice, not the model\'s answer audio');
+  assert.deepEqual(fake.commentary, [], 'nothing is said over the owner');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model still carries it');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('R6: Gemini has no thinking channel on this path, so a late finding is dropped with a receipt', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
+  await attached(h, 'late-gemini');
+  const before = toolResponseCount(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] } });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  for (let i = 0; i < 400 && toolResponseCount(h) === before; i++) await tick();
+  assert.equal(toolResponseCount(h), before + 1, `the first answer still reaches the backend: ${JSON.stringify({ calls: h.calls, receipts }).slice(0, 600)}`);
+  assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1);
+  release();
+  for (let i = 0; i < 400; i++) { if (receipts.some(entry => entry['event'] === 'research_late_findings')) break; await tick(); }
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1, 'one receipt, and nothing appended');
+  assert.equal(late[0]!['delivered'], 'dropped');
+  assert.equal(late[0]!['reason'], 'no_thinking_channel');
+});
+
+test('a tool past the host ceiling is answered once with a timeout and one continuation', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
+  const { session } = await openPort(h, 'ceiling');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ceil1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 0, 'the tool has not answered on its own');
+  h.advance(12_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'exactly one answer reaches the backend');
+  assert.deepEqual(fake.toolResponses[0], [{ id: 'ceil1', name: 'search_knowledge', response: { error: 'timeout' } }]);
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit'), [
+    { event: 'tool_ceiling_hit', tool: 'search_knowledge', ms: 12_000, outcome: 'timeout' },
+  ]);
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'and only one continuation, never a second answer');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('a delegation still open at 25 s logs its stall, speaks once and is not rebuilt', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'stall');
+  fake.emit({ type: 'resumptionHandle', handle: 'synthetic-stall-handle' });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'stall1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  release();
+  await settlePort();
+  h.advance(25_000); scheduler.runDue(); await settlePort();
+  const stalls = receipts.filter(entry => entry['event'] === 'gptlive_delegation_stalled');
+  assert.equal(stalls.length, 1, 'one stall receipt, not a stream of them');
+  assert.deepEqual(stalls[0], { event: 'gptlive_delegation_stalled', ms: 25_000 });
+  assert.deepEqual(fake.commentary.at(-1), 'the knowledge lookup is done.', 'the line names the execution receipt');
+  // S4a-R2 (b): the stall deadline is diagnostic. Escalation is S2's, so the receipts show its recovery and the
+  // session count shows the stall started nothing of its own.
+  const recoveries = receipts.filter(entry => entry['event'] === 'live_recovery');
+  assert.equal(fake.sessionsOpened, 1 + recoveries.length, 'the stall added no session of its own');
+  assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'S2 keeps its own escalation');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late callback never answers twice', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'ceiling-write');
+  // The note waits for the owner's transcript, so the batch is dispatched once that lands.
+  fake.emit({ type: 'inputTranscription', text: 'remember this', finished: true });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [
+    { id: 'w1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } },
+    { id: 'r1', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
+  ] });
+  await settlePort();
+  h.advance(12_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'one settlement reaches the backend');
+  // A read that ran past the ceiling timed out; a write the host cannot prove is uncertain, never a plain timeout.
+  assert.deepEqual(fake.toolResponses[0], [
+    { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } },
+    { id: 'r1', name: 'search_knowledge', response: { error: 'timeout' } },
+  ]);
+  // The settlements are distinct statuses, and none of them claims the remote side stopped.
+  const hits = receipts.filter(entry => entry['event'] === 'tool_ceiling_hit');
+  assert.deepEqual(hits, [
+    { event: 'tool_ceiling_hit', tool: 'remember_note', ms: 12_000, outcome: 'uncertain' },
+    { event: 'tool_ceiling_hit', tool: 'search_knowledge', ms: 12_000, outcome: 'timeout' },
+  ]);
+  // The callback lands after the settlement: it may not rewrite it or write a second output.
+  release();
+  await settlePort();
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_late').map(entry => entry['outcome']), ['completed', 'completed'],
+    'a late callback is a receipt, never a second answer');
+  assert.equal(fake.toolResponses.length, 1, 'a late callback never produces a second output');
+  assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } });
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is never answered', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
+  const { session } = await openPort(h, 'ceiling-cancelled');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The provider cancels the call before the ceiling: its abort signal is set, so the host knows it never ran.
+  fake.emit({ type: 'toolCallCancellation', ids: ['c1'] });
+  await settlePort();
+  h.advance(12_000); scheduler.runDue(); await settlePort();
+  // S4a-R2 (a): "cancelled before execution" is the provider cancellation's own receipt, and such a call is owed no
+  // answer at all, so it never settles at the ceiling (3r keeps that behaviour).
+  assert.equal(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').length, 0, 'no ceiling settlement for a cancelled call');
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_cancelled').map(entry => entry['tool']), ['search_knowledge']);
+  assert.deepEqual(fake.toolResponses, [], 'a provider-cancelled call is never answered (3r)');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (e): thinking never claims nothing changed around a write, and the line names execution state', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'thinking-write');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w2', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
+  await settlePort();
+  assert.deepEqual(fake.thinking, ['Reading memory.'], 'a write in the batch means no claim about what changed');
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  // S4a-R2 (e): the host waits for the owner transcript before a remember_note is dispatched, so the honest
+  // word is queued, never "reading".
+  assert.deepEqual(fake.commentary, ['waiting on the memory.'], 'a queued call is never described as being read');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const nudges = (): number => receipts.filter(entry => entry['event'] === 'live_dead_air_nudge').length;
+
+  // The ack path: the progress line goes out and the debt is still owed, so the watchdog escalates anyway.
+  const acked = await openPort(h, 'ack-watchdog');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'a1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  release();
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1, 'the progress line went out: that is the ack under test');
+  assert.equal(nudges(), 0, 'the ack is not a delivery and the watchdog has not spoken yet');
+  h.advance(2_000); scheduler.runDue(); await settlePort();
+  assert.equal(nudges(), 1, 'the watchdog still escalated after the commentary ack');
+  acked.attachment.close();
+  await settlePort();
+
+  // The delivery path: the answer's own audible audio is the one thing that ends the debt, so no deadline escalates.
+  const before = nudges();
+  const answered = await openPort(h, 'audio-delivery');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'a2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(nudges(), before, 'audible audio, not an ack, is what the watchdog accepts');
+  answered.attachment.close();
+});
+
+test('review F1/F2: the research lookup, the one the model can call, speaks and thinks', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // `research` is the only lookup the production model is declared, so this is the reachable path (review F2).
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'research-progress');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
+  await settlePort();
+  assert.equal(fake.thinking.length, 1, 'silent truth goes out for a research lookup');
+  assert.match(fake.thinking[0]!, /Running a lookup across your sources\. Nothing has been sent or booked while that runs\./);
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1, 'progress speech goes out for a research lookup');
+  // The line names a source the run actually opened and its settled receipt, never the requested list.
+  assert.match(fake.commentary[0]!, /chat/, 'the research source is named from its own step');
+  assert.match(fake.commentary[0]!, /is done|failed|Still reading/, 'with the status the run reported');
+  // Review F2: the OpenAI path never sends the dead-air user turn.
+  assert.deepEqual(fake.texts, [], 'no Continue. user message on the Responses-delegation path');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
+// O1b-N: the app's playback receipts ride the live socket the call already holds. One closed frame
+// shape in, native trace rows out; a malformed frame is refused and journaled, never stored.
+test('O1b-N: a forwarded playback receipt records native rows and a refused frame writes none', async t => {
+  const h = await harness(t);
+  configureDebugJournal(h.dir, true);
+  t.after(() => resetDebugJournal());
+  const { session, attachment } = await attached(h, 'playback-receipts');
+  const frame = (receipt: string, seq: number, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-b2', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq, ...extra });
+
+  attachment.playbackReceipt(frame('received', 1));
+  attachment.playbackReceipt(frame('enqueued', 2));
+  attachment.playbackReceipt(frame('started', 3));
+  attachment.playbackReceipt(frame('drained', 4));
+  const events = h.store.transaction(tx => tx.all('SELECT kind, source, source_seq FROM trace_event WHERE live_session_id=? ORDER BY seq', [session.liveSessionId]));
+  assert.deepEqual(events.map(row => row['kind']), ['playback.received', 'playback.enqueued', 'playback.started', 'playback.drained']);
+  assert.ok(events.every(row => row['source'] === 'native'));
+  const row = h.store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', ['inst-b2:1']))!;
+  assert.equal(row['drained_at'], 1_700_000_000_004, 'the producer wall ms lands in the summary row');
+  assert.equal(row['turn_id'], null, 'the host never guesses the turn it does not know');
+
+  const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_event')!['n']));
+  attachment.playbackReceipt(frame('drained', 5, { note: 'free text never reaches a column' }));
+  attachment.playbackReceipt('{ not json');
+  assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_event')!['n'])), before, 'a refused frame writes nothing');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, null, 'a refused frame cannot end the call');
+
+  const rejected = journalRecords(h.dir).filter(record => record['event'] === 'playback_receipt_rejected');
+  assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is journaled by typed code');
+  attachment.close();
+  await attachment.done;
 });

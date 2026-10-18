@@ -11,10 +11,11 @@ const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
 const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory'];
-const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient'];
-const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop'];
+const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
+const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
-const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
+// #280: `routed` is the routed start's own driver; it never goes through the selector loop.
+const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
@@ -24,10 +25,22 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
+/** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
+const LATE_DELIVERIES = ['commentary', 'thinking', 'dropped'];
+const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'session_closed', 'no_thinking_channel',
+  'no_commentary_channel', 'already_spoken', 'window_elapsed', 'owner_speaking', 'new_question', 'answer_playing', 'send_failed'];
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
+/** S4a: why a progress line was sent, as a closed set (never free text). */
+const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
+/** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. A call the
+ *  provider cancelled never settles at the ceiling: its own `tool_cancelled` receipt names it, with no answer. */
+const CEILING_OUTCOMES = ['timeout', 'uncertain'];
+const LATE_OUTCOMES = ['completed', 'failed'];
+/** S4a-R4: the command families a rejected client event id can name. */
+const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -515,12 +528,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // never question text, evidence or item ids.
     const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars'];
     // #260: the run's own driver is optional (a stop line makes no selection) but is admitted only as
-    // one of the three; any other value refuses the whole event, as the closed sets above do.
+    // one of the four; any other value refuses the whole event, as the closed sets above do. #280:
+    // a routed start writes its own line and names `routed`.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
     if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
     if (Object.keys(value).sort().join(',') !== (hasDriver ? [...keys, 'driver'] : keys).sort().join(',')) return;
     if (!isSafeId(value.researchId) || !isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
-    if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable'])) return;
+    if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
     if (typeof value.fallbackUsed !== 'boolean') return;
     if (!isSafeCount(value.rounds) || !isSafeCount(value.ops) || !isSafeCount(value.elapsedMs) || !isSafeCount(value.deadAirMs) || !isSafeCount(value.selectorMs) || !isSafeCount(value.replyBytes)) return;
     const pUseful = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
@@ -569,12 +583,42 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
     // given, so a read cut short can be judged against the time the source really had. Never a query.
+    // K1: a knowledge read also reports the body window it asked for, so a named-layer read can be told
+    // apart from a snippet lookup. Optional, a token and counts only; without this the whole receipt, the
+    // deadline and coalesced count included, was refused and never reached host.log.
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
-    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
     if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs) || !isSafeCount(value.coalesced)) return;
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced };
+    let knowledge: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } | undefined;
+    if (hasKnowledge) {
+      const row = value.knowledge as Record<string, unknown> | null | undefined;
+      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
+      if (Object.keys(row).sort().join(',') !== ['detail', 'maxChars', 'deadlineMs', 'truncated'].sort().join(',')) return;
+      if (!isSafeToken(row['detail']) || !isSafeCount(row['maxChars']) || !isSafeCount(row['deadlineMs']) || typeof row['truncated'] !== 'boolean') return;
+      knowledge = { detail: row['detail'], maxChars: row['maxChars'], deadlineMs: row['deadlineMs'], truncated: row['truncated'] };
+    }
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}) };
+  }
+  if (value.event === 'research_first_answer') {
+    // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
+    // reply and the ones it named as pending. Never a query, never a finding.
+    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending'])) return;
+    if (!isSafeId(value.researchId) || typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
+    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending };
+  }
+  if (value.event === 'research_late_findings') {
+    // R6: one line per source that settled after the first answer: how long it took, how many items it
+    // really returned, and how the host delivered them. Never the text of one.
+    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'delivered', 'reason'])) return;
+    if (!isSafeId(value.researchId) || !isSafeMember(value.source, RESEARCH_SOURCES)) return;
+    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (typeof value.items !== 'number' || !Number.isInteger(value.items) || value.items < 0 || value.items > 16) return;
+    if (!isSafeMember(value.delivered, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
+    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, delivered: value.delivered, reason: value.reason };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
@@ -591,7 +635,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
-    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
+    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
     return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
   }
   if (value.event === 'conversation_summary_recovery') {
@@ -611,6 +655,50 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if ('errorCode' in value && !isSafeToken(value.errorCode)) return;
     if ('reason' in value && !isSafeMember(value.reason, SUMMARY_REASONS)) return;
     return value;
+  }
+  if (value.event === 'commentary_sent') {
+    // S4a: progress speech went out. Which delegation asked for it and why, never the line that was spoken.
+    if (!closedKeys(value, ['event', 'delegationKey', 'reason'])) return;
+    if (!isSafeId(value.delegationKey) || !isSafeMember(value.reason, PROGRESS_REASONS)) return;
+    return { event: 'commentary_sent', delegationKey: value.delegationKey, reason: value.reason };
+  }
+  if (value.event === 'thinking_sent') {
+    // S4a: silent context went out; the count alone, since the text is what the owner must never see in a log.
+    if (!closedKeys(value, ['event', 'chars'])) return;
+    if (!isSafeCount(value.chars)) return;
+    return { event: 'thinking_sent', chars: value.chars };
+  }
+  if (value.event === 'tool_ceiling_hit') {
+    // S4a: the host ceiling answered a call instead of the tool. The tool name, the wait and the settlement,
+    // never its args: a read times out, a write is uncertain, and a cancelled one never ran.
+    if (!closedKeys(value, ['event', 'tool', 'ms', 'outcome'])) return;
+    if (!isSafeToken(value.tool) || !isSafeCount(value.ms) || !isSafeMember(value.outcome, CEILING_OUTCOMES)) return;
+    return { event: 'tool_ceiling_hit', tool: value.tool, ms: value.ms, outcome: value.outcome };
+  }
+  if (value.event === 'tool_ceiling_late') {
+    // S4a-R2 (a): a callback that landed after the ceiling settled the call. A receipt only: the settled output
+    // stands, and this never writes a second one.
+    if (!closedKeys(value, ['event', 'tool', 'outcome'])) return;
+    if (!isSafeToken(value.tool) || !isSafeMember(value.outcome, LATE_OUTCOMES)) return;
+    return { event: 'tool_ceiling_late', tool: value.tool, outcome: value.outcome };
+  }
+  if (value.event === 'command_rejected') {
+    // S4a-R4: a provider error that names a client command. Code, param and the command family only.
+    if (!closedKeys(value, ['event', 'code', 'param', 'kind'])) return;
+    if (!isSafeToken(value.code) || !isSafeToken(value.param) || !isSafeMember(value.kind, COMMAND_KINDS)) return;
+    return { event: 'command_rejected', code: value.code, param: value.param, kind: value.kind };
+  }
+  if (value.event === 'provider_error_unclassified') {
+    // S4a-R2 (c): a provider error no disposition map entry claimed. Its own type, code and param, nothing else.
+    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
+    return { event: 'provider_error_unclassified', type: value.type, code: value.code, param: value.param };
+  }
+  if (value.event === 'responses_validation_failed') {
+    // S4a-R4: the backend refused its own delegation config. The refused field, once per session.
+    if (!closedKeys(value, ['event', 'param'])) return;
+    if (!isSafeToken(value.param)) return;
+    return { event: 'responses_validation_failed', param: value.param };
   }
   if (value.event === 'research_joined') {
     // Metadata only: the run id a second start joined. No question, no result text.

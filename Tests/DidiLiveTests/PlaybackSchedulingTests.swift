@@ -120,7 +120,39 @@ func recordedSchedule() -> (schedule: [PlaybackChunk], starvedTurns: Int) {
         try require(tight.playedBack(atMs: 500), "the short chunk drains")
         let starved = tight.arrival(frames: 12000, atMs: 600)
         try require(starved.underrun, "a refill within the pause threshold is a real underrun")
-        try require(starved.queuedMs == 500, "the drained burst length is recorded, got \(starved.queuedMs)")
+        try require(starved.burstMs == 500, "the drained burst length is recorded as burstMs, got \(starved.burstMs)")
+        try require(starved.queuedMs == 500, "a refill states the depth it now holds, got \(starved.queuedMs)")
+
+        // D12-4: the queue reports a real depth. It falls buffer by buffer while the answer plays,
+        // never only at the drain, and it is 0 once the burst has drained.
+        var live = NativePlaybackQueue()
+        var depths: [Int] = []
+        for index in 0..<4 {
+            let arrival = live.arrival(frames: 24000, atMs: index * 50)   // 1 s of audio per buffer
+            if index == 0 { try require(arrival.queuedMs == 1000, "the first chunk states a 1 s depth, got \(arrival.queuedMs)") }
+            depths.append(arrival.queuedMs)
+        }
+        try require(depths == [1000, 2000, 3000, 4000], "the depth is the real backlog, got \(depths)")
+        var falling: [Int] = []
+        for second in 1...4 {
+            falling.append(live.depthMs)
+            _ = live.playedBack(atMs: second * 1000)
+        }
+        try require(falling == [4000, 3000, 2000, 1000], "the depth falls as buffers play, got \(falling)")
+        try require(live.depthMs == 0, "the depth is 0 after the drain, got \(live.depthMs)")
+        let drainedAfter = live.arrival(frames: 24000, atMs: 9000)
+        try require(drainedAfter.queuedMs == 1000 && !drainedAfter.underrun, "a refill after a pause starts a new depth, not an underrun")
+
+        // D12-5: every owner action names its own trigger; `other` stays for the app's own stops, and
+        // a menu trigger armed for one Stop is consumed by exactly that Stop.
+        var latch = LiveStopTriggerLatch()
+        for trigger in [LiveStopTrigger.button, .hotkey, .menu] {
+            try require(latch.take(trigger) == trigger, "\(trigger.rawValue) reaches the receipt unchanged")
+            latch.arm(trigger)
+            try require(latch.take(.other) == trigger, "an armed \(trigger.rawValue) is the one the Stop carries")
+            try require(latch.take(.other) == .other, "an armed trigger is consumed once")
+        }
+        try require(LiveStopTrigger.allCases.map(\.rawValue) == ["button", "hotkey", "menu", "other"], "the trigger set is closed")
 
         // P2-R1: a 22 s answer delivered as 0.34 s host frames inside 2.5 s (Gemini's ~8x
         // realtime) must never reach the 120 s playback memory guard, and the old 24-buffer

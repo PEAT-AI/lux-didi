@@ -14,6 +14,8 @@ import Foundation
             return raw
         }
         let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let clock = NativeLogClock.shared
 
         // 1. Every closed reason writes one live_end line with an ISO timestamp and a closed reason token.
         do {
@@ -33,7 +35,13 @@ import Foundation
                     expect(false, "timestamp missing or not ISO8601 for \(reason.rawValue)"); continue
                 }
                 expect(abs(date.timeIntervalSince(at)) < 1, "timestamp round-trips for \(reason.rawValue)")
-                expect(Set(object.keys) == ["event", "reason", "timestamp"], "no extra keys for \(reason.rawValue): \(object.keys.sorted())")
+                // O1b-N: every line carries the launch identity, both clocks and a sequence.
+                expect(Set(object.keys) == ["event", "reason", "timestamp", "wall_ms", "mono_ms", "source_instance_id", "source_seq"],
+                    "no extra keys for \(reason.rawValue): \(object.keys.sorted())")
+                expect(stamp.contains("."), "wall time keeps fractional seconds for \(reason.rawValue)")
+                expect((object["mono_ms"] as? Int) != nil, "mono_ms is a number for \(reason.rawValue)")
+                expect(object["source_instance_id"] as? String == clock.sourceInstanceID, "the launch identity is stamped")
+                expect(object["source_seq"] as? Int == index + 1, "one sequence per line, strictly increasing")
             }
             try? FileManager.default.removeItem(at: directory)
         }
@@ -134,6 +142,47 @@ import Foundation
                     expect(numeric(rms["speechBuffers"]), "postRms.speechBuffers is a number")
                 } else { expect(false, "postRms object present") }
             } else { expect(false, "interruption lines are valid JSON") }
+        }
+
+        // 4. O1b-N retention: both files rotate at the cap the host log uses, keeping two rotations.
+        do {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-live-rotate-" + UUID().uuidString)
+            let file = directory.appendingPathComponent("native-live.log")
+            let journal = NativeLiveJournal(fileURL: file, limit: 400)
+            for index in 1...40 { journal.append(["event": "rotation_fixture", "index": index]) }
+            let manager = FileManager.default
+            expect(manager.fileExists(atPath: file.path), "the live file keeps the newest line")
+            expect(manager.fileExists(atPath: file.path + ".1"), "one rotation is kept")
+            expect(manager.fileExists(atPath: file.path + ".2"), "two rotations are kept")
+            let sizes = [file.path, file.path + ".1", file.path + ".2"].map {
+                (try? manager.attributesOfItem(atPath: $0)[.size] as? Int) ?? 0
+            }
+            expect(sizes.allSatisfy { $0 <= 400 }, "no file exceeds the cap, got \(sizes)")
+            let lines = (try? String(contentsOf: file, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+            let newest = lines.last.flatMap(jsonObject)
+            expect(newest?["index"] as? Int == 40, "the newest record survives the last rotation")
+            try? manager.removeItem(at: directory)
+        }
+
+        // 5. O1b-N identity: a line inside a call carries the session id, and the receipt frame is
+        //    exactly the closed shape the host validates, with its own dense sequence.
+        do {
+            let journal = NativeLiveJournal(fileURL: nil)
+            journal.sessionID = "session-abc"
+            journal.append(["event": "inside_a_call"])
+            expect(journal.events.last?["liveSessionId"] as? String == "session-abc", "a line inside a call carries its session id")
+            var receipts: [NativePlaybackReceipt] = []
+            let first = NativePlaybackReceipt(kind: .received, segmentSeq: 1, sourceInstanceID: clock.sourceInstanceID,
+                sourceSeq: clock.nextSequence("receipt"), monoMs: clock.monoMs(), wallMs: NativeLogClock.wallMs(Date()), reason: nil)
+            let second = NativePlaybackReceipt(kind: .interrupted, segmentSeq: 1, sourceInstanceID: clock.sourceInstanceID,
+                sourceSeq: clock.nextSequence("receipt"), monoMs: clock.monoMs(), wallMs: NativeLogClock.wallMs(Date()), reason: "interrupted")
+            receipts = [first, second]
+            expect(receipts[1].sourceSeq == receipts[0].sourceSeq + 1, "the receipt stream is dense")
+            let wire = jsonObject(receipts[1].json) ?? [:]
+            expect(Set(wire.keys) == ["type", "receipt", "segment_seq", "source_instance_id", "source_seq", "mono_ms", "wall_ms", "reason"],
+                "the receipt frame is the closed shape, got \(wire.keys.sorted())")
+            expect(wire["receipt"] as? String == "interrupted", "the receipt names its moment")
+            expect((jsonObject(first.json) ?? [:])["reason"] == nil, "no reason is invented for a plain receipt")
         }
 
         if failures == 0 { print("NATIVE-LIVE-JOURNAL PASS") } else { print("NATIVE-LIVE-JOURNAL FAIL \(failures)") }

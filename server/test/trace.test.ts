@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
-import { TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance } from '../trace/record.js';
+import { TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
 const SESSION = 'ls-fixture-1';
@@ -303,5 +304,106 @@ test('exportMetadata selects named columns only', () => {
       'opened_at', 'origin', 'outcome', 'playback_drained_at', 'stall_reason', 'supersedes_turn_id', 'turn_id', 'turn_index',
     ]);
     assert.equal(exported.trace_utterance, undefined);
+  });
+});
+
+// O1b-N: the app's playback receipts, forwarded over the live socket. The frames here are the
+// exact closed shapes the Swift side sends; nothing in this test is owner content.
+const INSTANCE = 'inst-a1';
+const frame = (receipt: string, seq: number, wallMs: number, extra: Record<string, unknown> = {}): string => JSON.stringify({
+  type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: INSTANCE, source_seq: seq,
+  mono_ms: 1_000 + seq, wall_ms: wallMs, ...extra,
+});
+const forward = (store: Store, raw: string, attribution?: { turnId: string; responseKey: string }): RecordResult =>
+  recordPlaybackReceipt(store, SESSION, parsePlaybackReceipt(raw), attribution);
+
+test('a forwarded receipt sequence records native events and the playback row', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    for (const [receipt, seq] of [['received', 1], ['enqueued', 2], ['started', 3], ['drained', 4]] as const) {
+      assert.equal(forward(store, frame(receipt, seq, T0 + 200 + seq), { turnId: 't1', responseKey: 'r1' }).duplicate, false);
+    }
+    const events = store.transaction(tx => tx.all('SELECT kind, source, source_instance_id, source_seq, at, mono_ms, turn_id, playback_key FROM trace_event WHERE source=? ORDER BY seq', ['native']));
+    assert.deepEqual(events.map(row => row['kind']), ['playback.received', 'playback.enqueued', 'playback.started', 'playback.drained']);
+    assert.ok(events.every(row => row['source'] === 'native'), 'every forward is a native event');
+    assert.deepEqual(events.map(row => row['source_seq']), [1, 2, 3, 4]);
+    assert.equal(events[3]!['at'], T0 + 204, 'the producer wall ms is stored as sent, never replaced by the host clock');
+    assert.equal(events[3]!['mono_ms'], 1_004);
+    const row = store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${INSTANCE}:1`]))!;
+    assert.equal(row['received_at'], T0 + 201);
+    assert.equal(row['enqueued_at'], T0 + 202);
+    assert.equal(row['started_at'], T0 + 203);
+    assert.equal(row['drained_at'], T0 + 204);
+    assert.equal(row['turn_id'], 't1');
+  });
+});
+
+test('a duplicate receipt frame is deduped, not recorded twice', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    const raw = frame('received', 7, T0 + 10);
+    assert.equal(forward(store, raw).duplicate, false);
+    const replay = forward(store, raw);
+    assert.equal(replay.duplicate, true);
+    const nativeEvents = (): number => store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM trace_event WHERE source='native'")!['n']));
+    assert.equal(nativeEvents(), 1);
+    assert.equal(counts(store)['trace_playback'], 1);
+    // A drained receipt for the same segment is not a replay: it is the next receipt in order.
+    assert.equal(forward(store, frame('drained', 8, T0 + 90)).duplicate, false);
+    assert.equal(nativeEvents(), 2);
+  });
+});
+
+test('a frame with an unknown or free-text field is refused by a typed code', () => {
+  const base = { type: 'playback_receipt', receipt: 'drained', segment_seq: 1, source_instance_id: INSTANCE, source_seq: 1, mono_ms: 1, wall_ms: 2 };
+  for (const [label, raw, code] of [
+    ['free text', { ...base, note: 'the owner said something' }, 'unknown_field'],
+    ['unknown receipt', { ...base, receipt: 'audible' }, 'unknown_receipt'],
+    ['string count', { ...base, source_seq: '1' }, 'invalid_field'],
+    ['missing clock', { ...base, wall_ms: undefined, mono_ms: undefined }, 'missing_field'],
+  ] as const) {
+    assert.throws(() => parsePlaybackReceipt(JSON.stringify(raw)),
+      (error: unknown) => error instanceof IngestReject && error.code === code, label);
+  }
+  assert.throws(() => parsePlaybackReceipt('x'.repeat(PLAYBACK_RECEIPT_MAX_BYTES + 1)),
+    (error: unknown) => error instanceof IngestReject && error.code === 'frame_too_large');
+  // A refused frame writes nothing at all.
+  withStore(store => assert.throws(() => forward(store, JSON.stringify({ ...base, note: 'x' }))));
+});
+
+test('a missing sequence range is reported by the timeline reader', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    forward(store, frame('received', 1, T0 + 10));
+    forward(store, frame('started', 4, T0 + 20));
+    assert.deepEqual(buildTimeline(readOf(store), SESSION).nativeGaps, [{ sourceInstanceId: INSTANCE, fromSeq: 2, toSeq: 3 }]);
+  });
+});
+
+test('the timeline prints a drained playback inside its turn when attributable and outside when not', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    for (const [receipt, seq] of [['received', 1], ['started', 2], ['drained', 3]] as const) {
+      forward(store, frame(receipt, seq, T0 + 200 + seq), { turnId: 't1', responseKey: 'r1' });
+    }
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.equal(report.turns[0]!.playback.length, 1);
+    assert.deepEqual(report.unattributedPlayback, []);
+    const rendered = renderTimeline(report);
+    assert.match(rendered, /\n {2}playback inst-a1:1 segment=1 .*drained=.*clock=approx/);
+    assert.doesNotMatch(rendered, /turn=none/);
+  });
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    forward(store, frame('received', 1, T0 + 10));
+    forward(store, frame('drained', 2, T0 + 20));
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.equal(report.turns[0]!.playback.length, 0);
+    assert.equal(report.unattributedPlayback.length, 1);
+    const rendered = renderTimeline(report);
+    assert.match(rendered, /^playback inst-a1:1 segment=1 .*turn=none/m);
+    assert.deepEqual(report.gaps, [], 'an orphan segment is not a stall: it is printed outside the turns');
   });
 });

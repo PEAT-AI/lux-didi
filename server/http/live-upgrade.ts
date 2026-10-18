@@ -197,6 +197,10 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       }
       const raw = data.toString();
       if (raw.includes('"native_action_result"') && nativeActions.settle(attachment.liveSessionId, parseFrame(raw))) return;
+      // O1b-N: a playback receipt is a bounded closed frame. It is validated and recorded inside the
+      // session (trace/ingest.ts); a refused one is journaled by typed code and dropped, never closing
+      // the socket. An unknown control below still closes, exactly as before.
+      if (raw.includes('"playback_receipt"')) { attachment.playbackReceipt(raw); return; }
       const type = control(raw);
       if (type === null) { ws.close(1002, 'invalid_control'); return; }
       if (type === 'endAudioStream') { try { attachment.endAudioStream(); } catch { ws.close(1002, 'invalid_command'); } return; }

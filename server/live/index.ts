@@ -8,7 +8,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, chooseStartContext, withProvenance, type WarmContextSections } from './warm-context.js';
@@ -18,6 +18,8 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { capJournalText, journalRecord } from '../host/journal.js';
+import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
+import { TraceRecordError } from '../trace/record.js';
 
 import { hostLogEvent, LIVE_STATE_CAUSES } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
@@ -104,6 +106,23 @@ const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waiti
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
+/** S4a ceiling on one non-research tool call: past it the host answers the call itself with a timeout output. */
+const TOOL_CEILING_MS = 12_000;
+/** S4a progress speech on the GPT-Live path: one speakable line about this long into an open delegation, only
+ *  when nothing has been audible for PROGRESS_QUIET_MS, and never more than one every PROGRESS_INTERVAL_MS. */
+const PROGRESS_FIRST_MS = 6_000;
+const PROGRESS_QUIET_MS = 3_000;
+const PROGRESS_INTERVAL_MS = 8_000;
+/** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
+ *  stalled: the receipt names it, one progress line goes out, and the S2 recovery resumes instead of rebuilding. */
+const DELEGATION_DEADLINE_MS = 25_000;
+/** R6 late findings: a source that settles this long after the first answer is still silent context for the
+ *  model, but it is no longer spoken, because the owner has moved on. */
+const LATE_WINDOW_MS = 20_000;
+/** R6: the biggest late block one source may append, about 400 tokens, well under the 500 token ceiling. */
+const LATE_BLOCK_CHARS = 1_400;
+/** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
+const LATE_SPOKEN_CHARS = 280;
 
 /** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
 const LIVE_STEPS_MAX = 8;
@@ -117,6 +136,17 @@ const STEP_SOURCES: Record<string, string> = {
 function stepSourceOf(name: string): string {
   const prefix = name.split('_')[0] ?? name;
   return STEP_SOURCES[prefix] ?? prefix;
+}
+
+/** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary a progress line names. */
+type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout';
+/** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
+function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
+
+/** S4a: a spoken list of at most a handful of sources, in the order the ledger ran them. */
+function joinWords(words: readonly string[]): string {
+  if (words.length <= 1) return words[0] ?? '';
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
 }
 
 /** The action word a direct tool asks its source for. */
@@ -148,6 +178,13 @@ interface ActiveSession {
   /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
    *  own audible audio or an ended turn. Inaudible fill and progress speech never clear it (D3, amendment C). */
   awaitingAnswer: boolean; answerAt: number | undefined;
+  /** S4a progress speech and the delegation deadline that outlives the S2 watchdog window. */
+  progressTimer?: ReturnType<JobTimer> | undefined; progressSentAt?: number | undefined;
+  delegationTimer?: ReturnType<JobTimer> | undefined;
+  /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
+  researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
+  /** S4a-R2 (e): one execution receipt per call of this turn, the only source a progress line may name. */
+  exec: Map<string, { source: string; status: ExecStatus }>;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
@@ -1011,7 +1048,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1055,6 +1092,7 @@ export class LiveSessionOwner {
       output: handle.consumer,
       done: handle.done.promise,
       sendAudio: ({ pcm }) => this.#sendAudio(handle, pcm),
+      playbackReceipt: frame => this.#playbackReceipt(handle, frame),
       endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
       close: () => this.#stop(handle),
       detach: () => this.#detach(handle),
@@ -1064,6 +1102,20 @@ export class LiveSessionOwner {
         this.#settle(handle, { state: 'consumer_backpressure' }, false, 'backpressure', null);
       },
     };
+  }
+
+  /**
+   * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
+   * native trace event plus its playback summary row. A refusal is a typed code in the debug journal
+   * and never changes session state: a malformed frame cannot end or wedge a call.
+   */
+  #playbackReceipt(handle: ActiveSession, frame: string): void {
+    try {
+      recordPlaybackReceipt(this.#store, handle.liveSessionId, parsePlaybackReceipt(frame));
+    } catch (error) {
+      const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
+      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'playback_receipt_rejected', code });
+    }
   }
 
   #armIdle(handle: ActiveSession, remainingMs: number): void {
@@ -1093,7 +1145,112 @@ export class LiveSessionOwner {
     this.#armIdle(handle, this.#profile.limits.idleMs);
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
+    handle.progressSentAt = undefined;
+    this.#armProgress(handle);
+    this.#armDelegationDeadline(handle);
     this.#armWatchdog(handle);
+  }
+
+  /** S4a: only the GPT-Live path carries progress speech, and only while the adapter declares it. */
+  #progressPath(handle: ActiveSession): boolean {
+    return this.#profile.provider === 'openai' && typeof handle.session.sendCommentary === 'function';
+  }
+
+  /** S4a: a factual line from this turn's step ledger, naming only sources actually running or done. */
+  #progressLine(handle: ActiveSession): string | undefined {
+    // S4a-R2 (e): what the host can prove, from the execution receipts of this turn's calls: a source that was
+    // only requested is never described as being read.
+    const byStatus = (status: ExecStatus): string[] => [...handle.exec.values()].filter(entry => entry.status === status).map(entry => entry.source);
+    const parts: string[] = [];
+    const running = byStatus('running');
+    const queued = byStatus('queued');
+    const done = byStatus('done');
+    const failed = byStatus('failed');
+    const timedOut = byStatus('timeout');
+    if (running.length) parts.push(`Still reading the ${joinWords([...new Set(running)])}`);
+    if (queued.length) parts.push(`waiting on the ${joinWords([...new Set(queued)])}`);
+    if (done.length) parts.push(`the ${joinWords([...new Set(done)])} lookup is done`);
+    if (failed.length) parts.push(`the ${joinWords([...new Set(failed)])} lookup failed`);
+    if (timedOut.length) parts.push(`the ${joinWords([...new Set(timedOut)])} lookup timed out`);
+    // Never invent progress: a turn with no receipt has nothing truthful to say, so it says nothing.
+    if (!parts.length) return undefined;
+    return `${parts.join('; ')}.`;
+  }
+
+  /** One progress line, at most one per delegation every 8 s, suppressed while the owner speaks or an answer plays. */
+  #sendProgress(handle: ActiveSession, reason: 'dead_air' | 'stalled'): boolean {
+    if (this.#settled(handle) || handle.rebuilding || !this.#progressPath(handle)) return false;
+    const now = this.#now();
+    if (handle.progressSentAt !== undefined && now - handle.progressSentAt < PROGRESS_INTERVAL_MS) return false;
+    if (handle.speaking) return false;
+    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return false;
+    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return false;
+    const line = this.#progressLine(handle);
+    if (line === undefined) return false;
+    try { handle.session.sendCommentary!({ text: line }); } catch { return false; }
+    handle.progressSentAt = now;
+    hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason });
+    return true;
+  }
+
+  /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
+  #delegationKey(handle: ActiveSession): string { return `${handle.liveSessionId}-${handle.generation}`; }
+
+  #armProgress(handle: ActiveSession): void {
+    handle.progressTimer?.cancel();
+    handle.progressTimer = undefined;
+    if (!this.#progressPath(handle)) return;
+    handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_FIRST_MS);
+    handle.progressTimer.unref?.();
+  }
+
+  #progressTick(handle: ActiveSession): void {
+    handle.progressTimer = undefined;
+    if (this.#settled(handle) || handle.rebuilding) return;
+    // A delegation is open while its calls run and until the answer's own audio arrives.
+    if (handle.pendingCallIds.size === 0 && !handle.awaitingAnswer) return;
+    this.#sendProgress(handle, 'dead_air');
+    // The cadence is the interval, not the attempt, so a suppressed line is retried on the same 8 s beat.
+    handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_INTERVAL_MS);
+    handle.progressTimer.unref?.();
+  }
+
+  #cancelProgress(handle: ActiveSession): void {
+    handle.progressTimer?.cancel(); handle.progressTimer = undefined;
+    handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
+  }
+
+  #armDelegationDeadline(handle: ActiveSession): void {
+    handle.delegationTimer?.cancel();
+    handle.delegationTimer = undefined;
+    if (this.#profile.provider !== 'openai') return;
+    handle.delegationTimer = this.#schedule(() => this.#delegationDeadline(handle), DELEGATION_DEADLINE_MS);
+    handle.delegationTimer.unref?.();
+  }
+
+  /** S4a: a delegation open past its deadline gets one receipt, one spoken line, and no session rebuild. */
+  #delegationDeadline(handle: ActiveSession): void {
+    handle.delegationTimer = undefined;
+    if (this.#settled(handle) || handle.rebuilding || !handle.awaitingAnswer) return;
+    // A nested response that finished the answer is a terminal event, so only silence past the answer is a stall.
+    if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt > (handle.answerAt ?? 0)) return;
+    // S4a-R2 (b): diagnostic only. The receipt and one line are all this deadline does; escalation stays S2's.
+    hostLogEvent({ event: 'gptlive_delegation_stalled', ms: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())) });
+    this.#sendProgress(handle, 'stalled');
+  }
+
+  /** S4a: a bounded wait on tool work that resolves to `timeout` instead of running past the host ceiling.
+   *  `late` hears a callback that landed after the settlement, which is a receipt and never a second output. */
+  #withCeiling<T>(work: Promise<T>, late: (outcome: 'completed' | 'failed') => void): Promise<T | 'timeout'> {
+    return new Promise<T | 'timeout'>((resolve, reject) => {
+      let settled = false;
+      const timer = this.#schedule(() => { settled = true; resolve('timeout'); }, TOOL_CEILING_MS);
+      timer.unref?.();
+      void work.then(
+        value => { timer.cancel(); if (settled) late('completed'); else resolve(value); },
+        error => { timer.cancel(); if (settled) late('failed'); else reject(error instanceof Error ? error : new Error('tool_failed')); },
+      );
+    });
   }
 
   /** D6: the adapter's 500 ms output-silence model reports waitingForInput between her sentences. That is
@@ -1150,7 +1307,10 @@ export class LiveSessionOwner {
             msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
         }
-        try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
+        // S4a: on the GPT-Live path progress speech replaces the "Continue." user message, which under Responses
+        // delegation would be a fake owner turn. Gemini keeps its nudge unchanged.
+        if (this.#progressPath(handle)) this.#sendProgress(handle, 'dead_air');
+        else { try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; } }
         handle.watchdogPhase = 'nudged';
         hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation });
         this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
@@ -1524,6 +1684,7 @@ export class LiveSessionOwner {
         const audible = event.type === 'audio' && event.audible !== false;
         // The answer's own audible audio is the one thing that clears the owed reply; progress text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
+        if (audible || event.type === 'turnComplete') this.#cancelProgress(handle);
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
@@ -1573,6 +1734,8 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
+          this.#sendThinking(handle, event.calls);
+          this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
           void this.#toolBatch(handle, event, generation).catch(() => {
@@ -1849,8 +2012,19 @@ export class LiveSessionOwner {
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      // R6: the loop's own clocks (the first answer point, the dead-air beat) run on the owner's scheduler,
+      // so a test drives whole seconds instead of sleeping through them.
+      schedule: this.#schedule,
       // U-k3: each source's read opens and closes one line in the voice view while it runs.
-      step: step => { if (this.#settled(handle) || generation !== handle.generation) return; this.#recordStep(handle, step); },
+      step: step => {
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        this.#recordStep(handle, step);
+        // Review F1 (S4A-R2 (e)): the research fan-out is the lookup the model actually makes, so each source's
+        // start and end is an execution receipt too, and a progress line can name what is really running.
+        handle.exec.set(step.stepId, { source: step.source, status: step.phase === 'end' ? (step.ok === false ? 'failed' : 'done') : 'running' });
+      },
+      // R6: a source that settles after the first answer. The host owns the block and the delivery rule.
+      late: event => this.#lateFindings(handle, generation, event),
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
@@ -1861,6 +2035,10 @@ export class LiveSessionOwner {
         if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
         response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
       } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+      // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
+      // window and the one late commentary of this call both count from here.
+      const pending = response['pending'];
+      if (Array.isArray(pending) && pending.length > 0) { handle.researchAnsweredAt = this.#now(); handle.lateCommentaryFor = undefined; }
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {
@@ -1873,13 +2051,78 @@ export class LiveSessionOwner {
     return { responses, projections };
   }
 
+  /** S4a: one silent line per lookup turn, so "did you find it?" is answered truthfully without a backend round
+   *  trip. It names only sources this turn is actually reading, and states the read-only fact at that moment. */
+  #sendThinking(handle: ActiveSession, calls: readonly { name: string }[]): void {
+    const typed = handle.session.sendThinking;
+    if (typed === undefined) return;
+    const named = calls.filter(call => call.name !== RESEARCH_TOOL_NAME);
+    const research = calls.some(call => call.name === RESEARCH_TOOL_NAME);
+    const sources = [...new Set(named.map(call => stepSourceOf(call.name)))];
+    // Review F1: a research run picks its sources inside the run, so the honest start line names the fan-out.
+    if (!sources.length && !research) return;
+    // S4a-R2 (e): a write in the batch means the host cannot claim nothing changed, so it claims nothing.
+    const readOnly = named.every(call => isReadOnlyTool(call.name));
+    const what = sources.length ? `Reading ${joinWords(sources)}` : 'Running a lookup across your sources';
+    const text = readOnly ? `${what}. Nothing has been sent or booked while that runs.` : `${what}.`;
+    try { typed.call(handle.session, { text }); } catch { return; }
+    hostLogEvent({ event: 'thinking_sent', chars: text.length });
+  }
+
+  /**
+   * R6: what a source found after the call had already answered. The block is always silent context for the
+   * model, so "what else did you find?" is answered truthfully, and it is spoken only when the turn is quiet:
+   * the owner is not talking, no answer audio is playing, no new question has started, and the answer is young.
+   * One late line per call, and one delivery per source, so a slow source is never reported twice.
+   */
+  #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
+    const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
+    const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
+    if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
+    if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    const think = handle.session.sendThinking;
+    // Gemini carries no thinking channel on this path, so the finding is dropped and the receipt says so.
+    if (think === undefined) return drop('no_thinking_channel');
+    const block = `Later findings from ${event.source} (${event.ms} ms): ${event.items.join('; ')}`.slice(0, LATE_BLOCK_CHARS);
+    try { think.call(handle.session, { text: block }); } catch { return drop('send_failed'); }
+    hostLogEvent({ event: 'thinking_sent', chars: block.length });
+    const reason = this.#lateCommentaryReason(handle, event);
+    if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
+    const speak = handle.session.sendCommentary;
+    const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
+    try { speak!.call(handle.session, { text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
+    handle.lateCommentaryFor = event.researchId;
+    hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
+    hostLogEvent({ ...receipt, delivered: 'commentary', reason: 'quiet' });
+  }
+
+  /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
+  #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings): string | null {
+    const now = this.#now();
+    const answeredAt = handle.researchAnsweredAt ?? now;
+    if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
+    if (typeof handle.session.sendCommentary !== 'function') return 'no_commentary_channel';
+    if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+    // A question begun after the first answer means the owner moved on: the block stays context only.
+    if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';
+    // Owner speech, on the same hold `#sendProgress` uses: speech that began before the first answer and has
+    // not gone quiet yet is still the owner talking, even though it is not a new question.
+    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+    // Answer audio is the model's own output, a different reason from the owner's voice.
+    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return 'answer_playing';
+    return null;
+  }
+
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
    *  A `research` call opens one line per source from inside the run instead. */
   #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
     handle.liveSteps = [];
     handle.liveStepItems = new Map();
+    handle.exec = new Map();
     for (const call of calls) {
+      // S4a-R2 (e): queued is the only status a call has until the tool owner is handed it.
       if (call.name === RESEARCH_TOOL_NAME) continue;
+      handle.exec.set(call.id, { source: stepSourceOf(call.name), status: 'queued' });
       const subject = stepSubject(call.args);
       const step = { callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name), ...(subject !== undefined ? { subject } : {}), phase: 'start' as const };
       liveToolStep(step);
@@ -1957,6 +2200,7 @@ export class LiveSessionOwner {
       for (const unit of pending) {
         handle.callAborts.set(unit.call.id, new AbortController());
         handle.callStartedAt.set(unit.call.id, this.#now());
+        handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'running' });
         registerSignals(unit, unit.subs);
       }
       const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
@@ -1981,8 +2225,27 @@ export class LiveSessionOwner {
         const ok = record?.status === 'completed' && accepted !== undefined;
         return { key, name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
       };
-      const batch = await runBatch(subCalls, step);
+      const raced = await this.#withCeiling(runBatch(subCalls, step), outcome => {
+        for (const unit of pending) hostLogEvent({ event: 'tool_ceiling_late', tool: unit.call.name, outcome });
+      });
       if ((this.#settled(handle) || generation !== handle.generation)) return;
+      // S4a ceiling: a call still running at the host limit is answered as a timeout through the same
+      // continuation owner, so the backend gets one output per call and one response.create for the batch.
+      if (raced === 'timeout') {
+        for (const unit of pending) {
+          // S4a-R2 (a): a cancelled call never reaches this branch (its own `tool_cancelled` receipt covers it and
+          // it is owed no answer), so the ceiling settles a read as a timeout and a write as uncertain.
+          const outcome = isReadOnlyTool(unit.call.name) ? 'timeout' : 'uncertain';
+          hostLogEvent({ event: 'tool_ceiling_hit', tool: unit.call.name, ms: TOOL_CEILING_MS, outcome });
+          handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
+        }
+        // The ceiling settles the call locally: this abort asks the tool owner to stop, and proves nothing about
+        // the remote side, so a write settles as uncertain unless its cancellation came from somewhere else.
+        for (const unit of pending) handle.callAborts.get(unit.call.id)?.abort();
+      }
+      const batch: Batch | undefined = raced === 'timeout'
+        ? { tools: [], bindings: [], responses: [], accepted: [], error: { status: 'deadline', reason: 'timeout' } }
+        : raced;
       // Phase 2: calendar and brief enumerate their calendars first, then read a bounded event slice
       // per calendar id the shaped list carried, so the calendar intent covers every calendar.
       const followUps = new Map<number, IntentSubCall[]>();
@@ -2046,6 +2309,11 @@ export class LiveSessionOwner {
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
+      // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
+      // the ceiling settled keeps that status, because "timed out" is what happened and "failed" would hide it.
+      if (handle.exec.has(id) && handle.exec.get(id)?.status !== 'timeout') {
+        handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
+      }
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
@@ -2062,6 +2330,13 @@ export class LiveSessionOwner {
       });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
+    // S4a-R2 (a): a read that ran past the ceiling settles as a timeout and a write as uncertain. A late callback
+    // never rewrites either, and a provider-cancelled call is owed no answer at all (3r).
+    responses = responses.map(response => {
+      const call = event.calls.find(candidate => candidate.id === response.id);
+      if (call === undefined || handle.exec.get(call.id)?.status !== 'timeout' || isReadOnlyTool(call.name)) return response;
+      return { ...response, response: { error: 'outcome_uncertain' } };
+    });
     // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
     // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }

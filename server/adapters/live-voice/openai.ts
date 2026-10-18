@@ -42,6 +42,22 @@ export function isCustomVoiceId(voice: string): boolean { return CUSTOM_VOICE_ID
 /** The voice the session start frame asks for: a preset stays a string, a custom voice travels as an id. */
 function voicePayload(voice: string): string | { id: string } { return isCustomVoiceId(voice) ? { id: voice } : voice; }
 // PV1: the Language line is gone, because the host's accent block carries the accent and this line competed with it.
+/** The delegated backend's own instructions: a generic voice-backend template, no owner content, so the backend
+ *  answers in the shape the live voice model has to speak. `backendProcedure` (wagon S4b) appends the task
+ *  procedure after it under a blank line; S4a passes none. */
+export const OPENAI_BACKEND_TEMPLATE = 'You are helping an assistant in a live voice conversation. Return the relevant facts, the task\'s current status, and the next step.';
+/** Brevity rule: the backend's text is read by a model that has to say it out loud. */
+export const OPENAI_BACKEND_BREVITY = 'Telegraphic facts, at most about 120 words; the voice model elaborates.';
+/** The documented 500 token ceiling on a progress or thinking append, kept as a character bound. */
+const APPEND_CHAR_LIMIT = 2_000;
+/** S4a-R2 (d): the ledger keeps this many command ids, oldest dropped first. */
+const COMMAND_LEDGER_LIMIT = 64;
+/** Verbosity of the backend's own prose. Documented low setting, so the second leg stops writing essays. */
+const DELEGATION_TEXT_VERBOSITY = 'low';
+export function openAiBackendInstructions(procedure?: string): string {
+  const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`;
+  return typeof procedure === 'string' && procedure.length ? `${base}\n\n${procedure}` : base;
+}
 export const OPENAI_TOOLS_SECTION = 'Tools: before a lookup, say one short natural line that you are checking; never go silent for more than a few seconds.';
 export const OPENAI_DELIVERY_SECTION = 'Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.';
 /** OpenAI's live prompting guide, verbatim: the server owns turn taking, so a stray sound is not a new turn. */
@@ -151,6 +167,26 @@ function object(value: unknown): value is ObjectValue { return !!value && typeof
 /** Words in the assembled input transcript of one episode: punctuation-only and empty text count zero. */
 function countWords(text: string): number { return text.split(/[^\p{L}\p{N}]+/u).filter(Boolean).length; }
 function fail(code: LiveVoiceErrorCode): never { throw new LiveVoiceError(code); }
+/** S4a-R4: the command family a rejected client command names, as a closed token for the receipt. */
+const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'] as const;
+type CommandKind = (typeof COMMAND_KINDS)[number];
+
+/** S4a-R2 (c): what a provider error is, decided by its own code or type and never by a field's presence.
+ *  `command_rejected` means the command never became a response, so nothing may be emitted as an interruption. */
+type ErrorDisposition = 'command_rejected' | 'validation_failed' | 'transport' | 'moderation' | 'backend_failure' | 'unknown';
+const ERROR_DISPOSITIONS: Readonly<Record<string, ErrorDisposition>> = {
+  invalid_value: 'command_rejected', invalid_request_error: 'command_rejected', unknown_parameter: 'command_rejected',
+  missing_required_parameter: 'command_rejected', invalid_type: 'command_rejected', unsupported_parameter: 'command_rejected',
+  conversation_already_has_active_response: 'transport', response_already_active: 'transport',
+  responses_validation_failed: 'validation_failed',
+  connection_error: 'transport', server_error: 'transport', internal_error: 'transport', timeout: 'transport',
+  rate_limit_exceeded: 'transport', session_expired: 'transport',
+  moderation_error: 'moderation', content_filter: 'moderation',
+  backend_error: 'backend_failure', response_failed: 'backend_failure', responses_failed: 'backend_failure',
+};
+function dispositionOf(type: string, code: string): ErrorDisposition {
+  return ERROR_DISPOSITIONS[code] ?? ERROR_DISPOSITIONS[type] ?? 'unknown';
+}
 /** One field of a provider refusal: redacted, whitespace-collapsed and bounded, never any request text. */
 function setupErrorText(value: unknown): string {
   return typeof value === 'string' ? redactSecrets(value).replace(/\s+/g, ' ').trim().slice(0, SETUP_ERROR_TEXT_LIMIT) : '';
@@ -176,7 +212,7 @@ interface Settings {
   modelId: string; voice: string; enabled: boolean; allowed: readonly DataClass[];
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
   limits: Readonly<LiveVoiceLimits>; socketFactory: LiveSocketFactory;
-  clock: LiveVoiceClock | undefined;
+  clock: LiveVoiceClock | undefined; backendProcedure: string | undefined;
 }
 
 /** 3r D4: a delegation whose calls are all answered and whose outputs are upstream, but which has produced no
@@ -227,7 +263,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       modelId: options.modelId, voice, keyReference: options.keyReference,
       enabled: route.enabled, allowed: Object.freeze(classList(route.dataClasses, 'route_denied')),
       resolve: options.credentials.resolve.bind(options.credentials), limits: Object.freeze(limits), socketFactory,
-      clock: options.clock,
+      clock: options.clock, backendProcedure: options.backendProcedure,
     });
   }
 
@@ -269,7 +305,8 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
         instructions,
         audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: voicePayload(settings.voice) } },
         ...(seed.items.length ? { input: seed.items } : {}),
-        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
+        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, instructions: openAiBackendInstructions(settings.backendProcedure),
+          text: { verbosity: DELEGATION_TEXT_VERBOSITY }, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
           parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT } } },
       },
     });
@@ -390,6 +427,9 @@ class Session implements LiveVoiceSession {
   /** Open delegations from `session.delegation.created`, by provider delegation id (3r D4). */
   private readonly delegations = new Map<string, Delegation>();
   private commandSequence = 0;
+  private validationRefused = false;
+  /** S4a-R2 (d): event id to the command it identified. Correlation only. */
+  private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();
   /** Audible silence of the current speaking stretch: its timer, whether its receipt was already sent, and the
    *  arrival clock of the last output delta (dropped or forwarded), which is what a post-flush gap is read on. */
   private outputSilence: unknown;
@@ -1073,6 +1113,35 @@ class Session implements LiveVoiceSession {
     const errorCode = typeof error.code === 'string' && error.code.length ? error.code : 'none';
     const param = typeof error.param === 'string' && error.param.length ? error.param : 'none';
     hostLogEvent({ event: 'live_provider_error', type, code: errorCode, param });
+    // S4a-R2 (c): the disposition comes from the code or type map, and the client event id is read from the
+    // ledger only to name which command it was.
+    const disposition = dispositionOf(type, errorCode);
+    const clientEventId = typeof error.client_event_id === 'string' && error.client_event_id.length ? error.client_event_id : undefined;
+    const command = clientEventId === undefined ? undefined : this.commands.get(clientEventId);
+    // 3r F: a rejection that only says a response is already active is the one retry the continuation gate allows
+    // (3r A). It is read before the disposition, because its own type is `invalid_request_error`, which the map
+    // would otherwise take for a rejected command.
+    const retry = ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`);
+    if (disposition === 'command_rejected' && !retry) {
+      // The command never became a response, so there is nothing to cut, and a rejection is not a reason to resend.
+      hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: command?.kind ?? 'other' });
+      this.touch();
+      return;
+    }
+    if (disposition === 'validation_failed') {
+      // The backend refused the delegation config itself: one loud receipt naming the field, and the live session
+      // keeps running, because the voice path is unaffected by a refused backend setting.
+      if (!this.validationRefused) { this.validationRefused = true; hostLogEvent({ event: 'responses_validation_failed', param }); }
+      this.touch();
+      return;
+    }
+    if (disposition === 'unknown') {
+      // S4a-R2 (c): an unclassified provider error is a diagnostic trap, never an interruption and never a retry.
+      hostLogEvent({ event: 'provider_error_unclassified', type, code: errorCode, param });
+      this.endResponse(undefined);
+      this.touch();
+      return;
+    }
     // 3r F: an error is not a speech cut unless what it names says so. A rejection that only says a response is
     // already active is the one retry the continuation gate allows (3r A).
     if (ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`)) {
@@ -1083,7 +1152,7 @@ class Session implements LiveVoiceSession {
       this.touch();
       return;
     }
-    if (SPEECH_CUT_ERROR.test(`${type} ${errorCode}`) && this.generation !== this.muted) {
+    if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(`${type} ${errorCode}`)) && this.generation !== this.muted) {
       this.generation += 1;
       this.muted = this.generation;
       // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
@@ -1190,7 +1259,9 @@ class Session implements LiveVoiceSession {
       const response = this.answeredCalls.get(call.id)!;
       // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
       // Exactly one terminal output per call: success, error, timeout and cancellation are all that one object.
-      if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId(), item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
+      const outputId = `tool_out_${call.id}`;
+      this.recordCommand(outputId, 'tool_out');
+      if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
         this.answeredCalls.clear();
         return this.continuationOutcome = 'failed';
@@ -1213,7 +1284,7 @@ class Session implements LiveVoiceSession {
       this.continuationOwed = true;
       return this.continuationOutcome = 'deferred';
     }
-    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId() }))) {
+    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
       this.continuationOwed = true;
       return this.continuationOutcome = 'failed';
     }
@@ -1237,10 +1308,24 @@ class Session implements LiveVoiceSession {
     this.continueTurn(0, 1);
   }
 
-  /** One client command id, so a provider error frame can be tied to the command that earned it (3r F). */
-  private commandId(): string {
+  /** One client command id, so a provider error frame can be tied to the command that earned it (3r F, S4a-R4).
+   *  The prefix names the command family: a rejected `tool_out_` answer is not the same event as a rejected
+   *  `response.create`. */
+  private commandId(kind: 'cont' | 'cmt' | 'thk'): string {
     this.commandSequence += 1;
-    return `cmd_${this.commandSequence}`;
+    const id = `${kind}_${this.commandSequence}`;
+    this.recordCommand(id, kind);
+    return id;
+  }
+
+  /** S4a-R2 (d): a small ledger of what was sent and when, so a correlation is read from the wire and never
+   *  guessed from a string. It grants nothing: an id is never permission to resend a command. */
+  private recordCommand(eventId: string, kind: CommandKind): void {
+    this.commands.set(eventId, { kind, sentAt: this.clock.now(), epoch: this.generation });
+    if (this.commands.size > COMMAND_LEDGER_LIMIT) {
+      const oldest = this.commands.keys().next();
+      if (!oldest.done) this.commands.delete(oldest.value);
+    }
   }
 
   /** A session that ends owes no call an answer and no delegation a stall receipt (3r B). */
@@ -1311,8 +1396,29 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
-    if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId(), item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }] } }))) fail(this.terminal!.code);
-    this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId() }));
+    if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }] } }))) fail(this.terminal!.code);
+    this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
+  }
+
+  /** Speakable progress: the voice model paraphrases it aloud, so the owner hears that a lookup is still running.
+   *  Documented shape (`session.commentary.append`, guides/live-delegation): plain-string `content` under 500
+   *  tokens, and a null `delegation_id` under Responses delegation. */
+  sendCommentary(input: { text: string }): void {
+    this.append('session.commentary.append', 'cmt', input);
+  }
+
+  /** Silent context: the model may use it to answer a question about the lookup, and never speaks it on append. */
+  sendThinking(input: { text: string }): void {
+    this.append('session.thinking.append', 'thk', input);
+  }
+
+  private append(type: 'session.commentary.append' | 'session.thinking.append', kind: 'cmt' | 'thk', input: { text: string }): void {
+    if (this.draining) return;
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    // The documented ceiling is 500 tokens per append; a short character bound keeps every line well under it.
+    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) fail('invalid_request');
+    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), delegation_id: null, content: input.text }))) fail(this.terminal!.code);
   }
 
   endAudioStream(): void {

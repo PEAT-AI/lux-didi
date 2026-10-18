@@ -3514,6 +3514,37 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   h.owner.revoke(session.liveSessionId);
 });
 
+
+test('R6/B1: a late finding stays silent while the owner speech that began before the answer runs on', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
+  const { session } = await openPort(h, 'late-owner-speech');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  await settlePort();
+  // She started talking before any answer could go out, and no turn boundary has arrived yet.
+  h.advance(3_500); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'inputTranscription', text: 'so about that', finished: false });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['chat'], 'the answer went out while she was still speaking');
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1);
+  assert.equal(late[0]!['delivered'], 'thinking', 'silent context only');
+  assert.equal(late[0]!['reason'], 'owner_speaking', 'her own voice, not the model\'s answer audio');
+  assert.deepEqual(fake.commentary, [], 'nothing is said over the owner');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model still carries it');
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('R6: Gemini has no thinking channel on this path, so a late finding is dropped with a receipt', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

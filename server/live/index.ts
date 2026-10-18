@@ -2079,9 +2079,12 @@ export class LiveSessionOwner {
     if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
     if (typeof handle.session.sendCommentary !== 'function') return 'no_commentary_channel';
     if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
-    if (handle.speaking) return 'owner_speaking';
     // A question begun after the first answer means the owner moved on: the block stays context only.
     if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';
+    // Owner speech, on the same hold `#sendProgress` uses: speech that began before the first answer and has
+    // not gone quiet yet is still the owner talking, even though it is not a new question.
+    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+    // Answer audio is the model's own output, a different reason from the owner's voice.
     if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return 'answer_playing';
     return null;
   }

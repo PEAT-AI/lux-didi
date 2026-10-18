@@ -3443,44 +3443,38 @@ test('progress speech is suppressed while the owner speaks, and Gemini keeps its
 });
 
 
-// --- R6: late findings reach the voice model, and are spoken only on a quiet turn -----------------
 
-/** Two sources where the second MCP read is held, so the first answer point fires with one still open. */
-function lateFindingsHarness(t: Parameters<typeof harness>[0], port: LiveVoicePort) {
-  const scheduler = new DeadlineClock();
-  let release!: () => void;
-  const held = new Promise<void>(resolve => { release = resolve; });
-  let calls = 0;
-  const setup = harness(t, { provider: 'openai', model: 'gpt-live-1', port, tools: true, calendar: true, scheduler, limits: openaiLimits,
-    beforeTool: async () => { calls += 1; if (calls > 1) await held; } });
-  return { setup, release: () => release(), scheduler };
-}
+// --- R6: late findings reach the voice model, and are spoken only on a quiet turn -----------------
 
 test('R6: a source that settles after the first answer is appended once, and said once on a quiet turn', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
+  const scheduler = new DeadlineClock();
   const fake = progressPort();
-  const { setup, release, scheduler } = lateFindingsHarness(t, fake.port);
-  const h = await setup;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  // Her own memory answers in process and the knowledge read is held, so 4.5 s arrives with one source open.
+  note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'today' }, { source: 'knowledge', query: 'release' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the tool output is written with a source still reading');
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
-  const pending = reply['pending'] as string[];
-  assert.equal(pending.length, 1, 'the reply names the source it is still reading');
+  assert.deepEqual(reply['pending'], ['knowledge'], 'the reply names the source it is still reading');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'and carries what is already in hand');
   assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1, 'one receipt for the answer point');
+  assert.deepEqual(fake.thinking.filter(text => text.startsWith('Later findings from')), [], 'nothing is appended before the reader lands');
   release();
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
-  assert.equal(late[0]!['source'], pending[0], 'the late receipt names the source that was pending');
+  assert.equal(late[0]!['source'], 'knowledge');
   assert.equal(late[0]!['delivered'], 'commentary', 'a quiet turn hears it once');
-  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from')).length, 1, 'and the model is always told');
-  assert.deepEqual(fake.commentary.map(text => text.split(':')[0]), [`One more thing from ${pending[0]}`], 'one spoken line, naming the source');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from knowledge')).length, 1, 'the model is always told');
+  assert.deepEqual(fake.commentary.map(text => text.split(':')[0]), ['One more thing from knowledge'], 'one spoken line, naming the source');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -3488,17 +3482,19 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
+  const scheduler = new DeadlineClock();
   const fake = progressPort();
-  const { setup, release, scheduler } = lateFindingsHarness(t, fake.port);
-  const h = await setup;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'today' }, { source: 'knowledge', query: 'release' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
-  const pending = ((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'] as string[];
-  assert.equal(pending.length, 1, 'the tool output is written with a source still reading');
+  assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['knowledge']);
   // The owner talks over the answer: the block is context only from here on.
-  fake.emit({ type: 'audio', pcm: new Uint8Array([0, 0, 0, 0]), rate: 24_000, audible: true });
+  fake.emit({ type: 'inputTranscription', text: 'and what about the other thing', finished: false });
   await settlePort();
   release();
   await settlePort();
@@ -3506,7 +3502,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   assert.equal(late.length, 1);
   assert.equal(late[0]!['delivered'], 'thinking', 'silent context only');
   assert.notEqual(late[0]!['reason'], 'quiet', 'and the receipt says why it stayed silent');
-  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from')).length, 1, 'the model still carries it');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from knowledge')).length, 1, 'the model still carries it');
   assert.deepEqual(fake.commentary, [], 'the owner hears nothing over herself');
   h.owner.revoke(session.liveSessionId);
 });
@@ -3518,14 +3514,13 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   const scheduler = new DeadlineClock();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  let calls = 0;
-  const h = await harness(t, { tools: true, calendar: true, scheduler, beforeTool: async () => { calls += 1; if (calls > 1) await held; } });
+  const h = await harness(t, { tools: true, scheduler, beforeTool: () => held });
+  note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'today' }, { source: 'knowledge', query: 'release' }] } }] } });
-  for (let i = 0; i < 200 && toolResponseCount(h) === before; i++) await tick();
-  h.advance(4_500); scheduler.runDue();
-  for (let i = 0; i < 200 && toolResponseCount(h) === before; i++) await tick();
+  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }] } }] } });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(toolResponseCount(h), before + 1, 'the first answer still reaches the backend');
   assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1);
   release();

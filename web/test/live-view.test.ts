@@ -853,21 +853,22 @@ test('P7 the growing bubble keeps its node and an opened detail stays open', () 
   context.live = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: seed } as unknown as LiveCurrent;
   // The reader opened the tool chip before the answer started growing.
   list.children = liveSegments(context.live).map((segment: any) => makeRow(restoreOpen(segment.html, ['tool:3'])));
-  const growingRow = list.children[3];
-  const toolRow = list.children[2];
+  const row = (seg: string) => list.children.find((child: any) => child.dataset.seg === seg);
+  const growingRow = row('naya:4');
+  const toolRow = row('tool:3');
   assert.ok(/data-growing/.test(growingRow.outerHTML), 'the last answer is the growing bubble');
   context.live = { ...context.live, cursor: 5, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }] } as unknown as LiveCurrent;
   runInContext(script, context);
-  assert.equal(list.children[3], growingRow, 'the growing bubble is the same DOM node, never replaced');
+  assert.equal(row('naya:4'), growingRow, 'the growing bubble is the same DOM node, never replaced');
   assert.match(growingRow.querySelector('[data-live-text]').innerHTML, /Right away\./, 'its text node grew in place');
   assert.equal(replaced.includes('naya:4'), false, 'the growing row was never rewritten through outerHTML');
-  assert.equal(list.children[2], toolRow, 'no other row is rebuilt while the answer grows');
+  assert.equal(row('tool:3'), toolRow, 'no other row is rebuilt while the answer grows');
   assert.match(toolRow.outerHTML, /live-tool-result[^>]*open>/, 'the opened tool chip is still open');
   assert.equal(replaced.includes('tool:3'), false);
   // When the journal closes the run the row becomes an ordinary closed bubble.
   context.live = { ...context.live, cursor: 6, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }, { seq: 6, kind: 'turnComplete' }] } as unknown as LiveCurrent;
   runInContext(script, context);
-  assert.equal(growingText(list.children[3].outerHTML), undefined, 'a closed bubble is no longer growing');
+  assert.equal(growingText(row('naya:4')!.outerHTML), undefined, 'a closed bubble is no longer growing');
 });
 
 test('FE1-R1 a finished session shows its first turn headline and turn count, collapsed', () => {

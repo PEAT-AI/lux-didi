@@ -3211,7 +3211,7 @@ test('Q5-R4: a fresh call carries the previous opener assembled from its fragmen
   assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
 });
 
-test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps the full conduct', async t => {
+test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps the shared voice conduct', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-backend-procedure-'));
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
@@ -3248,7 +3248,8 @@ test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps t
   gemini.send({ setupComplete: {} });
   await geminiAttachment.ready;
   const setup = (gemini.frames[0] as { setup: { systemInstruction: { parts: { text: string }[] }; delegation?: unknown } }).setup;
-  assert.ok(setup.systemInstruction.parts[0]!.text.includes(NAYA_TOOLS), 'the Gemini composition still carries the full NAYA_TOOLS conduct');
+  assert.ok(setup.systemInstruction.parts[0]!.text.includes(NAYA_LIVE_BASE), 'the Gemini setup carries the shared voice instruction');
+  assert.equal(setup.systemInstruction.parts[0]!.text.includes(NAYA_BACKEND_PROCEDURE), false, 'the Gemini setup never carries the delegated procedure');
   assert.equal('delegation' in setup, false, 'the Gemini setup carries no delegated backend');
 });
 

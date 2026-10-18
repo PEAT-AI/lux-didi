@@ -3040,17 +3040,18 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
 // P3: gpt-live-1 streams output frames for the whole call (48 kB/s in session 1018), so a frame is speech only
 // when its level says so; a silent frame must leave the orb alone.
 test('P3: an inaudible output frame never puts the orb in SPEAKING', async t => {
-  const scheduler = new DeadlineClock();
-  const fake = fakeLiveVoicePort({ provider: 'openai' });
-  const h = await harness(t, { port: fake.port, provider: 'openai', model: 'gpt-live-1', scheduler,
-    limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  await attached(h, 'p3-inaudible');
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'p3-inaudible', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
   assert.equal(h.owner.current().state, 'listening');
   // The fill that arrives before any word: 100 ms of digital silence.
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   assert.equal(h.owner.current().state, 'listening', 'a silent fill frame never puts the orb in SPEAKING');
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
-  await advanceUntil(h.advance, scheduler, () => h.owner.current().state === 'speaking');
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   assert.equal(h.owner.current().state, 'speaking', 'her first audible frame is the start');
+  attachment.close();
 });

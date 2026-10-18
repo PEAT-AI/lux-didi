@@ -718,6 +718,9 @@ describe('openai gpt-live turn states', () => {
     await until(() => audioOf(opened.captured).length === 1);
     // gpt-live-1 keeps sending output frames at 48 kB/s; after the last word they are all digital silence.
     for (let index = 0; index < 12; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
+    // The last stretch may still be inside the 400 ms head start: the cushion times out and plays it too.
+    clock.advance(400);
+    await quiet();
     assert.deepEqual(project(opened.captured.events), ['listening', 'speaking', 'listening'], 'silence ends SPEAKING');
     assert.equal(audioBytes(opened.captured), 19_200 + 12 * 4_800, 'not one silent byte is dropped');
     const audio = opened.captured.events.filter(event => event.type === 'audio');

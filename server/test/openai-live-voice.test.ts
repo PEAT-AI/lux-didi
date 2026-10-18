@@ -7,6 +7,11 @@ import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-v
 import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../runtime/store.js';
+import { liveTracePort, type LiveTracePort } from '../trace/record.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 /** The adapter receipts as the host log receives them: the durable sink captures exactly the emitted record. */
@@ -1494,5 +1499,66 @@ describe('openai gpt-live turn states', () => {
     assert.equal(rearm.length, 1, 'the turn reports its re-arm count once');
     assert.equal(rearm[0]!.count, 1);
     assert.ok(safeEvent(rearm[0]), 'the host log whitelist accepts the re-arm receipt');
+  });
+});
+
+describe('openai gpt-live receipts', () => {
+  /** A real store in a temp dir: the receipts are rows, not a mock, and the adapter is given a real port. */
+  function receipts(t: TestContext): { port: LiveTracePort; rows: (kind: string) => Record<string, unknown>[] } {
+    const dir = mkdtempSync(join(tmpdir(), 'didi-o1ba-receipts-'));
+    const store = new Store(dir);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    return {
+      port: liveTracePort({ port: store, liveSessionId: 'ls-o1ba', connectionEpoch: 'e0', turnId: () => 'ls-o1ba:t1' }),
+      rows: (kind: string) => store.transaction(tx => tx.all('SELECT * FROM trace_event WHERE kind=? ORDER BY seq', [kind])),
+    };
+  }
+
+  async function openWithTrace(t: TestContext, port: LiveTracePort) {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), { ...control(), trace: port });
+    t.after(() => session.close());
+    const captured = collect(session);
+    await f.frame(1);
+    f.send({ type: 'session.started', session: { id: 'sess_fixture' } });
+    await session.ready;
+    return { f, session, captured };
+  }
+
+  test('O1b-A: a delegated response writes its four receipts, and two answers in reverse order share one continuation', async t => {
+    const { port, rows } = receipts(t);
+    const { f, session } = await openWithTrace(t, port);
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_a') });
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_b') });
+    await tick();
+    // The second call answers first: the batch is not settled, so the owner defers, then one create carries both.
+    session.sendToolResponse({ responses: [{ id: 'call_b', name: 'research', response: { ok: true } }] });
+    session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
+    await tick();
+
+    assert.equal(rows('delegation.created').length, 1, 'one receipt per delegated response');
+    assert.equal(rows('response.created').length, 1);
+    assert.equal(rows('response.observed').length, 1, 'the first output is the proof the provider answered');
+    assert.deepEqual(rows('call.intent').map(row => row['call_key']).sort(), ['call_a', 'call_b']);
+    assert.deepEqual(rows('call.output_written').map(row => row['call_key']).sort(), ['call_a', 'call_b']);
+    const decisions = rows('continuation.decided').map(row => JSON.parse(String(row['detail'])) as { outcome: string; skipReason?: string });
+    assert.deepEqual(decisions.map(decision => decision.outcome), ['deferred', 'sent'], 'one deferral, then the one send');
+    assert.equal(decisions[0]!.skipReason, 'awaiting_calls', 'a skipped response.create names why');
+    assert.equal(rows('continuation.decided')[0]!['response_key'], rows('response.created')[0]!['response_key'],
+      'the decision names the response it answers, so both calls of the batch report the same continuation');
+  });
+
+  test('O1b-A: a response that stops writes its terminal receipt with the provider status and the store code', async t => {
+    const { port, rows } = receipts(t);
+    const { f, session } = await openWithTrace(t, port);
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
+    await tick();
+    const terminal = rows('response.terminal');
+    assert.equal(terminal.length, 1);
+    const detail = JSON.parse(String(terminal[0]!['detail']));
+    assert.deepEqual([detail.status, detail.terminalReason], ['completed', 'completed']);
+    session.close();
   });
 });

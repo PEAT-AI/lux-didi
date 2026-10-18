@@ -32,7 +32,7 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
@@ -3839,4 +3839,60 @@ test('S5: a failed backend turn settles typed, says one honest line, and is neve
     'the terminal disposition is typed, and it names the failure class the receipt details');
   assert.equal(fake.sessionsOpened, 1, 'still no rebuild');
   assert.deepEqual(fake.texts, [], 'no Continue. user turn on the failure path either');
+});
+
+// --- O1b-A: every step of a call leaves one receipt ------------------------------------------------
+
+test('O1b-A: a synthetic tool turn writes one turn, ordered utterances, a tool result and no debug directory', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true });
+  const session = h.owner.create({ idempotencyKey: 'o1ba-tool-turn', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'What is on my plate?', finished: true }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'call_o1ba', name: 'search_knowledge', args: { query: 'plate', limit: 1 } }] }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Nothing is on your plate.', finished: true }));
+  fake.emit(portEvent(audibleFrame));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+
+  const turns = h.store.transaction(tx => tx.all('SELECT turn_id, close_reason, outcome FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.equal(turns.length, 1, 'one owner turn, opened at her words and closed on the answer');
+  assert.equal(turns[0]!['close_reason'], 'completed');
+  assert.equal(turns[0]!['outcome'], 'answered');
+  const turnId = String(turns[0]!['turn_id']);
+  const utterances = h.store.transaction(tx => tx.all('SELECT role, text FROM trace_utterance WHERE turn_id=? ORDER BY at, rowid', [turnId]));
+  assert.deepEqual(utterances.map(row => row['role']), ['owner', 'model'], 'her words, then the answer');
+  assert.deepEqual(utterances.map(row => row['text']), ['What is on my plate?', 'Nothing is on your plate.']);
+  const results = h.store.transaction(tx => tx.all('SELECT call_key, text FROM trace_call_result'));
+  assert.equal(results.length, 1, 'the tool result text lands in the content table');
+  assert.equal(results[0]!['call_key'], 'call_o1ba');
+  // O1b-A: the JSONL journal wrote under <dataDir>/debug and nothing writes it any more.
+  assert.equal(existsSync(join(h.dir, 'debug')), false, 'a live session creates no debug/ directory');
+  attachment.close();
+});
+
+test('O1b-A: a turn that never becomes audible records the typed stall with what the watchdog saw', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'o1ba-stall', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Book me a table.', finished: true }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'call_stall', name: 'search_knowledge', args: { query: 'table', limit: 1 } }] }));
+  await settlePort();
+  for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { fake.emit(portEvent(fillFrame)); await settlePort(); h.advance(100); }
+  const stalls = h.store.transaction(tx => tx.all("SELECT detail FROM trace_event WHERE kind='live.dead_air_stalled'"));
+  assert.equal(stalls.length, 1, 'one typed stall receipt, not an absence');
+  const detail = JSON.parse(String(stalls[0]!['detail']));
+  assert.equal(detail.anyAudio, false, 'the fill frames never became audible output');
+  assert.equal(typeof detail.inaudibleMs, 'number');
+  assert.equal(typeof detail.turnAgeMs, 'number');
+  const turn = h.store.transaction(tx => tx.get('SELECT stall_reason FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.equal(turn!['stall_reason'], 'no_audible_output', 'the open turn carries the stall, so the timeline prints its GAP');
+  attachment.close();
 });

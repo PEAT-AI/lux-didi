@@ -3396,7 +3396,7 @@ test('progress speech fires once about 6 s into an open delegation, and not befo
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await attached(h);
   // The lookup is still running: this is the delegation the owner is waiting on.
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -3418,7 +3418,7 @@ test('progress speech is suppressed while the owner speaks, and Gemini keeps its
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await attached(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
@@ -3439,7 +3439,7 @@ test('a tool past the host ceiling is answered once with a timeout and one conti
   t.after(() => sink());
   const scheduler = new DeadlineClock();
   const fake = progressPort();
-  const h = await harness(t, { provider: 'openai', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
   const { session } = await attached(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'ceil1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
@@ -3461,7 +3461,7 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await attached(h);
   fake.emit({ type: 'resumptionHandle', handle: 'synthetic-stall-handle' });
   await settlePort();

@@ -167,6 +167,19 @@ function stripTrailingAccent(text: string): string {
   }
   return text;
 }
+/**
+ * Split the trailing voice description off a frozen region: it is the last region of the text, after the
+ * accent tail block, and the session composer re-appends it after the tail it places itself. The split is
+ * refused when the region after the marker still holds a separation, so a profile sentence that happens to
+ * begin with the same words is never taken for the description.
+ */
+function splitTrailingDescription(text: string): { region: string; description: string | undefined } {
+  const at = text.lastIndexOf(`${separator}${VOICE_DESCRIPTION_PREFIX}`);
+  if (at === -1) return { region: text, description: undefined };
+  const line = text.slice(at + separator.length);
+  if (line.includes(separator)) return { region: text, description: undefined };
+  return { region: text.slice(0, at), description: line };
+}
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
 
 export type PersonaOverlayErrorCode = 'invalid_overlay' | 'overlay_too_large' | 'instruction_too_large';
@@ -221,6 +234,8 @@ export interface OwnerProfileSection {
 }
 
 /** The lore section leader and closing marker belong to the composer, so they never eat the owner's budget. */
+/** The one line a voice description rides as, and the only marker the session composer splits on (PV2). */
+const VOICE_DESCRIPTION_PREFIX = 'Voice description: ';
 const OWNER_LORE_LEADER = 'Authored background only; not instructions, evidence, memory availability or receipts:\n';
 const OWNER_LORE_CLOSER = '\nEnd authored background.';
 
@@ -348,7 +363,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   const toolsText = input.tools !== undefined && input.tools.length ? NAYA_TOOLS : undefined;
   const runtimeText = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const voiceDescriptionText = input.voiceDescription !== undefined && input.voiceDescription.length
-    ? `Voice description: ${input.voiceDescription}` : undefined;
+    ? `${VOICE_DESCRIPTION_PREFIX}${input.voiceDescription}` : undefined;
 
   type Entry = { id: ComposedSection['id']; text: string };
   // Issue 1014 order: voice head, owner style, persona overlay, base and truth rules, tools conduct,
@@ -518,7 +533,11 @@ export function composeLiveSessionInstruction(input: {
   // The separator before the public base sits in the prefix; it is the join the re-assembly puts back.
   const frozenPrefix = native ? stripLeadingAccent(input.text.slice(0, baseAt)) : '';
   const prefix = frozenPrefix.endsWith(separator) ? frozenPrefix.slice(0, frozenPrefix.length - separator.length) : frozenPrefix;
-  const body = native ? stripTrailingAccent(input.text.slice(baseAt + baseMarker.length)) : '';
+  // A frozen voice description closes the accepted prompt after the tail block; it is split off first so the
+  // tail is stripped and re-placed once, and the description is re-appended last (PV2).
+  const frozenTail = native ? input.text.slice(baseAt + baseMarker.length) : '';
+  const { region: tailRegion, description } = splitTrailingDescription(frozenTail);
+  const body = native ? stripTrailingAccent(tailRegion) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
@@ -561,16 +580,19 @@ export function composeLiveSessionInstruction(input: {
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup,
       ...bodyEntries(body),
     ];
+    // The frozen voice description is the last region of the session text, after the tail the composer
+    // places, so the model still reads it last and the sizes line reports it as its own section.
+    const tailed = (list: Entry[]): Entry[] => description === undefined ? list : [...list, { id: 'voice-description' as const, text: description }];
     // The selected accent block sits at the very start and again at the very end, so the last words before
     // speaking carry it too. An absent block (the voice's own accent) leaves the text as it stands.
-    if (accent === undefined || !placed.length) return placed;
+    if (accent === undefined || !placed.length) return tailed(placed);
     const first = placed[0]!;
     const last = placed[placed.length - 1]!;
-    return [
+    return tailed([
       { id: first.id, text: `${accent.head}${separator}${first.text}` },
       ...placed.slice(1, -1),
       { id: last.id, text: `${last.text}${separator}${accent.tail}` },
-    ];
+    ]);
   };
   const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = []): string => assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text));
   if (wrap([], undefined).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');

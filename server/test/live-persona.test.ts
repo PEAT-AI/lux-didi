@@ -470,6 +470,35 @@ test('PV2: a composition over the target drops whole lower-priority sections, ne
   assert.ok(full.text.includes('strong Indian accent'), 'the accent blocks never yield');
 });
 
+test('P9-R2 F1: the session composition carries one accent tail, gives the description once, and logs it', () => {
+  const description = 'Warm Indian English, unhurried.';
+  const stays = (text: string): number => text.split('Stay in this accent').length - 1;
+  const plain = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en' });
+  const described = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en', voiceDescription: description });
+  const session = (text: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, accentSelection: 'indian-strong' });
+  const withoutDescription = session(plain.text);
+  const composed = session(described.text);
+  // The head block and the tail block, never a third: the description adds no accent tail.
+  assert.equal(stays(withoutDescription.text), 2, 'the head and the tail, in the text that has no description');
+  assert.equal(stays(composed.text), stays(withoutDescription.text), 'the description adds no accent tail');
+  assert.equal(composed.text.split('Voice description:').length - 1, 1, 'the description appears once');
+  assert.ok(composed.text.trimEnd().endsWith(description), 'and it is the last thing the model reads');
+  // The sizes line the session start emits carries the description as its own section.
+  const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
+  const line = `Voice description: ${description}`;
+  assert.equal(sections['voice-description'], line.length);
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, sections,
+    languageCode: 'en', voice: 'marin' });
+  assert.ok(logged, 'the session size line stays inside the closed shape');
+  assert.equal((logged.sections as Record<string, number>)['voice-description'], line.length);
+  // A second pass over an already composed session text keeps one tail and one description.
+  const again = session(composed.text);
+  assert.equal(stays(again.text), 2);
+  assert.equal(again.text.split('Voice description:').length - 1, 1);
+  assert.equal(again.sections.filter(section => section.id === 'voice-description').length, 1);
+});
+
 test('PV2: the voice description is appended once inside the accent tail and logs as its own section', () => {
   const description = 'Warm Indian English, unhurried, clear consonants, a light lilt.';
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: 'strong Indian accent', language: 'en', voiceDescription: description });

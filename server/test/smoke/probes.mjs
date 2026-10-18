@@ -8,8 +8,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync, rmSync } from 'node:fs';
 import { homedir, loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -128,6 +128,29 @@ async function installedConfig() {
     // owner profile rather than touch the installed state. Only the config source is mirrored here.
     return { configDir: doc.configDir, ownerProfilePath: undefined };
   } catch { return { configDir: undefined, ownerProfilePath: undefined }; }
+}
+
+/**
+ * Copy the installed provider config into a private temp dir and hand the host that copy: a probe host
+ * must never be given a config dir it could journal or seed beside (#397). Regular files only, symlinks
+ * are never followed out, and every file keeps its own mode so a key file stays owner-only. No content is
+ * printed, and the copy is removed before the probes exit.
+ */
+export async function stageProviderConfig(sourceDir) {
+  const configDir = await mkdtemp(join(tmpdir(), 'didi-smoke-config-'));
+  const remove = async () => { await rm(configDir, { recursive: true, force: true }); };
+  try {
+    await chmod(configDir, 0o700);
+    for (const entry of await readdir(sourceDir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const from = join(sourceDir, entry.name);
+      const to = join(configDir, entry.name);
+      const mode = (await stat(from)).mode & 0o777;
+      await copyFile(from, to);
+      await chmod(to, mode);
+    }
+  } catch (error) { await remove(); throw error; }
+  return { configDir, remove };
 }
 
 function bearerFor(dataDir) { return readFile(join(dataDir, 'admin-credential'), 'utf8').then(value => value.trim()); }
@@ -502,7 +525,12 @@ async function main() {
   const dataDir = externalDataDir ?? (dev
     ? join(homedir(), 'Library/Application Support/Lux Didi')
     : await mkdtemp(join(tmpdir(), 'didi-smoke-')));
-  const config = dev ? { configDir: undefined, ownerProfilePath: undefined } : await installedConfig();
+  const installed = dev ? { configDir: undefined, ownerProfilePath: undefined } : await installedConfig();
+  // #397: the host runs against a private copy of the provider config, never the installed config dir, and
+  // the copy goes away even when a probe exits early with FAIL.
+  const staged = installed.configDir ? await stageProviderConfig(installed.configDir) : undefined;
+  if (staged) process.on('exit', () => { try { rmSync(staged.configDir, { recursive: true, force: true }); } catch { /* the exit path never throws */ } });
+  const config = { configDir: staged?.configDir, ownerProfilePath: installed.ownerProfilePath };
   const serverEntry = join(root, 'server/dist/host/index.js');
   const webRoot = join(root, 'web/dist');
   if (!existsSync(serverEntry) || !existsSync(webRoot)) {

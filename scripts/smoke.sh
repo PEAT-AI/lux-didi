@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Real-path smoke test. One command, exit 0 or 1, at most 300 s of wall clock.
 #
-# It runs the host exactly as the native app does (--supervised, the app's environment and its config source),
+# It runs the host exactly as the native app does (--supervised, the app's environment and a copy of its config
+# source: the probes stage that copy and remove it, so no probe host ever writes beside the installed config),
 # holds its stdout to the native rule (the ready frame, then any further byte is a failure), and then drives
 # the path the operator uses: every configured connector, one text turn that must call tools, one Live
 # turn that must call a tool and keep the session open, and one Live voice turn that must run the research
@@ -46,6 +47,8 @@ if [[ " $* " == *" --dev "* ]]; then
   run_probes "$@"
   exit $?
 fi
+# The config-copy step: the probes copy the installed provider config into a private temp dir, hand the host
+# that copy and remove it on exit, so this run never makes a host write into the installed app's own folder.
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/didi-smoke.XXXXXX")"
 run_probes --data-dir "$smoke_dir" "$@"
 status=$?

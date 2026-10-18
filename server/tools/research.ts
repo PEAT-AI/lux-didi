@@ -164,7 +164,7 @@ export interface ResearchSourceLog {
   /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
   coalesced: number;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
-  knowledge?: { detail: string; maxChars: number; deadlineMs: number };
+  knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean };
 }
 
 /** A source that cannot serve a read right now, with the reason its connector gave. */
@@ -538,6 +538,15 @@ function knowledgeSearchArgs(query: string): JsonObject {
     detail: RESEARCH.knowledgeDetail,
     max_chars: RESEARCH.knowledgeMaxChars,
     deadline_ms: RESEARCH.knowledgeDeadlineMs,
+  };
+}
+
+/** 3r K1 and K1-R3: the knowledge receipt's metadata, the same on the routed and the selector path.
+ * `truncated` reads the mark `insightItems` writes on a hit the server cut at the asked-for window. */
+function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } {
+  return {
+    detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeMaxChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
+    truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeMaxChars} chars`)),
   };
 }
 
@@ -1371,6 +1380,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
       event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
       deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
       coalesced: batchSizes.get(outcome.source) ?? 1,
+      ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
     });
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
     run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
@@ -1730,9 +1740,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
             outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
             ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
-            ...(part.source === 'knowledge'
-              ? { knowledge: { detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeMaxChars, deadlineMs: RESEARCH.knowledgeDeadlineMs } }
-              : {}),
+            ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
           });
         }
         // A source that answered counts as read, so an empty result is never re-offered as pending.

@@ -814,7 +814,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 });
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
 });
 

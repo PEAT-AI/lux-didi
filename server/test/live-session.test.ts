@@ -3187,6 +3187,51 @@ test('Q5-R4: the opener context names at most three earlier openers, one or two 
   assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
 });
 
+test('3u: the anti-repeat note names the topic each earlier opener came from, still under the cap', () => {
+  const note = openersNote(['Morning. The release branch merged cleanly.'], ['the release branch merge']);
+  assert.ok(note!.includes('"Morning. The release branch merged cleanly."'), 'the sentence is still quoted');
+  assert.ok(note!.includes('(about the release branch merge)'), 'the topic the earlier plan offered is named beside it');
+  assert.ok(note!.length <= OPENER_CONTEXT_CHARS, `the note stays bounded (${note!.length})`);
+  const unnamed = openersNote(['Morning. Then more.'], [undefined]);
+  assert.equal(unnamed!.includes('(about'), false, 'no topic is invented for an opener the plan cannot name');
+  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`], [`${'C'.repeat(200)} topic.`, undefined]);
+  assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `a long topic never breaks the cap (${long!.length})`);
+  const full = openersNote([`${'A'.repeat(150)} first.`], [`${'T'.repeat(150)} topic.`]);
+  assert.ok(full!.includes(`(about ${'T'.repeat(60)})`), 'the topic is clipped to one short clause');
+});
+
+test('3u: consecutive starts offer different stored open loops and record the plan as metadata', async t => {
+  const h = await harness(t);
+  configureDebugJournal(h.dir, true);
+  t.after(() => resetDebugJournal());
+  h.store.transaction(tx => {
+    summaries.insertSummary(tx, { liveSessionId: 'synthetic-shared-loop', status: 'complete', summary: 'The owner said the tax form is still to be filed.',
+      endedAt: NOW - 3_600_000, now: NOW });
+    summaries.insertSummary(tx, { liveSessionId: 'synthetic-accountant-loop', status: 'complete', summary: 'The owner said he still has to call the accountant.',
+      endedAt: NOW - 7_200_000, now: NOW });
+  });
+  const snapshot = (liveSessionId: string): string => {
+    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
+    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  };
+  const first = h.owner.create({ idempotencyKey: 'opener-rotation-1', inputClass: 'ordinary' }, h.ctx);
+  const second = h.owner.create({ idempotencyKey: 'opener-rotation-2', inputClass: 'ordinary' }, h.ctx);
+  const loops = [first, second].map(session => /^- open loop: (.+)$/mu.exec(snapshot(session.liveSessionId))?.[1]);
+  assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored summaries');
+  assert.notEqual(loops[0], loops[1], `consecutive starts offer different loops (${loops.join(' / ')})`);
+  assert.ok(snapshot(first.liveSessionId).includes('# Opening options'), 'the plan is one section of the instruction');
+  // The debug journal writes one file per session, so the records are keyed by their own session id
+  // and never by the order the day directory happens to list them in.
+  const records = journalRecords(h.dir).filter(record => record['event'] === 'session_start');
+  const planFor = (liveSessionId: string): Record<string, unknown> | undefined => records
+    .find(record => record['sessionId'] === liveSessionId)?.['openerPlan'] as Record<string, unknown> | undefined;
+  const plans = [planFor(first.liveSessionId), planFor(second.liveSessionId)];
+  assert.equal(records.length, 2, 'each start records its own plan');
+  assert.deepEqual(plans.map(plan => Object.keys(plan ?? {}).sort().join(',')), ['kinds,rotation', 'kinds,rotation'], 'the receipt carries kinds and rotation only');
+  assert.deepEqual(plans.map(plan => plan?.['kinds']), [['open-loop', 'recent-thread'], ['open-loop', 'recent-thread']], 'an empty calendar offers no calendar kind');
+  assert.equal((plans[0]?.['rotation'] as number) + 1, plans[1]?.['rotation'], 'the persisted start counter advances by one');
+});
+
 test('S4b: an opener is assembled from its ordered fragments up to the first finished fragment or turn boundary', () => {
   const rows = (entries: [string, string | null, number | null][]) => entries.map(([kind, text, finished]) => ({ kind, text, finished }));
   assert.equal(openerFromJournal(rows([['outputTranscription', 'Morning.', 0], ['outputTranscription', ' The release', 0], ['outputTranscription', ' merged cleanly.', 1], ['outputTranscription', ' Later.', 0]])),

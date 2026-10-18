@@ -16,7 +16,7 @@ import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { capJournalText, journalRecord } from '../host/journal.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { TraceRecordError } from '../trace/record.js';
@@ -58,13 +58,30 @@ function openingSentencesOf(text: string): string {
  * text stays owner-local: this string is composed into the start instruction and is never written to
  * host.log.
  */
-export function openersNote(openers: readonly string[]): string | undefined {
-  const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.map(line => `"${line}"`).join(' ')}`;
+export function openersNote(openers: readonly string[], topics: readonly (string | undefined)[] = []): string | undefined {
+  // Release 3u: alongside the sentence, the subject its own start plan offered, so the note names a
+  // topic and not only words. A call whose plan does not name the opener's subject carries none.
+  const line = (opener: string, topic: string | undefined): string => {
+    const sentence = `"${opener}"`;
+    return topic === undefined ? sentence : `${sentence} (about ${clipTopic(topic)})`;
+  };
+  const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.join(' ')}`;
   const taken: string[] = [];
-  for (const opener of openers.map(openingSentencesOf).filter(Boolean).slice(0, 3)) {
-    if (note([...taken, opener]).length <= OPENER_CONTEXT_CHARS) taken.push(opener);
+  const spoken = openers.map(openingSentencesOf).filter(Boolean).slice(0, 3);
+  for (const [index, opener] of spoken.entries()) {
+    const next = line(opener, topics[index]);
+    if (note([...taken, next]).length <= OPENER_CONTEXT_CHARS) taken.push(next);
   }
   return taken.length ? note(taken) : undefined;
+}
+
+/** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
+const OPENER_TOPIC_CHARS = 60;
+function clipTopic(topic: string): string {
+  if (topic.length <= OPENER_TOPIC_CHARS) return topic;
+  const cut = topic.slice(0, OPENER_TOPIC_CHARS);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).trim();
 }
 
 /**
@@ -85,14 +102,50 @@ export function openerFromJournal(rows: readonly { readonly kind: string; readon
   return utterance.trim();
 }
 
-/** Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal. */
-function previousOpeners(tx: Transaction, assistantId: string): string[] {
-  const sessions = tx.all("SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC LIMIT 3", [assistantId]).map(row => String(row['live_session_id']));
-  return sessions.map(liveSessionId => openerFromJournal(tx.all("SELECT kind, text, finished FROM live_journal WHERE live_session_id=? AND (kind='outputTranscription' OR kind IN ('generationComplete','turnComplete','interrupted')) ORDER BY journal_id", [liveSessionId]).map(row => ({
-    kind: String(row['kind']),
-    text: row['text'] === null || row['text'] === undefined ? null : String(row['text']),
-    finished: row['finished'] === null || row['finished'] === undefined ? null : Number(row['finished']),
-  })))).filter(text => text !== '');
+/**
+ * Release 3u: the topic an earlier call's opener came from, read off the plan that call's own start
+ * recorded. The words the opener shares with an option decide it, so a topic is never guessed: an
+ * opener whose subject the plan does not name is reported without one.
+ */
+function openerTopicOf(opener: string, recorded: readonly OpeningOption[]): string | undefined {
+  const words = (text: string): Set<string> => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4));
+  const spoken = words(opener);
+  let best: { topic: string; shared: number } | undefined;
+  for (const option of recorded) {
+    const shared = [...words(option.topic)].filter(word => spoken.has(word)).length;
+    if (shared > 0 && (best === undefined || shared > best.shared)) best = { topic: option.topic, shared };
+  }
+  return best?.topic;
+}
+
+/** The options an earlier call's start instruction recorded, from its own accepted-prompt snapshot. */
+function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
+  if (typeof snapshot !== 'string') return [];
+  try {
+    const parsed = JSON.parse(snapshot) as { system?: unknown };
+    return typeof parsed.system === 'string' ? openingOptionsTopics(parsed.system) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal.
+ * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
+ * subject as well as words. Nothing here reaches host.log.
+ */
+function previousOpeners(tx: Transaction, assistantId: string): { readonly text: string; readonly topic?: string }[] {
+  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC LIMIT 3", [assistantId]);
+  return sessions.flatMap(row => {
+    const text = openerFromJournal(tx.all("SELECT kind, text, finished FROM live_journal WHERE live_session_id=? AND (kind='outputTranscription' OR kind IN ('generationComplete','turnComplete','interrupted')) ORDER BY journal_id", [String(row['live_session_id'])]).map(entry => ({
+      kind: String(entry['kind']),
+      text: entry['text'] === null || entry['text'] === undefined ? null : String(entry['text']),
+      finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
+    })));
+    if (text === '') return [];
+    const topic = openerTopicOf(text, recordedOptions(row['accepted_prompt_snapshot']));
+    return [{ text, ...(topic === undefined ? {} : { topic }) }];
+  });
 }
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
@@ -730,7 +783,15 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const openers = openersNote(previousOpeners(tx, assistantId));
+      const earlierOpeners = previousOpeners(tx, assistantId);
+      const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
+      // Release 3u: the plan this start offers. The persisted start counter is the row count for the
+      // owner, so consecutive calls walk the stored open loops even when no summary was written between
+      // them; the warm calendar digest supplies the first option when the host built one.
+      const storedSummaries = summaries.injectionCandidates(tx);
+      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
+        ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
+        rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
@@ -739,7 +800,8 @@ export class LiveSessionOwner {
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
-        ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}) });
+        ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}),
+        ...(openerPlan.section.length ? { openingOptions: openerPlan.section } : {}) });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
@@ -751,7 +813,7 @@ export class LiveSessionOwner {
         const start = chooseStartContext(this.#warm.take(), () => {
           // The summaries fill what the other sections leave under the target, so measure it once.
           basis = composeSession(undefined);
-          earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
+          earlier = buildEarlierConversationsSection(storedSummaries,
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
             summary: earlier.section.length ? earlier.section : undefined,
@@ -774,7 +836,9 @@ export class LiveSessionOwner {
       journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'session_start',
         provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
         instructionChars: composed.text.length, instructionSections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])),
-        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text });
+        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text,
+        // Release 3u: the plan receipt, metadata only: the kinds offered and the start counter that chose them.
+        openerPlan: { kinds: openerPlan.options.map(option => option.kind), rotation: openerPlan.rotation } });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];

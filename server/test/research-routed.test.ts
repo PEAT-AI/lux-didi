@@ -368,7 +368,8 @@ test('the batch bound grows with the lookup count for every source except the ca
   assert.equal(lookupBound('calendar', 2, 15_000), RESEARCH.sourceDeadline.calendar, 'two windows never double the calendar budget');
   assert.ok(lookupBound('calendar', 2, 15_000) < RESEARCH.startDeadlineMs, 'and it stays inside the start deadline, never equal to it');
   assert.equal(lookupBound('knowledge', 1, 15_000), RESEARCH.sourceDeadline.knowledge);
-  assert.equal(lookupBound('knowledge', 2, 15_000), RESEARCH.sourceDeadline.knowledge * 2, 'a coalesced batch buys the time each lookup needs');
+  assert.equal(lookupBound('knowledge', 2, 30_000), RESEARCH.sourceDeadline.knowledge * 2, 'a coalesced batch buys the time each lookup needs');
+  assert.equal(lookupBound('knowledge', 2, 15_000), 15_000, 'never past what the run has left');
   assert.equal(lookupBound('knowledge', 4, 9_000), 9_000, 'never past what the run has left');
 });
 

@@ -730,8 +730,8 @@ test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never 
   const deps: ResearchDeps = { ...h.deps, configured: ['knowledge'], logSource: event => receipts.push(event) };
   const running = runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   await settle();
-  clock.advance(12_000); await settle();
-  clock.advance(13_000); await settle();
+  clock.advance(RESEARCH.sourceDeadline.knowledge); await settle();
+  clock.advance(researchCallBudgetMs(['knowledge'])); await settle();
   const reply = await running;
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['knowledge', 'timeout', 12_000]], 'a cut knowledge read is a timeout at 12 s, never an empty search');
   assert.ok((reply['unchecked'] as string[]).includes('knowledge'), 'and it is named unchecked rather than reported as read');
@@ -757,6 +757,6 @@ test('P5: the warm-up probes each healthy connector once per session and never b
   assert.equal(probes.length, 4, 'a second start in the same session proves nothing twice');
   release();
   await settle();
-  assert.deepEqual(warm.map(event => [event.source, event.ok]), [['chat', true], ['calendar', true], ['knowledge', true], ['mail', true]], 'each probe leaves one connector_warm receipt');
+  assert.deepEqual(warm.map(event => `${event.source}:${event.ok}`).sort(), ['calendar:true', 'chat:true', 'knowledge:true', 'mail:true'], 'each probe leaves one connector_warm receipt');
   assert.ok(warm.every(event => typeof event.ms === 'number'));
 });

@@ -97,13 +97,13 @@ export const RESEARCH = Object.freeze({
   replyLimitChars: 6_000,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
-  mailLines: 8, chatLines: 8, calendarLines: 12,
+  mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
   /**
-   * P5-R1: knowledge returns up to eight hits with the whole body the connector sends. The old 40 hits
-   * of 1,200-character snippets cut the evidence the owner asked for; the whole-reply budget still
-   * bounds the total, so nothing here can overrun the answer.
+   * P5-R1: a knowledge lookup asks for eight hits and keeps the whole body the connector sends, instead
+   * of forty hits of 1,200-character snippets that cut the evidence short. `knowledgeLines` stays the
+   * reply's per-source line bound: it caps what the answer shows, never what the search may return.
    */
-  knowledgeLines: 8,
+  knowledgeHits: 8,
   /** K6: how many memory lines one routed memory lookup may show. */
   memoryLines: 12,
   mailSnippetChars: 200, chatTextChars: 300, openedBodyChars: 1_500,
@@ -543,7 +543,7 @@ export function offerableCandidates(configured: readonly SourceKind[], completed
 export function candidateSubs(kind: CandidateKind, config: { question: string; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
   const keywords = contentKeywords(config.question).join(' ');
-  if (kind === 'knowledge_search') return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeLines }, 'k0')];
+  if (kind === 'knowledge_search') return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeHits }, 'k0')];
   if (kind === 'calendar_window') {
     // One call covers every selected calendar: the connector resolves the set and merges the reads.
     const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now());
@@ -563,7 +563,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     }
     if (config.configured.includes('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: 'after:yesterday', limit: RESEARCH.chatLines }, 'b2'));
-    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, { query: keywords || 'open loop follow up', limit: RESEARCH.knowledgeLines }, 'b3'));
+    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, { query: keywords || 'open loop follow up', limit: RESEARCH.knowledgeHits }, 'b3'));
     return subs;
   }
   return [];

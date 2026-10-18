@@ -71,16 +71,19 @@ const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
 /** One provisional production ceiling for complete trusted Chat and Live instructions. */
 export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
-/** The working size a Live instruction aims for before any section yields (issue 1014; PV1: 30k). */
-export const LIVE_INSTRUCTION_TARGET_CHARS = 30_000;
-/** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k). */
-export const LIVE_INSTRUCTION_HARD_LIMIT = 36_000;
+/** The working size a Live instruction aims for before any section yields (issue 1014; PV1: 30k; PV2: 44k).
+ *  gpt-live-1 accepts 16,384 instruction tokens (about 60k characters), so 44k leaves room for the
+ *  provider wrapper sections while staying clear of the 52k hard ceiling. */
+export const LIVE_INSTRUCTION_TARGET_CHARS = 44_000;
+/** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k; PV2: 52k). */
+export const LIVE_INSTRUCTION_HARD_LIMIT = 52_000;
 /** The memory section never exceeds this many characters; it is the first section to yield. */
 export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
 export const STANDING_MEMORY_CHAR_LIMIT = 3_000;
-/** Owner lore is dense; it is clipped to this many characters and never yielded. */
-export const OWNER_LORE_CHAR_LIMIT = 5_000;
+/** Owner lore is dense; it is clipped to this many characters (PV2: 14k, a much deeper owner profile)
+ *  and never yielded. */
+export const OWNER_LORE_CHAR_LIMIT = 14_000;
 /**
  * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
  * continue the conversation instead of greeting. Exact text is asserted in tests and sent as the opening
@@ -89,7 +92,7 @@ export const OWNER_LORE_CHAR_LIMIT = 5_000;
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
-export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'] as const);
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
 /** Every composed section id is a listed id, so a new section cannot skip the allowlist. */
 export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[number];
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
@@ -208,6 +211,8 @@ export interface ComposeLiveInstructionInput {
   readonly accent?: string;
   readonly tools?: readonly string[];
   readonly memory?: string;
+  /** The optional OpenAI voice-prompt text mirrored in the accent tail (PV2), at most 1,500 characters. */
+  readonly voiceDescription?: string;
 }
 
 export interface OwnerProfileSection {
@@ -328,37 +333,45 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   const overlayText = input.overlay !== undefined ? overlaySection(input.overlay) : undefined;
   const toolsText = input.tools !== undefined && input.tools.length ? NAYA_TOOLS : undefined;
   const runtimeText = input.runtimeContext?.length ? input.runtimeContext : undefined;
+  const voiceDescriptionText = input.voiceDescription !== undefined && input.voiceDescription.length
+    ? `Voice description: ${input.voiceDescription}` : undefined;
 
   type Entry = { id: ComposedSection['id']; text: string };
   // Issue 1014 order: voice head, owner style, persona overlay, base and truth rules, tools conduct,
-  // runtime context, owner lore, memory, terminal voice anchor.
-  const select = (tools: string | undefined, memory: string | undefined): Entry[] => {
+  // runtime context, owner lore, memory, terminal voice anchor, then the optional voice description,
+  // which the voice docs recommend mirroring in the instructions and which rides inside the accent tail.
+  const select = (tools: string | undefined, memory: string | undefined, runtime: string | undefined = runtimeText): Entry[] => {
     const entries: Entry[] = [];
     if (head !== undefined) entries.push({ id: 'voice-head', text: head });
     entries.push(...ownerStyle);
     if (overlayText !== undefined) entries.push({ id: 'overlay', text: overlayText });
     entries.push({ id: 'base', text: input.base });
     if (tools !== undefined) entries.push({ id: 'tools', text: tools });
-    if (runtimeText !== undefined) entries.push({ id: 'runtime', text: runtimeText });
+    if (runtime !== undefined) entries.push({ id: 'runtime', text: runtime });
     entries.push(...ownerLore);
     if (memory !== undefined) entries.push({ id: 'memory', text: memory });
     entries.push({ id: 'voice', text: voice });
+    if (voiceDescriptionText !== undefined) entries.push({ id: 'voice-description', text: voiceDescriptionText });
     return entries;
   };
   const size = (entries: Entry[]): number => assemble(entries.map(entry => entry.text)).length;
 
   let memory = input.memory?.length ? input.memory.slice(0, MEMORY_SECTION_CHAR_LIMIT) : undefined;
   let tools = toolsText;
-  // Yield memory first, then trim the tools conduct. The voice blocks, style, overlay and lore never yield.
-  if (size(select(tools, memory)) > LIVE_INSTRUCTION_TARGET_CHARS) memory = undefined;
-  if (size(select(tools, memory)) > LIVE_INSTRUCTION_TARGET_CHARS && tools !== undefined) {
-    const remaining = LIVE_INSTRUCTION_TARGET_CHARS - size(select(undefined, memory)) - separator.length;
-    tools = remaining <= 0 ? undefined : tools.slice(0, remaining).replace(/\s+$/, '');
-  }
-  const entries = select(tools, memory);
+  let runtime = runtimeText;
+  // Whole sections yield in priority order: memory first, then the tools conduct, then the runtime
+  // context. The voice blocks, the owner style, the overlay, the base and the owner lore never yield,
+  // and no surviving section is ever cut mid-text. A yielded section is reported with a zero size, so
+  // live_instruction_sizes names exactly which sections were dropped.
+  const dropped: Entry[] = [];
+  const over = (): boolean => size(select(tools, memory, runtime)) > LIVE_INSTRUCTION_TARGET_CHARS;
+  if (over() && memory !== undefined) { dropped.push({ id: 'memory', text: '' }); memory = undefined; }
+  if (over() && tools !== undefined) { dropped.push({ id: 'tools', text: '' }); tools = undefined; }
+  if (over() && runtime !== undefined) { dropped.push({ id: 'runtime', text: '' }); runtime = undefined; }
+  const entries = select(tools, memory, runtime);
   if (size(entries) > LIVE_INSTRUCTION_HARD_LIMIT) throw new PersonaOverlayError('instruction_too_large');
   const text = assemble(entries.map(entry => entry.text));
-  const sections = entries.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
+  const sections = [...entries, ...dropped].map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
   return Object.freeze({ text, sha256: digest(text), sections: Object.freeze(sections) });
 }
 

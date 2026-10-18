@@ -32,8 +32,14 @@ const DELEGATION_PARALLEL_TOOL_CALLS = true;
 const DELEGATION_REASONING_EFFORT = 'low';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
-/** `nira` is the documented Hindi voice (guides/live-conversations voice table), which the persona forbids. */
-const REFUSED_VOICES: readonly string[] = ['nira'];
+/** The documented form of a prompt-designed custom voice (`POST /v1/audio/voices`, type prompt):
+ *  `voice_` plus 16 to 64 lowercase hex characters. GPT-Live is the one surface that can speak it, and the
+ *  session start frame references it as `audio.output.voice = { id }` rather than by name (PV2). */
+const CUSTOM_VOICE_ID = /^voice_[0-9a-f]{16,64}$/;
+/** Whether one voice name is a custom voice id rather than a preset name. */
+export function isCustomVoiceId(voice: string): boolean { return CUSTOM_VOICE_ID.test(voice); }
+/** The voice the session start frame asks for: a preset stays a string, a custom voice travels as an id. */
+function voicePayload(voice: string): string | { id: string } { return isCustomVoiceId(voice) ? { id: voice } : voice; }
 // PV1: the Language line is gone, because the host's accent block carries the accent and this line competed with it.
 export const OPENAI_TOOLS_SECTION = 'Tools: before a lookup, say one short natural line that you are checking; never go silent for more than a few seconds.';
 export const OPENAI_DELIVERY_SECTION = 'Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.';
@@ -150,7 +156,10 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       || (options.socketFactory !== undefined && typeof options.socketFactory !== 'function')
       || (options.clock !== undefined && (typeof options.clock.now !== 'function' || typeof options.clock.setTimer !== 'function' || typeof options.clock.clearTimer !== 'function'))) fail('invalid_settings');
     const voice = options.voice === undefined || options.voice === '' ? OPENAI_DEFAULT_VOICE : options.voice;
-    if (typeof voice !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(voice) || REFUSED_VOICES.includes(voice)) fail('invalid_settings');
+    // A `voice_` name is a custom id and must be a well-formed one; every other name is a preset name
+    // by shape, and the provider's own list is what decides whether it exists (PV2).
+    if (typeof voice !== 'string' || (voice.startsWith('voice_')
+      ? !isCustomVoiceId(voice) : !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(voice))) fail('invalid_settings');
     if (options.limits !== undefined && !object(options.limits)) fail('invalid_settings');
     const limits = { ...DEFAULTS, ...options.limits };
     for (const name of Object.keys(limits)) if (!(name in DEFAULTS)) fail('invalid_settings');
@@ -202,7 +211,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       session: {
         model: settings.modelId,
         instructions,
-        audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: settings.voice } },
+        audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: voicePayload(settings.voice) } },
         ...(seed.items.length ? { input: seed.items } : {}),
         delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto',
           parallel_tool_calls: DELEGATION_PARALLEL_TOOL_CALLS, reasoning: { effort: DELEGATION_REASONING_EFFORT } } },

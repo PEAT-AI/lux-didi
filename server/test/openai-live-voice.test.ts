@@ -74,8 +74,9 @@ describe('openai gpt-live adapter', () => {
     const start = f.frames[0] as unknown as Start;
     // GPT-Live references a prompt-designed voice as { id }, never as its name.
     assert.deepEqual((start.session['audio'] as Record<string, unknown>)['output'], { voice: { id: custom } });
-    // The documented id form is voice_ plus 16 to 64 lowercase hex characters; anything else is refused.
-    for (const bad of ['voice_0123456789ABCDEF', 'voice_0123', 'nira2', 'voice-0123456789abcdef', 'voice_0123456789abcdef'.padEnd(71, 'a')]) {
+    // The documented id form is voice_ plus 16 to 64 lowercase hex characters; a `voice_` name that is
+    // not one is refused rather than sent as a preset.
+    for (const bad of ['voice_0123456789ABCDEF', 'voice_0123', 'voice_0123456789abcdef'.padEnd(71, 'a')]) {
       assert.throws(() => new OpenAiLiveVoiceAdapter(options({ voice: bad })), code('invalid_settings'), bad);
     }
     const preset = await fixture(t);

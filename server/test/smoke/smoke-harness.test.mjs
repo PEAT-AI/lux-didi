@@ -205,7 +205,7 @@ test('probes stage the installed provider config into a private temp copy', asyn
   } finally { await staged.remove(); await rm(dir, { recursive: true, force: true }); }
   assert.equal(existsSync(staged.configDir), false, 'the copy is removed, key material is not left behind');
   // The shipping path, not just the helper: the probes stage once and hand that copy to the host.
-  const source = await readFile(join(repoRoot, 'server/test/smoke/probes.mjs'), 'utf8');
-  assert.equal((source.match(/stageProviderConfig\(/g) ?? []).length, 2, 'probes.mjs defines the staging step and calls it once');
-  assert.match(source, /configDir: config\.configDir/, 'the host spawn takes the staged copy, never the installed dir');
+  const probeSource = await readFile(join(repoRoot, 'server/test/smoke/probes.mjs'), 'utf8');
+  assert.equal((probeSource.match(/stageProviderConfig\(/g) ?? []).length, 2, 'probes.mjs defines the staging step and calls it once');
+  assert.match(probeSource, /configDir: config\.configDir/, 'the host spawn takes the staged copy, never the installed dir');
 });

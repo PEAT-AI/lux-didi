@@ -1906,18 +1906,6 @@ export class LiveSessionOwner {
             ownerTurnOpen = true;
             this.#openTurn(handle);
           }
-
-        // O1b-A: what was actually said, both sides, lands in the content table and nowhere else. It is written
-        // after the owner-utterance boundary has opened this turn, so her first words are never dropped.
-        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
-          const turnId = handle.connection.turnId;
-          if (turnId !== undefined) {
-            try {
-              recordUtterance(this.#store, { turnId, role: event.type === 'inputTranscription' ? 'owner' : 'model',
-                at: this.#now(), final: event.finished === true, text: event.text });
-            } catch { /* a content write never breaks the turn it belongs to */ }
-          }
-        }
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
@@ -1926,6 +1914,17 @@ export class LiveSessionOwner {
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
             }
+          }
+        }
+        // O1b-A: what was actually said, both sides, lands in the two content tables and nowhere else. It is
+        // written after the owner-utterance boundary has opened the turn, so her first words are never dropped.
+        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
+          const turnId = handle.connection.turnId;
+          if (turnId !== undefined) {
+            try {
+              recordUtterance(this.#store, { turnId, role: event.type === 'inputTranscription' ? 'owner' : 'model',
+                at: this.#now(), final: event.finished === true, text: event.text });
+            } catch { /* a content write never breaks the turn it belongs to */ }
           }
         }
         const kind = journalKind(event.type);

@@ -8,7 +8,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, chooseStartContext } from './warm-context.js';
@@ -1590,11 +1590,20 @@ export class LiveSessionOwner {
     }
   }
 
-  #unreachableSources(): ResearchSourceKind[] {
-    const sources: ResearchSourceKind[] = [];
-    for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
+  #unreachableSources(): (ResearchSourceKind | UnavailableSource)[] {
+    const sources: (ResearchSourceKind | UnavailableSource)[] = [];
+    // P5-R5 (F3): the endpoint report carries why it is not connected, and the owner's reply names it.
+    // Codes and closed enums only: never the free-text `error`, so no connector text can reach a reply.
+    const endpoints = (this.#tools?.status?.().endpoints ?? []) as unknown as readonly {
+      connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
+    }[];
+    for (const endpoint of endpoints) {
       if (endpoint.state === 'connected') continue;
-      for (const source of researchSourcesForConnector(endpoint.connector)) if (!sources.includes(source)) sources.push(source);
+      const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+      for (const source of researchSourcesForConnector(endpoint.connector)) {
+        if (sources.some(entry => (typeof entry === 'string' ? entry : entry.source) === source)) continue;
+        sources.push({ source, reason });
+      }
     }
     return sources;
   }

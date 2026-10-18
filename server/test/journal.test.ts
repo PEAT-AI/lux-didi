@@ -170,6 +170,7 @@ test('an out-of-vocabulary record is dropped without a receipt', t => {
 test('a chat session journals its instructions, both transcripts, its model round and its end', async t => {
   const dir = tempDir(t);
   resetDebugJournal();
+  // P5-R2: the seam the rest of this file uses, so the journal's day is the pinned NOW, not today.
   configureDebugJournal(dir, true, { now: () => NOW });
   t.after(resetDebugJournal);
   const work: (() => void)[] = [];
@@ -214,6 +215,7 @@ test('a chat session journals its instructions, both transcripts, its model roun
 test('a live session journals its instructions, provider ack, transcripts and its end', async t => {
   const dir = tempDir(t);
   resetDebugJournal();
+  // P5-R2: the seam the rest of this file uses, so the journal's day is the pinned NOW, not today.
   configureDebugJournal(dir, true, { now: () => NOW });
   t.after(resetDebugJournal);
   const work: (() => void)[] = [];

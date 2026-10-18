@@ -506,14 +506,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
     return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
   }
-  if (value.event === 'research_lookup') {
-    // N3: one receipt per routed lookup: the layer, its outcome and its wall time. Never a query.
-    const keys = ['event', 'researchId', 'source', 'outcome', 'ms'];
+  if (value.event === 'research_source') {
+    // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
+    // given, so a read cut short can be judged against the time the source really had. Never a query.
+    const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs'];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
-    if (!isSafeCount(value.ms)) return;
-    return { event: 'research_lookup', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms };
+    if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs)) return;
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar

@@ -1165,7 +1165,9 @@ export class LiveSessionOwner {
 
   #progressTick(handle: ActiveSession): void {
     handle.progressTimer = undefined;
-    if (this.#settled(handle) || handle.rebuilding || !handle.awaitingAnswer) return;
+    if (this.#settled(handle) || handle.rebuilding) return;
+    // A delegation is open while its calls run and until the answer's own audio arrives.
+    if (handle.pendingCallIds.size === 0 && !handle.awaitingAnswer) return;
     this.#sendProgress(handle, 'dead_air');
     // The cadence is the interval, not the attempt, so a suppressed line is retried on the same 8 s beat.
     handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_INTERVAL_MS);
@@ -1312,7 +1314,10 @@ export class LiveSessionOwner {
     }
     handle.watchdogRecoveredAt = this.#now();
     hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
-    await this.#recoverFromDrop(handle, undefined, handle.stalledNoRebuild !== true, 'model_mute');
+    // S4a: a delegation still open when the watchdog fires is a stall, not a mute model, so the session is resumed
+    // rather than rebuilt; the stall receipt at DELEGATION_DEADLINE_MS names it.
+    const stalledDelegation = handle.awaitingAnswer || handle.pendingCallIds.size > 0;
+    await this.#recoverFromDrop(handle, undefined, handle.stalledNoRebuild !== true && !stalledDelegation, 'model_mute');
     handle.stalledNoRebuild = false;
   }
 
@@ -1692,6 +1697,7 @@ export class LiveSessionOwner {
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
           this.#sendThinking(handle, event.calls);
+          this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
           void this.#toolBatch(handle, event, generation).catch(() => {

@@ -1039,6 +1039,7 @@ class Session implements LiveVoiceSession {
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
     this.settleTurn();
+    this.writeAnswered();
     this.resumeContinuation();
   }
 
@@ -1293,8 +1294,20 @@ class Session implements LiveVoiceSession {
       this.answeredCalls.set(id, response);
     }
     if (!fresh.length) return this.continuationOutcome;
-    // A call of this backend response still has no answer: the batch is not ready, so nothing is written yet and
-    // the continuation waits. The delegation guide's order is every result, then one `response.create` (S5).
+    return this.writeAnswered();
+  }
+
+  /**
+   * The delegation guide's order (S5): every result of the backend response is written together, then exactly one
+   * `response.create`. Nothing is written while the response is still emitting calls, because a call emitted after
+   * it would be answered by a continuation already sent: the batch is complete only when its response is.
+   */
+  private writeAnswered(): LiveToolSendOutcome {
+    if (this.delegatedOutstanding) {
+      if (this.pendingCalls.length) this.continuationOwed = true;
+      return this.continuationOutcome;
+    }
+    if (!this.pendingCalls.length) return this.continuationOutcome;
     if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) {
       this.deferralReceipt();
       return this.continuationOutcome = 'deferred';

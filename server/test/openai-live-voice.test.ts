@@ -678,8 +678,11 @@ describe('openai gpt-live adapter', () => {
     await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
     await quiet();
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'continuation_deferred'),
-      [{ event: 'continuation_deferred', responseKey: 'resp_1', awaiting: 1 }], 'the receipt says what is still owed, never a call id');
+    // Two deferrals, both honest: the completed response still owed two answers, then one.
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'continuation_deferred'), [
+      { event: 'continuation_deferred', responseKey: 'resp_1', awaiting: 2 },
+      { event: 'continuation_deferred', responseKey: 'resp_1', awaiting: 1 },
+    ], 'the receipt says what is still owed, never a call id');
   });
 
   test('a whitespace-only fragment starts no input episode and postpones no receipt', async t => {

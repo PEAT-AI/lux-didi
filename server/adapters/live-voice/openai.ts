@@ -1304,8 +1304,10 @@ class Session implements LiveVoiceSession {
    */
   private writeAnswered(): LiveToolSendOutcome {
     if (this.delegatedOutstanding) {
+      // The response that emitted these calls is still open: it may emit more, so the batch is not complete.
       if (this.pendingCalls.length) this.continuationOwed = true;
-      return this.continuationOutcome;
+      this.deferralReceipt();
+      return this.continuationOutcome = 'deferred';
     }
     if (!this.pendingCalls.length) return this.continuationOutcome;
     if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) {
@@ -1382,7 +1384,7 @@ class Session implements LiveVoiceSession {
    * many call outputs it still waits for. Never a call id, never an argument.
    */
   private deferralReceipt(): void {
-    const awaiting = this.pendingCalls.filter(call => !this.outputSent.has(call.id)).length;
+    const awaiting = this.pendingCalls.filter(call => !this.answeredCalls.has(call.id)).length;
     hostLogEvent({ event: 'continuation_deferred', responseKey: this.currentResponse ?? 'none', awaiting });
   }
 

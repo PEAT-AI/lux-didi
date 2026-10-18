@@ -23,6 +23,8 @@ cp -R "$root/server/contracts/." "$out/source/contracts/"
 # The selected tests side-effect import live-remember/live-declarations and host/log,
 # whose transitive modules these directories carry, so the isolated tsc can resolve them.
 cp -R "$root/server/chat" "$root/server/domain" "$root/server/host" "$root/server/http" "$root/server/runtime" "$root/server/memory" "$out/source/"
+# runtime/store.ts applies the trace store migrations and prunes its content, so this tree needs trace too.
+cp -R "$root/server/trace" "$out/source/"
 for name in credential-binding provider-config model live-voice prompt live-remember live-declarations mongoose-auth; do
   cp "$root/server/test/$name.test.ts" "$out/source/test/"
 done

@@ -238,6 +238,16 @@ expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .start && Singl
     "a move out of cold or back from hot-muted starts, a move to cold stops")
 expect(SingleKeyTrigger.signing == "adhoc" || SingleKeyTrigger.signing == "identity" || SingleKeyTrigger.signing == "unknown",
     "the signing fact is one of the three the receipt knows")
+// The signing label is pure over the code-signature flags, so it is testable with
+// an injected stub: an ad-hoc build can never report the label that promises a
+// grant survives an install.
+let adhocFlags: UInt32 = 0x0002
+let developerIDFlags: UInt32 = 0x0000
+expect(SingleKeyTrigger.signingLabel(codeFlags: { adhocFlags }) == "adhoc", "an ad-hoc signature reports adhoc, never identity")
+expect(SingleKeyTrigger.signingLabel(codeFlags: { developerIDFlags }) == "identity", "a certificate-backed signature reports identity")
+expect(SingleKeyTrigger.signingLabel(codeFlags: { nil }) == "unknown", "a signature the system will not describe is unknown, never identity")
+expect(SingleKeyTrigger.signingLabel(codeFlags: { adhocFlags | developerIDFlags }) != "identity",
+    "the injected stub cannot turn ad-hoc flags into identity")
 SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)

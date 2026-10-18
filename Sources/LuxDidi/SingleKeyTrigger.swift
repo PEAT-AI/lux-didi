@@ -189,21 +189,33 @@ final class SingleKeyTrigger {
          "tapCreated": tapCreated, "signing": signing]
     }
 
+    /// `adhoc`, `identity` or `unknown` for one set of code-signature flags. The
+    /// ad-hoc flag is `kSecCodeSignatureAdhoc` (0x0002), which Swift does not
+    /// import. A signature the system will not describe is never called
+    /// `identity`, because that is the label that promises a grant survives.
+    nonisolated static func signingLabel(codeFlags: () -> UInt32?) -> String {
+        guard let flags = codeFlags() else { return "unknown" }
+        return flags & 0x0002 != 0 ? "adhoc" : "identity"
+    }
+
     /// `adhoc` or `identity`: the fact that decides whether a grant survives an install,
     /// read from the running code's signature. `unknown` when the system will not say,
-    /// which includes an unsigned run. The ad-hoc flag is `kSecCodeSignatureAdhoc`
-    /// (0x0002), which Swift does not import.
-    nonisolated static var signing: String {
+    /// which includes an unsigned run.
+    nonisolated static var signing: String { signingLabel(codeFlags: currentCodeFlags) }
+
+    /// The flags of the running executable's own signature, or `nil` when the
+    /// system will not describe it. The one place this file asks the system.
+    nonisolated static func currentCodeFlags() -> UInt32? {
         var code: SecCode?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return "unknown" }
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
         var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return "unknown" }
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
         var information: CFDictionary?
         guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
                                             &information) == errSecSuccess,
               let fields = information as? [String: Any],
-              let flags = fields[kSecCodeInfoFlags as String] as? UInt32 else { return "unknown" }
-        return flags & 0x0002 != 0 ? "adhoc" : "identity"
+              let flags = fields[kSecCodeInfoFlags as String] as? UInt32 else { return nil }
+        return flags
     }
 
     /// Asked at most once per app version, on an interactive launch, with a one-line

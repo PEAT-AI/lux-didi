@@ -3,11 +3,21 @@
 # Applications target. The production build is separate from the install.
 #
 # Refuses: a target outside the user's home, a missing/invalid source app, an
-# existing staging path, or any use of --force. It never deletes user data or rewrites owner-edited configuration and never touches an unrelated application. The prior app is preserved as
+# existing staging path, any use of --force, or an ad-hoc signed app once a
+# signing identity is configured. It never deletes user data or rewrites owner-edited configuration and never touches an unrelated application. The prior app is preserved as
 # a uniquely named rollback and restored if post-swap validation fails.
+#
+# The designated requirement is printed because macOS keys the Accessibility
+# grant to it: an ad-hoc `cdhash H"..."` changes on every build and the grant is
+# dropped on every install (issue #382).
 #
 # Usage: scripts/install-macos-app.sh <built-app> [--to DIR]
 #   --to DIR   user-local Applications directory (default: $HOME/Applications)
+#
+# Environment:
+#   LUX_DIDI_SIGNING_IDENTITY  the identity the owner signs with; set it (or have
+#                              a valid one in the keychain) and an ad-hoc app is
+#                              refused instead of installed.
 set -euo pipefail
 export CI=1
 
@@ -50,6 +60,21 @@ web_shell_installed() {
 
 name="$(basename "$built")"
 [ "$name" = "Lux Didi.app" ] || { echo "install-macos-app.sh: expected 'Lux Didi.app', got '$name'" >&2; exit 2; }
+
+# The requirement macOS matches the Accessibility grant against. An ad-hoc
+# signature states a bare cdhash, which no reinstall can match; a
+# certificate-backed one names an identifier and a certificate anchor.
+designated_requirement() { codesign -d -r- "$1" 2>&1 | sed -n 's/^#* *designated => //p' | head -1; }
+is_adhoc_requirement() {
+  case "$1" in
+    *'cdhash H"'*) case "$1" in *certificate*) return 1;; *) return 0;; esac;;
+  esac
+  return 1
+}
+signing_identity="${LUX_DIDI_SIGNING_IDENTITY:-}"
+if [ -z "$signing_identity" ] && security find-identity -p codesigning -v 2>/dev/null | grep -qF '"Lux Didi Local Signing"'; then
+  signing_identity="Lux Didi Local Signing"
+fi
 target="$target_dir/$name"
 stage="$target_dir/.LuxDidi.install.$$"
 [ ! -e "$stage" ] || { echo "install-macos-app.sh: staging path already exists" >&2; exit 2; }
@@ -57,6 +82,13 @@ stage="$target_dir/.LuxDidi.install.$$"
 # Validate before swap.
 codesign --verify --deep --strict "$built"
 [ -x "$built/Contents/MacOS/LuxDidi" ] || { echo "install-macos-app.sh: source executable missing" >&2; exit 2; }
+built_requirement="$(designated_requirement "$built")"
+if [ -n "$signing_identity" ] && is_adhoc_requirement "$built_requirement"; then
+  echo "install-macos-app.sh: refusing an ad-hoc install: signing identity '$signing_identity' is configured" >&2
+  echo "install-macos-app.sh: but the designated requirement is ad-hoc ($built_requirement), so macOS would" >&2
+  echo "install-macos-app.sh: drop the Accessibility grant again; rebuild with scripts/build-macos-app.sh" >&2
+  exit 1
+fi
 
 mkdir -p "$target_dir"
 ditto "$built" "$stage"
@@ -78,5 +110,10 @@ if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/Mac
 fi
 
 # Installation owns only the app bundle. Configuration remains owner-controlled.
+installed_requirement="$(designated_requirement "$target")"
+printf 'INSTALL-MACOS-APP designated requirement: %s\n' "${installed_requirement:-unknown}"
+if is_adhoc_requirement "$installed_requirement"; then
+  printf 'INSTALL-MACOS-APP WARNING ad-hoc signature: this requirement changes every build, so the Accessibility grant will not survive the next install\n' >&2
+fi
 
 printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"

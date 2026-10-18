@@ -66,6 +66,31 @@ permissions, Open at login, shortcuts, and connector status. Nothing requests
 permission until you press a setup button. The page's Settings panel shows the
 same connector next steps and is read-only.
 
+## Stable signing
+
+A Lux Didi install keeps the same code requirement across rebuilds, so macOS
+keeps the Accessibility grant you gave it. An ad-hoc build has no certificate:
+macOS describes it by a `cdhash` that changes on every build, so it discards the
+grant on every install. A local signing identity fixes that once.
+
+Create it, once, on your own machine:
+
+```bash
+scripts/create-signing-identity.sh
+```
+
+That makes a self-signed code-signing certificate named **Lux Didi Local
+Signing** in your login keychain and prints one `security add-trusted-cert`
+command. Run that command and enter your login keychain password; nothing else
+is needed. `scripts/create-signing-identity.sh --dry-run` prints the plan and
+changes nothing. Running it again when the identity exists does nothing.
+
+The build and the install then both report the designated requirement.
+`identifier "ai.peat.lux-didi" and certificate ... = H"..."` is the stable
+shape; a bare `cdhash H"..."` means the identity was not used, and the build
+says so in a warning. With the identity configured, the install refuses an
+ad-hoc build instead of installing one that would drop your grant again.
+
 ## Connector setup
 
 Installation does not create provider or connector configuration, install connector

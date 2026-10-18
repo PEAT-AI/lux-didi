@@ -638,6 +638,7 @@ describe('openai gpt-live adapter', () => {
 
   test('S5: every answered call writes its output at answer time, and only the continuation waits', async t => {
     const clock = new FakeClock();
+    const logged = hostReceipts(t);
     const { f, session, captured } = await ready(t, { clock });
     f.send(delegated('response.created', { response: { id: 'resp_1' } }));
     for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
@@ -658,6 +659,9 @@ describe('openai gpt-live adapter', () => {
       { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
       { type: 'response.create' },
     ], 'the last answer completes the batch, and exactly one continuation follows it');
+    // S1-R1: the receipt names the whole batch, not the round that happened to be last.
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'),
+      [{ event: 'gptlive_tool_output', calls: 2, responseCreate: 'sent' }]);
   });
 
   test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {

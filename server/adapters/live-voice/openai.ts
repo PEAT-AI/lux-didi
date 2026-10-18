@@ -432,6 +432,8 @@ class Session implements LiveVoiceSession {
   private continuationsSent = 0;
   /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
   private continuationCalls = 0;
+  /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
+  private batchAnswers = 0;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
   /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
@@ -1328,11 +1330,14 @@ class Session implements LiveVoiceSession {
     for (const id of written) this.answeredCalls.delete(id);
     if (written.length) this.noteDelegationOutputs(written);
     // A call of this backend response still has no answer: its output is owed, so no continuation yet.
+    // The one continuation answers every output of this backend response, however many rounds delivered them,
+    // so the receipt's count is the batch, not the last chunk (S1-R1).
+    this.batchAnswers += written.length;
     if (this.pendingCalls.length > 0) {
       this.deferralReceipt();
       return this.continuationOutcome = 'deferred';
     }
-    return this.continueTurn(written.length, 0);
+    return this.continueTurn(this.batchAnswers, 0);
   }
 
   /** The one gate a continuation passes (3r A): it is owed, and only a terminal event or a rejection resumes it. */
@@ -1353,6 +1358,7 @@ class Session implements LiveVoiceSession {
     }
     this.continuationOwed = false;
     this.continuationRejected = false;
+    this.batchAnswers = 0;
     this.continuationsSent += 1;
     if (attempt) this.continuationRetries += 1;
     const answered = this.continuationCalls;
@@ -1411,6 +1417,7 @@ class Session implements LiveVoiceSession {
     this.openedResponses.clear();
     this.endedResponses.clear();
     this.continuationOwed = false;
+    this.batchAnswers = 0;
     this.continuationCalls = 0;
     this.lastContinuationCalls = 0;
     this.delegatedOutstanding = false;

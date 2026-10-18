@@ -208,6 +208,9 @@ export class CalendarDigestCache {
   current(): CalendarDigestSnapshot | undefined {
     const snapshot = this.#snapshot;
     if (snapshot === undefined) return undefined;
+    // No grant is a property of the connector, not of the day, so it is never cached: a start after the
+    // owner connects the calendar asks again instead of reading yesterday's absence for half an hour.
+    if (snapshot.state === 'unconfigured') return undefined;
     const now = this.#now();
     const sameDay = localDayWindow(now, this.#timeZone).timeMin === localDayWindow(snapshot.fetchedAt, this.#timeZone).timeMin;
     if (sameDay && now - snapshot.fetchedAt < calendarDigestFreshMs) return snapshot;

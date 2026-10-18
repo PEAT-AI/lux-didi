@@ -256,6 +256,18 @@ test('1015: a truly empty day is the one case that reports empty', async () => {
   assert.equal(filled.items, 0);
 });
 
+test('1015: an unconfigured connector is never cached, so a start asks again once the grant arrives', async () => {
+  const clock = { now: digestMonday };
+  let granted = false;
+  const cache = new CalendarDigestCache(async () => (granted
+    ? { state: 'present' as const, text: '10:00 standup', items: 1, fetchedAt: clock.now }
+    : { state: 'unconfigured' as const, text: undefined, items: 0, fetchedAt: clock.now }),
+    { now: () => clock.now, timeZone: 'Asia/Kolkata' });
+  assert.equal((await cache.forStart()).state, 'unconfigured', 'no grant, no digest');
+  granted = true;
+  assert.equal((await cache.forStart()).state, 'present', 'the next start reads the calendar the owner just granted');
+});
+
 test('1015: a cache older than 30 min is stale, leaves the slot out and triggers a refresh', async () => {
   const { cache, read, clock } = digestCache({});
   await cache.refresh();

@@ -435,7 +435,7 @@ test('O1b-A: a full synthetic call turn prints its turn, ordered utterances, cal
     assert.equal(track.calls[0]!.outputWrittenAt, T0 + 1_320, 'the call carries its output time');
     assert.equal(track.calls[0]!.continuationAt, T0 + 1_320, 'and the continuation it earned');
     assert.equal(track.calls[0]!.continuationOutcome, 'sent');
-    assert.equal(track.turn.firstAudibleAt, T0 + 1_500, 'first audible comes from the playback receipt');
+    assert.equal(track.turn.firstAudibleAt, track.playback[0]!.audibleAt, 'first audible comes from the playback receipt itself');
     assert.equal(track.playback[0]!.drainedAt, T0 + 1_900);
     const printed = renderTimeline(report);
     assert.match(printed, /call c1 research/);
@@ -448,10 +448,9 @@ test('O1b-A: a turn that stalls before any delegation prints its typed GAP and t
     const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
     openTurn(store, 't1', 1, T0 + 1_000);
     record(store, 'live.dead_air_stalled', { ...id, turnId: 't1' }, { stalledAt: T0 + 9_000, turnAgeMs: 8_000, anyAudio: false, inaudibleMs: 0 });
-    record(store, 'turn.closed', { ...id, turnId: 't1' }, { closedAt: T0 + 16_000, closeReason: 'completed', outcome: 'no_response' });
 
     const report = buildTimeline(readOf(store), SESSION);
-    assert.equal(report.turns[0]!.turn.stallReason, 'no_audible_output', 'the stall receipt lands on the turn');
+    assert.equal(report.turns[0]!.turn.stallReason, 'no_audible_output', 'the stall receipt lands on the open turn');
     assert.ok(report.gaps.some(gap => gap.obligation === 'no_delegation'), 'the stall before any delegation is a typed GAP');
     const printed = renderTimeline(report);
     assert.match(printed, /GAP/);

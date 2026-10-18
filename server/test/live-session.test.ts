@@ -3458,7 +3458,9 @@ test('a tool past the host ceiling is answered once with a timeout and one conti
   h.advance(12_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'exactly one answer reaches the backend');
   assert.deepEqual(fake.toolResponses[0], [{ id: 'ceil1', name: 'search_knowledge', response: { error: 'timeout' } }]);
-  assert.equal(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').length, 1);
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit'), [
+    { event: 'tool_ceiling_hit', tool: 'search_knowledge', ms: 12_000, outcome: 'timeout' },
+  ]);
   h.advance(1_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'and only one continuation, never a second answer');
   h.owner.revoke(session.liveSessionId);
@@ -3494,6 +3496,9 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
 });
 
 test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late callback never answers twice', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
@@ -3515,11 +3520,41 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
     { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } },
     { id: 'r1', name: 'search_knowledge', response: { error: 'timeout' } },
   ]);
+  // The settlements are distinct statuses, and none of them claims the remote side stopped.
+  const hits = receipts.filter(entry => entry['event'] === 'tool_ceiling_hit');
+  assert.deepEqual(hits, [
+    { event: 'tool_ceiling_hit', tool: 'remember_note', ms: 12_000, outcome: 'uncertain' },
+    { event: 'tool_ceiling_hit', tool: 'search_knowledge', ms: 12_000, outcome: 'timeout' },
+  ]);
   // The callback lands after the settlement: it may not rewrite it or write a second output.
   release();
   await settlePort();
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_late').map(entry => entry['outcome']), ['completed', 'completed'],
+    'a late callback is a receipt, never a second answer');
   assert.equal(fake.toolResponses.length, 1, 'a late callback never produces a second output');
   assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } });
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (a): a call the provider cancelled before the ceiling settles as cancelled, and is never answered', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
+  const { session } = await openPort(h, 'ceiling-cancelled');
+  fake.emit({ type: 'inputTranscription', text: 'remember this', finished: true });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
+  await settlePort();
+  // The provider cancels the call before the ceiling: its abort signal is set, so the host knows it never ran.
+  fake.emit({ type: 'toolCallCancellation', ids: ['c1'] });
+  await settlePort();
+  h.advance(12_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').map(entry => entry['outcome']), ['cancelled'],
+    'the third status names a write that was cancelled before it executed');
+  assert.equal(fake.toolResponses.length, 0, 'a provider-cancelled call is never answered (3r)');
   h.owner.revoke(session.liveSessionId);
 });
 

@@ -1215,14 +1215,16 @@ export class LiveSessionOwner {
     this.#sendProgress(handle, 'stalled');
   }
 
-  /** S4a: a bounded wait on tool work that resolves to `timeout` instead of running past the host ceiling. */
-  #withCeiling<T>(work: Promise<T>): Promise<T | 'timeout'> {
+  /** S4a: a bounded wait on tool work that resolves to `timeout` instead of running past the host ceiling.
+   *  `late` hears a callback that landed after the settlement, which is a receipt and never a second output. */
+  #withCeiling<T>(work: Promise<T>, late: (outcome: 'completed' | 'failed') => void): Promise<T | 'timeout'> {
     return new Promise<T | 'timeout'>((resolve, reject) => {
-      const timer = this.#schedule(() => resolve('timeout'), TOOL_CEILING_MS);
+      let settled = false;
+      const timer = this.#schedule(() => { settled = true; resolve('timeout'); }, TOOL_CEILING_MS);
       timer.unref?.();
       void work.then(
-        value => { timer.cancel(); resolve(value); },
-        error => { timer.cancel(); reject(error instanceof Error ? error : new Error('tool_failed')); },
+        value => { timer.cancel(); if (settled) late('completed'); else resolve(value); },
+        error => { timer.cancel(); if (settled) late('failed'); else reject(error instanceof Error ? error : new Error('tool_failed')); },
       );
     });
   }
@@ -2146,16 +2148,20 @@ export class LiveSessionOwner {
         const ok = record?.status === 'completed' && accepted !== undefined;
         return { key, name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
       };
-      const raced = await this.#withCeiling(runBatch(subCalls, step));
+      const raced = await this.#withCeiling(runBatch(subCalls, step), outcome => {
+        for (const unit of pending) hostLogEvent({ event: 'tool_ceiling_late', tool: unit.call.name, outcome });
+      });
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       // S4a ceiling: a call still running at the host limit is answered as a timeout through the same
       // continuation owner, so the backend gets one output per call and one response.create for the batch.
       if (raced === 'timeout') {
         for (const unit of pending) {
-          hostLogEvent({ event: 'tool_ceiling_hit', tool: unit.call.name, ms: TOOL_CEILING_MS });
-          handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
           // S4a-R2 (a): the signal's own state at settlement, read before the abort below writes it.
-          if (handle.callAborts.get(unit.call.id)?.signal.aborted === true) handle.cancelledBeforeExec.add(unit.call.id);
+          const cancelled = handle.callAborts.get(unit.call.id)?.signal.aborted === true;
+          if (cancelled) handle.cancelledBeforeExec.add(unit.call.id);
+          const outcome = isReadOnlyTool(unit.call.name) ? 'timeout' : cancelled ? 'cancelled' : 'uncertain';
+          hostLogEvent({ event: 'tool_ceiling_hit', tool: unit.call.name, ms: TOOL_CEILING_MS, outcome });
+          handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
         }
         // The ceiling settles the call locally: this abort asks the tool owner to stop, and proves nothing about
         // the remote side, so a write settles as uncertain unless its cancellation came from somewhere else.

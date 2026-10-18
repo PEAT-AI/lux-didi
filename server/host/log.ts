@@ -30,6 +30,9 @@ const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_su
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
+/** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. */
+const CEILING_OUTCOMES = ['timeout', 'uncertain', 'cancelled'];
+const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
@@ -629,10 +632,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'thinking_sent', chars: value.chars };
   }
   if (value.event === 'tool_ceiling_hit') {
-    // S4a: the host ceiling answered a call instead of the tool. The tool name and the wait, never its args.
-    if (!closedKeys(value, ['event', 'tool', 'ms'])) return;
-    if (!isSafeToken(value.tool) || !isSafeCount(value.ms)) return;
-    return { event: 'tool_ceiling_hit', tool: value.tool, ms: value.ms };
+    // S4a: the host ceiling answered a call instead of the tool. The tool name, the wait and the settlement,
+    // never its args: a read times out, a write is uncertain, and a cancelled one never ran.
+    if (!closedKeys(value, ['event', 'tool', 'ms', 'outcome'])) return;
+    if (!isSafeToken(value.tool) || !isSafeCount(value.ms) || !isSafeMember(value.outcome, CEILING_OUTCOMES)) return;
+    return { event: 'tool_ceiling_hit', tool: value.tool, ms: value.ms, outcome: value.outcome };
+  }
+  if (value.event === 'tool_ceiling_late') {
+    // S4a-R2 (a): a callback that landed after the ceiling settled the call. A receipt only: the settled output
+    // stands, and this never writes a second one.
+    if (!closedKeys(value, ['event', 'tool', 'outcome'])) return;
+    if (!isSafeToken(value.tool) || !isSafeMember(value.outcome, LATE_OUTCOMES)) return;
+    return { event: 'tool_ceiling_late', tool: value.tool, outcome: value.outcome };
   }
   if (value.event === 'command_rejected') {
     // S4a-R4: a provider error that names a client command. Code, param and the command family only.

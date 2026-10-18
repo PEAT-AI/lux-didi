@@ -1,15 +1,23 @@
 # Debugging Naya from her own logs
 
-Two local files describe every session. They sit in the host data directory, which is `--data-dir`,
-else `DIDI_STATE_DIR`, else the platform default the host itself uses: `~/Library/Application
+Every store a debugger can read sits in the host data directory, which is `--data-dir`, else
+`DIDI_STATE_DIR`, else the platform default the host itself uses: `~/Library/Application
 Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA_HOME/lux-didi`
-(or `~/.local/share/lux-didi`) elsewhere. The reader resolves it the same way.
+(or `~/.local/share/lux-didi`) elsewhere. Every reader resolves it the same way.
 
 | path | holds | privacy |
 | --- | --- | --- |
+| `<dataDir>/state.sqlite`, `trace` tables | the joinable record: turns, responses, calls, playback, the event spine | metadata is content-free; two content tables are owner content |
 | `<dataDir>/logs/host.log` | content-free metadata: enums, counts and timings only | safe to quote in a bug report |
+| `<dataDir>/logs/native-live.log` | the app's own voice session journal: closed reason codes, counts and timings | content-free |
+| `<dataDir>/logs/audio.log` | numbers only: captured and played byte counts per second | content-free |
 | `<dataDir>/debug/<YYYY-MM-DD>/live-<sessionId>.jsonl` | the full local record of a voice session | owner content, never publish |
 | `<dataDir>/debug/<YYYY-MM-DD>/chat-<sessionId>.jsonl` | the full local record of a chat run | owner content, never publish |
+| the unified log | the app's own OS log, subsystem `ai.lux.didi` | treat as owner content |
+
+The four files are four answers to different questions. `state.sqlite` is the only one whose
+tables join on host-minted ids, so it is the one to read first; `host.log` and the debug journal
+remain the detail and content twins of that record.
 
 The journal root is the parent of the host's config directory, which is `<dataDir>/debug` for the
 default layout (the host reads `live.json` from `<dataDir>/provider-config`). A host started with a
@@ -19,6 +27,66 @@ switch that moves both.
 The debug journal is the content twin of `host.log`, not a replacement: `host.log` keeps its
 content-free contract, and every debug journal line is one JSON object per line so it can be
 grepped and read by a program.
+
+## The trace store
+
+The `trace` migration owner lives in `state.sqlite` beside every other table, on the same
+connection. Five metadata tables and two content tables share host-minted keys, so a session is one
+query rather than four files that cannot be joined.
+
+| table | holds |
+| --- | --- |
+| `trace_turn` | one turn: turn id, index, origin (`owner`, `assistant`, `recovery`), open and close time, monotonic ms, close reason, derived summaries, attribution flag |
+| `trace_response` | one response or delegation: provider and delegation ids (nullable until observed), connection epoch, turn, status, continuation of another response |
+| `trace_call` | one tool call: name, argument and result character counts, intent/execute/output-prepared/output-written times, outcome, ms |
+| `trace_playback` | one audio segment: source instance, segment sequence, response and turn (nullable, audio carries no provider id), received/audible/enqueued/started/drained/interrupted times |
+| `trace_event` | the append-only causal spine: seq, kind, source (`host`, `native`, `provider`), source sequence, producer wall ms, producer monotonic ms, host ingest time, schema version, typed detail |
+| `trace_utterance` | content: transcript lines, by turn and role, final flag |
+| `trace_call_result` | content: tool result text, capped at 16 KB, with its truncation flag |
+
+Only the last two tables hold owner text. Every metadata column is an id, a closed code, a count or
+a duration: the writer refuses any field outside its allowlist, so a provider message, a tool
+argument, a result preview, a transcript snippet, a path or a title has nowhere to land. A turn
+opens at the earliest reliable owner-utterance boundary, never on raw mic frames. Under full duplex
+turn N stays open while turn N+1 opens, and nothing is silently reparented.
+
+Every event carries three times: the producer's wall ms, the producer's monotonic ms, and the host
+ingestion time. Within one clock domain an interval is exact; an interval between the host clock and
+a native instance clock is approximate and is labelled so. Host and native monotonic values are
+never subtracted from each other. A native receipt carries `source_instance_id` and `source_seq`,
+dedups on that pair, and the reader reports a missing sequence range rather than hiding it.
+
+Retention covers the two content tables only: rows older than 30 days are pruned at host startup.
+Metadata rows are untouched by that pass. Deletion is logical, so SQLite WAL frames and free pages
+are not forensically erased; see `docs/privacy-and-authority.md`.
+
+## The SQL timeline
+
+`scripts/didi-timeline` reads `state.sqlite` only and prints one timeline. It never reads the
+journal or `host.log`. Every command accepts `--data-dir <path>`.
+
+```sh
+scripts/didi-timeline latest                                  # the most recent traced session, content hidden
+scripts/didi-timeline <sessionId> --turn 3                    # one turn, its responses, calls and playback
+scripts/didi-timeline <sessionId> --content                   # add transcript lines and tool result text
+scripts/didi-timeline <sessionId> --json                      # the report as JSON, no owner text unless --content
+scripts/didi-timeline --export-metadata --session <sessionId> # named metadata columns only, never a dump
+```
+
+Tracks overlap as the session did: while turn N's answer plays, turn N+1 prints as its own open
+turn, and the playback line stays under turn N. A `GAP` line is a typed obligation with the receipt
+that would close it, not a long interval:
+
+- `no_delegation`: a response was created and no provider response or delegation id arrived.
+- `no_response`: a continuation was sent and no provider response came back.
+- `no_continuation_decision`: a call batch settled and no continuation response or turn close followed.
+- `no_audible_output`: an answer completed and no playback segment became audible.
+- `no_playback_drain`: playback started and no drain, interruption or termination followed.
+
+Interrupted, superseded or intentionally silent work owes nothing and is never labelled a stall.
+Outstanding obligations are listed at capture time, so a timeline taken mid-turn states what was
+still owed, not a verdict. `NATIVE-GAP` reports an interior hole in a native instance's own
+sequence.
 
 ## The debug journal
 
@@ -92,11 +160,12 @@ binary, `NAYA_LOG_SUBSYSTEM` the subsystem.
 
 ## When the owner says "inspect the logs"
 
-1. `sessions --since 24h` and find the session by start time, duration and terminal code.
-2. `errors --since 24h` and see whether that session is already named there.
-3. `timeline <id>` and read the shape of the session: turn boundaries, tool calls, provider close.
-4. `slow --over 5000` for the timings, then `tools <id>` for the arguments of the slow call.
-5. Rerun `timeline <id> --content` for the words, and `native <id>` when the question is about what
+1. `didi-timeline latest` for the shape of the session and its typed `GAP` obligations.
+2. `sessions --since 24h` and find the same session by start time, duration and terminal code.
+3. `errors --since 24h` and see whether that session is already named there.
+4. `timeline <id>` and read the journal detail: turn boundaries, tool calls, provider close.
+5. `slow --over 5000` for the timings, then `tools <id>` for the arguments of the slow call.
+6. Rerun `timeline <id> --content` for the words, and `native <id>` when the question is about what
    the app did.
 
 Read content only as far as the question needs it: the point of the ordering is to find the one
@@ -105,6 +174,7 @@ line that matters before reading a transcript.
 ## Privacy rule
 
 The debug journal holds owner content: transcripts, the composed instructions, tool arguments and
-tool results. Only the owner and owner-authorized Claude sessions read it. Never paste a debug
+tool results. The trace content tables hold transcript lines and tool result text, and the unified
+log may too. Only the owner and owner-authorized Claude sessions read them. Never paste a debug
 journal line, a transcript or a tool result into a public issue, a pull request, a commit, a test
 fixture or a message, and never read the owner's real data directory from a test or a check.

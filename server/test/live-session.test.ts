@@ -3551,24 +3551,33 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
-  const { session } = await openPort(h, 'ack-watchdog');
+  const nudges = (): number => receipts.filter(entry => entry['event'] === 'live_dead_air_nudge').length;
+
+  // The ack path: the progress line goes out and the debt is still owed, so the watchdog escalates anyway.
+  const acked = await openPort(h, 'ack-watchdog');
   fake.emit({ type: 'toolCall', calls: [{ id: 'a1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   release();
   await settlePort();
-  const nudges = (): number => receipts.filter(entry => entry['event'] === 'live_dead_air_nudge').length;
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.commentary.length, 1, 'the progress line went out: that is the ack under test');
   assert.equal(nudges(), 0, 'the ack is not a delivery and the watchdog has not spoken yet');
-  // The ack bought nothing: the answer is still owed, so the watchdog escalates on its own deadline.
   h.advance(2_000); scheduler.runDue(); await settlePort();
   assert.equal(nudges(), 1, 'the watchdog still escalated after the commentary ack');
-  // Negative control: only the answer's own audio ends the debt, so no later deadline escalates again.
+  acked.attachment.close();
+  await settlePort();
+
+  // The delivery path: the answer's own audible audio is the one thing that ends the debt, so no deadline escalates.
+  const before = nudges();
+  const answered = await openPort(h, 'audio-delivery');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'a2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
   await settlePort();
-  h.advance(20_000); scheduler.runDue(); await settlePort();
-  assert.equal(nudges(), 1, 'audible audio, not an ack, is what the watchdog accepts');
-  h.owner.revoke(session.liveSessionId);
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(nudges(), before, 'audible audio, not an ack, is what the watchdog accepts');
+  answered.attachment.close();
 });
 
 test('review F1/F2: the research lookup, the one the model can call, speaks and thinks', async t => {

@@ -372,7 +372,8 @@ test('the public character, voice surface and tool conduct are the authored verb
   assert.equal(sha(NAYA_TOOLS), '946c1651d007df23ee1085b013c8c664d4be04d2ac17145123f0df20cf6a59a0');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and how to use them\n\n'));
-  assert.ok(NAYA_TOOLS.endsWith('Nothing is ever sent to another person by Naya.'));
+  assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is ever sent to another person by Naya.'));
+  assert.ok(NAYA_BACKEND_PROCEDURE.endsWith('call research again only when nothing it returned fits.'));
   assert.ok(NAYA_TOOLS.includes('answer at the depth of the question, not the size of the result'));
 });
 
@@ -677,7 +678,7 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 const WRAPPER_3O_CHARS = 6603;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper grows under 1200 chars', () => {
   const rules = [
-    'Before a lookup, say at most five words about what you are checking, then call the tool.',
+    'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
     'Vary how you start replies; never open two replies in a row with the same word.',

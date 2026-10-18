@@ -336,18 +336,18 @@ expect(hotkey.presence.state == .live && hotkey.closed == closedAtLiveHold,
     "a hold while live releases to the normal live state")
 expect(hotkey.lastAction() == "hold_end", "the live hold's release logs single_key_tap hold_end")
 
-// A chord during a hold cancels the hold where it happens: the fence closes at the chord
-// while the key is still down, and the release adds nothing.
+// A chord during a hold from idle cancels the hold where it happens: the fence closes at
+// the chord while the key is still down, and the release adds nothing.
 hotkey.clock += 10
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
-hotkey.presence.ready()
-expect(hotkey.presence.state == .live, "the session the cancelled hold runs in is live")
+expect(hotkey.presence.state == .cold, "the session before the cancelled hold is stopped")
 var closedBeforeChordHold = hotkey.closed
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
 hotkey.fireHold()
+hotkey.presence.ready()
 expect(hotkey.presence.state == .live && hotkey.fences.last == false, "the hold opens the mic")
 var receiptsBeforeChordHold = hotkey.receipts.count
 hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
@@ -361,6 +361,27 @@ expect(hotkey.closed == closedBeforeChordHold, "the cancelled hold keeps the ses
 hotkey.presence.answerCompleted()
 expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeChordHold + 1,
     "the answer's end still closes the session a cancelled hold left open")
+
+// A hold that starts while Naya is already live is cancelled the same way: the gesture
+// ends, and the session it was talking in is not sent into the mute grace.
+hotkey.clock += 10
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live, "a session is live before the cancelled live hold")
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+expect(hotkey.presence.state == .live, "a hold while live keeps the session live")
+var receiptsBeforeLiveChord = hotkey.receipts.count
+hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
+expect(hotkey.presence.state == .live && hotkey.presence.dropDeadline == nil,
+    "a chord during a live hold cancels the gesture and leaves no mute grace behind")
+expect(hotkey.lastAction() == "hold_end", "the cancelled live hold still logs single_key_tap hold_end")
+hotkey.release(at: hotkey.clock + 0.2)
+expect(hotkey.receipts.count == receiptsBeforeLiveChord + 1
+    && hotkey.presence.state == .live, "the release of the cancelled live hold adds no gesture")
 
 // A Command chord during the press cancels the gesture: no start, no hold, one receipt.
 var receiptsBeforeChord = hotkey.receipts.count

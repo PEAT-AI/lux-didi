@@ -4,6 +4,7 @@
 # backend auth/stream regressions, and the real GPU browser view of shared page
 # selection and durable external-run discovery.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 git diff --check
@@ -15,7 +16,7 @@ done
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 status=0
-node --test --test-reporter=tap --test-timeout=20000 \
+node_test_files --test-reporter=tap --test-timeout=20000 \
   server/dist/test/native-conversation.test.js \
   server/dist/test/connected.test.js \
   server/dist/test/http.test.js \
@@ -24,7 +25,7 @@ grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exi
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 # Mini orb web route unit test: orb-only markup and the one glance state.
 status=0
-node --test --test-reporter=tap --test-timeout=15000 web/test/mini.test.ts | tee "$log" || status=$?
+node_test_files --test-reporter=tap --test-timeout=15000 web/test/mini.test.ts | tee "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected mini orb tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 # Real GPU browser admission: a held slot is reported by the helper, never read as a pass.

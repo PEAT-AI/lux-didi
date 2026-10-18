@@ -2,6 +2,7 @@
 # Acceptance check for the Mongoose and Mattermost read connectors (W-H).
 # Synthetic fixtures only: no network, no real Mongoose or Mattermost service, no credentials.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
@@ -46,4 +47,4 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
 mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/stdio-mattermost-child.mjs" "$out/dist/test/fixtures/"
 cp "$root/server/test/fixtures/stdio-mattermost-attention-child.mjs" "$out/dist/test/fixtures/"
-node --test --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js"

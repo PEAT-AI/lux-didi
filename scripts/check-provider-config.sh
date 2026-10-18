@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
@@ -37,5 +38,5 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   "$out"/source/config/*.ts "$out"/source/prompt/*.ts \
   "$out"/source/adapters/model/*.ts "$out"/source/test/provider-config.test.ts
 node "$out/dist/config/cli.js" --help
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/provider-config.test.js" | tee "$out/results.tap"
+node_test_files --test-reporter=tap --test-timeout=15000 "$out/dist/test/provider-config.test.js" | tee "$out/results.tap"
 grep -Eq '^# tests [1-9][0-9]*$' "$out/results.tap"

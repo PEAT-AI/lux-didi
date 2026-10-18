@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
@@ -32,8 +33,8 @@ test -f "$out/dist/test/chat.test.js"
 # DOMAIN's accepted test imports ../dist explicitly; point it at fresh output.
 mkdir -p "$out/test"
 cp server/test/domain.test.ts "$out/test/"
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/chat.test.js" "$out/dist/test/chat-tools.test.js" "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/test/domain.test.ts" "$out/dist/test/runtime.test.js" | tee "$out/results.tap"
+node_test_files --test-reporter=tap --test-timeout=15000 "$out/dist/test/chat.test.js" "$out/dist/test/chat-tools.test.js" "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/test/domain.test.ts" "$out/dist/test/runtime.test.js" | tee "$out/results.tap"
 # Only the affected real HTTP boundary regression; package installation/CLI
 # tests are unrelated and prohibited by this lane's no-installation contract.
-node --test --test-reporter=tap --test-timeout=15000 --test-name-pattern='real domain HTTP client' "$out/dist/test/http.test.js"
+node_test_files --test-reporter=tap --test-timeout=15000 --test-name-pattern='real domain HTTP client' "$out/dist/test/http.test.js"
 grep -Eq '^# tests [1-9][0-9]*$' "$out/results.tap"

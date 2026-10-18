@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Focused real-service/browser request-boundary proof. One unique artifact tree per invocation.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 [[ $# -eq 1 && "$1" = /* ]] || { echo 'Usage: check-api-response.sh /absolute/proof-root' >&2; exit 2; }
 # One bounded total budget, including build, renderer admission and browser cleanup.
@@ -24,7 +25,7 @@ test -s server/dist/test/connected-process.js
 node --check server/test/api-response-browser.mjs
 status=0
 lux-browser-slot run --priority worker --want 1 --wait 1800 -- \
-  node --test --test-reporter=tap --test-timeout=90000 server/test/api-response-browser.mjs \
+  node_test_files --test-reporter=tap --test-timeout=90000 server/test/api-response-browser.mjs \
   | tee "$DIDI_API_RESPONSE_ARTIFACTS/browser.tap" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$DIDI_API_RESPONSE_ARTIFACTS/browser.tap" || { echo 'Zero browser tests' >&2; exit 1; }
 [[ "$(grep -c 'CASE_RECORD C[1-8] ' "$DIDI_API_RESPONSE_ARTIFACTS/browser.tap")" -eq 8 ]] || { echo 'Expected exactly eight case records' >&2; exit 1; }

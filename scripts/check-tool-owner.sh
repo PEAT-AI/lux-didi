@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
@@ -30,4 +31,4 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts"
-node --test --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js"

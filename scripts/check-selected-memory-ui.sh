@@ -10,6 +10,7 @@
 # documented canonical wrapper, with one finite wait. A held admission therefore never
 # forces a repeated backend rebuild, and the browser step runs already holding the slot.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 if [[ "${1:-}" != '--renderer-held' ]]; then
   exec lux-browser-slot run --priority worker --want 1 --wait 900 -- bash "$0" --renderer-held
@@ -53,7 +54,7 @@ trap 'rm -f "$log"' EXIT
 status=0
 # New selected-memory HTTP behavior + impacted MEMORY/NCS accept/fingerprint/recovery and
 # CHAT/HTTP regressions, against the real compiled build.
-timeout 1200 node --test --test-reporter=tap --test-timeout=30000 \
+timeout 1200 node_test_files --test-reporter=tap --test-timeout=30000 \
   server/dist/test/selected-memory-ui.test.js server/dist/test/memory-context.test.js \
   server/dist/test/native-conversation.test.js server/dist/test/http.test.js \
   server/dist/test/chat.test.js \

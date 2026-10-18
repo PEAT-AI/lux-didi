@@ -880,3 +880,47 @@ test('Q5-R4: the start instruction carries the previous-openers context once, an
   assert.equal(without.text.includes('earlier openers'), false, 'a call with no earlier opener carries no context');
   assert.equal(without.sections.some(section => section.id === 'previous-openers'), false, 'and no empty section is reported');
 });
+
+// R7: the warm calendar digest reached the fetch and the warm cache but never the instruction, because
+// the session composer had no calendar input and no calendar section id. It is its own measured section.
+test('R7: the session composition carries the warm calendar digest after the runtime context', () => {
+  const text = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  const session = (calendar?: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'],
+    records: [{ id: 'a', text: 'Fixture note' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, runtimeContext: 'Fixture runtime',
+    ...(calendar === undefined ? {} : { calendar }) });
+  const composed = session('09:00 standup, 15:00 review');
+  assert.ok(composed.text.includes('Today: 09:00 standup, 15:00 review'), 'the digest reaches the instruction');
+  const ids = composed.sections.map(section => section.id);
+  const at = ids.indexOf('calendar');
+  assert.ok(at !== -1, 'the digest is its own section');
+  assert.ok(at > ids.indexOf('runtime'), 'it follows the runtime context');
+  assert.ok(at < ids.indexOf('memory'), 'and precedes the memory records');
+  const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
+  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length, 'measured as what it added');
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, sections, languageCode: 'en', voice: 'marin' });
+  assert.ok(logged !== undefined, 'the sizes line still passes the closed set with the calendar key');
+  assert.equal((logged['sections'] as Record<string, number>)['calendar'], sections['calendar'], 'the calendar key survives it');
+});
+
+test('R7: no digest and an empty digest both leave the calendar section out', () => {
+  const text = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  const session = (calendar?: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, runtimeContext: 'Fixture runtime', ...(calendar === undefined ? {} : { calendar }) });
+  for (const absent of [undefined, '', '   ']) {
+    const composed = session(absent);
+    assert.equal(composed.sections.some(section => section.id === 'calendar'), false, 'no empty section is reported');
+    assert.doesNotMatch(composed.text, /Today: /);
+  }
+});
+
+test('R7: a full-length digest keeps the composed instruction inside its limits', () => {
+  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['search_knowledge'],
+    memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
+  const digest = '09:00 ' + 'x'.repeat(394);
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
+    records: [{ id: 'a', text: 'Fixture note' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: 'Fixture runtime', calendar: digest });
+  assert.ok(composed.text.includes(digest), 'the digest is carried in full');
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `stays under the target (${composed.text.length})`);
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'and under the hard limit');
+});

@@ -836,7 +836,7 @@ test('the owner prewarm assembles after a start and reads the digest once per as
     await mkdir(configDir, { recursive: true, mode: 0o700 });
     const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
       dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
-    await writeFile(join(configDir, 'live.json'), `${JSON.stringify(live)}\n`);
+    await writeFile(join(configDir, 'live.json'), `${JSON.stringify(live)}\n`, { mode: 0o600 });
     const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
     assert.equal(loaded.status, 'configured');
     if (loaded.status !== 'configured') throw new Error('live.json must configure');

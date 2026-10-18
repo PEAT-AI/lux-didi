@@ -10,8 +10,7 @@ import {
   type TurnOrigin, type TurnOutcome, type UtteranceRole,
 } from './kinds.js';
 
-/** A content-free id: one token, no whitespace, no punctuation that could carry prose. */
-const ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,95}$/;
+/** A content-free id: one token, no whitespace, no punctuation that could carry prose. */const ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,95}$/;
 const TRACE_RESULT_MAX_CHARS = 16_384;
 
 export class TraceRecordError extends Error {
@@ -265,11 +264,8 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       return;
     }
     case 'delegation.created': {
-      const d = detail as TraceDetailMap['delegation.created'];
-      assertEpoch(tx, 'trace_response', 'response_key', ids.responseKey!, epoch);
-      requireChanged(tx.run(
-        'UPDATE trace_response SET provider_response_id=COALESCE(?, provider_response_id), delegation_id=COALESCE(delegation_id, ?) WHERE response_key=?',
-        [d.providerResponseId ?? null, `delegation:${ids.responseKey}`, ids.responseKey!]), `trace_response:${ids.responseKey}`);
+      // The delegation is a spine row: the response it answers may not have its own row yet, so nothing here
+      // writes a projection that a later receipt would have to repair.
       return;
     }
     case 'response.observed': {
@@ -408,3 +404,37 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
 }
 
 export { EVENT_KINDS };
+
+/**
+ * O1b-A: the receipt door an adapter is handed. The host binds the session id, the connection epoch and the
+ * turn, so an adapter names only what it did and can never write another session's row or another epoch's.
+ */
+export interface LiveTracePort {
+  receipt<K extends TraceEventKind>(kind: K, ids: Omit<TraceEventIds, 'liveSessionId' | 'connectionEpoch'>, detail: TraceDetailMap[K]): void;
+}
+
+export interface LiveTraceBinding {
+  port: TraceWritePort;
+  liveSessionId: string;
+  connectionEpoch: string;
+  /** The turn the host has open, read per receipt: a receipt that lands after the turn closed still names it. */
+  turnId?: () => string | undefined;
+  /** A refused receipt is counted where the caller can see it and never thrown into the adapter's turn. */
+  onReject?: (code: string, kind: TraceEventKind) => void;
+}
+
+export function liveTracePort(binding: LiveTraceBinding): LiveTracePort {
+  return {
+    receipt<K extends TraceEventKind>(kind: K, ids: Omit<TraceEventIds, 'liveSessionId' | 'connectionEpoch'>, detail: TraceDetailMap[K]): void {
+      try {
+        const turnId = ids.turnId ?? binding.turnId?.();
+        record(binding.port, kind, {
+          ...ids, ...(turnId === undefined ? {} : { turnId }),
+          liveSessionId: binding.liveSessionId, connectionEpoch: binding.connectionEpoch,
+        }, detail);
+      } catch (error) {
+        binding.onReject?.(error instanceof TraceRecordError ? error.code : 'record_failed', kind);
+      }
+    },
+  };
+}

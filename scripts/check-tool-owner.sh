@@ -18,7 +18,6 @@ cp "$root/server/runtime/store.ts" "$out/source/runtime/"
 # runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
 cp "$root"/server/trace/*.ts "$out/source/trace/"
 # server/tools imports the debug journal receipt: copy the module it compiles against.
-cp "$root/server/host/journal.ts" "$out/source/host/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"

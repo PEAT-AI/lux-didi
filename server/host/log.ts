@@ -97,11 +97,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!SAFE_TOKEN.test(String(value.tool)) || typeof value.count !== 'number' || !Number.isInteger(value.count) || value.count < 1 || value.count > 1_000_000) return;
     return { event: 'tool_redaction', tool: value.tool, count: value.count };
   }
-  if (value.event === 'debug_journal_error') {
-    // The journal's own receipt: the failing stage only, never a path, a line or a message.
-    if (Object.keys(value).sort().join(',') !== ['code', 'event'].sort().join(',')) return;
-    if (!isSafeMember(value.code, ['open', 'write', 'prune'])) return;
-    return { event: 'debug_journal_error', code: value.code };
+  if (value.event === 'live_trace_rejected') {
+    // O1b-A: the trace store's own receipt for a refused write: the kind and the store's typed code only,
+    // never a payload. It replaces the debug journal's error receipt in the same slot in this whitelist.
+    if (Object.keys(value).sort().join(',') !== ['code', 'event', 'kind'].sort().join(',')) return;
+    if (!isSafeToken(value.kind) || !isSafeToken(value.code)) return;
+    return { event: 'live_trace_rejected', kind: value.kind, code: value.code };
   }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic

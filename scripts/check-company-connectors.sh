@@ -30,7 +30,6 @@ cp "$root/server/host/mcp.ts" "$out/source/host/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
 cp "$root/server/host/mongoose-login.ts" "$out/source/host/"
 # server/tools imports the debug journal receipt and the memory read model: copy those modules too.
-cp "$root/server/host/journal.ts" "$out/source/host/"
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root/server/test/mongoose-connector.test.ts" "$out/source/test/"
 cp "$root/server/test/mongoose-auth.test.ts" "$out/source/test/"

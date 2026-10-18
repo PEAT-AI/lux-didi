@@ -15,7 +15,6 @@ cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
-cp "$root/server/host/journal.ts" "$out/source/host/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
 # runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
 cp "$root"/server/trace/*.ts "$out/source/trace/"

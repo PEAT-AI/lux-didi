@@ -7,6 +7,9 @@ import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
 import { redactSecrets } from '../../tools/redact.js';
 import { hostLogEvent } from '../../tools/host-events.js';
+import type { LiveTracePort, TraceDetailMap } from '../../trace/record.js';
+import type { ResponseStatus, ResponseTerminalReason, TraceEventKind } from '../../trace/kinds.js';
+import type { ContinuationOutcome, SkipReason } from '../../trace/kinds.js';
 
 /**
  * The GPT-Live adapter over the provider-neutral voice port.
@@ -140,6 +143,18 @@ const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   ...liveVoiceTimerDefaults,
 });
 const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
+
+/** O1b-A: the provider's own terminal status, mapped onto the trace store's closed sets, never passed through. */
+const TERMINAL_STATUS: Readonly<Record<string, ResponseStatus>> = {
+  completed: 'completed', failed: 'failed', cancelled: 'cancelled', incomplete: 'interrupted', in_progress: 'streaming', queued: 'pending',
+};
+function terminalReasonOf(status: string | undefined): ResponseTerminalReason {
+  if (status === 'failed') return 'failed';
+  if (status === 'cancelled') return 'cancelled';
+  // The provider stopped it short of its end: the response is over, but not because it finished speaking.
+  if (status === 'incomplete') return 'superseded';
+  return 'completed';
+}
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 type ObjectValue = Record<string, unknown>;
 /** One event body: the union member without its sequence, so `emit` keeps each variant's own fields. */
@@ -223,6 +238,8 @@ interface Settings {
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
   limits: Readonly<LiveVoiceLimits>; socketFactory: LiveSocketFactory;
   clock: LiveVoiceClock | undefined; backendProcedure: string | undefined;
+  /** O1b-A: the host's receipt door for this session and connection epoch. Absent, this adapter records nothing. */
+  trace: LiveTracePort | undefined;
 }
 
 /** 3r D4: a delegation whose calls are all answered and whose outputs are upstream, but which has produced no
@@ -274,12 +291,13 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       enabled: route.enabled, allowed: Object.freeze(classList(route.dataClasses, 'route_denied')),
       resolve: options.credentials.resolve.bind(options.credentials), limits: Object.freeze(limits), socketFactory,
       clock: options.clock, backendProcedure: options.backendProcedure,
+      trace: undefined,
     });
   }
 
   open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
     if (!object(control)) fail('invalid_request');
-    const settings = { ...this.settings, limits: { ...this.settings.limits, ...control.limits } };
+    const settings = { ...this.settings, limits: { ...this.settings.limits, ...control.limits }, trace: control.trace };
     for (const name of timerNames) if (!Number.isSafeInteger(settings.limits[name]) || settings.limits[name] < 1) fail('invalid_request');
     if (control.idleResetMs !== undefined && (!Number.isSafeInteger(control.idleResetMs) || control.idleResetMs < 1 || control.idleResetMs > 2_147_483_647)) fail('invalid_request');
     if (!settings.enabled) fail('route_denied');
@@ -469,6 +487,12 @@ class Session implements LiveVoiceSession {
   private heldAudibleBytes = 0;
   private headStartTimer: unknown;
   private readonly clock: LiveVoiceClock;
+  /** O1b-A: the host-minted key of each provider response, so a receipt joins a response to its calls. */
+  private readonly responseKeys = new Map<string, string>();
+  private responseKeySeq = 0;
+  private readonly observedResponses = new Set<string>();
+  /** O1b-A: when each call was delegated and by which response, for the executed/written receipts' ms. */
+  private readonly callOrigins = new Map<string, { at: number; responseKey?: string }>();
   private readonly diagnostic = {
     audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0,
@@ -981,6 +1005,10 @@ class Session implements LiveVoiceSession {
         // A repeated `response.created` is the same response: it changes no generation and no completion account.
         if (responseId !== undefined && this.openedResponses.has(responseId)) { this.touch(); return; }
         if (responseId !== undefined) this.openedResponses.add(responseId);
+        // O1b-A: the response's own receipt, minted before any output can name it.
+        this.receipt('response.created', { responseKey: this.responseKeyOf(responseId) }, {
+          createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
+        });
         this.endTurnTranscripts();
         this.delegatedOutstanding = true;
         this.generation += 1;
@@ -1042,6 +1070,15 @@ class Session implements LiveVoiceSession {
    */
   private endResponse(message: ObjectValue | undefined): void {
     this.delegatedOutstanding = false;
+    // O1b-A: the response stops being active here whatever stopped it, so its terminal receipt is taken here
+    // too, with the provider's own status and the reason this adapter read from it.
+    const responseKey = this.currentResponseKey;
+    if (responseKey !== undefined) {
+      const status = typeof message?.['status'] === 'string' ? message['status'] : undefined;
+      this.receipt('response.terminal', { responseKey }, {
+        terminalAt: this.clock.now(), status: TERMINAL_STATUS[status ?? ''] ?? 'completed', terminalReason: terminalReasonOf(status),
+      });
+    }
     if (message) this.responseDone(message);
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
@@ -1058,6 +1095,15 @@ class Session implements LiveVoiceSession {
 
   /** A delegated function call: `{call_id, name, arguments}` on the nested output item. */
   private outputItem(event: ObjectValue, message: ObjectValue): void {
+    // O1b-A: the first output of a response is the receipt that the provider really is answering. One per
+    // response, before the type check, so a spoken answer and a delegated one are both observed.
+    const responseKey = this.currentResponseKey;
+    if (responseKey !== undefined && !this.observedResponses.has(responseKey)) {
+      this.observedResponses.add(responseKey);
+      this.receipt('response.observed', { responseKey }, {
+        observedAt: this.clock.now(), ...(this.currentResponse === undefined ? {} : { providerResponseId: this.currentResponse }),
+      });
+    }
     const item = event.item;
     if (!object(item)) fail('protocol_error');
     if (item.type !== 'function_call') { this.touch(); return; }
@@ -1069,6 +1115,12 @@ class Session implements LiveVoiceSession {
     if (this.outputSent.has(call.id) || this.pendingCalls.some(pending => pending.id === call.id)) { this.touch(); return; }
     this.pendingCalls = [...this.pendingCalls, call];
     this.noteCallDelegation(call.id, message);
+    // O1b-A: the call's own receipt, with the provider call id and the size of its arguments, never their text.
+    this.callOrigins.set(call.id, { at: this.clock.now(), ...(responseKey === undefined ? {} : { responseKey }) });
+    this.receipt('call.intent', this.callIds(call.id), {
+      name: call.name, argsChars: typeof item.arguments === 'string' ? item.arguments.length : 0,
+      intentAt: this.clock.now(), providerCallId: call.id,
+    });
     this.emit({ type: 'toolCall', calls: [call] });
     this.touch();
   }
@@ -1095,6 +1147,13 @@ class Session implements LiveVoiceSession {
     const responseId = typeof inner.response_id === 'string' && inner.response_id.length ? inner.response_id : undefined;
     this.delegations.set(id, { id, openedAt: this.clock.now(), responses: responseId ? [responseId] : [], awaiting: new Set(), outputsAt: undefined, stallTimer: undefined, stalled: false });
     hostLogEvent({ event: 'delegation_open', ms: offsetMs });
+    // O1b-A (D12-1): one receipt per delegated response, so a delegation is never only an end-of-session count.
+    // The key is minted here and reused by that response's own `response.created`, so the two rows join.
+    if (responseId !== undefined) {
+      this.receipt('delegation.created', { responseKey: this.responseKeyOf(responseId) }, {
+        createdAt: this.clock.now(), providerResponseId: responseId, callCount: 0,
+      });
+    }
     this.touch();
   }
 
@@ -1319,10 +1378,23 @@ class Session implements LiveVoiceSession {
       // Exactly one terminal output per call: success, error, timeout and cancellation are all that one object.
       const outputId = `tool_out_${call.id}`;
       this.recordCommand(outputId, 'tool_out');
+      // O1b-A: the result the host produced is executed and prepared here, before the wire sees it.
+      const preparedAt = this.clock.now();
+      this.receipt('call.executed', this.callIds(call.id), { executedAt: preparedAt });
+      this.receipt('call.output_prepared', this.callIds(call.id), { outputPreparedAt: preparedAt });
       if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
+        this.receipt('call.output_written', this.callIds(call.id), {
+          outputWrittenAt: this.clock.now(), outcome: 'failed', ms: this.clock.now() - (this.callOrigins.get(call.id)?.at ?? this.clock.now()),
+          resultChars: JSON.stringify(response).length,
+        });
         return this.continuationOutcome = 'failed';
       }
+      const writtenAt = this.clock.now();
+      this.receipt('call.output_written', this.callIds(call.id), {
+        outputWrittenAt: writtenAt, outcome: 'completed', ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
+        resultChars: JSON.stringify(response).length,
+      });
       written.push(call.id);
       this.outputSent.add(call.id);
     }
@@ -1350,12 +1422,17 @@ class Session implements LiveVoiceSession {
       // now would answer a partial batch: defer to the emitted output of the last open call (S5).
       this.continuationOwed = true;
       this.deferralReceipt();
+      // O1b-A: the skip is a decision with a reason, not silence: a batch still being answered is the gate's own
+      // wait (awaiting_calls), a retired connection can never send it (epoch_stale).
+      this.continuationReceipt('deferred', this.draining || this.terminal !== undefined ? 'epoch_stale' : 'awaiting_calls');
       return this.continuationOutcome = 'deferred';
     }
     if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
       this.continuationOwed = true;
+      this.continuationReceipt('failed');
       return this.continuationOutcome = 'failed';
     }
+    this.continuationReceipt('sent');
     this.continuationOwed = false;
     this.continuationRejected = false;
     this.batchAnswers = 0;
@@ -1385,6 +1462,44 @@ class Session implements LiveVoiceSession {
     const id = `${kind}_${this.commandSequence}`;
     this.recordCommand(id, kind);
     return id;
+  }
+
+  /**
+   * O1b-A: one receipt into the host's trace store. The port binds the session, the connection epoch and the open
+   * turn, so this adapter names only its own response and call keys and never a session it was not handed.
+   */
+  private receipt<K extends TraceEventKind>(kind: K, ids: { responseKey?: string; callKey?: string }, detail: TraceDetailMap[K]): void {
+    this.settings.trace?.receipt(kind, ids, detail);
+  }
+
+  /** The host key of a provider response, minted once per provider id so every receipt of it joins. */
+  private responseKeyOf(providerId: string | undefined): string {
+    if (providerId === undefined) return `r${this.responseKeySeq += 1}`;
+    const known = this.responseKeys.get(providerId);
+    if (known !== undefined) return known;
+    const minted = `r${this.responseKeySeq += 1}`;
+    this.responseKeys.set(providerId, minted);
+    return minted;
+  }
+
+  /** The key of the response answering now: a receipt about it can only name it when the provider named itself. */
+  private get currentResponseKey(): string | undefined {
+    return this.currentResponse === undefined ? undefined : this.responseKeys.get(this.currentResponse);
+  }
+
+  /** O1b-A: the continuation owner's decision, written once per attempt against the response it answers. */
+  private continuationReceipt(outcome: ContinuationOutcome, skipReason?: SkipReason): void {
+    const responseKey = this.currentResponseKey;
+    if (responseKey === undefined) return;
+    this.receipt('continuation.decided', { responseKey }, {
+      decidedAt: this.clock.now(), outcome, ...(skipReason === undefined ? {} : { skipReason }),
+    });
+  }
+
+  /** O1b-A: a call's own key, its time and the response that emitted it, so its later receipts join both. */
+  private callIds(callKey: string): { callKey: string; responseKey?: string } {
+    const origin = this.callOrigins.get(callKey)?.responseKey;
+    return { callKey, ...(origin === undefined ? {} : { responseKey: origin }) };
   }
 
   /**

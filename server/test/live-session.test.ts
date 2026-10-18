@@ -32,14 +32,13 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse } from '../adapters/live-voice/index.js';
-import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -3140,8 +3139,6 @@ test('a delegated response with no audible output is nudged, and audible progres
 test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn receipt counts it', async t => {
   const fake = fakeLiveVoicePort();
   const h = await harness(t, { port: fake.port });
-  configureDebugJournal(h.dir, true);
-  t.after(() => resetDebugJournal());
   const session = h.owner.create({ idempotencyKey: 'p3-inaudible', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
@@ -3156,18 +3153,13 @@ test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn
   fake.emit({ type: 'turnComplete' });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   attachment.close();
-  for (let attempt = 0; attempt < 100 && !journalRecords(h.dir).some(line => line['event'] === 'turn_end'); attempt += 1) await tick();
-  const turnEnd = journalRecords(h.dir).find(line => line['event'] === 'turn_end' && line['speaker'] === 'model')!;
-  assert.equal(turnEnd['inaudibleMs'], 100, 'the fill frame is counted in playback milliseconds');
+  // O1b-A: the turn's own trace row carries the fact instead of a journal line, and it says the silent fill
+  // never became the turn's first audible frame.
+  const turn = h.store.transaction(tx => tx.all('SELECT first_audible_at, close_reason FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.equal(turn.length, 0, 'a turn opens on her words, not on an output frame: this call never spoke an owner turn');
 });
 
 /** Every journal line this data dir holds, fixture data only: the day directory is not pinned to a test clock. */
-function journalRecords(dir: string): Record<string, unknown>[] {
-  const root = join(dir, 'debug');
-  if (!existsSync(root)) return [];
-  return readdirSync(root).flatMap(day => readdirSync(join(root, day)).flatMap(file =>
-    readFileSync(join(root, day, file), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)));
-}
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
@@ -3768,11 +3760,12 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
 });
 
 // O1b-N: the app's playback receipts ride the live socket the call already holds. One closed frame
-// shape in, native trace rows out; a malformed frame is refused and journaled, never stored.
+// shape in, native trace rows out; a malformed frame is refused with a typed receipt, never stored.
 test('O1b-N: a forwarded playback receipt records native rows and a refused frame writes none', async t => {
   const h = await harness(t);
-  configureDebugJournal(h.dir, true);
-  t.after(() => resetDebugJournal());
+  const rejected: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'live_trace_rejected') rejected.push(record); } });
+  t.after(() => detachSink());
   const { session, attachment } = await attached(h, 'playback-receipts');
   const frame = (receipt: string, seq: number, extra: Record<string, unknown> = {}): string =>
     JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-b2', source_seq: seq,
@@ -3795,8 +3788,7 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_event')!['n'])), before, 'a refused frame writes nothing');
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, null, 'a refused frame cannot end the call');
 
-  const rejected = journalRecords(h.dir).filter(record => record['event'] === 'playback_receipt_rejected');
-  assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is journaled by typed code');
+  assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is a typed host.log receipt');
   attachment.close();
   await attachment.done;
 });

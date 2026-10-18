@@ -98,16 +98,12 @@ struct RightCommandTapDetector {
 /// What one accepted tap did, in the `single_key_tap` receipt's own words.
 enum SingleKeyTapAction: String, Equatable { case start, stop, ignored }
 
-/// One tap's receipt, built where the presence machine's move is known, so the
-/// `single_key_tap` line can never disagree with the `presence_state` line after it.
+/// One tap's receipt, built from the presence machine's state on both sides of the
+/// toggle, so the `single_key_tap` line can never disagree with the `presence_state`
+/// line after it.
 struct SingleKeyTapOutcome: Equatable {
     let action: SingleKeyTapAction
     let reason: String
-
-    init(action: SingleKeyTapAction, reason: String) {
-        self.action = action
-        self.reason = reason
-    }
 
     /// A move to COLD or hot-muted stops Naya, any other move starts it, and a state
     /// that did not change is ignored and names the state it stayed in.
@@ -116,9 +112,6 @@ struct SingleKeyTapOutcome: Equatable {
         guard before != after else { action = .ignored; return }
         action = after == .cold || after == .hotMuted ? .stop : .start
     }
-
-    /// The trigger has no presence binding, so the tap reached no machine.
-    static let unbound = SingleKeyTapOutcome(action: .ignored, reason: "unbound")
 }
 
 /// The per-version grant ask (`#3p`). An ad-hoc signed install can lose its
@@ -166,7 +159,10 @@ final class SingleKeyTrigger {
     }
 
     var system = System()
-    var onTap: (() -> SingleKeyTapOutcome)?
+    var onTap: (() -> Void)?
+    /// The presence machine's state as a name, so a tap receipt can say which move the
+    /// tap caused. Injected, so the receipts are proven without a presence machine.
+    var presenceState: () -> PresenceState = { .cold }
     /// The receipts, one at launch and one per accepted tap, into the native log.
     var onReceipt: (([String: Any]) -> Void)?
     /// Whether the listen-only tap is live. The launch receipt reports it, so a silent
@@ -283,11 +279,14 @@ final class SingleKeyTrigger {
     }
 
     /// Feeds one event to the detector on the main actor, fires the toggle when the
-    /// release completes a tap, and logs what that tap did.
+    /// release completes a tap, and logs what that tap did. The move is read from the
+    /// presence machine on both sides of the toggle, so the two log lines agree.
     func receive(_ event: SingleKeyEvent, at time: TimeInterval) {
         guard detector.handle(event, at: time) else { return }
         guard let onTap else { return }
-        let outcome = onTap()
+        let before = presenceState()
+        onTap()
+        let outcome = SingleKeyTapOutcome(from: before, to: presenceState())
         onReceipt?(["event": "single_key_tap", "action": outcome.action.rawValue, "reason": outcome.reason])
     }
 }

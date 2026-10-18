@@ -650,6 +650,7 @@ struct RootView: View {
         // interactive launch only, and the chord works whether or not the key does.
         // Every launch then leaves a receipt, so a key that never fires is visible.
         bindRightCommandTap(singleKey, to: presence)
+        singleKey.presenceState = { [weak presence] in presence?.state ?? .cold }
         singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
         SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.appVersion)
         let tapCreated = singleKey.start()

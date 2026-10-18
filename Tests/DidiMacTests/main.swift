@@ -146,11 +146,10 @@ var presenceTap = RightCommandTapDetector()
 let presenceTapped = presenceTap.handle(.rightCommandDown, at: 200) == false
     && presenceTap.handle(.rightCommandUp, at: 200.1)
 expect(presenceTapped, "a Right Command tap is the presence toggle")
-if presenceTapped { _ = wiredSingleKey.onTap?() }
+if presenceTapped { wiredSingleKey.onTap?() }
 expect(presence.state == .connecting, "the installed Right Command binding opens the presence session")
 expect(presenceSurfaces.last == .connecting, "the tap renders the presence surface")
-let stopOutcome = wiredSingleKey.onTap?()
-expect(stopOutcome?.action == .stop && stopOutcome?.reason == "cold", "the installed binding's tap receipt says stop when the machine returns to cold")
+wiredSingleKey.onTap?()
 expect(presence.state == .cold, "a second tap while connecting returns to cold")
 var rightOptionTap = RightCommandTapDetector()
 expect(rightOptionTap.handle(.otherModifiers(held: true), at: 210) == false, "a Right Option press is never a tap")
@@ -208,10 +207,10 @@ expect(trustedKey.start() && trustedKey.tapCreated, "a trusted launch creates th
 let trustedState = SingleKeyTrigger.stateReceipt(enabled: true, trusted: true, tapCreated: trustedKey.tapCreated, signing: "identity")
 expect(trustedState["tapCreated"] as? Bool == true && trustedState["signing"] as? String == "identity",
     "the launch receipt says the tap is live and what signed it")
-var singleKeyOutcomes: [SingleKeyTapOutcome] = [SingleKeyTapOutcome(from: .cold, to: .connecting),
-                                               SingleKeyTapOutcome(from: .live, to: .hotMuted),
-                                               SingleKeyTapOutcome(from: .live, to: .live)]
-trustedKey.onTap = { singleKeyOutcomes.removeFirst() }
+var presenceAfterTap: [PresenceState] = [.connecting, .hotMuted, .hotMuted]
+var singleKeyPresence = PresenceState.cold
+trustedKey.presenceState = { singleKeyPresence }
+trustedKey.onTap = { singleKeyPresence = presenceAfterTap.removeFirst() }
 trustedKey.receive(.rightCommandDown, at: 300)
 trustedKey.receive(.rightCommandUp, at: 300.1)
 expect(singleKeyReceipts.count == 1 && singleKeyReceipts[0]["event"] as? String == "single_key_tap"
@@ -224,11 +223,14 @@ expect(singleKeyReceipts.count == 2 && singleKeyReceipts[1]["action"] as? String
 trustedKey.receive(.rightCommandDown, at: 320)
 trustedKey.receive(.rightCommandUp, at: 320.1)
 expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "ignored"
-    && singleKeyReceipts[2]["reason"] as? String == "live", "a tap the machine does not move is logged as ignored with the state it stayed in")
+    && singleKeyReceipts[2]["reason"] as? String == "hotMuted", "a tap the machine does not move is logged as ignored with the state it stayed in")
 trustedKey.receive(.rightCommandDown, at: 330)
 trustedKey.receive(.rightCommandUp, at: 330.4)
 expect(singleKeyReceipts.count == 3, "a hold is not a tap and leaves no receipt")
-expect(SingleKeyTapOutcome.unbound == SingleKeyTapOutcome(action: .ignored, reason: "unbound"), "a tap with no presence binding is ignored")
+expect(SingleKeyTapOutcome(from: .live, to: .live).action == .ignored && SingleKeyTapOutcome(from: .live, to: .live).reason == "live",
+    "a tap the machine does not move is a receipt naming the state, proven directly")
+expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .start && SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
+    "a move out of cold or back from hot-muted starts, a move to cold stops")
 expect(SingleKeyTrigger.signing == "adhoc" || SingleKeyTrigger.signing == "identity" || SingleKeyTrigger.signing == "unknown",
     "the signing fact is one of the three the receipt knows")
 SingleKeyTrigger.isEnabled = singleKeyWasEnabled

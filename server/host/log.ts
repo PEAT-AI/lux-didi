@@ -751,6 +751,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
 }
 
+export class HostLog {
   private readonly path: string;
   constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });

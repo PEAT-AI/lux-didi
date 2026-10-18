@@ -184,3 +184,14 @@ test('the sanitizer replaces every free text field and keeps the frame order and
   assert.equal(text.includes('call_1') && text.includes('d_1'), true, 'a provider identifier survives, so a call still joins its output');
   assert.equal((steps[0]!.event as Record<string, unknown>)['start_ms'], 0, 'a numeric field is untouched');
 });
+
+test('the sanitizer reads a recorded log as one JSON array and as one frame per line', () => {
+  const oneLineEach = [
+    '{"at_ms":0,"direction":"in","event":{"type":"session.input_transcript.delta","delta":"owner private words"}}',
+    '{"at_ms":900,"direction":"in","event":{"type":"session.started","session":{"id":"sess_1"}}}',
+  ].join('\n');
+  const steps = sanitize(oneLineEach);
+  assert.equal(steps.length, 2, `both frames survived: ${JSON.stringify(steps)}`);
+  assert.equal(JSON.stringify(steps).includes('private'), false, 'no owner word survives the line-separated form either');
+  assert.deepEqual(steps.map(step => step.at_ms), [0, 900]);
+});

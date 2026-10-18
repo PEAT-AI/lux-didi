@@ -34,8 +34,16 @@ function scrub(value: unknown): unknown {
   return value;
 }
 
+/** A recording is either one JSON array or one JSON frame per line. */
+function framesFromText(text: string): unknown[] {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch { return text.split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line) as unknown); }
+}
+
 export function sanitize(recorded: unknown): TraceStep[] {
-  const frames = Array.isArray(recorded) ? recorded : String(recorded).split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line) as unknown);
+  const frames = Array.isArray(recorded) ? recorded : framesFromText(String(recorded));
   let clock = 0;
   return frames.map((entry, index) => {
     if (!entry || typeof entry !== 'object') throw new Error(`frame ${index} is not an object`);

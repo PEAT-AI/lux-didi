@@ -116,11 +116,13 @@ test('smoke.sh reports a FAIL line and runs no probe when the dist cannot be bui
 });
 
 // #260: probe5 must read the run's own driver, never re-derive it from selectorMs and fallbackUsed.
-test('probe5 accepts only the three drivers and fails on a missing one', () => {
-  assert.deepEqual(RESEARCH_DRIVERS, ['selector', 'fallback', 'single-source-hint']);
+// #280: the routed start writes its own run line, so `routed` joins the closed driver set.
+test('probe5 accepts only the four drivers and fails on a missing one', () => {
+  assert.deepEqual(RESEARCH_DRIVERS, ['selector', 'fallback', 'single-source-hint', 'routed']);
   assert.equal(researchDriver({ driver: 'selector' }), 'selector');
   assert.equal(researchDriver({ driver: 'fallback' }), 'fallback');
   assert.equal(researchDriver({ driver: 'single-source-hint' }), 'single-source-hint');
+  assert.equal(researchDriver({ driver: 'routed' }), 'routed');
   assert.equal(researchDriver({}), null, 'a run line without a driver must fail');
   assert.equal(researchDriver({ driver: 'owner secret' }), null);
   assert.equal(researchDriver({ selectorMs: 20, fallbackUsed: false }), null, 'the old derivation must not pass');

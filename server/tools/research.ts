@@ -694,12 +694,12 @@ export interface ResearchProgress {
   researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
   sourcesDone: SourceKind[]; sourcesPending: SourceKind[]; elapsedMs: number;
 }
-export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint';
+export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'routed';
 
 export interface ResearchRunLog {
   event: 'research_run'; researchId: string; questionClass: QuestionClass; rounds: number;
   perRound: { candidates: { kind: CandidateKind; pUseful: number }[]; chosen: CandidateKind[] }[];
-  stopReason: string; status: 'answered' | 'partial' | 'stopped' | 'unavailable'; ops: number;
+  stopReason: string; status: 'answered' | 'partial' | 'stopped' | 'unavailable' | 'failed'; ops: number;
   sources: { kind: SourceKind; disposition: string; latencyMs: number }[];
   elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
   driver?: ResearchDriver;
@@ -708,9 +708,9 @@ export interface ResearchRunLog {
 
 /** Q1: one metadata-only record per internal sub-call: counts and bytes, never the query or text. */
 export interface ResearchSubcallLog {
-  event: 'research_subcall'; researchId: string; kind: CandidateKind; tool: string; ok: boolean;
+  event: 'research_subcall'; researchId: string; kind: LedgerKind; tool: string; ok: boolean;
   errorCode?: string; items: number; rawBytes: number; keptBytes: number; queryChars: number;
-  queryAuthor: 'selector' | 'fallback';
+  queryAuthor: 'selector' | 'fallback' | 'routed';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
   window?: WindowKind;
   /** Calendar sub-calls only: how many selected calendars the read did not reach before the deadline. */
@@ -1242,7 +1242,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
 }
 
 interface RoutedOutcome {
-  lookup: ResearchLookup; kind: LedgerKind; source: SourceKind | 'memory';
+  lookup: ResearchLookup; kind: LedgerKind; tool: string; source: SourceKind | 'memory';
   outcome: LookupOutcome; ms: number; lines: string[]; total: number;
 }
 
@@ -1271,7 +1271,7 @@ export function lookupBound(source: SourceKind, lookups: number, remainingMs: nu
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
-    ({ lookup: plan.lookup, kind: plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
+    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
   const done: RoutedOutcome[] = [];
   // Her own memory is read locally by the composition that holds it, never over the network.
   const memoryDeadlineMs = RESEARCH.sourceDeadline.memory;
@@ -1342,6 +1342,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
+  const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const schedule = deps.schedule ?? scheduleTimer;
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
   // 3r R1 outcome 5: a routed read used to go silent until it returned. It now beats at the same
@@ -1362,51 +1363,79 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     bucket.push(plan);
     groups.set(plan.read.source, bucket);
   }
-  let outcomes: RoutedOutcome[];
+  let outcomes: RoutedOutcome[] = [];
+  let reply: JsonObject | undefined;
+  // #280: the routed start returned without its terminal run line, so every smoke probe read
+  // research_run 0 and a routed read that threw left no line at all. The line is written once, from
+  // this finally, so an errored or cut run stays visible and a good run is never written twice.
+  let runStatus: ResearchRunLog['status'] = 'partial';
+  let runStop = 'insufficient';
   try {
-    outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
-  } finally {
-    beatTimer?.cancel();
-  }
-  // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
-  // way the selector path does, so a routed read is never trimmed to a search reply's length.
-  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
-  // P5: the receipt carries the deadline the read was given, so a cut read is never judged by a bound it
-  // never had. A same-source batch shares one bound, so the count is the group's own size.
-  const batchSizes = new Map<SourceKind | 'memory', number>();
-  for (const outcome of outcomes) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
-  for (const outcome of outcomes) {
-    logLookup({
-      event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
-      deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
-      coalesced: batchSizes.get(outcome.source) ?? 1,
-      ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
-    });
-    const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
-    run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
-    if (outcome.source === 'memory') {
-      if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
-      else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
-      else if (outcome.outcome !== 'empty') run.sourcesFailed.add('memory');
-      continue;
+    try {
+      outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+    } finally {
+      beatTimer?.cancel();
     }
-    if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); run.cutShort.delete(outcome.source); }
-    else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, ` for "${outcome.lookup.query.slice(0, 60)}"`); }
-    else if (outcome.outcome === 'timeout') { run.cutShort.add(outcome.source); }
-    else run.sourcesFailed.add(outcome.source);
+    // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
+    // way the selector path does, so a routed read is never trimmed to a search reply's length.
+    if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
+    // P5: the receipt carries the deadline the read was given, so a cut read is never judged by a bound it
+    // never had. A same-source batch shares one bound, so the count is the group's own size.
+    const batchSizes = new Map<SourceKind | 'memory', number>();
+    for (const outcome of outcomes) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
+    for (const outcome of outcomes) {
+      logLookup({
+        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
+        deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
+        coalesced: batchSizes.get(outcome.source) ?? 1,
+        ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
+      });
+      logSubcall({
+        event: 'research_subcall', researchId: run.researchId, kind: outcome.kind, tool: outcome.tool,
+        ok: outcome.outcome === 'ok' || outcome.outcome === 'empty',
+        ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { errorCode: outcome.outcome }),
+        items: outcome.lines.length,
+        // A routed read returns only the lines it kept, so raw and kept bytes are the same measure.
+        rawBytes: outcome.lines.join('\n').length, keptBytes: outcome.lines.join('\n').length,
+        queryChars: outcome.lookup.query.length, queryAuthor: 'routed',
+      });
+      const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
+      run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
+      if (outcome.source === 'memory') {
+        if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
+        else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
+        else if (outcome.outcome !== 'empty') run.sourcesFailed.add('memory');
+        continue;
+      }
+      if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); run.cutShort.delete(outcome.source); }
+      else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, ` for "${outcome.lookup.query.slice(0, 60)}"`); }
+      else if (outcome.outcome === 'timeout') { run.cutShort.add(outcome.source); }
+      else run.sourcesFailed.add(outcome.source);
+    }
+    run.ended = true;
+    const sources: JsonObject = {};
+    for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
+    const answered = outcomes.some(outcome => outcome.lines.length > 0);
+    const cut = signal.aborted || run.stopped;
+    const status = cut ? 'stopped' : (answered ? 'answered' : 'partial');
+    runStatus = cut ? 'failed' : (answered ? 'answered' : 'partial');
+    runStop = cut ? 'cancelled' : (answered ? 'answered' : 'insufficient');
+    deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
+    reply = buildReply(run, status, configured, false, limit, sources);
+    logRouted({
+      event: 'research_routed', researchId: run.researchId, sources: outcomes.map(outcome => outcome.lookup.source),
+      lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
+    });
+    return reply;
+  } catch (error) {
+    // A routed read that throws is a failed run, and the closed code keeps the exception text out.
+    runStatus = 'failed';
+    runStop = 'failed';
+    throw error;
+  } finally {
+    const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
   }
-  run.ended = true;
-  const sources: JsonObject = {};
-  for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
-  const answered = outcomes.some(outcome => outcome.lines.length > 0);
-  const status = signal.aborted || run.stopped ? 'stopped' : (answered ? 'answered' : 'partial');
-  deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
-  const reply = buildReply(run, status, configured, false, limit, sources);
-  logRouted({
-    event: 'research_routed', researchId: run.researchId, sources: outcomes.map(outcome => outcome.lookup.source),
-    lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
-  });
-  return reply;
 }
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */

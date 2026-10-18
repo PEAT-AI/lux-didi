@@ -157,6 +157,11 @@ expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == false, "a key pressed
 expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x40) == false, "the Right Option device bit is never a Right Command press")
 expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x80040), "a Right Option press is another modifier, so a press under it is a chord")
 
+// B6 regression: a tap the system disabled is re-armed, everything else is not.
+expect(RightCommandTapDetector.shouldReArm(.tapDisabledByTimeout), "a timed out tap is re-armed")
+expect(RightCommandTapDetector.shouldReArm(.tapDisabledByUserInput), "a user-disabled tap is re-armed")
+expect(RightCommandTapDetector.shouldReArm(.keyDown) == false && RightCommandTapDetector.shouldReArm(.flagsChanged) == false, "a key event is never a re-arm")
+
 // #3p / B7 regression: the grant is asked once per app version on an interactive
 // launch and only while it is missing, proven through the prompt seam with no modal
 // and no TCC prompt. An ad-hoc signed install can lose the grant, so a new version

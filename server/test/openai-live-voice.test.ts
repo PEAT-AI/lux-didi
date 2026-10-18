@@ -1528,6 +1528,8 @@ describe('openai gpt-live receipts', () => {
   test('O1b-A: a delegated response writes its four receipts, and two answers in reverse order share one continuation', async t => {
     const { port, rows } = receipts(t);
     const { f, session, captured } = await openWithTrace(t, port);
+    // The delegation frame is what makes a delegated response a delegation: it names the response it opens with.
+    f.send({ type: 'session.delegation.created', delegation: { id: 'item_1', offset_ms: 0, response_id: 'resp_1' } });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_a') });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_b') });

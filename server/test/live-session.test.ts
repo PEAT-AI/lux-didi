@@ -3239,7 +3239,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   await attachment.ready;
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
   await settlePort();
-  for (let elapsed = 0; elapsed < 16_000; elapsed += 100) {
+  for (let elapsed = 0; elapsed < 18_100; elapsed += 100) {
     fake.emit(elapsed === 3_000 ? audibleFrame : fillFrame);
     await settlePort();
     h.advance(100);

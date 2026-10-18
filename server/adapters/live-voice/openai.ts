@@ -1001,7 +1001,9 @@ class Session implements LiveVoiceSession {
         // A duplicated or out-of-order terminal event is the same end: it neither closes an obligation twice nor
         // moves the presentation (S5).
         if (responseId !== undefined) {
-          if (this.endedResponses.has(responseId)) { this.touch(); return; }
+          // A repeat of the same end closes nothing twice and moves no presentation, but an owed continuation
+          // still gets its one chance through the gate (3r A retry, 3r E resume): the gate refuses a partial batch.
+          if (this.endedResponses.has(responseId)) { this.resumeContinuation(); this.touch(); return; }
           this.endedResponses.add(responseId);
         }
         const usage = response?.usage;
@@ -1303,12 +1305,6 @@ class Session implements LiveVoiceSession {
    * it would be answered by a continuation already sent: the batch is complete only when its response is.
    */
   private writeAnswered(): LiveToolSendOutcome {
-    if (this.delegatedOutstanding) {
-      // The response that emitted these calls is still open: it may emit more, so the batch is not complete.
-      if (this.pendingCalls.length) this.continuationOwed = true;
-      this.deferralReceipt();
-      return this.continuationOutcome = 'deferred';
-    }
     if (!this.pendingCalls.length) return this.continuationOutcome;
     if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) {
       this.deferralReceipt();

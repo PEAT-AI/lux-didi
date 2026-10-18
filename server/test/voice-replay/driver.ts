@@ -39,14 +39,19 @@ export interface Trace {
 }
 
 export interface Command { readonly seq: number; readonly at: number; readonly type: string; readonly frame: Record<string, unknown>; readonly epoch: number }
-export interface Projection { readonly at: number; readonly cause: string; readonly state: string; readonly lifecycle: string }
+export interface Projection {
+  readonly at: number; readonly cause: string; readonly state: string; readonly lifecycle: string;
+  /** The host's terminal state word, when the session settled: an answer cannot be excused by a silent end. */
+  readonly terminal: string | null;
+  /** The terminal code the adapter or the owner fixed, when the outcome carries one (LiveTerminalOutcome). */
+  readonly terminalCode: string | null;
+}
 export interface Receipt { readonly at: number; readonly bytes: number; readonly durationMs: number }
 export interface CallObligation {
   readonly callId: string; readonly name: string; readonly at: number; readonly epoch: number;
   /** The delegation whose response emitted the call: a continuation waits for every call of that delegation. */
   readonly delegationId: string;
-  outputs: Command[]; terminal: 'answer' | 'error' | 'timeout' | 'cancelled' | undefined;
-  continuation: Command | undefined; deliveryAt: number | undefined;
+  outputs: Command[]; deliveryAt: number | undefined;
 }
 
 /** A virtual monotonic clock without wall sleeps: the one timer queue both the adapter and the host use. */
@@ -74,18 +79,18 @@ export class ReplayClock implements LiveVoiceClock {
   /** Notified after every timer this clock fires, so the driver can sample the orb between steps. */
   onFire: (() => void) | undefined;
   /** Fire every timer due at or before `target` in (time, id) order, then land on `target`. */
-  async advanceTo(target: number, flush: () => Promise<void>): Promise<void> {
+  async advanceTo(target: number, settle: () => Promise<void>): Promise<void> {
     for (;;) {
       const due = this.#timers.filter(timer => timer.at <= target).sort((a, b) => a.at - b.at || a.id - b.id)[0];
       if (!due) break;
       this.#timers = this.#timers.filter(timer => timer !== due);
       this.#time = Math.max(this.#time, due.at);
       due.fire();
-      await flush();
+      await settle();
       this.onFire?.();
     }
     this.#time = Math.max(this.#time, target);
-    await flush();
+    await settle();
   }
 }
 
@@ -115,8 +120,8 @@ export interface Replay {
    *  when the voice connection resumed. A typed loss is a disposition; silence is not. */
   readonly dispositions: readonly { readonly at: number; readonly callId: string; readonly code: string }[];
   readonly calls: readonly CallObligation[];
-  /** Each run of output submissions and the continuation decision that must follow it. */
-  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly create: Command | undefined }[];
+  /** Each run of output submissions and every continuation decision recorded after it. */
+  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly creates: readonly Command[] }[];
   readonly toolCalls: readonly { name: string; args: unknown; at: number }[];
   /** The tool journal's refusals: a scenario expecting a real tool result asserts this is empty. */
   readonly journalErrors: readonly string[];
@@ -142,7 +147,16 @@ export interface Replay {
 const startedFrame = (): Record<string, unknown> => ({ type: 'session.started', session: { id: 'sess_replay' } });
 
 const tick = (): Promise<void> => new Promise<void>(resolve => setImmediate(resolve));
-const flush = async (): Promise<void> => { await tick(); await tick(); };
+
+/**
+ * Await `promise` while still turning the event loop, so a barrier can be abandoned instead of hanging a test.
+ * Not a sleep: it yields the loop and gives up only after `turns` macrotasks, which is the pathology guard.
+ */
+const bounded = async (promise: Promise<void>, turns = 20_000): Promise<void> => {
+  let done = false;
+  void promise.then(() => { done = true; });
+  for (let i = 0; i < turns && !done; i++) await tick();
+};
 
 /** A provider `function_call` item, as the adapter surfaces a delegated tool call. */
 const isFunctionCall = (frame: Record<string, unknown>): { callId: string; name: string; delegationId: string } | undefined => {
@@ -165,6 +179,16 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   t.after(() => store.close());
   const clock = new ReplayClock();
   const f = await fixture(t);
+  // The socket barrier counts what the adapter writes synchronously, and the fixture's own awaited frame barrier
+  // tells the driver when the provider side has parsed all of it. Nothing here samples on a fixed tick.
+  let written = 0;
+  const base = f.socketFactory;
+  const socketFactory: typeof base = (url, config) => {
+    const client = base(url, config);
+    const send = client.send.bind(client) as (...args: unknown[]) => unknown;
+    (client as unknown as { send: (...args: unknown[]) => unknown }).send = (...args: unknown[]) => { written += 1; return send(...args); };
+    return client;
+  };
   const profile = validateLiveProfile({
     provider: 'openai', liveModelId: 'gpt-live-1', voice: 'marin', keyReference: 'openai-primary',
     route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
@@ -175,7 +199,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'openai', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: { resolve: async () => 'SYNTHETIC-REPLAY-KEY' },
-    socketFactory: f.socketFactory, clock,
+    socketFactory, clock,
     limits: { handshakeMs: 120_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 60_000 },
   });
   const tools = options.tools ? await replayTools(t, store, clock, liveProfileIdentity(profile)) : undefined;
@@ -187,9 +211,11 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   const projections: Projection[] = [];
   const receipts: Receipt[] = [];
   const calls: CallObligation[] = [];
-  const batches: { epoch: number; at: number; callIds: string[]; create: Command | undefined }[] = [];
+  const batches: { epoch: number; at: number; callIds: string[]; creates: Command[] }[] = [];
   let seq = 0;
   let epoch = 0;
+  /** The batch a `response.create` may continue: only while its results are the last thing written. */
+  let currentBatch: { epoch: number; at: number; callIds: string[]; creates: Command[] } | undefined;
   const record = (): void => {
     handshakeNewConnections();
     while (providerFrames.length < f.frames.length) {
@@ -211,25 +237,47 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
           obligation?.outputs.push(command);
           // A batch is the run of output submissions the continuation must follow: the docs say submit results
           // for every pending call, then send `response.create`.
-          const last = batches.at(-1);
-          if (last && !last.create && last.epoch === command.epoch) last.callIds.push(callId);
-          else batches.push({ epoch: command.epoch, at: command.at, callIds: [callId], create: undefined });
+          // A batch is the run of output submissions the continuation must follow: the docs say submit results
+          // for every pending call, then send `response.create`. A submission after a decision opens a new batch.
+          if (currentBatch && currentBatch.epoch === command.epoch && currentBatch.creates.length === 0) currentBatch.callIds.push(callId);
+          else { currentBatch = { epoch: command.epoch, at: command.at, callIds: [callId], creates: [] }; batches.push(currentBatch); }
+        } else {
+          // A non-result item (the host's own text nudge) breaks the adjacency: a later create is not this batch's.
+          currentBatch = undefined;
         }
       }
       if (command.type === 'response.create') {
-        const batch = batches.at(-1);
-        if (batch && !batch.create) batch.create = command;
+        // Every create that follows a batch's results belongs to it, so a duplicate is visible to invariant 2.
+        if (currentBatch && currentBatch.epoch === command.epoch) currentBatch.creates.push(command);
+      } else if (command.type !== 'response.item.create') {
+        currentBatch = undefined;
       }
     }
   };
   const sample = (cause: string): void => {
     const snapshot = owner.get(liveSessionId);
     const state = owner.current().state;
+    const outcome = snapshot.terminal;
+    const terminal = outcome?.state ?? null;
+    const terminalCode = outcome !== null && outcome !== undefined && 'code' in outcome ? outcome.code : null;
     const last = projections.at(-1);
-    if (last && last.state === state && last.lifecycle === snapshot.lifecycle) return;
-    projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle });
+    if (last && last.state === state && last.lifecycle === snapshot.lifecycle && last.terminal === terminal
+      && last.terminalCode === terminalCode) return;
+    projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle, terminal, terminalCode });
   };
 
+  /** Wait until the provider side has every frame the adapter wrote and no tool call is in flight. */
+  const drained = async (): Promise<void> => {
+    for (let pass = 0; pass < 8; pass++) {
+      const before = written;
+      if (f.frames.length < before) await bounded(f.frame(before));
+      record();
+      if (tools && tools.inFlight > 0) { await tick(); continue; }
+      await tick();
+      record();
+      if (written === before && f.frames.length === before) return;
+    }
+  };
   const owner = createLiveSessionOwner({
     store, voice: adapter as LiveVoicePort, profile,
     now: () => clock.now(), schedule: (callback, delayMs) => clock.schedule(callback, delayMs), timeZone: 'UTC',
@@ -307,42 +355,42 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
       // One obligation per call id per epoch: a duplicated `function_call` frame is the same call, and the
       // adapter already answered it once, so it earns a second obligation no more than it earns a second output.
       if (call && !calls.some(entry => entry.callId === call.callId && entry.epoch === epoch)) {
-        calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], terminal: undefined, continuation: undefined, deliveryAt: undefined });
+        calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
       }
       f.send(frame);
-      await flush();
+      await drained();
       record();
       sample(cause);
     },
     async speak(samples = 480) {
       attachment.sendAudio({ pcm: tone(samples) });
-      await flush();
+      await drained();
       record();
     },
     async endInput() {
       attachment.endAudioStream();
-      await flush();
+      await drained();
       record();
       sample('endInput');
     },
     recoverySteps(steps) { recovery = steps; },
     async playback() {
       for (const entry of pendingPlay.splice(0)) playOne(entry.bytes, entry.at);
-      await flush();
+      await drained();
     },
     async advance(ms) {
       const target = clock.now() + Math.max(0, ms);
       for (;;) {
         const due = recoveryQueue.filter(step => step.at <= target).sort((a, b) => a.at - b.at)[0];
         const next = due ? due.at : target;
-        await clock.advanceTo(next, flush);
+        await clock.advanceTo(next, drained);
         record();
         if (!due) break;
         recoveryQueue.splice(recoveryQueue.indexOf(due), 1);
         const call = isFunctionCall(due.event);
-        if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], terminal: undefined, continuation: undefined, deliveryAt: undefined });
+        if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
         f.send(due.event);
-        await flush();
+        await drained();
         record();
         sample('recovery');
       }
@@ -358,7 +406,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
         if (condition()) return true;
         if (clock.now() >= limit) return condition();
         // Step by the nearest scheduled timer, or 50 virtual ms, so a host timer fires at its own time.
-        await clock.advanceTo(clock.now() + 50, flush);
+        await clock.advanceTo(clock.now() + 50, drained);
         record();
       }
       return condition();
@@ -366,10 +414,10 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     async release() {
       try { attachment.detach(); } catch { /* already settled */ }
       try { owner.revoke(liveSessionId); } catch { /* already terminal */ }
-      await flush();
+      await drained();
       await api.until(() => outputEnded, 5_000);
       await owner.shutdown();
-      await flush();
+      await drained();
     },
   };
   return api;
@@ -411,7 +459,7 @@ export function loadTrace(name: string): Trace {
 export interface Played {
   readonly replay: Replay;
   readonly trace: Trace;
-  violations(options?: { allowUnanswered?: boolean }): Violations;
+  violations(): Violations;
 }
 
 /**
@@ -433,7 +481,7 @@ export async function play(t: TestContext, name: string, options: ReplayOptions 
   const target = lastAt + trace.deadline_ms;
   await r.advance(Math.max(0, target - (r.clock.now() - r.clock.startedAt)));
   await r.until(() => r.owner.get(r.liveSessionId).lifecycle === 'terminal', trace.deadline_ms);
-  return { replay: r, trace, violations: overrides => analyse({ calls: r.calls, batches: r.batches, commands: r.commands, projections: r.projections, receipts: r.receipts, dispositions: r.dispositions, deadlineMs: trace.deadline_ms, ...overrides }) };
+  return { replay: r, trace, violations: () => analyse({ calls: r.calls, batches: r.batches, commands: r.commands, projections: r.projections, receipts: r.receipts, dispositions: r.dispositions, deadlineMs: trace.deadline_ms }) };
 }
 
 async function applyClient(r: Replay, event: Record<string, unknown>): Promise<void> {
@@ -466,6 +514,8 @@ export interface ReplayTools {
   readonly calls: { name: string; args: unknown; at: number }[];
   /** Why the tool journal refused a call, if it did. An empty list means every scripted tool really ran. */
   readonly journalErrors: readonly string[];
+  /** Tool calls currently in flight; zero means every scripted tool has returned to the host. */
+  readonly inFlight: number;
   /** The queue of scripts; an exhausted queue answers immediately with the default synthetic result. */
   script(entry: ToolScript): void;
   /** Called by the driver once the live owner exists: the host's own authority lookup. */
@@ -492,9 +542,14 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
     const at = clock.now();
     calls.push({ name: request.params.name, args: request.params.arguments, at });
     const script = queue.shift() ?? {};
-    if (script.latencyMs) await new Promise<void>(resolve => { clock.setTimer(script.latencyMs!, resolve); });
-    if (script.fail) return { content: [{ type: 'text', text: 'synthetic tool failure' }], isError: true };
-    return { content: [{ type: 'text', text: script.text ?? '#1: Synthetic insight\n[Evidence](https://example.test/evidence)' }] };
+    // The tool barrier: a driver that is about to read the command log first waits until no tool call is in
+    // flight, so a tool's late write cannot land between two observations.
+    inFlight += 1;
+    try {
+      if (script.latencyMs) await new Promise<void>(resolve => { clock.setTimer(script.latencyMs!, resolve); });
+      if (script.fail) return { content: [{ type: 'text', text: 'synthetic tool failure' }], isError: true };
+      return { content: [{ type: 'text', text: script.text ?? '#1: Synthetic insight\n[Evidence](https://example.test/evidence)' }] };
+    } finally { inFlight -= 1; }
   });
   await sdk.connect(transport);
   // The MCP adapter reaches the endpoint over `fetch`; the scripted server answers in process, no network.
@@ -512,6 +567,7 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
   // The tool journal refuses a call for a policy reason; a replay records that reason instead of blaming the
   // fake tool, so a scenario that expects a real result never passes on a refused call.
   const journalErrors: string[] = [];
+  let inFlight = 0;
   const intent = toolOwner.journal.intent.bind(toolOwner.journal);
   toolOwner.journal.intent = (input) => {
     try { return intent(input); } catch (error) { journalErrors.push(error instanceof Error ? error.message : String(error)); throw error; }
@@ -531,6 +587,7 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
     composition: { owner: toolOwner, connectionIds: () => ['lux'] },
     calls,
     journalErrors,
+    get inFlight() { return inFlight; },
     script: entry => { queue.push(entry); },
     setAuthority: lookup => { authority = lookup; },
     async close() { await port.close(); await transport.close(); await sdk.close(); },
@@ -544,17 +601,17 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
 export interface Violations { readonly list: readonly string[] }
 
 const ANSWER_COMMANDS = new Set(['response.item.create', 'response.create']);
+/** The only terminal words that are a typed failure of the turn itself (LiveTerminalOutcome). */
+const TYPED_FAILURE = new Set(['failed', 'deadline']);
 
 export function analyse(input: {
   readonly calls: readonly CallObligation[];
-  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly create: Command | undefined }[];
+  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly creates: readonly Command[] }[];
   readonly commands: readonly Command[];
   readonly projections: readonly Projection[];
   readonly receipts: readonly Receipt[];
   readonly dispositions: readonly { readonly at: number; readonly callId: string; readonly code: string }[];
   readonly deadlineMs: number;
-  /** A scenario that ends a call before its answer is expected says so here, and only here. */
-  readonly allowUnanswered?: boolean;
 }): Violations {
   const list: string[] = [];
   const { calls, commands, projections, receipts, deadlineMs } = input;
@@ -568,7 +625,7 @@ export function analyse(input: {
     const lost = input.dispositions.find(entry => entry.callId === call.callId);
     if (outputs.length === 0 && lost) continue;
     if (outputs.length === 0) {
-      if (!input.allowUnanswered) list.push(`invariant 1: call ${call.callId} (${call.name}) got no output submission and no typed disposition`);
+      list.push(`invariant 1: call ${call.callId} (${call.name}) got no output submission and no typed disposition`);
     } else if (outputs.length > 1) {
       list.push(`invariant 1: call ${call.callId} (${call.name}) got ${outputs.length} output submissions, not one`);
     }
@@ -577,14 +634,17 @@ export function analyse(input: {
   // 2. every ready batch gets exactly one continuation decision: one `response.create` immediately after the
   //    batch's results, never a second one for the same results, and never a withheld one.
   for (const batch of input.batches) {
-    if (batch.create === undefined) {
+    if (batch.creates.length === 0) {
       list.push(`invariant 2: the batch ${batch.callIds.join(',')} submitted its results and no continuation followed`);
       continue;
     }
+    if (batch.creates.length > 1) {
+      list.push(`invariant 2: the batch ${batch.callIds.join(',')} was continued ${batch.creates.length} times, not once`);
+    }
     // A continuation waits for every pending call of the delegation it answers: a create after a partial batch
     // is the "do not resend it" the delegation guide forbids.
-    const decidedAt = batch.create.at;
-    const answered = new Set(input.batches.flatMap(entry => entry.create !== undefined && entry.create.at <= decidedAt ? entry.callIds : []));
+    const decidedAt = batch.creates[0]!.at;
+    const answered = new Set(input.batches.flatMap(entry => entry.creates.length > 0 && entry.creates[0]!.at <= decidedAt ? entry.callIds : []));
     const answeredNow = new Set([...answered, ...batch.callIds]);
     for (const callId of batch.callIds) {
       const call = calls.find(entry => entry.callId === callId);
@@ -595,10 +655,6 @@ export function analyse(input: {
         list.push(`invariant 2: a continuation was sent for ${callId} while ${missing.join(',')} of delegation ${call.delegationId} had no result`);
       }
     }
-  }
-  const decided = new Set(input.batches.map(batch => batch.create?.seq).filter((seq): seq is number => seq !== undefined));
-  if (decided.size !== input.batches.filter(batch => batch.create !== undefined).length) {
-    list.push('invariant 2: one continuation decision covers more than one ready batch');
   }
 
   // 3. no stale-epoch write: once the session settled, nothing may be written for it but a close.
@@ -636,9 +692,15 @@ export function analyse(input: {
     if (call.outputs.length !== 1) continue;
     const owedAt = call.outputs[0]!.at;
     const delivered = receipts.find(receipt => receipt.at >= owedAt);
-    const settled = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal');
+    // A typed failure is the only settle that excuses a missing answer: `failed` or `deadline` with the code
+    // the adapter or the owner fixed (LiveTerminalOutcome). Every other terminal word (closed, cancelled,
+    // revoked, expired, not_started, outcome_unknown, journal_limit, consumer_backpressure) is a silent end.
+    const settled = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal'
+      && TYPED_FAILURE.has(entry.terminal ?? '') && entry.terminalCode !== null);
     if (delivered === undefined && settled === undefined) {
-      list.push(`invariant 6: ${call.callId} was answered but the turn never became audible and never failed within the ${deadlineMs} ms deadline`);
+      const ended = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal');
+      list.push(`invariant 6: ${call.callId} was answered but the turn never became audible and never failed with a typed disposition within the ${deadlineMs} ms deadline` +
+        (ended ? ` (the session settled as ${ended.terminal ?? 'unknown'}${ended.terminalCode === null ? '' : `:${ended.terminalCode}`})` : ''));
     } else if (delivered !== undefined && delivered.at - owedAt > deadlineMs) {
       list.push(`invariant 6: ${call.callId} became audible ${delivered.at - owedAt} ms after submission, past the ${deadlineMs} ms deadline`);
     }
@@ -654,8 +716,10 @@ export function trace(input: Replay): string {
     return `g${command.epoch}:${command.type}${callId}`;
   }).join(' -> ');
   const orb = input.projections.map(entry => `${entry.state}@${entry.at - input.clock.startedAt}`).join(' ');
-  const calls = input.calls.map(call => `${call.callId}:${call.outputs.length}/${call.continuation ? 'continued' : 'open'}`).join(' ');
-  const outcome = input.owner.get(input.liveSessionId).terminal?.state ?? 'open';
+  const continued = new Set(input.batches.flatMap(batch => batch.creates.length > 0 ? batch.callIds : []));
+  const calls = input.calls.map(call => `${call.callId}:${call.outputs.length}/${continued.has(call.callId) ? 'continued' : 'open'}`).join(' ');
+  const terminal = input.projections.find(entry => entry.lifecycle === 'terminal');
+  const outcome = terminal ? `${terminal.terminal ?? 'unknown'}${terminal.terminalCode === null ? '' : `:${terminal.terminalCode}`}` : 'open';
   const fill = `${input.inaudibleFrames} fill frames`;
   return `\ncommands: ${commands}\norb: ${orb}\ncalls: ${calls}\nreceipts: ${input.receipts.length} (${fill})\ndisposition: ${outcome}`;
 }

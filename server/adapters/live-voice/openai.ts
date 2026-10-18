@@ -430,6 +430,8 @@ class Session implements LiveVoiceSession {
   private continuationOwed = false;
   /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
   private continuationCalls = 0;
+  /** Outputs of the current backend response written so far: the batch the one continuation answers (S5). */
+  private batchAnswers = 0;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
   /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
@@ -1293,12 +1295,10 @@ class Session implements LiveVoiceSession {
       this.answeredCalls.set(id, response);
     }
     if (!fresh.length) return this.continuationOutcome;
-    if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) {
-      this.deferralReceipt();
-      return this.continuationOutcome = 'deferred';
-    }
+    // S5: each output is written as soon as its own answer is ready. Only the continuation waits for the batch.
     const written: string[] = [];
     for (const call of this.pendingCalls) {
+      if (!this.answeredCalls.has(call.id)) continue;
       const response = this.answeredCalls.get(call.id)!;
       // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
       // Exactly one terminal output per call: success, error, timeout and cancellation are all that one object.
@@ -1306,15 +1306,22 @@ class Session implements LiveVoiceSession {
       this.recordCommand(outputId, 'tool_out');
       if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
-        this.answeredCalls.clear();
         return this.continuationOutcome = 'failed';
       }
       written.push(call.id);
       this.outputSent.add(call.id);
     }
-    this.pendingCalls = []; this.answeredCalls.clear();
-    this.noteDelegationOutputs(written);
-    return this.continueTurn(written.length, 0);
+    this.pendingCalls = this.pendingCalls.filter(call => !written.includes(call.id));
+    for (const id of written) this.answeredCalls.delete(id);
+    if (written.length) this.noteDelegationOutputs(written);
+    // A call of this backend response still has no answer: the batch is not ready, so no continuation yet.
+    if (this.pendingCalls.length > 0) {
+      this.deferralReceipt();
+      return this.continuationOutcome = 'deferred';
+    }
+    // The one continuation answers every output of this backend response, however many rounds delivered them.
+    this.batchAnswers += written.length;
+    return this.continueTurn(this.batchAnswers, 0);
   }
 
   /** The one gate a continuation passes (3r A): it is owed, and only a terminal event or a rejection resumes it. */
@@ -1335,6 +1342,7 @@ class Session implements LiveVoiceSession {
     }
     this.continuationOwed = false;
     this.continuationRejected = false;
+    this.batchAnswers = 0;
     if (attempt) this.continuationRetries += 1;
     const answered = this.continuationCalls;
     this.continuationCalls = 0;
@@ -1392,6 +1400,7 @@ class Session implements LiveVoiceSession {
     this.openedResponses.clear();
     this.endedResponses.clear();
     this.continuationOwed = false;
+    this.batchAnswers = 0;
     this.continuationCalls = 0;
     this.lastContinuationCalls = 0;
     this.delegatedOutstanding = false;

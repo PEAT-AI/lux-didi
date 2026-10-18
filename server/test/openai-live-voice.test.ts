@@ -618,8 +618,13 @@ describe('openai gpt-live adapter', () => {
     await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     await quiet();
-    assert.deepEqual(f.frames.slice(1), [], 'nothing goes upstream while a call of the turn is unanswered');
-    assert.throws(() => session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), code('protocol_error'));
+    // S5: the first answer's own output goes the moment it is ready, and nothing follows it until the batch ends.
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create'],
+      'the ready output goes at once and no continuation follows while a call of the turn is unanswered');
+    // S5: an answer whose output is already on the wire is the same answer, never a second submission.
+    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
+    await quiet();
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create'], 'a repeated answer writes nothing');
     session.sendToolResponse({ responses: [{ id: 'call_2', name: 'calendar', response: { ok: false } }] });
     await f.frame(4);
     assert.deepEqual(f.frames.slice(1).map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame)), [
@@ -627,6 +632,58 @@ describe('openai gpt-live adapter', () => {
       { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
       { type: 'response.create' },
     ]);
+  });
+
+  test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {
+    const clock = new FakeClock();
+    const logged = hostReceipts(t);
+    const { f, session, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    f.send(delegated('response.output_item.done', functionCall('call_1')));
+    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 1);
+    // The same end announced twice is the same end: no second tool turn, no second protocol step.
+    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    await quiet();
+    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
+    await quiet();
+    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    await quiet();
+    assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'a duplicate item is the same call');
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create', 'response.create'],
+      'a duplicate frame neither adds an output nor a second continuation');
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'turn_failed'), [], 'a duplicate is not a failure');
+  });
+
+  test('S5: a failed backend response is one typed turn failure with the provider code and no continuation', async t => {
+    const clock = new FakeClock();
+    const { f, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    f.send(delegated('response.done', { response: { id: 'resp_1', status: 'completed' } }));
+    f.send(delegated('response.done', { response: { id: 'resp_2', status: 'failed', error: { code: 'backend_unavailable', message: 'synthetic' } } }));
+    await until(() => captured.events.some(event => event.type === 'turnFailed'));
+    const failures = captured.events.filter(event => event.type === 'turnFailed');
+    assert.deepEqual(failures.map(event => ({ type: event.type, code: event['code'] })), [{ type: 'turnFailed', code: 'backend_unavailable' }],
+      'one typed failure carrying the provider code, and the code is the provider\'s own word');
+    await quiet();
+    assert.deepEqual(f.frames.filter(frame => frame['type'] === 'response.create'), [], 'a failed backend response is never continued');
+    // S5 receipt, metadata only: the closed shape the host log accepts, and no free field.
+    assert.deepEqual(safeEvent({ event: 'turn_failed', code: 'backend_unavailable' }), { event: 'turn_failed', code: 'backend_unavailable' });
+    assert.equal(safeEvent({ event: 'turn_failed', code: 'two words and a payload' }), undefined, 'a code that is not a token is dropped');
+  });
+
+  test('S5: a deferred continuation lands one receipt naming the response and what it awaits', async t => {
+    const clock = new FakeClock();
+    const logged = hostReceipts(t);
+    const { f, session, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
+    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
+    await quiet();
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'continuation_deferred'),
+      [{ event: 'continuation_deferred', responseKey: 'resp_1', awaiting: 1 }], 'the receipt says what is still owed, never a call id');
   });
 
   test('a whitespace-only fragment starts no input episode and postpones no receipt', async t => {
@@ -779,12 +836,13 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: false } }] }), 'deferred');
     await quiet();
-    assert.deepEqual(f.frames.slice(1), [], 'nothing goes upstream while a call of the response is unanswered');
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['response.item.create'],
+      'the ready output goes at once and no continuation follows while a call of the response is unanswered');
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
     await f.frame(4);
     assert.deepEqual(withoutIds(f.frames.slice(1)), [
-      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
       { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
+      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
       { type: 'response.create' },
     ]);
   });

@@ -17,6 +17,8 @@ const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// R7: the warm calendar digest's own closed vocabulary.
+const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'unconfigured'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
@@ -32,7 +34,7 @@ const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'session_clos
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
-const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
+const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
 /** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. A call the
@@ -688,6 +690,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeToken(value.code) || !isSafeToken(value.param) || !isSafeMember(value.kind, COMMAND_KINDS)) return;
     return { event: 'command_rejected', code: value.code, param: value.param, kind: value.kind };
   }
+  if (value.event === 'continuation_deferred') {
+    // S5: a continuation is owed but a call of its batch has no output yet. The response it answers and how many
+    // call outputs it waits for, never a call id and never an argument.
+    if (!closedKeys(value, ['event', 'responseKey', 'awaiting'])) return;
+    if (!isSafeToken(value.responseKey) || !isSafeCount(value.awaiting)) return;
+    return { event: 'continuation_deferred', responseKey: value.responseKey, awaiting: value.awaiting };
+  }
+  if (value.event === 'turn_failed') {
+    // S5: a backend response ended failed, incomplete or errored. The provider's code, nothing else.
+    if (!closedKeys(value, ['event', 'code'])) return;
+    if (!isSafeToken(value.code)) return;
+    return { event: 'turn_failed', code: value.code };
+  }
   if (value.event === 'provider_error_unclassified') {
     // S4a-R2 (c): a provider error no disposition map entry claimed. Its own type, code and param, nothing else.
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
@@ -708,12 +723,21 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'warm_prewarm') {
     // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:
-    // never the calendar digest, the summary or any prompt text.
+    // never the calendar digest, the summary or any prompt text. Which source that assembly came from is
+    // on the receipt the caller holds (R7), not on this line.
     if (!closedKeys(value, ['event', 'ageBeforeMs', 'ageAfterMs', 'assembled'])) return;
     const age = (field: unknown): boolean => field === null || isSafeCount(field);
     if (!age(value.ageBeforeMs) || !age(value.ageAfterMs)) return;
     if (typeof value.assembled !== 'boolean') return;
     return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
+  }
+  if (value.event === 'calendar_digest') {
+    // R7: the warm digest used to be silent when it was suppressed or failed. One closed line says which
+    // of four states it reached, how many events rode it and how old it was, never an event's text.
+    if (!closedKeys(value, ['event', 'state', 'items', 'ageMs'])) return;
+    if (!CALENDAR_DIGEST_STATES.includes(value.state as typeof CALENDAR_DIGEST_STATES[number])) return;
+    if (!isSafeCount(value.items) || !isSafeCount(value.ageMs)) return;
+    return { event: 'calendar_digest', state: value.state, items: value.items, ageMs: value.ageMs };
   }
 }
 

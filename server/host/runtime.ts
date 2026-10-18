@@ -51,10 +51,22 @@ export interface HostConfig { dataDir: string; webRoot: string; port?: number; d
  * the owner's configured google connector, in the host's own time zone. Without a current calendar
  * grant there is no reader and the slot stays absent, so a session start is never failed by it.
  */
+/**
+ * R7: mail and calendar are both `connector: google`, so the first google endpoint is not necessarily the
+ * calendar endpoint. The digest reads the endpoint whose current grant carries `gcal_list`; without one
+ * there is no reader and the slot stays absent.
+ */
+export function selectCalendarEndpoint<G extends { readonly toolNames: readonly string[] }>(endpoints: readonly { readonly id: string; readonly connector: string }[], grantOf: (endpointId: string) => G | undefined): G | undefined {
+  for (const endpoint of endpoints) {
+    if (endpoint.connector !== 'google') continue;
+    const grant = grantOf(endpoint.id);
+    if (grant !== undefined && grant.toolNames.includes('gcal_list')) return grant;
+  }
+  return undefined;
+}
 async function warmCalendarDigest(mcp: McpRuntimeComposition, now: () => number): Promise<string | undefined> {
-  const endpoint = mcp.status().endpoints.find(entry => entry.connector === 'google');
-  const grant = endpoint === undefined ? undefined : mcp.registry.currentGrant(endpoint.id);
-  if (grant === undefined || !grant.toolNames.includes('gcal_list')) return undefined;
+  const grant = selectCalendarEndpoint(mcp.status().endpoints, id => mcp.registry.currentGrant(id));
+  if (grant === undefined) return undefined;
   const reader = createGoogleReader({ port: mcp.port, registry: mcp.registry,
     config: { endpointId: grant.endpointId, account: grant.account, resource: grant.resource, schemaDigest: grant.schemaDigest, generation: grant.generation, family: 'calendar' } });
   return await buildCalendarDigest(reader, { now: now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
@@ -247,6 +259,7 @@ export async function startHost(config: HostConfig) {
       catch { summaryModel = null; }
     }
     const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
+      assistantName: owner.snapshot.displayName,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: config.now ?? Date.now, log: event => log.event(event) });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
@@ -291,7 +304,7 @@ export async function startHost(config: HostConfig) {
         // 338: the owner's wake instruction, the same one POST api/v1/live/prewarm serves. The live
         // owner writes the one closed `warm_prewarm` line, so either route logs it exactly once.
         prewarm: async (): Promise<WarmPrewarmReceipt> =>
-          await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false },
+          await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' as const },
         start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
         logExit('ready', 'close');

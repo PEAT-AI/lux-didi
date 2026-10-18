@@ -16,7 +16,7 @@ import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { capJournalText, journalRecord } from '../host/journal.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { TraceRecordError } from '../trace/record.js';
@@ -40,34 +40,112 @@ import {
 } from './types.js';
 
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, in your own words, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
-/** Q5-R4: the most the earlier calls' first sentences may add to a start instruction. */
-export const OPENER_CONTEXT_CHARS = 300;
+/** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
+export const OPENER_CONTEXT_CHARS = 450;
 
-/** Q5-R4: one earlier call's first sentence, so the note stays a hint rather than a transcript. */
-function firstSentenceOf(text: string): string {
+/** Q5-R4: one or two sentences, so the note carries a subject and not only a short fragment. */
+function openingSentencesOf(text: string): string {
   const flat = text.replace(/\s+/gu, ' ').trim();
-  const end = flat.search(/[.?!](\s|$)/u);
-  return end === -1 ? flat : flat.slice(0, end + 1);
+  const sentences = flat.split(/(?<=[.?!])\s+/u).filter(Boolean);
+  const first = sentences[0] ?? flat;
+  const pair = sentences.slice(0, 2).join(' ');
+  return first.length < 80 && pair.length <= 200 ? pair : first;
 }
 
 /**
- * Q5-R4: the previous calls' openers as "do not repeat" context, under 300 chars and absent when no
- * earlier call exists. The journal text stays owner-local: this string is composed into the start
- * instruction and is never written to host.log.
+ * Q5-R4: the previous calls' openers as "do not repeat" context, under 450 chars and absent when no
+ * earlier call exists. Three calls are named so the note carries a subject as well as words. The journal
+ * text stays owner-local: this string is composed into the start instruction and is never written to
+ * host.log.
  */
-export function openersNote(openers: readonly string[]): string | undefined {
-  const note = (lines: readonly string[]): string => `Do not open with any of these earlier openers: ${lines.map(line => `"${line}"`).join(' ')}`;
+export function openersNote(openers: readonly string[], topics: readonly (string | undefined)[] = []): string | undefined {
+  // Release 3u: alongside the sentence, the subject its own start plan offered, so the note names a
+  // topic and not only words. A call whose plan does not name the opener's subject carries none.
+  const line = (opener: string, topic: string | undefined): string => {
+    const sentence = `"${opener}"`;
+    return topic === undefined ? sentence : `${sentence} (about ${clipTopic(topic)})`;
+  };
+  const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.join(' ')}`;
   const taken: string[] = [];
-  for (const opener of openers.map(firstSentenceOf).filter(Boolean).slice(0, 2)) {
-    if (note([...taken, opener]).length <= OPENER_CONTEXT_CHARS) taken.push(opener);
+  const spoken = openers.map(openingSentencesOf).filter(Boolean).slice(0, 3);
+  for (const [index, opener] of spoken.entries()) {
+    const next = line(opener, topics[index]);
+    if (note([...taken, next]).length <= OPENER_CONTEXT_CHARS) taken.push(next);
   }
   return taken.length ? note(taken) : undefined;
 }
 
-/** Q5-R4: the two most recent earlier calls' first spoken lines, read from the owner-local journal. */
-function previousOpeners(tx: Transaction, assistantId: string): string[] {
-  return tx.all("SELECT (SELECT j.text FROM live_journal j WHERE j.live_session_id=s.live_session_id AND j.kind='outputTranscription' AND trim(j.text)<>'' ORDER BY j.journal_id LIMIT 1) AS opener FROM live_sessions s WHERE s.owner_assistant_id=? ORDER BY s.created_at DESC, s.rowid DESC LIMIT 2", [assistantId])
-    .map(row => String(row['opener'] ?? '')).filter(text => text.trim() !== '');
+/** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
+const OPENER_TOPIC_CHARS = 60;
+function clipTopic(topic: string): string {
+  if (topic.length <= OPENER_TOPIC_CHARS) return topic;
+  const cut = topic.slice(0, OPENER_TOPIC_CHARS);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).trim();
+}
+
+/**
+ * Q5-R4: one earlier call's opening utterance: its ordered transcription fragments up to the first
+ * finished fragment or turn boundary. A streamed fragment of a few characters carries no subject,
+ * which is why the first row alone was almost nothing to avoid.
+ */
+export function openerFromJournal(rows: readonly { readonly kind: string; readonly text: string | null; readonly finished: number | null }[]): string {
+  let utterance = '';
+  for (const row of rows) {
+    if (row.kind !== 'outputTranscription') {
+      if (utterance !== '') break;
+      continue;
+    }
+    utterance += row.text ?? '';
+    if (row.finished === 1) break;
+  }
+  return utterance.trim();
+}
+
+/**
+ * Release 3u: the topic an earlier call's opener came from, read off the plan that call's own start
+ * recorded. The words the opener shares with an option decide it, so a topic is never guessed: an
+ * opener whose subject the plan does not name is reported without one.
+ */
+function openerTopicOf(opener: string, recorded: readonly OpeningOption[]): string | undefined {
+  const words = (text: string): Set<string> => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length >= 4));
+  const spoken = words(opener);
+  let best: { topic: string; shared: number } | undefined;
+  for (const option of recorded) {
+    const shared = [...words(option.topic)].filter(word => spoken.has(word)).length;
+    if (shared > 0 && (best === undefined || shared > best.shared)) best = { topic: option.topic, shared };
+  }
+  return best?.topic;
+}
+
+/** The options an earlier call's start instruction recorded, from its own accepted-prompt snapshot. */
+function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
+  if (typeof snapshot !== 'string') return [];
+  try {
+    const parsed = JSON.parse(snapshot) as { system?: unknown };
+    return typeof parsed.system === 'string' ? openingOptionsTopics(parsed.system) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal.
+ * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
+ * subject as well as words. Nothing here reaches host.log.
+ */
+function previousOpeners(tx: Transaction, assistantId: string): { readonly text: string; readonly topic?: string }[] {
+  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC LIMIT 3", [assistantId]);
+  return sessions.flatMap(row => {
+    const text = openerFromJournal(tx.all("SELECT kind, text, finished FROM live_journal WHERE live_session_id=? AND (kind='outputTranscription' OR kind IN ('generationComplete','turnComplete','interrupted')) ORDER BY journal_id", [String(row['live_session_id'])]).map(entry => ({
+      kind: String(entry['kind']),
+      text: entry['text'] === null || entry['text'] === undefined ? null : String(entry['text']),
+      finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
+    })));
+    if (text === '') return [];
+    const topic = openerTopicOf(text, recordedOptions(row['accepted_prompt_snapshot']));
+    return [{ text, ...(topic === undefined ? {} : { topic }) }];
+  });
 }
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
@@ -93,6 +171,11 @@ const CONSUMER_GONE_MS = 5_000;
 // 3p: a socket that closed and sent no Stop is a call that ended, not a pause. One second is the longest a Stop may
 // take to be felt by the owner; the 5 s rule above stays behind it as the last net.
 const CONSUMER_CLOSED_MS = 1_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+/** S5: the one honest line after a backend turn failed. It owns the failure and offers the retry, and it never
+ *  invents a reason the provider did not give. */
+export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
+/** S5: how long her own line has to become audible before the turn is settled failed instead of left owing. */
+export const TURN_FAILED_GRACE_MS = 1_000;
 // 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
 // that ended, or a model turn left open, owes a reply, and only a deadline on that debt recovers it. One nudge
 // at RESPONSE_WATCHDOG_NUDGE_MS, then the fresh-seeded recovery at RESPONSE_WATCHDOG_RECOVERY_MS after it.
@@ -269,8 +352,24 @@ type SummaryHooks = {
  */
 type WarmHooks = { calendarDigest?: () => Promise<string | undefined> };
 
-/** The receipt one forced prewarm returns, and the host logs (issue 338). */
-export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean };
+/**
+ * R7: what a wake prewarm can assemble before any session has run. The persona is the frozen prompt and
+ * the digest is the read it just made; memory and the conversation summary belong to a start's own store
+ * read, which is the one warm input a wake does not touch.
+ */
+function sourceSections(persona: string, calendar: string | undefined): WarmContextSections {
+  return { persona, memory: [], summary: undefined, summaryIds: [], summaryOmitted: [], calendar };
+}
+
+/** R7: how many events a digest carries, counted from its `HH:MM` stamps; the receipt never carries their text. */
+function digestItems(digest: string | undefined): number {
+  return digest === undefined ? 0 : (digest.match(/(?:^|, )\d{2}:\d{2} /g) ?? []).length;
+}
+
+/** The receipt one forced prewarm returns, and the host logs (issue 338, R7). */
+export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean;
+  /** Which source the assembly came from: a start's own sections, this owner's sources, or nothing that fit. */
+  readonly reason: 'sections' | 'sources' | 'too_large' | 'unconfigured' };
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
@@ -544,6 +643,10 @@ export class LiveSessionOwner {
   #warm: WarmContextCache;
   /** The digest the host built at the last prewarm; absent leaves the calendar slot out (issue 339). */
   #calendar: string | undefined;
+  /** R7: what the last read reached, so a suppressed or failed digest is a line and not a silence. */
+  #calendarState: 'present' | 'empty' | 'failed' | 'unconfigured';
+  /** R7: when that read finished, so the receipt can say how old the digest was at hello. */
+  #calendarAt: number | undefined;
   /** The sections the last start used, so a forced prewarm refreshes without reading the store again. */
   #sections: WarmContextSections | undefined;
   readonly #calendarDigest: (() => Promise<string | undefined>) | undefined;
@@ -566,6 +669,7 @@ export class LiveSessionOwner {
     this.#memorySource = config.memorySource;
     // The digest hook rides the composition seam; a test may also pass it on the config directly.
     this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
+    this.#calendarState = this.#calendarDigest === undefined ? 'unconfigured' : 'empty';
     this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
@@ -609,17 +713,22 @@ export class LiveSessionOwner {
    * failed or empty leaves the slot out; nothing here can fail the assembly.
    */
   async prepareCalendar(): Promise<void> {
-    if (this.#calendarDigest === undefined) return;
-    try { this.#calendar = await this.#calendarDigest(); }
-    catch { this.#calendar = undefined; }
+    if (this.#calendarDigest === undefined) { this.#calendar = undefined; this.#calendarState = 'unconfigured'; return; }
+    try {
+      const digest = await this.#calendarDigest();
+      this.#calendar = digest !== undefined && digest.trim().length ? digest : undefined;
+      this.#calendarState = this.#calendar === undefined ? 'empty' : 'present';
+    } catch { this.#calendar = undefined; this.#calendarState = 'failed'; }
+    this.#calendarAt = this.#now();
   }
 
   /**
-   * The owner's prewarm instruction (issue 338): read today's calendar digest once, then rebuild the
+   * The owner's prewarm instruction (issue 338, R7): read today's calendar digest once, then rebuild the
    * warm assembly from the sections the last start used plus that digest, keeping the summary
-   * provenance that start recorded (F9). No store is read here, nothing talks to a model, and a
-   * connector failure leaves the slot out rather than failing the instruction. Returns the receipt
-   * the host logs as `warm_prewarm`.
+   * provenance that start recorded (F9). A wake before any start (R7) has no such sections, so it
+   * assembles from the sources this owner holds without a store read, the digest included, and the
+   * receipt says which source it used. Nothing talks to a model, and a connector failure leaves the
+   * slot out rather than failing the instruction. Returns the receipt the host logs as `warm_prewarm`.
    */
   async prewarm(): Promise<WarmPrewarmReceipt> {
     const ageBeforeMs = this.#warm.ageMs ?? null;
@@ -627,11 +736,14 @@ export class LiveSessionOwner {
     const previous = this.#sections;
     // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;
     // it is not `refresh(true)` because a source collection cannot carry the provenance above.
-    const refreshed = previous === undefined ? undefined : this.#warm.adopt(withProvenance({ ...previous, calendar: this.#calendar }, previous));
+    const next = previous ?? sourceSections(this.#profile.prompt.text, this.#calendar);
+    const refreshed = this.#warm.adopt(previous === undefined ? next : withProvenance({ ...next, calendar: this.#calendar }, previous));
     if (refreshed !== undefined) this.#sections = refreshed.sections;
-    const receipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined };
-    // One closed metadata line per instruction, whichever route asked for it.
-    this.#summaryLog?.({ event: 'warm_prewarm', ...receipt });
+    const receipt: WarmPrewarmReceipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined,
+      reason: refreshed === undefined ? 'too_large' : previous === undefined ? 'sources' : 'sections' };
+    // One closed metadata line per instruction, whichever route asked for it. The log keeps the 338 shape
+    // (two ages and the flag); the closed reason is on the receipt the caller holds.
+    this.#summaryLog?.({ event: 'warm_prewarm', ageBeforeMs: receipt.ageBeforeMs, ageAfterMs: receipt.ageAfterMs, assembled: receipt.assembled });
     return receipt;
   }
   profileProjection(): LiveProfileProjection {
@@ -700,14 +812,26 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const openers = openersNote(previousOpeners(tx, assistantId));
-      const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const earlierOpeners = previousOpeners(tx, assistantId);
+      const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
+      // Release 3u: the plan this start offers. The persisted start counter is the row count for the
+      // owner, so consecutive calls walk the stored open loops even when no summary was written between
+      // them; the warm calendar digest supplies the first option when the host built one.
+      const storedSummaries = summaries.injectionCandidates(tx);
+      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
+        ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
+        rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
+      const composeSession = (earlierSection: string | undefined, calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+        // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
+        delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+        ...(calendar ? { calendar } : {}),
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
-        ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}) });
+        ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}),
+        ...(openerPlan.section.length ? { openingOptions: openerPlan.section } : {}) });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
@@ -716,10 +840,13 @@ export class LiveSessionOwner {
       // stale or absent one is assembled here, exactly as before, and adopted for the next start.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
-        const start = chooseStartContext(this.#warm.take(), () => {
+        // R7: a wake prewarm assembles the persona and the digest but no conversation summary, so a start
+        // still assembles its own summary; the digest reaches it from #calendar either way.
+        const warm = this.#warm.take();
+        const start = chooseStartContext(warm !== undefined && warm.sections.summary === undefined ? undefined : warm, () => {
           // The summaries fill what the other sections leave under the target, so measure it once.
-          basis = composeSession(undefined);
-          earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
+          basis = composeSession(undefined, this.#calendar);
+          earlier = buildEarlierConversationsSection(storedSummaries,
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
             summary: earlier.section.length ? earlier.section : undefined,
@@ -729,20 +856,28 @@ export class LiveSessionOwner {
         else this.#warm.adopt(start.sections);
         // The sections this start used are what a forced prewarm refreshes, so it re-reads no store.
         this.#sections = start.sections;
-        // With no summary section the measured basis is the result, so a start composes once.
-        if (!earlier.section) return basis ?? composeSession(undefined);
-        return composeSession(earlier.section);
+        // R7: one digest per instruction, the warm start's own sections first and never a second read.
+        const calendar = start.sections.calendar ?? this.#calendar;
+        // The measured basis carries the same digest, so it is the result when the summary is absent.
+        if (!earlier.section) return basis !== undefined && start.sections.calendar === this.#calendar ? basis : composeSession(undefined, calendar);
+        return composeSession(earlier.section, calendar);
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
+      // only: the state it reached, how many events rode it and how old it was at this start.
+      this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),
+        ageMs: this.#calendarAt === undefined ? 0 : Math.max(0, now - this.#calendarAt) });
       // The debug journal's session start: the composed instructions once, then the identity and sizes
       // a debugging session needs. host.log keeps only the content-free sizes line above.
       journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'session_start',
         provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
         instructionChars: composed.text.length, instructionSections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])),
-        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text });
+        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text,
+        // Release 3u: the plan receipt, metadata only: the kinds offered and the start counter that chose them.
+        openerPlan: { kinds: openerPlan.options.map(option => option.kind), rotation: openerPlan.rotation } });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
@@ -1195,6 +1330,45 @@ export class LiveSessionOwner {
 
   /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
   #delegationKey(handle: ActiveSession): string { return `${handle.liveSessionId}-${handle.generation}`; }
+
+  /**
+   * S5: the honest end of a backend turn. One typed disposition, `turn_failed` with the provider's own code, and
+   * the open calls of the turn closed, so no ledger entry and no orb state keeps owing a reply the backend will
+   * not send. She then says one honest line through the progress-speech path. A backend turn failure is not a
+   * transport failure, so nothing is rebuilt; if her line never becomes audible, the turn is settled failed
+   * rather than left owing, and the owner's S2 recovery starts the retry.
+   */
+  #turnFailed(handle: ActiveSession, generation: number, code: string): void {
+    if (this.#settled(handle) || generation !== handle.generation) return;
+    const failedAt = this.#now();
+    hostLogEvent({ event: 'turn_failed', code });
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_failed', code });
+    // The turn is over: every call it left open is closed here, never still in flight in the projection.
+    for (const id of [...handle.pendingCallIds]) {
+      handle.callAborts.get(id)?.abort();
+      handle.callAborts.delete(id);
+      handle.pendingCallIds.delete(id);
+      handle.pendingCalls.delete(id);
+      handle.callStartedAt.delete(id);
+      handle.exec.delete(id);
+    }
+    handle.thinking = false;
+    handle.awaitingAnswer = false;
+    handle.answerAt = undefined;
+    this.#cancelProgress(handle);
+    this.#cancelWatchdog(handle);
+    this.#noteState(handle, 'tool');
+    if (this.#progressPath(handle)) {
+      try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
+    }
+    this.#armIdle(handle, this.#profile.limits.idleMs);
+    this.#schedule(() => {
+      if (this.#settled(handle) || generation !== handle.generation) return;
+      // She spoke the line: the turn is answered, and the session carries on from it.
+      if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= failedAt) return;
+      this.#settle(handle, { state: 'failed', code: 'backend_failed' }, false, 'ended', null);
+    }, TURN_FAILED_GRACE_MS);
+  }
 
   #armProgress(handle: ActiveSession): void {
     handle.progressTimer?.cancel();
@@ -1709,6 +1883,12 @@ export class LiveSessionOwner {
             name: 'provider_go_away', configuredMs: event.timeLeftMs });
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
+        }
+        if (event.type === 'turnFailed') {
+          // S5: a backend response that ended failed, incomplete or errored is a typed turn failure, never a
+          // silent stall and never a rebuild: the session is healthy, the turn is not.
+          this.#turnFailed(handle, generation, event.code);
+          continue;
         }
         if (event.type === 'contextUsage') {
           // The provider's own usage report, kept with the other numbers and never a payload.

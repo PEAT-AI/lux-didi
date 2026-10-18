@@ -128,6 +128,9 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'contextUsage'; totalTokens: number; promptTokens?: number; responseTokens?: number }
   | { type: 'upstreamQueue'; bufferedBytes: number }
   | { type: 'resumptionHandle'; handle: string | null }
+  /** S5: one delegated backend response ended failed, incomplete or errored. `code` is the provider's own word,
+   *  bounded to a metadata-safe token. The session itself is still healthy: this is a failed turn, not transport. */
+  | { type: 'turnFailed'; code: string }
   | { type: 'outcome'; outcome: LiveVoiceOutcome }
 );
 export interface LiveVoiceSession {

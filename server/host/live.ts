@@ -3,6 +3,7 @@ import * as labels from '../domain/labels.js';
 import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
+import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { credentialsFor, loadProviderConfig, slotKeyPresent } from '../config/index.js';
 import { loadLiveConfig, saveLiveSelection, currentLivePlaybackRate, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { createLiveVoiceAdapter, LiveVoiceError, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
@@ -150,6 +151,8 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
       sessionMs: profile.limits.sessionMs, closeMs: profile.limits.closeMs,
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
+    // S4b: only the delegated backend executes the lookups; a direct-tool provider has no backend to instruct.
+    ...(profile.provider === 'openai' ? { backendProcedure: NAYA_BACKEND_PROCEDURE } : {}),
   }); } catch (error) {
     // A provider with no adapter yet (or one that rejects its settings) reports its own code, never a fallback.
     const code = error instanceof LiveVoiceError ? error.code : 'unsupported_provider';

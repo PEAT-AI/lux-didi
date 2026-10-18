@@ -3536,7 +3536,7 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   h.owner.revoke(session.liveSessionId);
 });
 
-test('S4a-R2 (a): a call the provider cancelled before the ceiling settles as cancelled, and is never answered', async t => {
+test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is never answered', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -3552,8 +3552,10 @@ test('S4a-R2 (a): a call the provider cancelled before the ceiling settles as ca
   fake.emit({ type: 'toolCallCancellation', ids: ['c1'] });
   await settlePort();
   h.advance(12_000); scheduler.runDue(); await settlePort();
-  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').map(entry => entry['outcome']), ['cancelled'],
-    'the third status names a write that was cancelled before it executed');
+  // S4a-R2 (a): "cancelled before execution" is the provider cancellation's own receipt, and such a call is owed no
+  // answer at all, so it never settles at the ceiling (3r keeps that behaviour).
+  assert.equal(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').length, 0, 'no ceiling settlement for a cancelled call');
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_cancelled').map(entry => entry['tool']), ['remember_note']);
   assert.equal(fake.toolResponses.length, 0, 'a provider-cancelled call is never answered (3r)');
   h.owner.revoke(session.liveSessionId);
 });

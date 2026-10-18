@@ -30,8 +30,9 @@ const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_su
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
-/** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. */
-const CEILING_OUTCOMES = ['timeout', 'uncertain', 'cancelled'];
+/** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. A call the
+ *  provider cancelled never settles at the ceiling: its own `tool_cancelled` receipt names it, with no answer. */
+const CEILING_OUTCOMES = ['timeout', 'uncertain'];
 const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];

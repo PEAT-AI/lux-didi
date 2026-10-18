@@ -174,8 +174,6 @@ interface ActiveSession {
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** S4a-R2 (e): one execution receipt per call of this turn, the only source a progress line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
-  /** S4a-R2 (a): calls the provider had already cancelled when the ceiling settled them. */
-  cancelledBeforeExec: Set<string>;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
@@ -1039,7 +1037,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), cancelledBeforeExec: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -2156,10 +2154,9 @@ export class LiveSessionOwner {
       // continuation owner, so the backend gets one output per call and one response.create for the batch.
       if (raced === 'timeout') {
         for (const unit of pending) {
-          // S4a-R2 (a): the signal's own state at settlement, read before the abort below writes it.
-          const cancelled = handle.callAborts.get(unit.call.id)?.signal.aborted === true;
-          if (cancelled) handle.cancelledBeforeExec.add(unit.call.id);
-          const outcome = isReadOnlyTool(unit.call.name) ? 'timeout' : cancelled ? 'cancelled' : 'uncertain';
+          // S4a-R2 (a): a cancelled call never reaches this branch (its own `tool_cancelled` receipt covers it and
+          // it is owed no answer), so the ceiling settles a read as a timeout and a write as uncertain.
+          const outcome = isReadOnlyTool(unit.call.name) ? 'timeout' : 'uncertain';
           hostLogEvent({ event: 'tool_ceiling_hit', tool: unit.call.name, ms: TOOL_CEILING_MS, outcome });
           handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
         }
@@ -2254,12 +2251,12 @@ export class LiveSessionOwner {
       });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
-    // S4a-R2 (a): a read that ran past the ceiling settles as a timeout; a write settles as uncertain, or as
-    // cancelled when the provider's own cancellation came first. A late callback never rewrites either.
+    // S4a-R2 (a): a read that ran past the ceiling settles as a timeout and a write as uncertain. A late callback
+    // never rewrites either, and a provider-cancelled call is owed no answer at all (3r).
     responses = responses.map(response => {
       const call = event.calls.find(candidate => candidate.id === response.id);
       if (call === undefined || handle.exec.get(call.id)?.status !== 'timeout' || isReadOnlyTool(call.name)) return response;
-      return { ...response, response: { error: handle.cancelledBeforeExec.has(call.id) ? 'cancelled_before_execution' : 'outcome_uncertain' } };
+      return { ...response, response: { error: 'outcome_uncertain' } };
     });
     // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
     // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).

@@ -1101,6 +1101,7 @@ function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | u
     live: projection ? { state: projection, cursor: 0, entries: [] } : undefined,
     liveMachine: { view: { ...initialLiveView(), state: machine, error: extra.stateError } },
     liveVoiceState, liveLabel: (current: LiveCurrent) => liveLabel(current), busy: false, error: undefined,
+    connectingBeforeFirstSpeech,
     connectedView: { active: false }, e: (text: string) => text, lookupLineMarkup: () => '',
     machineOwnsOrb: ownsOrb, liveControl: controlOf, startAvailable, liveErrorText,
   };

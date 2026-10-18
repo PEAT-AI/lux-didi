@@ -547,7 +547,8 @@ test('the warm calendar digest keeps one bounded line and trims a day that does 
   const digest = await buildCalendarDigest(digestReader(busy), { now: digestNow, timeZone: 'UTC' });
   assert.equal(typeof digest, 'string');
   assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
-  assert.match(digest ?? '', /^09:00 review with the whole team 9/, 'the first event keeps its local clock time');
+  assert.match(digest ?? '', /^00:00 review with the whole team 0/, 'the first event keeps its local clock time');
+  assert.match(digest ?? '', /team 10$/, 'the last event that fits is kept whole');
   assert.equal((digest ?? '').endsWith(', '), false, 'a trimmed digest never ends on a separator');
 });
 

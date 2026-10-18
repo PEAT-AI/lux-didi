@@ -516,7 +516,6 @@ test('the host-start reconciler re-distils a no_text_model skip once a text mode
   const h = open();
   try {
     withTurns(h.store, 's-requeue');
-    withTurns(h.store, 's-sealed');
     seedSession(h.store, 's-thin');
     seedTurn(h.store, 's-thin', 'inputTranscription', 'only one owner turn');
     await summarizer(h.store, null).distill('s-requeue');

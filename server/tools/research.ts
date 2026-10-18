@@ -1970,7 +1970,11 @@ export function knownReply(ledger: ResearchLedger, researchId: string, configure
 }
 
 interface Deferred { promise: Promise<JsonObject>; resolve: (reply: JsonObject) => void }
-type ActiveRun = { superseded: boolean; awaiter: Deferred };
+type ActiveRun = {
+  superseded: boolean; awaiter: Deferred;
+  /** R6/M2: the readers a first answer left running; the run is over when this settles. */
+  reading?: Promise<void>;
+};
 function deferred(): Deferred {
   let resolve!: (reply: JsonObject) => void;
   const promise = new Promise<JsonObject>(r => { resolve = r; });
@@ -2032,14 +2036,21 @@ export class ResearchScheduler {
 
   #drive(call: ResearchCall, signal: AbortSignal, id: string): Promise<JsonObject> {
     const awaiter = deferred();
-    const entry = { superseded: false, awaiter };
+    const entry: ActiveRun = { superseded: false, awaiter };
     this.#active.set(id, entry);
-    runResearch(this.#deps, call, signal).then(reply => {
-      if (this.#active.get(id) === entry) this.#active.delete(id);
+    // R6/M2: a call that answered ahead of its readers is still the run those readers belong to, so stop
+    // and continue must find it. The entry leaves the active set only when the run itself has ended.
+    const deps: ResearchDeps = { ...this.#deps, background: done => {
+      entry.reading = done;
+      this.#deps.background?.(done);
+    } };
+    const settle = (): void => { if (this.#active.get(id) === entry) this.#active.delete(id); };
+    runResearch(deps, call, signal).then(reply => {
       if (!entry.superseded) awaiter.resolve(reply);
+      if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     }).catch(() => {
-      if (this.#active.get(id) === entry) this.#active.delete(id);
       if (!entry.superseded) awaiter.resolve({ error: 'research_failed' });
+      if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     });
     return awaiter.promise;
   }

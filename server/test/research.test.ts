@@ -967,3 +967,68 @@ test('R6: a late source that fails says nothing and still leaves one receipt', a
   await reading;
   assert.deepEqual(late.map(entry => [entry.source, entry.items, entry.ok]), [['knowledge', [], false]], 'a failed read never invents a finding');
 });
+
+// --- R6/M2: a run that answered ahead of its readers is still the run stop and continue address ------
+
+test('R6/M2: stop reaches a run that answered ahead of its readers', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      await gate.promise;
+      return subs.map(call => sub(call.name, '## Release 3t\nprogressive research ships', true, call.key));
+    },
+  });
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
+  const scheduler = new ResearchScheduler(h.deps);
+  const controller = new AbortController();
+  const first = scheduler.call({
+    action: 'start', question: 'what did he ask me to remember', researchId: 'r6stop',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, controller.signal);
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  assert.deepEqual((await first)['pending'], ['knowledge'], 'the call has answered with a reader still running');
+  const stopped = await scheduler.call({ action: 'stop', researchId: 'r6stop' }, controller.signal);
+  assert.equal(stopped['researchId'], 'r6stop', 'stop finds the run the first answer left reading');
+  assert.equal(h.deps.ledger.find('r6stop')?.stopped, true, 'and records that run stopped');
+  assert.ok((stopped['findings'] as unknown[]).length > 0, 'with what it already knew');
+  gate.resolve();
+  controller.abort();
+  await reading;
+  assert.equal(h.deps.ledger.find('r6stop')?.ended, true, 'the run line is the run\'s own end');
+});
+
+test('R6/M2: continue reaches a run that answered ahead of its readers', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      await gate.promise;
+      return subs.map(call => sub(call.name, '## Release 3t\nprogressive research ships', true, call.key));
+    },
+  });
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
+  const scheduler = new ResearchScheduler(h.deps);
+  const controller = new AbortController();
+  const first = scheduler.call({
+    action: 'start', question: 'what did he ask me to remember', researchId: 'r6cont',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, controller.signal);
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  assert.deepEqual((await first)['pending'], ['knowledge']);
+  const continuing = scheduler.call({ action: 'continue', researchId: 'r6cont' }, controller.signal);
+  gate.resolve();
+  const reply = await continuing;
+  assert.equal(reply['researchId'], 'r6cont', 'continue addresses the same run, never a second one beside it');
+  assert.ok((reply['findings'] as unknown[]).length > 0, 'and reuses the ledger the first answer wrote');
+  controller.abort();
+  await reading;
+});

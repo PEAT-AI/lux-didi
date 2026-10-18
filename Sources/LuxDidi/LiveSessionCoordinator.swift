@@ -145,6 +145,17 @@ public struct LiveStopReceipt: Sendable, Equatable {
     }
 }
 
+/// One native frame the protocol refused, kept so the native log proves why a call went outcomeUnknown:
+/// the sequence the marker carried, the highest sequence already accepted, and the marker kind.
+public struct LiveFrameRejection: Sendable, Equatable {
+    public let sequence: Int
+    public let previous: Int
+    public let kind: String
+    public init(sequence: Int, previous: Int, kind: String) {
+        self.sequence = sequence; self.previous = previous; self.kind = kind
+    }
+}
+
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
 public actor LiveSessionCoordinator {
     public let events: AsyncStream<LiveClientState>
@@ -175,6 +186,9 @@ public actor LiveSessionCoordinator {
     /// E1: whether the provider's turnComplete for the live turn arrived before a barge-in marker.
     private var turnCompleteSeen = false
     public private(set) var captureEpoch: UInt64 = 0
+    /// The last frame this client refused, taken by the presentation so the rejection is never a silent throw.
+    public private(set) var frameRejection: LiveFrameRejection?
+    public func takeFrameRejection() -> LiveFrameRejection? { defer { frameRejection = nil }; return frameRejection }
     private var captureMuted = false
     private var captureDiagnosticOwner: UInt64?
     private var captureDiagnostics = LiveCaptureDiagnostics()
@@ -300,6 +314,10 @@ public actor LiveSessionCoordinator {
 
     private func receive(_ connection: any LiveSocket, token: UInt64) async {
         var previousSequence = 0
+        // Set by `continuity resumed`, cleared by the first marker after it. A rebuild opens a provider
+        // session that counts its own events again, so one non-increasing sequence right after a resume
+        // re-bases the high water mark instead of failing an otherwise healthy call (3o).
+        var rebased = false
         do {
             while !Task.isCancelled {
                 let frame = try await connection.receive()
@@ -311,6 +329,7 @@ public actor LiveSessionCoordinator {
                         try await sink.flush()
                     } else if event == "resumed", state == .rebuilding {
                         state = .active
+                        rebased = true
                     }
                 case .pcm(let pcm):
                     if state == .rebuilding { continue }
@@ -320,8 +339,14 @@ public actor LiveSessionCoordinator {
                     guard generation == token, !Task.isCancelled else { return }
                 case .marker(let marker):
                     if state == .rebuilding { continue }
-                    guard marker.sequence > previousSequence else { throw LiveClientError.invalidFrame }
+                    if marker.sequence <= previousSequence {
+                        guard rebased else {
+                            frameRejection = LiveFrameRejection(sequence: marker.sequence, previous: previousSequence, kind: marker.kind.rawValue)
+                            throw LiveClientError.invalidFrame
+                        }
+                    }
                     previousSequence = marker.sequence
+                    rebased = false
                     if marker.kind == .ready {
                         guard state == .attaching else { throw LiveClientError.invalidFrame }
                         state = .active
@@ -349,9 +374,16 @@ public actor LiveSessionCoordinator {
             }
         } catch {
             guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
-            state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil
+            let reason = safe(error, fallback: .transport)
+            state = .outcomeUnknown(reason)
             try? await sink.flush()
-            await connection.cancel()
+            // 3p P1: an outcome that is unknown still ends the call on the host, through the Stop path, so a
+            // refused frame never leaves the provider session talking to a Mac that stopped listening. close()
+            // takes the socket and sends the close control itself, so nothing cancels that socket before it,
+            // and it runs in its own task because this receive task is cancelled on the way.
+            await Task { _ = await self.close(trigger: .other) }.value
+            if case .terminal = state { return }
+            state = .outcomeUnknown(reason)
         }
     }
 

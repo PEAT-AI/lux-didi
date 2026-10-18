@@ -2320,6 +2320,40 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
 });
 
 
+/** Read the output stream until one marker of `kind` arrives, and return the sequence the Mac sees. */
+async function markerSequence(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, kind: string): Promise<number> {
+  for (;;) {
+    const item = await output.next();
+    assert.equal(item.done, false, 'consumer remains attached across the rebuild');
+    const chunk = item.value;
+    if (chunk.kind === 'marker' && chunk.marker.kind === kind && chunk.marker.sequence !== null) return chunk.marker.sequence;
+  }
+}
+
+test('a provider rebuild never lowers the marker sequence the Mac sees', async t => {
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'resume-sequence');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ serverContent: { inputTranscription: { text: 'before the rebuild', finished: true } } });
+  const before = await markerSequence(output, 'inputTranscription');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-sequence-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  // The rebuilt provider session counts its own events from one again; the sequence the Mac sees must not.
+  h.f.send({ serverContent: { inputTranscription: { text: 'after the rebuild', finished: true } } });
+  const after = await markerSequence(output, 'inputTranscription');
+  assert.ok(after > before, `marker sequence ${after} after the rebuild must exceed ${before}`);
+  attachment.close(); await attachment.done;
+});
+
+test('a judged no_pong receipt is a closed metadata-only host log shape', () => {
+  const accepted = safeEvent({ event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 49_450 });
+  assert.deepEqual(accepted, { event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 49_450 });
+  assert.equal(safeEvent({ event: 'live_no_pong', lastInboundAgeMs: -1, missedPongs: 2, bufferedAmount: 0 }), undefined, 'a negative age is refused');
+  assert.equal(safeEvent({ event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 0, text: 'leak' }), undefined, 'the shape stays closed');
+});
+
 test('an exhausted original budget never opens a replacement connection', async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { sessionMs: 100, idleMs: 1000 } });

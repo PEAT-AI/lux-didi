@@ -161,6 +161,9 @@ interface ActiveSession {
   consumerState: LiveConsumerState;
   journalEvents: number;
   journalBytes: number;
+  /** The sequence the Mac sees, counted once for the whole session: a provider rebuild opens a new adapter
+   *  session whose own counter starts again at 1, and the Mac refuses a marker that does not advance. */
+  markerSequence: number;
   adapterOutcome: LiveVoiceOutcome | undefined;
   diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
   ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
@@ -220,9 +223,9 @@ function logTurnScript(handle: ActiveSession): void {
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
 // once, marked after_barge_in so the UI can show why the answer may not match the pending turn.
-function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number): LivePublicMarker {
+function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number, sequence: number): LivePublicMarker {
   return {
-    kind, sequence: event.sequence, journalSequence,
+    kind, sequence, journalSequence,
     text: 'text' in event ? event.text : null,
     finished: 'finished' in event && event.finished !== undefined ? event.finished : null,
     value: event.type === 'waitingForInput' ? event.value : null,
@@ -921,7 +924,7 @@ export class LiveSessionOwner {
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
-      consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
+      consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
       diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, terminalOutcome: null,
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
@@ -1262,7 +1265,7 @@ export class LiveSessionOwner {
     this.#armIdle(handle, this.#profile.limits.idleMs);
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
-    this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence) });
+    this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });
   }
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
@@ -1547,7 +1550,7 @@ export class LiveSessionOwner {
           handle.inputJournalId = persisted;
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
         }
-        this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted) });
+        this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted, ++handle.markerSequence) });
       }
     } catch (error) {
       handle.persistFailure = error;

@@ -232,8 +232,24 @@ type SummaryHooks = {
  */
 type WarmHooks = { calendarDigest?: () => Promise<string | undefined> };
 
-/** The receipt one forced prewarm returns, and the host logs (issue 338). */
-export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean };
+/**
+ * R7: what a wake prewarm can assemble before any session has run. The persona is the frozen prompt and
+ * the digest is the read it just made; memory and the conversation summary belong to a start's own store
+ * read, which is the one warm input a wake does not touch.
+ */
+function sourceSections(persona: string, calendar: string | undefined): WarmContextSections {
+  return { persona, memory: [], summary: undefined, summaryIds: [], summaryOmitted: [], calendar };
+}
+
+/** R7: how many events a digest carries, counted from its `HH:MM` stamps; the receipt never carries their text. */
+function digestItems(digest: string | undefined): number {
+  return digest === undefined ? 0 : (digest.match(/(?:^|, )\d{2}:\d{2} /g) ?? []).length;
+}
+
+/** The receipt one forced prewarm returns, and the host logs (issue 338, R7). */
+export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean;
+  /** Which source the assembly came from: a start's own sections, this owner's sources, or nothing that fit. */
+  readonly reason: 'sections' | 'sources' | 'too_large' | 'unconfigured' };
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
@@ -507,6 +523,10 @@ export class LiveSessionOwner {
   #warm: WarmContextCache;
   /** The digest the host built at the last prewarm; absent leaves the calendar slot out (issue 339). */
   #calendar: string | undefined;
+  /** R7: what the last read reached, so a suppressed or failed digest is a line and not a silence. */
+  #calendarState: 'present' | 'empty' | 'failed' | 'unconfigured';
+  /** R7: when that read finished, so the receipt can say how old the digest was at hello. */
+  #calendarAt: number | undefined;
   /** The sections the last start used, so a forced prewarm refreshes without reading the store again. */
   #sections: WarmContextSections | undefined;
   readonly #calendarDigest: (() => Promise<string | undefined>) | undefined;
@@ -529,6 +549,7 @@ export class LiveSessionOwner {
     this.#memorySource = config.memorySource;
     // The digest hook rides the composition seam; a test may also pass it on the config directly.
     this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
+    this.#calendarState = this.#calendarDigest === undefined ? 'unconfigured' : 'empty';
     this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
@@ -572,17 +593,22 @@ export class LiveSessionOwner {
    * failed or empty leaves the slot out; nothing here can fail the assembly.
    */
   async prepareCalendar(): Promise<void> {
-    if (this.#calendarDigest === undefined) return;
-    try { this.#calendar = await this.#calendarDigest(); }
-    catch { this.#calendar = undefined; }
+    if (this.#calendarDigest === undefined) { this.#calendar = undefined; this.#calendarState = 'unconfigured'; return; }
+    try {
+      const digest = await this.#calendarDigest();
+      this.#calendar = digest !== undefined && digest.trim().length ? digest : undefined;
+      this.#calendarState = this.#calendar === undefined ? 'empty' : 'present';
+    } catch { this.#calendar = undefined; this.#calendarState = 'failed'; }
+    this.#calendarAt = this.#now();
   }
 
   /**
-   * The owner's prewarm instruction (issue 338): read today's calendar digest once, then rebuild the
+   * The owner's prewarm instruction (issue 338, R7): read today's calendar digest once, then rebuild the
    * warm assembly from the sections the last start used plus that digest, keeping the summary
-   * provenance that start recorded (F9). No store is read here, nothing talks to a model, and a
-   * connector failure leaves the slot out rather than failing the instruction. Returns the receipt
-   * the host logs as `warm_prewarm`.
+   * provenance that start recorded (F9). A wake before any start (R7) has no such sections, so it
+   * assembles from the sources this owner holds without a store read, the digest included, and the
+   * receipt says which source it used. Nothing talks to a model, and a connector failure leaves the
+   * slot out rather than failing the instruction. Returns the receipt the host logs as `warm_prewarm`.
    */
   async prewarm(): Promise<WarmPrewarmReceipt> {
     const ageBeforeMs = this.#warm.ageMs ?? null;
@@ -590,9 +616,11 @@ export class LiveSessionOwner {
     const previous = this.#sections;
     // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;
     // it is not `refresh(true)` because a source collection cannot carry the provenance above.
-    const refreshed = previous === undefined ? undefined : this.#warm.adopt(withProvenance({ ...previous, calendar: this.#calendar }, previous));
+    const next = previous ?? sourceSections(this.#profile.prompt.text, this.#calendar);
+    const refreshed = this.#warm.adopt(previous === undefined ? next : withProvenance({ ...next, calendar: this.#calendar }, previous));
     if (refreshed !== undefined) this.#sections = refreshed.sections;
-    const receipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined };
+    const receipt: WarmPrewarmReceipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined,
+      reason: refreshed === undefined ? 'too_large' : previous === undefined ? 'sources' : 'sections' };
     // One closed metadata line per instruction, whichever route asked for it.
     this.#summaryLog?.({ event: 'warm_prewarm', ...receipt });
     return receipt;
@@ -664,10 +692,11 @@ export class LiveSessionOwner {
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
       const openers = openersNote(previousOpeners(tx, assistantId));
-      const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (earlierSection: string | undefined, calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+        ...(calendar ? { calendar } : {}),
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}) });
@@ -679,9 +708,12 @@ export class LiveSessionOwner {
       // stale or absent one is assembled here, exactly as before, and adopted for the next start.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
-        const start = chooseStartContext(this.#warm.take(), () => {
+        // R7: a wake prewarm assembles the persona and the digest but no conversation summary, so a start
+        // still assembles its own summary; the digest reaches it from #calendar either way.
+        const warm = this.#warm.take();
+        const start = chooseStartContext(warm !== undefined && warm.sections.summary === undefined ? undefined : warm, () => {
           // The summaries fill what the other sections leave under the target, so measure it once.
-          basis = composeSession(undefined);
+          basis = composeSession(undefined, this.#calendar);
           earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
@@ -692,14 +724,20 @@ export class LiveSessionOwner {
         else this.#warm.adopt(start.sections);
         // The sections this start used are what a forced prewarm refreshes, so it re-reads no store.
         this.#sections = start.sections;
-        // With no summary section the measured basis is the result, so a start composes once.
-        if (!earlier.section) return basis ?? composeSession(undefined);
-        return composeSession(earlier.section);
+        // R7: one digest per instruction, the warm start's own sections first and never a second read.
+        const calendar = start.sections.calendar ?? this.#calendar;
+        // The measured basis carries the same digest, so it is the result when the summary is absent.
+        if (!earlier.section) return basis !== undefined && start.sections.calendar === this.#calendar ? basis : composeSession(undefined, calendar);
+        return composeSession(earlier.section, calendar);
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
+      // only: the state it reached, how many events rode it and how old it was at this start.
+      this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),
+        ageMs: this.#calendarAt === undefined ? 0 : Math.max(0, now - this.#calendarAt) });
       // The debug journal's session start: the composed instructions once, then the identity and sizes
       // a debugging session needs. host.log keeps only the content-free sizes line above.
       journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'session_start',

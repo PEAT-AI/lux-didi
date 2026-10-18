@@ -16,6 +16,9 @@ const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exh
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// R7: the warm calendar digest's own closed vocabulary, and why a prewarm assembled what it did.
+const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'unconfigured'];
+const WARM_PREWARM_REASONS = ['sections', 'sources', 'too_large', 'unconfigured'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
@@ -619,13 +622,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'research_joined', researchId: value.researchId };
   }
   if (value.event === 'warm_prewarm') {
-    // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:
-    // never the calendar digest, the summary or any prompt text.
-    if (!closedKeys(value, ['event', 'ageBeforeMs', 'ageAfterMs', 'assembled'])) return;
+    // 338: the owner's forced warm refresh. Two ages, whether an assembly replaced the old one and which
+    // source that assembly came from: never the calendar digest, the summary or any prompt text.
+    if (!closedKeys(value, ['event', 'ageBeforeMs', 'ageAfterMs', 'assembled', 'reason'])) return;
     const age = (field: unknown): boolean => field === null || isSafeCount(field);
     if (!age(value.ageBeforeMs) || !age(value.ageAfterMs)) return;
     if (typeof value.assembled !== 'boolean') return;
-    return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
+    if (!WARM_PREWARM_REASONS.includes(value.reason as typeof WARM_PREWARM_REASONS[number])) return;
+    return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled, reason: value.reason };
+  }
+  if (value.event === 'calendar_digest') {
+    // R7: the warm digest used to be silent when it was suppressed or failed. One closed line says which
+    // of four states it reached, how many events rode it and how old it was, never an event's text.
+    if (!closedKeys(value, ['event', 'state', 'items', 'ageMs'])) return;
+    if (!CALENDAR_DIGEST_STATES.includes(value.state as typeof CALENDAR_DIGEST_STATES[number])) return;
+    if (!isSafeCount(value.items) || !isSafeCount(value.ageMs)) return;
+    return { event: 'calendar_digest', state: value.state, items: value.items, ageMs: value.ageMs };
   }
 }
 

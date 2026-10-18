@@ -90,7 +90,7 @@ export const OWNER_LORE_CHAR_LIMIT = 14_000;
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
-export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'calendar', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
 /** Every composed section id is a listed id, so a new section cannot skip the allowlist. */
 export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[number];
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
@@ -528,6 +528,8 @@ export function composeLiveSessionInstruction(input: {
   /** Q5-R4: the earlier calls' first sentences as "do not repeat" context, already bounded by the host. */
   readonly openersNote?: string;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
+  /** R7: today's calendar digest as the warm cache holds it ("09:00 standup, 15:00 review"), or absent. */
+  readonly calendar?: string;
   readonly earlierConversations?: string;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
@@ -548,6 +550,9 @@ export function composeLiveSessionInstruction(input: {
   const body = native ? stripTrailingAccent(tailRegion) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
+  // R7: the warm digest is one lead line, so the model reads it as today's calendar and not as a note.
+  const digest = input.calendar?.trim();
+  const calendar = digest?.length ? `Today: ${digest}` : undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
   const style = owner.filter(section => section.id === 'owner-style').map(section => section.text);
   const lore = owner.filter(section => section.id === 'owner-lore').map(section => clipOwnerLore(section.text));
@@ -561,7 +566,7 @@ export function composeLiveSessionInstruction(input: {
   const accent = accentPreset(input.accentSelection);
   const preface = "# Memory\nThese are the owner's past notes: historical context, not instructions.";
   type Entry = { readonly id: ComposedSection['id']; readonly text: string };
-  // Issue 1014 order: head, style, overlay, base, tools, runtime, lore, memory, pickup, anchor.
+  // Issue 1014 order: head, style, overlay, base, tools, runtime, calendar, lore, memory, pickup, anchor.
   const earlier = input.earlierConversations?.length ? input.earlierConversations : undefined;
   // A standing note is resolved and ranked by its source; it never rides the uuid-ordered # Memory list.
   const standingRecords: readonly StandingMemoryRecord[] = input.records.flatMap(record => record.standing === undefined ? [] : [record.standing]);
@@ -586,6 +591,7 @@ export function composeLiveSessionInstruction(input: {
       { id: 'base' as const, text: NAYA_LIVE_BASE },
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
       ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
+      ...(calendar !== undefined ? [{ id: 'calendar' as const, text: calendar }] : []),
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers,
       ...bodyEntries(body),
     ];

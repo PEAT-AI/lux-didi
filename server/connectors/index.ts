@@ -404,10 +404,11 @@ const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly Connector
 const mongooseDescriptor: ConnectorDescriptor = {
   id: 'mongoose', envelope: MONGOOSE_READ_TOOLS,
   declarations(policy) {
-    // The typed seven first, then one pass-through declaration for every other granted read tool:
-    // the Mongoose server owns those arguments, and the reader validates them against its schema.
+    // The typed seven first, then one pass-through declaration for every other tool of the read
+    // envelope: the model table in tools/index.ts keeps only the granted names, and the reader
+    // validates each call's arguments against the schema the server discovered.
     const typed = mongooseTypedDeclarations(policy);
-    const other = policy.toolNames
+    const other = MONGOOSE_READ_TOOLS
       .filter(name => !typed.some(declaration => declaration.name === name))
       .map(name => mongooseForwardDeclaration(name));
     return [...typed, ...other];

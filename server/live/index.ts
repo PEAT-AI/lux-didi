@@ -934,9 +934,6 @@ export class LiveSessionOwner {
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
     this.#noteState(handle, 'created');
-    // P5-R2: warm the research connectors once, now that the session exists. Fire and forget: the start
-    // never waits on a connector, and a second warm-up in the same session proves nothing twice.
-    this.#warmResearch(handle);
     void handle.done.promise.catch(() => {});
     // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
     // the owner call ceiling ends the call for time exactly as before. Neither is the other.
@@ -1622,12 +1619,9 @@ export class LiveSessionOwner {
     return sources;
   }
 
-  /**
-   * The one host-side executor for research sub-calls: a turn's authorized reads and (P5-R2) the session
-   * start's warm-up share it, so a probe is dispatched under the same registry, host authority and step
-   * accounting as a real read, never beside it.
-   */
-  #researchExecute(handle: ActiveSession, generation: number, host: HostContext, allowed: boolean): (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]> {
+  /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
+  async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    const configured = this.#researchSources(handle);
     const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
       // Q1-R3(d): a research run issues several execute batches (search, then hydrate/open/thread, then a
@@ -1657,35 +1651,6 @@ export class LiveSessionOwner {
         return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
-    return execute;
-  }
-
-  /**
-   * P5-R2: one connector warm-up per live session, fired at session start and never awaited. Each probe is
-   * a cheap read through the same registry, host authority and result gate a turn's read uses; if the gate
-   * refuses, the probe fails and says so (`connector_warm {source, ms, ok}`), and the session is unaffected.
-   */
-  #warmResearch(handle: ActiveSession): void {
-    if (this.#tools === undefined || handle.host === undefined) return;
-    const host = structuredClone(handle.host);
-    const execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]> = async (subs, signal) => {
-      const gate = await this.#tools!.owner.resultGate.authorize(host, [], [handle.inputClass], signal);
-      if (gate.state !== 'allowed') throw Error('warm_not_allowed');
-      return this.#researchExecute(handle, handle.generation, host, true)(subs, signal);
-    };
-    // The probes are cut by their own source deadline inside `warmConnectors`, so a hung connector never
-    // holds a probe open past the read it is warming.
-    new ResearchScheduler({
-      now: () => this.#now(), configured: this.#researchSources(handle), configuredNow: () => this.#researchSources(handle),
-      unavailableNow: () => this.#unreachableSources(), execute, emit: () => {}, log: () => {},
-      logWarm: event => hostLogEvent(event), ledger: new ResearchLedger(),
-    }).warm(handle.abort.signal);
-  }
-
-  /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
-  async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
-    const configured = this.#researchSources(handle);
-    const execute = this.#researchExecute(handle, generation, host, allowed);
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the

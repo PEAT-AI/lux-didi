@@ -1,0 +1,7 @@
+# Scenarios the current code fails, with the wagon that owes the fix. A parked scenario is a line here and a
+# `todo` test whose message quotes the assertion that fails; a `todo` scenario with no line fails the gate, and
+# so does a line whose scenario has started passing (the line is then stale).
+scenario-3 S4a
+scenario-4 S4a
+scenario-6 S4a
+scenario-9 S4a

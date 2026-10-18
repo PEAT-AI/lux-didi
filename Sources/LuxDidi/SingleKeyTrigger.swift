@@ -194,7 +194,8 @@ struct SingleKeyGrantPrompt {
 final class SingleKeyTrigger {
     /// On by default; only an explicit `false` turns the single key off.
     static let enabledKey = "DidiSingleKeyTriggerEnabled"
-    static let explanation = "Naya can start and stop with a tap of the Right Command key. "
+    static let explanation = "Naya starts and stops with a tap of the Right Command key, "
+        + "and talks while you hold it. "
         + "macOS needs Accessibility (or Input Monitoring) permission for that key; "
         + "Control-Option-Space keeps working without it."
 

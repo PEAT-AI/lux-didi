@@ -520,8 +520,8 @@ struct RootView: View {
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) }))
     private var presenceGraceTimer: Timer?
     private var presenceMenuItem: NSMenuItem?
-    /// MINI2: the Right Command tap toggles exactly like the chord. It stays off
-    /// until the grant is present, and the settings view reads the state that
+    /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
+    /// off until the grant is present, and the settings view reads the state that
     /// `pushSingleKeyState` writes as `window.didiSingleKey`.
     private lazy var singleKey = SingleKeyTrigger()
     private var singleKeyMenuItem: NSMenuItem?

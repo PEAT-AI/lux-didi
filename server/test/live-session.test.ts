@@ -3564,3 +3564,24 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'the watchdog still escalated');
   h.owner.revoke(session.liveSessionId);
 });
+
+test('review F1/F2: the research lookup, the one the model can call, speaks and thinks', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // `research` is the only lookup the production model is declared, so this is the reachable path (review F2).
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'research-progress');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
+  await settlePort();
+  assert.equal(fake.thinking.length, 1, 'silent truth goes out for a research lookup');
+  assert.match(fake.thinking[0]!, /Running a lookup across your sources\. Nothing has been sent or booked while that runs\./);
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1, 'progress speech goes out for a research lookup');
+  // The line names the source the run actually opened, never the requested list.
+  assert.match(fake.commentary[0]!, /Still reading the (chat|mattermost)\.|waiting on the (chat|mattermost)\./);
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});

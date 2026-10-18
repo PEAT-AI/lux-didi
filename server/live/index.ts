@@ -1987,7 +1987,13 @@ export class LiveSessionOwner {
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
       // U-k3: each source's read opens and closes one line in the voice view while it runs.
-      step: step => { if (this.#settled(handle) || generation !== handle.generation) return; this.#recordStep(handle, step); },
+      step: step => {
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        this.#recordStep(handle, step);
+        // Review F1 (S4A-R2 (e)): the research fan-out is the lookup the model actually makes, so each source's
+        // start and end is an execution receipt too, and a progress line can name what is really running.
+        handle.exec.set(step.stepId, { source: step.source, status: step.phase === 'end' ? (step.ok === false ? 'failed' : 'done') : 'running' });
+      },
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
@@ -2016,13 +2022,14 @@ export class LiveSessionOwner {
     const typed = handle.session.sendThinking;
     if (typed === undefined) return;
     const named = calls.filter(call => call.name !== RESEARCH_TOOL_NAME);
+    const research = calls.some(call => call.name === RESEARCH_TOOL_NAME);
     const sources = [...new Set(named.map(call => stepSourceOf(call.name)))];
-    if (!sources.length) return;
+    // Review F1: a research run picks its sources inside the run, so the honest start line names the fan-out.
+    if (!sources.length && !research) return;
     // S4a-R2 (e): a write in the batch means the host cannot claim nothing changed, so it claims nothing.
     const readOnly = named.every(call => isReadOnlyTool(call.name));
-    const text = readOnly
-      ? `Reading ${joinWords(sources)}. Nothing has been sent or booked while that runs.`
-      : `Reading ${joinWords(sources)}.`;
+    const what = sources.length ? `Reading ${joinWords(sources)}` : 'Running a lookup across your sources';
+    const text = readOnly ? `${what}. Nothing has been sent or booked while that runs.` : `${what}.`;
     try { typed.call(handle.session, { text }); } catch { return; }
     hostLogEvent({ event: 'thinking_sent', chars: text.length });
   }

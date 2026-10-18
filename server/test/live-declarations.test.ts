@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { chatCapabilities } from '../chat/context.js';
 import { compilePrompt, validatePreferences, PROMPT_VERSION } from '../prompt/index.js';
@@ -23,7 +23,8 @@ function violations(schema: unknown, path: string): string[] {
 
 test('every composed Live connector and built-in declaration conforms to provider schema dialect', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
-  const originals = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy));
+  // Each connector declares for its own granted read envelope, exactly as the runtime does.
+  const originals = Object.entries(CONNECTOR_DESCRIPTORS).flatMap(([id, descriptor]) => descriptor.declarations({ ...policy, toolNames: [...(CONNECTOR_ENVELOPES[id] ?? [])] }));
   // The one research tool is declared to the Live model alongside remember_note (#241).
   const intents = [researchDeclaration()].map(({ name, description, parameters, guidance }) => ({ name, description, parameters, guidance }));
   const registry = [...originals, ...intents, { name: 'remember_note', description: 'Remember a note', parameters: REMEMBER_PARAMETERS }].map(tool => ({ ...tool, effect: 'read' as const, accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' as const }) })) as ToolDefinition[];

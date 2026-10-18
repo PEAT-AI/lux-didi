@@ -383,7 +383,7 @@ function mongooseForwardDeclaration(name: string): ConnectorToolDeclaration {
     name,
     description: `Read company knowledge with the Mongoose tool ${name}. Pass the arguments that tool defines.`,
     effect: 'read',
-    parameters: { type: 'object', additionalProperties: true },
+    parameters: { type: 'object', properties: {} },
     validate(args) { return isRecord(args) && JSON.stringify(args).length <= 4000; },
   };
 }

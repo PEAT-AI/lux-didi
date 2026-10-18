@@ -84,6 +84,11 @@ export const RESEARCH = Object.freeze({
    * the cap, so a call cannot hang on a source that never answers and cannot outlast what it reads.
    */
   answerSlackMs: 2_000,
+  /**
+   * P5-R5 (F4): the cap is a guard, not a bound in force: with the largest table row at 12 s the budget
+   * tops out at 14 s, and a start call's ledger deadline is the older `startDeadlineMs` 15 s, which the
+   * budget nests inside. A future row would need both numbers raised together.
+   */
   answerCapMs: 20_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
@@ -1215,7 +1220,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   reads.forEach((plan, index) => {
     const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
     const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own);
-    const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : 'empty';
+    // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
+    // complete, so a returned failure is a failed read, never a search that matched nothing.
+    const missed = own.some(result => !result.ok);
+    const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
     done.push(settle(plan, outcome, block.lines, block.total));
   });
   return done;
@@ -1505,22 +1513,28 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         };
         const subjectOfRead = stepSubject({ query: action?.query, window: action?.window });
         const named = sourceKindOf(kind);
-        const startSources = named !== null ? [named]
+        const allSources = named !== null ? [named]
           : [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
+        // P5 outcome 3 and P5-R5 (F2): a source that cannot serve a read right now never spends this
+        // read's deadline, and it is dropped source by source, so a multi-source read still serves the
+        // healthy ones while the reply carries the dead one's reason.
+        const startSources = allSources.filter(source => !unavailable.includes(source));
+        const deadSources = allSources.filter(source => unavailable.includes(source));
+        const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
         for (const source of startSources) {
           publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
         }
-        // P5 outcome 3: a source that cannot serve a read right now never spends this read's deadline, and
-        // the reply carries the reason instead of reporting a timeout or a search that found nothing.
-        const sourceDeadlineMsOfRead = sourceDeadlineMs(startSources);
-        if (startSources.length > 0 && startSources.every(source => unavailable.includes(source))) {
-          for (const source of startSources) {
-            run.unavailableReasons.set(source, unavailableReason(source));
-            run.sourcesFailed.add(source);
-            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead });
-          }
-          return;
+        for (const source of deadSources) {
+          run.unavailableReasons.set(source, unavailableReason(source));
+          run.sourcesFailed.add(source);
+          logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead });
         }
+        if (startSources.length === 0) return;
+        // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
+        const served = deadSources.length === 0 ? subs : subs.filter(sub => {
+          const source = sourceKindOfKindName(sub.name) ?? named;
+          return source === null || !deadSources.includes(source);
+        });
         // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
         const cut = new AbortController();
         const readSignal = AbortSignal.any([roundSignal, cut.signal, abandon.get(kind)!.signal]);
@@ -1529,7 +1543,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
         // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
         // sent twice, so the connector is asked one question once.
-        const issued = subs.filter(call => !run.calls.has(callSignature(call)));
+        const issued = served.filter(call => !run.calls.has(callSignature(call)));
         if (issued.length === 0) return;
         for (const call of issued) run.calls.add(callSignature(call));
         const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
@@ -1574,7 +1588,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         }
         latencies.set(kind, now() - at);
         cutTimer.cancel();
-        const key = `${kind}:${subs.map(sub => JSON.stringify(sub.args)).join(',')}`;
+        const key = `${kind}:${served.map(sub => JSON.stringify(sub.args)).join(',')}`;
         // Outcome 2: the read is credited per source. `brief` fans out over several sources, so each
         // one is credited and delivered on its own instead of the whole batch going uncredited.
         const parts = creditableSources(kind, results);
@@ -1588,12 +1602,12 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           } else if (part.results.some(result => result.ok)) {
             // The connector answered and matched nothing: that is a search, not an outage.
             run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
-            run.emptySearches.set(part.source, queryShapeOf(subs));
+            run.emptySearches.set(part.source, queryShapeOf(served));
           } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
           // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
           logSource({
             event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
-            outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : 'empty',
+            outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
             ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead,
           });
         }

@@ -736,3 +736,19 @@ test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never 
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['knowledge', 'timeout', 12_000]], 'a cut knowledge read is a timeout at 12 s, never an empty search');
   assert.ok((reply['unchecked'] as string[]).includes('knowledge'), 'and it is named unchecked rather than reported as read');
 });
+
+// --- P5-R5: an errored read is a failure, never an empty search ---------------------------------
+
+test('P5-R5: a connector that returns a failure is a failed read, never a search that found nothing', async () => {
+  const receipts: ResearchSourceLog[] = [];
+  const failed = (key: string, name: string): IntentSubResult =>
+    ({ key, name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'connector_failure' });
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
+  const h = harness({ selector, execute: async subs => subs.map(call => failed(call.key, call.name)) });
+  const deps: ResearchDeps = { ...h.deps, configured: ['mail'], logSource: event => receipts.push(event) };
+  const reply = await runResearch(deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['mail', 'failed', 12_000]], 'a returned failure is receipted failed, never empty');
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /could not reach/, 'and the owner hears that the source could not be read');
+  assert.equal(note.includes('found nothing'), false, 'an errored read is never voiced as an empty search');
+});

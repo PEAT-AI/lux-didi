@@ -424,3 +424,19 @@ test('P5: a dead connector is reported unavailable with its reason, never empty 
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'unavailable', 12_000]]);
   assert.deepEqual(h.executed, [], 'the dead connector is never asked');
 });
+
+test('P5-R5: a routed read that returns a failure is failed, never empty', async () => {
+  const receipts: ResearchSourceLog[] = [];
+  const failed = (key: string, name: string): IntentSubResult =>
+    ({ key, name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'connector_failure' });
+  const h = harness({ configured: ['knowledge'], execute: async subs => subs.map(call => failed(call.key, call.name)) });
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'project status' }],
+  }, new AbortController().signal);
+  assert.deepEqual(reply['sources'], { knowledge: 'failed' }, 'a returned failure is its own outcome, never empty');
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome]), [['knowledge', 'failed']]);
+  const note = String(reply['note'] ?? '');
+  assert.equal(note.includes('found nothing'), false, 'an errored read is never voiced as an empty search');
+  assert.match(note, /could not reach/, 'and the reply says the source could not be reached');
+});

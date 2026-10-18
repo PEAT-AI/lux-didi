@@ -668,7 +668,10 @@ for id in NativeNextSteps.connectorIDs {
 }
 let calendarStep = NativeNextSteps.lookup(id: "calendar", state: "missing", reason: "credential_missing")
 expect(calendarStep.command == nil && calendarStep.guideURL?.absoluteString == "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup", "portable calendar instructions link the public guide without a copy command")
-expect(NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil).command == nil, "credential path is not a copy command")
+// P8 gave the Mongoose credential path its own sign-in, so the command it carries is the sign-in and
+// never a file copy.
+let mongooseStep = NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil)
+expect(mongooseStep.command == "mongoose-login", "the Mongoose credential path offers its sign-in, never a copy command")
 let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose", "connected", nil)])
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
 expect(onboardingRows.contains { $0.title == "calendar" && $0.detail == "missing: \(calendarStep.text)" && $0.command == nil }, "fixture projects exact connector next step")

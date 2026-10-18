@@ -42,6 +42,8 @@ export interface TraceGap {
 export interface NativeGap { sourceInstanceId: string; fromSeq: number; toSeq: number }
 export interface TimelineReport {
   liveSessionId: string; capturedAt: number; turns: TurnTrack[]; gaps: TraceGap[]; nativeGaps: NativeGap[];
+  /** Playback the host could not tie to a turn. Printed outside every turn, never guessed into one. */
+  unattributedPlayback: PlaybackView[];
 }
 
 const num = (value: SQLValue | undefined): number | null => value === null || value === undefined ? null : Number(value);
@@ -120,6 +122,8 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
     turns,
     gaps,
     nativeGaps: missingNativeRanges(read, liveSessionId),
+    // Selected before the turn filter, so `--turn N` never turns another turn's playback into an orphan.
+    unattributedPlayback: playback.filter(segment => segment.turnId === null),
   };
 }
 
@@ -231,6 +235,16 @@ const wall = (value: number | null): string => value === null ? '-' : new Date(v
 const mono = (value: number | null): string => value === null ? '-' : `+${value}ms`;
 const orDash = (value: string | null): string => value ?? '-';
 
+/**
+ * One playback segment. Its times are the app's wall clock, a different domain from the host's
+ * turn clock, so the label says approximate and no cross-domain interval is ever subtracted.
+ */
+const playbackLine = (p: PlaybackView, label = '  playback', suffix = ''): string =>
+  `${label} ${p.playbackKey} segment=${p.segmentSeq} instance=${p.sourceInstanceId} response=${orDash(p.responseKey)}`
+  + ` received=${wall(p.receivedAt)} audible=${wall(p.audibleAt)} enqueued=${wall(p.enqueuedAt)}`
+  + ` started=${wall(p.startedAt)} drained=${wall(p.drainedAt)} interrupted=${wall(p.interruptedAt)}`
+  + ` termination=${orDash(p.terminationReason)} clock=approx${suffix}`;
+
 export function renderTimeline(report: TimelineReport): string {
   const lines: string[] = [`session ${report.liveSessionId} captured ${wall(report.capturedAt)}`];
   for (const track of report.turns) {
@@ -248,13 +262,9 @@ export function renderTimeline(report: TimelineReport): string {
         + ` prepared=${wall(c.outputPreparedAt)} written=${wall(c.outputWrittenAt)} outcome=${c.outcome}`
         + ` ms=${c.ms ?? '-'} argsChars=${c.argsChars} resultChars=${c.resultChars ?? '-'}`);
     }
-    for (const p of track.playback) {
-      lines.push(`  playback ${p.playbackKey} segment=${p.segmentSeq} instance=${p.sourceInstanceId} response=${orDash(p.responseKey)}`
-        + ` received=${wall(p.receivedAt)} audible=${wall(p.audibleAt)} enqueued=${wall(p.enqueuedAt)}`
-        + ` started=${wall(p.startedAt)} drained=${wall(p.drainedAt)} interrupted=${wall(p.interruptedAt)}`
-        + ` termination=${orDash(p.terminationReason)}`);
-    }
+    for (const p of track.playback) lines.push(playbackLine(p));
   }
+  for (const p of report.unattributedPlayback) lines.push(playbackLine(p, 'playback', ' turn=none'));
   if (report.gaps.length === 0) lines.push('gaps: none');
   for (const gap of report.gaps) {
     lines.push(`GAP turn ${gap.turnIndex} obligation=${gap.obligation} expected=${gap.expectedReceipt}`

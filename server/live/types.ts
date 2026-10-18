@@ -179,6 +179,8 @@ export interface LiveAttachment {
   readonly output: AsyncIterable<LiveOutputChunk>;
   readonly done: Promise<LiveSessionSnapshot>;
   sendAudio(input: { readonly pcm: Uint8Array }): void;
+  /** O1b-N: one bounded native playback receipt frame, validated before it reaches the trace store. */
+  playbackReceipt(frame: string): void;
   endAudioStream(): void;
   /** The client closed the session: end it now, keeping its journal. */
   close(): void;

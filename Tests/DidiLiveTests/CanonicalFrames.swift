@@ -35,6 +35,7 @@ private actor ConsumerSocket: LiveSocket {
     }
     func sendPCM(_ data: Data) async throws { throw LiveClientError.invalidFrame }
     func sendControl(_ control: LiveControl) async throws { controls += 1 }
+    func sendReceipt(_ frame: String) async throws {}
     func cancel() async { cancelled = true }
 }
 private struct ConsumerSockets: LiveSocketConnecting {

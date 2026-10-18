@@ -123,7 +123,9 @@ struct NativePlaybackArrival: Sendable, Equatable {
     let start: Bool
     /// The queue was dry while playback was underway: an utterance starved.
     let underrun: Bool
-    /// Audio that had been queued for the burst that ran dry, in ms.
+    /// The burst that just ran dry had held this much audio, in ms (0 when the queue never drained).
+    let burstMs: Int
+    /// The queue depth now, after this chunk arrived: the real length still to play, in ms.
     let queuedMs: Int
     /// Milliseconds since the previous chunk arrived, 0 for the first of a session.
     let sinceLastChunkMs: Int
@@ -153,30 +155,45 @@ struct NativePlaybackQueue {
     var overflowsMemoryGuard: Bool { scheduledFrames >= Self.overflowFrames }
     private(set) var playing = false
     private var drainedFrames = 0
+    private var burstFrames = 0
+    /// One entry per scheduled buffer, in play order: the depth falls as each buffer finishes.
+    private var queuedFrames: [Int] = []
     private var drainedAtMs: Int?
     private var lastArrivalMs: Int?
+
+    /// The queue depth: the audio still to play, in ms of audible time. It falls buffer by buffer,
+    /// never only at the drain, so a receipt taken mid-burst states the real backlog.
+    var depthMs: Int { Self.ms(scheduledFrames, rate: rate) }
 
     mutating func arrival(frames: Int, atMs: Int) -> NativePlaybackArrival {
         let sinceLastChunkMs = lastArrivalMs.map { atMs - $0 } ?? 0
         lastArrivalMs = atMs
         let starved = (drainedAtMs.map { atMs - $0 } ?? Int.max) < Self.pauseThresholdMs
+        // A chunk that arrives on an empty queue begins a new burst.
+        if scheduledFrames <= 0 { burstFrames = 0 }
+        burstFrames += frames
         queuedBuffers += 1
         scheduledFrames += frames
+        queuedFrames.append(frames)
         drainedAtMs = nil
         var start = false
         if !playing, scheduledFrames >= Self.prebufferFrames { playing = true; start = true }
         return NativePlaybackArrival(start: start, underrun: starved,
-                                     queuedMs: starved ? Self.ms(drainedFrames, rate: rate) : 0,
+                                     burstMs: starved ? Self.ms(drainedFrames, rate: rate) : 0,
+                                     queuedMs: depthMs,
                                      sinceLastChunkMs: sinceLastChunkMs)
     }
 
     /// A scheduled buffer finished playing back. Returns true when the queue is now dry: the player
-    /// is stopped and the next arrival re-arms the prebuffer, so a pause is not a glitch.
+    /// is stopped and the next arrival re-arms the prebuffer, so a pause is not a glitch. The frames
+    /// that played leave the depth, so `depthMs` falls while the answer is still playing.
     @discardableResult mutating func playedBack(atMs: Int) -> Bool {
-        queuedBuffers -= 1
+        if !queuedFrames.isEmpty { scheduledFrames = max(0, scheduledFrames - queuedFrames.removeFirst()) }
+        queuedBuffers = max(0, queuedBuffers - 1)
         guard queuedBuffers == 0 else { return false }
         playing = false
-        drainedFrames = scheduledFrames
+        drainedFrames = burstFrames
+        burstFrames = 0
         scheduledFrames = 0
         drainedAtMs = atMs
         return true
@@ -184,7 +201,8 @@ struct NativePlaybackQueue {
 
     mutating func flush() {
         queuedBuffers = 0; scheduledFrames = 0; playing = false
-        drainedFrames = 0; drainedAtMs = nil; lastArrivalMs = nil
+        queuedFrames.removeAll()
+        drainedFrames = 0; burstFrames = 0; drainedAtMs = nil; lastArrivalMs = nil
     }
 
     /// Audible milliseconds for a frame count. At rate 1.0 this is the integer arithmetic it always
@@ -548,6 +566,12 @@ struct NativeLiveInterruptionSample: Sendable {
     var ownerIsHeld: Bool { owner.isOwned }
     var captureDrain: Task<Void, Never>? { drain }
     var onOutput: ((Bool) -> Void)?
+    /// One playback receipt per segment moment, forwarded to the host over the live socket.
+    var onPlaybackReceipt: ((NativePlaybackReceipt) -> Void)?
+    /// The segment the app is reporting: one playback run, from the first chunk to its drain or flush.
+    private var playbackSegment = 0
+    private var segmentActive = false
+    private var terminatedSegment = 0
     /// One recorded underrun per starved arrival, for the native-live.log line.
     var onUnderrun: ((NativePlaybackArrival) -> Void)?
     var onInterruption: (() async -> Void)?
@@ -1131,6 +1155,15 @@ struct NativeLiveInterruptionSample: Sendable {
         if stopPlayer { player?.stop() }
     }
     private func nowMs() -> Int { Int(now().timeIntervalSince1970 * 1000) }
+    /// One playback receipt for a segment, stamped with the process clock and the launch identity.
+    /// The receipt sequence is its own stream, so a forwarded receipt range stays dense.
+    private func emitReceipt(_ kind: NativePlaybackReceipt.Kind, segment: Int, reason: String? = nil) {
+        guard segment > 0, onPlaybackReceipt != nil else { return }
+        let clock = NativeLogClock.shared
+        onPlaybackReceipt?(NativePlaybackReceipt(kind: kind, segmentSeq: segment,
+            sourceInstanceID: clock.sourceInstanceID, sourceSeq: clock.nextSequence("receipt"),
+            monoMs: clock.monoMs(), wallMs: NativeLogClock.wallMs(Date()), reason: reason))
+    }
     func write(_ pcm: Data) async throws {
         // Contract C1: model audio has arrived, so stop any waiting or playing cue. It stops the cue
         // only; the answer is scheduled normally below, delayed by nothing.
@@ -1160,7 +1193,11 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         }
         let token = outputGeneration
-        let arrival = playbackQueue.arrival(frames: Int(buffer.frameLength), atMs: nowMs())
+        let frames = Int(buffer.frameLength)
+        // A chunk that lands on a dry queue is the first of a new segment.
+        let newSegment = !playbackQueue.playing && playbackQueue.scheduledFrames <= 0
+        let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs())
+        if newSegment { playbackSegment += 1; segmentActive = true; emitReceipt(.received, segment: playbackSegment) }
         if arrival.underrun { playback.underruns += 1; onUnderrun?(arrival) }
         onOutput?(true); isPlayingOutput = true
         var sum: Double = 0
@@ -1178,6 +1215,8 @@ struct NativeLiveInterruptionSample: Sendable {
                 if self.playbackQueue.playedBack(atMs: self.nowMs()) {
                     // The queue ran dry: this is a pause or the end of a turn, never a glitch. Stop the
                     // node so the next burst re-fills the prebuffer before playback restarts.
+                    self.emitReceipt(.drained, segment: self.playbackSegment)
+                    self.segmentActive = false
                     self.player?.stop()
                     self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
                     self.outputOrb.reset()
@@ -1185,7 +1224,8 @@ struct NativeLiveInterruptionSample: Sendable {
                 }
             }
         }
-        if arrival.start { player.play(); outputOrb.started(atMs: nowMs()) }
+        if newSegment { emitReceipt(.enqueued, segment: playbackSegment) }
+        if arrival.start { player.play(); emitReceipt(.started, segment: playbackSegment); outputOrb.started(atMs: nowMs()) }
     }
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }
@@ -1198,6 +1238,8 @@ struct NativeLiveInterruptionSample: Sendable {
     private func flushOutput() {
         // Contract C1: a barge-in, a rebuild or a session end tears down the wait cue with the turn.
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
+        // A barge-in closes the segment it interrupts; the flush below drops exactly that audio.
+        if segmentActive { emitReceipt(.interrupted, segment: playbackSegment, reason: "interrupted"); segmentActive = false }
         outputGeneration &+= 1; player?.stop(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
         // P3: stopping the player empties only the player. The stretcher holds its own tail, so reset
         // the unit: no syllable of a flushed turn may play after the flush.
@@ -1205,6 +1247,11 @@ struct NativeLiveInterruptionSample: Sendable {
         outputOrb.reset()
     }
     func stop() {
+        // The call is over: the last played segment gets one terminal receipt, whichever stop it was.
+        if playbackSegment > terminatedSegment {
+            emitReceipt(.terminated, segment: playbackSegment, reason: "session_end")
+            terminatedSegment = playbackSegment
+        }
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted
         playback.sessionMs = sessionStartedAt.map { max(0, Int(now().timeIntervalSince($0) * 1000)) } ?? 0

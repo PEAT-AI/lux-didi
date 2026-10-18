@@ -60,6 +60,24 @@ Retention covers the two content tables only: rows older than 30 days are pruned
 Metadata rows are untouched by that pass. Deletion is logical, so SQLite WAL frames and free pages
 are not forensically erased; see `docs/privacy-and-authority.md`.
 
+## The native logs
+
+`native-live.log` and `audio.log` are the app's own files, so every line carries what a join needs
+and the host's record does not: `source_instance_id` (one per app launch), `source_seq` (strictly
+increasing per instance), `mono_ms` (the app's own monotonic clock) and a fractional wall time in
+`timestamp` plus `wall_ms`. Inside a call every line also carries `liveSessionId`. Both files rotate
+at 5 MiB with two rotations (`<name>`, `<name>.1`, `<name>.2`), the shape `host.log` already uses,
+so neither grows without a bound.
+
+The app forwards its playback receipts (received, enqueued, started, drained, interrupted,
+terminated) to the host over the live socket it already holds. Each is one bounded frame with
+`segment_seq`, `source_instance_id`, `source_seq`, `mono_ms` and `wall_ms`; the host validates it
+against a closed shape, refuses an unknown or free-text field, records it as a `native` trace event
+plus its `trace_playback` row, and dedups on `(source_instance_id, source_seq)`. A refused frame is
+journaled by typed code and never changes session state. `response_key` and `turn_id` on a playback
+row are set only when the host knows them for that segment; a segment the host cannot attribute is
+printed outside every turn with `turn=none`, never guessed into one.
+
 ## The SQL timeline
 
 `scripts/didi-timeline` reads `state.sqlite` only and prints one timeline. It never reads the

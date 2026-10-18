@@ -18,6 +18,8 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { capJournalText, journalRecord } from '../host/journal.js';
+import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
+import { TraceRecordError } from '../trace/record.js';
 
 import { hostLogEvent, LIVE_STATE_CAUSES } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
@@ -1081,6 +1083,7 @@ export class LiveSessionOwner {
       output: handle.consumer,
       done: handle.done.promise,
       sendAudio: ({ pcm }) => this.#sendAudio(handle, pcm),
+      playbackReceipt: frame => this.#playbackReceipt(handle, frame),
       endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
       close: () => this.#stop(handle),
       detach: () => this.#detach(handle),
@@ -1090,6 +1093,20 @@ export class LiveSessionOwner {
         this.#settle(handle, { state: 'consumer_backpressure' }, false, 'backpressure', null);
       },
     };
+  }
+
+  /**
+   * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
+   * native trace event plus its playback summary row. A refusal is a typed code in the debug journal
+   * and never changes session state: a malformed frame cannot end or wedge a call.
+   */
+  #playbackReceipt(handle: ActiveSession, frame: string): void {
+    try {
+      recordPlaybackReceipt(this.#store, handle.liveSessionId, parsePlaybackReceipt(frame));
+    } catch (error) {
+      const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
+      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'playback_receipt_rejected', code });
+    }
   }
 
   #armIdle(handle: ActiveSession, remainingMs: number): void {

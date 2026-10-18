@@ -80,12 +80,15 @@ enum State: String, CaseIterable {
                 self.state = self.muted ? .muted : (speaking ? .speaking : .listening)
             }
         }
+        // O1b-N: every playback receipt goes to the host over the socket this call already holds.
+        device.onPlaybackReceipt = { [weak self] receipt in
+            Task { await self?.coordinator.sendPlaybackReceipt(receipt.json) }
+        }
         device.onUnderrun = { [weak self] arrival in
             guard let self else { return }
             self.appendLocalDiagnostic(["event": "playback_underrun",
-                "timestamp": ISO8601DateFormatter().string(from: Date()),
                 "session": String(self.captureDiagnosticOwner ?? 0),
-                "queuedMs": arrival.queuedMs, "sinceLastChunkMs": arrival.sinceLastChunkMs])
+                "burstMs": arrival.burstMs, "queuedMs": arrival.queuedMs, "sinceLastChunkMs": arrival.sinceLastChunkMs])
         }
         device.onInputChange = { [weak self] name in
             guard let self else { return }
@@ -150,7 +153,10 @@ enum State: String, CaseIterable {
                 guard current == event else { continue }
                 switch event {
                 case .active where self.state == .pausedForInput: break
-                case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
+                case .active:
+                    self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
+                    // Every native line written inside this call now carries its session id.
+                    self.adoptSession(await coordinator.sessionID)
                 case .rebuilding:
                     self.speaking = false
                     if self.state != .pausedForInput {
@@ -181,7 +187,6 @@ enum State: String, CaseIterable {
                     // kind land in native-live.log before the presentation moves to outcomeUnknown.
                     if let rejection = await coordinator.takeFrameRejection() {
                         self.appendLocalDiagnostic(["event": "native_frame_rejected",
-                            "timestamp": ISO8601DateFormatter().string(from: Date()),
                             "sequence": rejection.sequence, "previous": rejection.previous, "kind": rejection.kind])
                     }
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
@@ -239,14 +244,18 @@ enum State: String, CaseIterable {
         else if let owner = error as? AudioOwnerError { code = owner.rawValue }
         else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
-        var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code,
-                             "timestamp": ISO8601DateFormatter().string(from: Date())]
+        var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
         if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
         appendLocalDiagnostic(fields)
         return diagnostic
     }
     private func appendLocalDiagnostic(_ fields: [String: Any]) {
         journal.append(fields)
+    }
+    /// The live session both native journals are inside, so a line written mid-call is attributable.
+    private func adoptSession(_ sessionID: String?) {
+        journal.sessionID = sessionID
+        AudioOwner.shared.journal?.sessionID = sessionID
     }
     private func stopAudioAndSummarize() {
         device.stop()
@@ -256,7 +265,7 @@ enum State: String, CaseIterable {
             let transport = await coordinator.captureSummary(owner: owner)
             let capture = native.capture
             var fields: [String: Any] = ["event": "native_capture_summary",
-                "timestamp": ISO8601DateFormatter().string(from: Date()), "nativeState": nativeState,
+                "nativeState": nativeState,
                 "tapBuffers": capture.tapBuffers, "convertedBytes": capture.convertedBytes,
                 "convertFailures": capture.convertFailures, "maxRMS": capture.maxRMS,
                 "ringDrops": capture.ringDrops, "drainFrames": native.drainFrames,
@@ -313,7 +322,7 @@ enum State: String, CaseIterable {
         if let receipt = await coordinator.close(trigger: trigger) {
             // 3p: the two native receipts that make a Stop readable: what pressed it, and when the wire closed behind it.
             journal.append(["event": "live_stop", "trigger": receipt.trigger.rawValue,
-                            "stopRequestedAt": ISO8601DateFormatter().string(from: receipt.stopRequestedAt)])
+                            "stopRequestedAt": NativeLogClock.wallText(receipt.stopRequestedAt)])
             journal.append(["event": "socket_close_sent", "msAfterStop": receipt.socketCloseSentMs])
         }
         await captureSummaryTask?.value
@@ -323,5 +332,6 @@ enum State: String, CaseIterable {
         if case .outcomeUnknown = outcome { state = .outcomeUnknown }
         else { state = .ended }
         muted = false; speaking = false
+        adoptSession(nil)
     }
 }

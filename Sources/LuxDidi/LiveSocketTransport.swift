@@ -103,6 +103,8 @@ public protocol LiveSocket: Sendable {
     func receive() async throws -> LiveFrame
     func sendPCM(_ data: Data) async throws
     func sendControl(_ control: LiveControl) async throws
+    /// O1b-N: one bounded playback receipt frame on the socket the call already holds.
+    func sendReceipt(_ frame: String) async throws
     func cancel() async
 }
 public protocol LiveSocketConnecting: Sendable {
@@ -316,6 +318,15 @@ private actor FoundationLiveSocket: LiveSocket {
         try LiveSocketTransport.validatePCM(data)
         guard await sends.acquireAudio() else { throw LiveClientError.queueOverflow }
         do { try await send(.data(data)) } catch { await sends.release(); throw error }
+        await sends.release()
+    }
+    /// O1b-N: one bounded playback receipt on the same socket. Like a control frame it is never shed:
+    /// a receipt is tiny, and a dropped one is a hole the timeline would have to report.
+    func sendReceipt(_ frame: String) async throws {
+        guard frame.utf8.count <= 1_024 else { throw LiveClientError.invalidFrame }
+        await sends.acquireControl()
+        do { try await send(.string(frame)) }
+        catch { await sends.release(); throw error }
         await sends.release()
     }
     /// A control frame is never shed: it waits for the wire and then goes ahead of any audio behind it, so a Stop

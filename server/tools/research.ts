@@ -152,6 +152,8 @@ export interface ResearchRoutedLog {
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
   deadlineMs: number;
+  /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
+  coalesced: number;
 }
 
 /** A source that cannot serve a read right now, with the reason its connector gave. */
@@ -1299,7 +1301,16 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
+  const schedule = deps.schedule ?? scheduleTimer;
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
+  // 3r R1 outcome 5: a routed read used to go silent until it returned. It now beats at the same
+  // dead-air cadence as the loop, so the model and the owner hear the run is alive inside five seconds.
+  const beat = (): void => {
+    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
+  };
+  let beatTimer: { unref(): void; cancel(): void } | undefined;
+  const arm = (): void => { beatTimer = schedule(() => { beat(); arm(); }, RESEARCH.progressEveryMs); beatTimer.unref(); };
+  arm();
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
   const readContext = { question, configured, run, now };
@@ -1310,7 +1321,12 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     bucket.push(plan);
     groups.set(plan.read.source, bucket);
   }
-  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+  let outcomes: RoutedOutcome[];
+  try {
+    outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+  } finally {
+    beatTimer?.cancel();
+  }
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
   // way the selector path does, so a routed read is never trimmed to a search reply's length.
   if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
@@ -1322,6 +1338,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     logLookup({
       event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
       deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
+      coalesced: batchSizes.get(outcome.source) ?? 1,
     });
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
     run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
@@ -1599,7 +1616,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         for (const source of deadSources) {
           run.unavailableReasons.set(source, unavailableReason(source));
           run.sourcesFailed.add(source);
-          logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead });
+          logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
         }
         if (startSources.length === 0) return;
         // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
@@ -1680,7 +1697,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           logSource({
             event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
             outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
-            ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead,
+            ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
           });
         }
         // A source that answered counts as read, so an empty result is never re-offered as pending.

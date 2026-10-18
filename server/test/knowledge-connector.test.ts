@@ -162,6 +162,53 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
   } finally { await adapter.close(); await f.close(); }
 });
 
+test('3r voice search: the bounded-body fields reach the wire exactly, and no others do', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const result = complete(await reader.search({ query: 'synthetic query', limit: 6, detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 }));
+    assert.equal(result.tool, 'search_knowledge');
+    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: { query: 'synthetic query', limit: 6, include_sensitive: false, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 } }]);
+    // A snippet search keeps the old wire shape: the 3r fields travel only when asked for.
+    await reader.search({ query: 'synthetic query', limit: 3 });
+    assert.deepEqual(f.calls[1], { name: 'search_knowledge', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } });
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('3r fields outside the server range are refused before dispatch', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const outs = await Promise.all([
+      reader.search({ query: 'x', limit: 1, detail: 'full' as never }),
+      reader.search({ query: 'x', limit: 1, maxChars: 199 }),
+      reader.search({ query: 'x', limit: 1, maxChars: 6_001 }),
+      reader.search({ query: 'x', limit: 1, maxChars: 1_200.5 }),
+      reader.search({ query: 'x', limit: 1, deadlineMs: 499 }),
+      reader.search({ query: 'x', limit: 1, deadlineMs: 30_001 }),
+    ]);
+    assert.deepEqual(outs.map(out => out.state === 'refused' ? out.reason : out.state), [
+      'invalid-detail', 'max-chars-out-of-range', 'max-chars-out-of-range', 'max-chars-out-of-range', 'deadline-ms-out-of-range', 'deadline-ms-out-of-range',
+    ]);
+    assert.deepEqual(f.calls, []);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('3r: an older server that rejects a field fails loudly with its own message and no retry', async () => {
+  const message = 'Error executing tool search_knowledge: unexpected keyword argument deadline_ms';
+  const f = await fixture({ call: () => ({ isError: true, content: [{ type: 'text', text: message }] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const result = await reader.search({ query: 'synthetic query', limit: 6, detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 });
+    assert.equal(result.state, 'tool-error');
+    assert.equal(JSON.stringify(result.decodedResult).includes('deadline_ms'), true, 'the server message naming the field is kept, never replaced');
+    assert.equal(f.calls.length, 1, 'a rejected field is never retried in the old shape');
+  } finally { await adapter.close(); await f.close(); }
+});
+
 test('a cut search result names the real search_knowledge limit follow-up; a larger limit returns the next slice', async () => {
   const all = Array.from({ length: 25 }, (_, index) => ({ id: index + 1, insight_title: `Insight ${index + 1}`, insight_type: 'PATTERN', updated_at: '2026-10-14', content: `Body ${index + 1}.` }));
   const f = await fixture({ call: (_name, args) => ({ content: [{ type: 'text', text: JSON.stringify({ results: all.slice(0, Number(args['limit'])) }) }] }) });
@@ -255,6 +302,20 @@ test('K2: a multi-id string drops unreadable tokens, dedupes and caps like a lis
   const capped = norm(many)!;
   assert.deepEqual(capped.args.ids, [90000, 90001, 90002, 90003, 90004, 90005, 90006, 90007, 90008, 90009], 'the split list caps at maxGetIds');
   assert.match(capped.notice!, /first 10/, 'the cap is named');
+});
+
+// 3r K1: the research path sends the bounded-body fields through the declaration's validator.
+test('3r: the search declaration accepts the bounded-body fields and still refuses anything else', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'search_knowledge')!;
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 }), true);
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6 }), true, 'the old two-key chat shape stays valid');
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, detail: 'full' }), false);
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, max_chars: 100 }), false);
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, deadline_ms: 30_001 }), false);
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, mode: 'fast' }), false, 'an undeclared field is still refused');
+  const properties = Object.keys(declaration.parameters['properties'] as Record<string, unknown>);
+  assert.deepEqual(properties, ['query', 'limit'], 'the model-facing chat call shape is unchanged');
 });
 
 // K2 (#250): the declared `ids` description and the boundary validator must still agree.

@@ -104,11 +104,20 @@ export const RESEARCH = Object.freeze({
   queryLimitChars: 200,
   mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
   /**
-   * P5-R1: a knowledge lookup asks for eight hits and keeps the whole body the connector sends, instead
-   * of forty hits of 1,200-character snippets that cut the evidence short. `knowledgeLines` stays the
-   * reply's per-source line bound: it caps what the answer shows, never what the search may return.
+   * P5-R1: a knowledge lookup keeps the body the connector sends instead of forty snippets that cut
+   * the evidence short. 3r K1: six hits, because each hit now carries a bounded body rather than a
+   * 400-character excerpt. `knowledgeLines` stays the reply's per-source line bound: it caps what the
+   * answer shows, never what the search may return.
    */
-  knowledgeHits: 8,
+  knowledgeHits: 6,
+  /**
+   * 3r K1: a voice lookup asks for bounded stored bodies with a deadline instead of snippets, so a hit
+   * arrives as text the owner can be read without a get_insight round trip. The cap is the server's
+   * default body window; a hit the server cut at it says so in the reply line.
+   */
+  knowledgeDetail: 'bodies' as const,
+  knowledgeMaxChars: 1_200,
+  knowledgeDeadlineMs: 8_000,
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -152,6 +161,10 @@ export interface ResearchRoutedLog {
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
   deadlineMs: number;
+  /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
+  coalesced: number;
+  /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
+  knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean };
 }
 
 /** A source that cannot serve a read right now, with the reason its connector gave. */
@@ -518,6 +531,25 @@ export function namedInsightIds(question: string, query?: string): number[] {
   return [...new Set(ids.filter(id => Number.isSafeInteger(id) && id > 0))].slice(0, RESEARCH.knowledgeHits);
 }
 
+/** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree. */
+function knowledgeSearchArgs(query: string): JsonObject {
+  return {
+    query, limit: RESEARCH.knowledgeHits,
+    detail: RESEARCH.knowledgeDetail,
+    max_chars: RESEARCH.knowledgeMaxChars,
+    deadline_ms: RESEARCH.knowledgeDeadlineMs,
+  };
+}
+
+/** 3r K1 and K1-R3: the knowledge receipt's metadata, the same on the routed and the selector path.
+ * `truncated` reads the mark `insightItems` writes on a hit the server cut at the asked-for window. */
+function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } {
+  return {
+    detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeMaxChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
+    truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeMaxChars} chars`)),
+  };
+}
+
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
 export function candidateSubs(kind: CandidateKind, config: { question: string; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
@@ -527,7 +559,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     // again; the connector returns its whole body up to the knowledge body cap.
     const ids = namedInsightIds(config.question, config.query);
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
-    return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeHits }, 'k0')];
+    return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(config.query ?? (keywords || 'recent notes')), 'k0')];
   }
   if (kind === 'calendar_window') {
     // One call covers every selected calendar: the connector resolves the set and merges the reads.
@@ -548,7 +580,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     }
     if (config.configured.includes('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: 'after:yesterday', limit: RESEARCH.chatLines }, 'b2'));
-    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, { query: keywords || 'open loop follow up', limit: RESEARCH.knowledgeHits }, 'b3'));
+    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(keywords || 'open loop follow up'), 'b3'));
     return subs;
   }
   return [];
@@ -907,6 +939,8 @@ function knowledgeHeadingOf(line: string): { id: string | undefined; title: stri
 
 const KNOWLEDGE_BULLET = /^\s*(?:-\s+)?\*\*#(\d+)\*\*\s*(.*)$/;
 const KNOWLEDGE_MD_HEADING = /^#{2,3}\s+/;
+/** The server's own bounded-body flag: `truncated: yes (5,432 chars stored)` under a hit. */
+const KNOWLEDGE_TRUNCATED = /^truncated: (yes|no)\b/u;
 
 /** Knowledge headings collapse to `#id title | body`, one per insight, in the shaped and raw forms. */
 function insightItems(raw: readonly string[]): string[] {
@@ -916,7 +950,16 @@ function insightItems(raw: readonly string[]): string[] {
   const flush = (): void => {
     if (heading === undefined) { body = []; return; }
     // P5-R1: the body is kept whole: the connector's own result bounds are the only cap on a hit.
-    items.push(`${heading.id ? `#${heading.id} ` : ''}${heading.title}${body.length ? ` | ${body.join(' ')}` : ''}`);
+    // 3r K1: a hit the server cut at the asked-for window says so, in place of the server's own flag.
+    let cut = false;
+    const kept = body.filter(line => {
+      const flag = KNOWLEDGE_TRUNCATED.exec(line);
+      if (!flag) return true;
+      cut = flag[1] === 'yes';
+      return false;
+    });
+    const text = `${heading.id ? `#${heading.id} ` : ''}${heading.title}${kept.length ? ` | ${kept.join(' ')}` : ''}`;
+    items.push(cut ? `${text} | cut at ${RESEARCH.knowledgeMaxChars} chars` : text);
     heading = undefined; body = [];
   };
   for (const line of raw) {
@@ -1299,7 +1342,16 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
+  const schedule = deps.schedule ?? scheduleTimer;
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
+  // 3r R1 outcome 5: a routed read used to go silent until it returned. It now beats at the same
+  // dead-air cadence as the loop, so the model and the owner hear the run is alive inside five seconds.
+  const beat = (): void => {
+    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
+  };
+  let beatTimer: { unref(): void; cancel(): void } | undefined;
+  const arm = (): void => { beatTimer = schedule(() => { beat(); arm(); }, RESEARCH.progressEveryMs); beatTimer.unref(); };
+  arm();
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
   const readContext = { question, configured, run, now };
@@ -1310,7 +1362,12 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     bucket.push(plan);
     groups.set(plan.read.source, bucket);
   }
-  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+  let outcomes: RoutedOutcome[];
+  try {
+    outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+  } finally {
+    beatTimer?.cancel();
+  }
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
   // way the selector path does, so a routed read is never trimmed to a search reply's length.
   if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
@@ -1322,6 +1379,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     logLookup({
       event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
       deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
+      coalesced: batchSizes.get(outcome.source) ?? 1,
+      ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
     });
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
     run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
@@ -1599,7 +1658,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         for (const source of deadSources) {
           run.unavailableReasons.set(source, unavailableReason(source));
           run.sourcesFailed.add(source);
-          logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead });
+          logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
         }
         if (startSources.length === 0) return;
         // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
@@ -1680,7 +1739,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           logSource({
             event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
             outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
-            ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead,
+            ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
+            ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
           });
         }
         // A source that answered counts as read, so an empty result is never re-offered as pending.

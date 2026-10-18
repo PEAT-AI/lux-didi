@@ -11,7 +11,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, chooseStartContext } from './warm-context.js';
+import { WarmContextCache, chooseStartContext, withProvenance, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
@@ -82,6 +82,8 @@ type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
 const SEED_CHAR_LIMIT = 8_000;
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
+/** D6: an open model turn holds SPEAKING across the adapter's between-sentence silence for this long. */
+export const SPEAKING_HOLD_MS = 1_500;
 // 3o: a client that detached is gone, not paused. This much detached and the session ends cleanly (the journal
 // stays); the countdown is cancelled by a re-attach. Measured: the app let go at 19:23:49Z and the model kept
 // speaking to nobody for 62 s.
@@ -143,12 +145,14 @@ interface ActiveSession {
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; callDeadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
   recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
-  nudgeTimer?: ReturnType<JobTimer> | undefined; nudgeTurn: number; nudgeFiredTurn: number;
+  /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
+   *  own audible audio or an ended turn. Inaudible fill and progress speech never clear it (D3, amendment C). */
+  awaitingAnswer: boolean; answerAt: number | undefined;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
-  /** A delegated response is owed and generating: busy, not mute, so the watchdog must not nudge or rebuild. */
-  awaitingDelegated: boolean;
+  /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
+  speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
@@ -220,6 +224,16 @@ type SummaryHooks = {
   onSessionTerminal?: (liveSessionId: string) => void;
   log?: (event: { event: string } & Record<string, unknown>) => void;
 };
+
+/**
+ * The warm-context hook wired through the same composition seam: today's calendar digest, built by
+ * the host from the configured connector. Never accepted from transport, and absent means the slot
+ * stays out of the assembly (issue 339).
+ */
+type WarmHooks = { calendarDigest?: () => Promise<string | undefined> };
+
+/** The receipt one forced prewarm returns, and the host logs (issue 338). */
+export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean };
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
@@ -491,6 +505,11 @@ export class LiveSessionOwner {
   readonly #research: ResearchSelector | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
   #warm: WarmContextCache;
+  /** The digest the host built at the last prewarm; absent leaves the calendar slot out (issue 339). */
+  #calendar: string | undefined;
+  /** The sections the last start used, so a forced prewarm refreshes without reading the store again. */
+  #sections: WarmContextSections | undefined;
+  readonly #calendarDigest: (() => Promise<string | undefined>) | undefined;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -508,6 +527,8 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
+    // The digest hook rides the composition seam; a test may also pass it on the config directly.
+    this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
     this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
@@ -544,6 +565,38 @@ export class LiveSessionOwner {
 
   /** Safe operator-visible identity. Never carries key bytes or prompt text. */
   get profileIdentity(): string { return this.#profileIdentity; }
+
+  /**
+   * R3-R5: the calendar digest belongs to every warm assembly, so the caller that is about to assemble
+   * asks for it first: one bounded primary-calendar read, never on the voice turn path. Unconfigured,
+   * failed or empty leaves the slot out; nothing here can fail the assembly.
+   */
+  async prepareCalendar(): Promise<void> {
+    if (this.#calendarDigest === undefined) return;
+    try { this.#calendar = await this.#calendarDigest(); }
+    catch { this.#calendar = undefined; }
+  }
+
+  /**
+   * The owner's prewarm instruction (issue 338): read today's calendar digest once, then rebuild the
+   * warm assembly from the sections the last start used plus that digest, keeping the summary
+   * provenance that start recorded (F9). No store is read here, nothing talks to a model, and a
+   * connector failure leaves the slot out rather than failing the instruction. Returns the receipt
+   * the host logs as `warm_prewarm`.
+   */
+  async prewarm(): Promise<WarmPrewarmReceipt> {
+    const ageBeforeMs = this.#warm.ageMs ?? null;
+    await this.prepareCalendar();
+    const previous = this.#sections;
+    // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;
+    // it is not `refresh(true)` because a source collection cannot carry the provenance above.
+    const refreshed = previous === undefined ? undefined : this.#warm.adopt(withProvenance({ ...previous, calendar: this.#calendar }, previous));
+    if (refreshed !== undefined) this.#sections = refreshed.sections;
+    const receipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined };
+    // One closed metadata line per instruction, whichever route asked for it.
+    this.#summaryLog?.({ event: 'warm_prewarm', ...receipt });
+    return receipt;
+  }
   profileProjection(): LiveProfileProjection {
     return {
       provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
@@ -633,10 +686,12 @@ export class LiveSessionOwner {
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
             summary: earlier.section.length ? earlier.section : undefined,
-            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: undefined };
+            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
         });
         if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
         else this.#warm.adopt(start.sections);
+        // The sections this start used are what a forced prewarm refreshes, so it re-reads no store.
+        this.#sections = start.sections;
         // With no summary section the measured basis is the result, so a start composes once.
         if (!earlier.section) return basis ?? composeSession(undefined);
         return composeSession(earlier.section);
@@ -754,8 +809,11 @@ export class LiveSessionOwner {
   }
 
   /** The live state of an open session, the same derivation the web page reads. */
+  /** D5: a tool call in flight or an answer owed is open work, so the orb is THINKING through the lookup and
+   *  the silence before her reply, whatever the adapter's silence model reports meanwhile. */
   #handleState(handle: ActiveSession): LivePageProjection['state'] {
-    return handle.rebuilding ? 'rebuilding' : handle.thinking ? 'thinking' : handle.speaking ? 'speaking' : handle.consumerState === 'attached' ? 'listening' : 'ended';
+    const working = handle.pendingCallIds.size > 0 || handle.awaitingAnswer;
+    return handle.rebuilding ? 'rebuilding' : working || handle.thinking ? 'thinking' : handle.speaking ? 'speaking' : handle.consumerState === 'attached' ? 'listening' : 'ended';
   }
 
   /** Every transition is written when it happens, not only when a web page polls for it. */
@@ -949,7 +1007,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, nudgeTurn: 0, nudgeFiredTurn: 0, awaitingDelegated: false,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
@@ -988,7 +1046,7 @@ export class LiveSessionOwner {
         name: 'call_ceiling', configuredMs: this.#profile.limits.callMaxMs });
       this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
-    void this.#consume(handle);
+    void this.#consume(handle).catch(error => this.#consumeFailed(handle, error));
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
     void ready.catch(() => {});
     return {
@@ -1023,28 +1081,40 @@ export class LiveSessionOwner {
     }, remainingMs);
   }
 
-  #cancelNudge(handle: ActiveSession): void { handle.nudgeTimer?.cancel(); handle.nudgeTimer = undefined; }
-
   /**
-   * Class B (R1-R1): after a tool response is sent, dead air earns ONE neutral continuation input per tool
-   * turn, and only if no model output or owner input arrives first. The nudge is a fixed host constant.
+   * Class B (R1-R1): after a tool result the answer is owed, so ONE deadline is armed on the response
+   * watchdog: the neutral continuation input at 8 s and the fresh-seeded recovery 7 s after it, never 23 s
+   * (amendment A). Only the answer's own audible audio or an ended turn clears the obligation, so inaudible
+   * fill frames can no longer push the deadline out forever (D3).
    */
   #armDeadAir(handle: ActiveSession): void {
     if (this.#settled(handle)) return;
     // 3j: the tool result is conversational activity, so the idle clock restarts here rather than on mic frames.
     this.#armIdle(handle, this.#profile.limits.idleMs);
-    this.#cancelNudge(handle);
-    handle.nudgeTurn += 1;
-    const turn = handle.nudgeTurn, generation = handle.generation;
-    handle.nudgeTimer = this.#schedule(() => {
-      if (this.#settled(handle) || generation !== handle.generation) return;
-      if (handle.nudgeFiredTurn === turn) return;
-      handle.nudgeFiredTurn = turn;
-      try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
-      hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
-    }, DEAD_AIR_NUDGE_MS);
-    handle.nudgeTimer.unref?.();
+    handle.awaitingAnswer = true;
+    handle.answerAt = this.#now();
+    this.#armWatchdog(handle);
   }
+
+  /** D6: the adapter's 500 ms output-silence model reports waitingForInput between her sentences. That is
+   *  presentation, not the end of the turn, so the orb holds SPEAKING until turnComplete or 1,500 ms of
+   *  audible silence, whichever comes first (amendment D). */
+  #holdSpeaking(handle: ActiveSession): void {
+    this.#cancelSpeakingHold(handle);
+    const audibleAt = handle.lastModelAudioAt;
+    const due = audibleAt === undefined ? 0 : audibleAt + SPEAKING_HOLD_MS - this.#now();
+    if (due <= 0) { handle.speaking = false; return; }
+    const generation = handle.generation;
+    handle.speakingHoldTimer = this.#schedule(() => {
+      handle.speakingHoldTimer = undefined;
+      if (this.#settled(handle) || generation !== handle.generation) return;
+      handle.speaking = false;
+      this.#noteState(handle, 'silence');
+    }, due);
+    handle.speakingHoldTimer.unref?.();
+  }
+
+  #cancelSpeakingHold(handle: ActiveSession): void { handle.speakingHoldTimer?.cancel(); handle.speakingHoldTimer = undefined; }
 
   /**
    * 3j: the response watchdog. A turn that owes a reply and delivers nothing is a stall even with a healthy
@@ -1069,12 +1139,17 @@ export class LiveSessionOwner {
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (handle.pendingCallIds.size > 0) return;
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
-      // A delegated response that is still generating is busy, not mute: nudging it would inject a turn into a
-      // working one and the recovery would then rebuild it (issue #348). The deadline stays the session's own, so
-      // this only refreshes the clock and writes no receipt of its own.
-      if (handle.awaitingDelegated) { this.#armWatchdog(handle); return; }
       if (step === 'nudge') {
         if (handle.watchdogPhase === 'nudged') return;
+        // One stall receipt per nudged deadline: how long the answer has been owed and how long since any
+        // audible output. Only the answer's own audio re-arms it, so a fill frame never writes a false healthy.
+        // The owed answer is the tool result's own bookkeeping, so progress speech defers the clock without
+        // erasing the obligation (amendment A).
+        if (handle.answerAt !== undefined) {
+          hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
+            msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+          hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
+        }
         try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
         handle.watchdogPhase = 'nudged';
         hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation });
@@ -1095,6 +1170,9 @@ export class LiveSessionOwner {
   #watchdogEvent(handle: ActiveSession, event: LiveVoiceEvent): void {
     if (this.#settled(handle) || handle.rebuilding) return;
     const type = event.type;
+    // D3: a fill frame is not output. The provider streams inaudible frames between sentences, so re-arming
+    // on one would push the deadline out forever and no stall would ever be witnessed.
+    if (type === 'audio' && event.audible === false) return;
     if (type === 'turnComplete' || type === 'interrupted' || type === 'toolCall' || type === 'toolCallCancellation') { this.#cancelWatchdog(handle); return; }
     // The owner's turn ended (a final transcription, or the provider's voice-activity end): a reply is owed.
     if (type === 'inputTranscription') { if (event.finished === true) this.#armWatchdog(handle); return; }
@@ -1180,7 +1258,7 @@ export class LiveSessionOwner {
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     this.#noteState(handle, 'rebuild');
     handle.lastRecoveryPath = path;
-    this.#cancelNudge(handle);
+    this.#cancelSpeakingHold(handle);
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
     handle.consumer.dropAudio();
@@ -1414,6 +1492,22 @@ export class LiveSessionOwner {
     hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
   }
 
+  /**
+   * #331: the consumer loop's handle is already in the caller's hands, so a rejection from the part of the loop
+   * that runs after its own try/catch (a durable write against a store that closed underneath it, for example)
+   * must not reject into the void. It is the same failed durable write the terminal path already answers: bounded
+   * fields in the log, the reader closed, and done resolved with the in-memory outcome, never a fabricated one.
+   */
+  #consumeFailed(handle: ActiveSession, error: unknown): void {
+    handle.persistFailure ??= error;
+    console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
+      code: handle.diagnosticTerminalCode,
+      class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
+    handle.consumer?.close();
+    handle.abort.abort();
+    handle.resolveDone();
+  }
+
   async #consume(handle: ActiveSession): Promise<void> {
     while (!this.#settled(handle)) {
     const session = handle.session, generation = handle.generation;
@@ -1425,10 +1519,12 @@ export class LiveSessionOwner {
         // 3j: the watchdog sees every port event before the per-type dispatch, because the arms sit on events
         // this loop handles early (modelTurnStarted) and on ones it consumes later.
         this.#watchdogEvent(handle, event);
-        // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
-        if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
-        // The delegated reply has started speaking, so it is no longer an owed-and-silent response.
-        if (event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription') handle.awaitingDelegated = false;
+        // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
+        // nothing else; it neither re-arms the deadline nor answers the obligation.
+        const audible = event.type === 'audio' && event.audible !== false;
+        // The answer's own audible audio is the one thing that clears the owed reply; progress text does not.
+        if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
+        if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
           resetTurnScript(handle);
@@ -1474,14 +1570,17 @@ export class LiveSessionOwner {
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;
+          handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
+          // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
+          this.#noteState(handle, 'tool');
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
-            if (responses.length) { this.#armDeadAir(handle); handle.awaitingDelegated = true; }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+            if (responses.length) this.#armDeadAir(handle);
             handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
             this.#noteState(handle, 'tool');
           }); continue;
@@ -1503,10 +1602,10 @@ export class LiveSessionOwner {
         if (event.type === 'interrupted') {
           for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id);
           handle.speaking = false;
-          // A barge-in abandons any awaited output, and a tool that never resolves must not leave
-          // THINKING stuck (F4).
+          this.#cancelSpeakingHold(handle);
+          // A barge-in ends the model's think time. A tool call in flight or an owed answer still reads as
+          // THINKING through it, because that work is still open (D5, amendment C).
           handle.thinking = false;
-          handle.awaitingDelegated = false;
           this.#noteState(handle, 'interrupted');
           handle.turnInterrupted = true;
           logTurnScript(handle);
@@ -1521,14 +1620,14 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete', inaudibleMs: Math.round(handle.inaudibleMs) }); handle.speaking = false; handle.turnCompleteSeen = true; handle.awaitingDelegated = false; handle.thinking = handle.pendingCallIds.size > 0;
+        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete', inaudibleMs: Math.round(handle.inaudibleMs) }); handle.speaking = false; this.#cancelSpeakingHold(handle); handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
         }
-        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; this.#noteState(handle, event.value ? 'silence' : 'input'); }
+        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) this.#holdSpeaking(handle); this.#noteState(handle, event.value ? 'silence' : 'input'); }
         if (event.type === 'audio') {
           countAudio(handle, 'output', event.pcm.byteLength, this.#now(), event.rmsDbfs);
           // Only audible speech is SPEAKING (release 3p): the provider streams output frames non-stop, so a frame
@@ -1537,6 +1636,7 @@ export class LiveSessionOwner {
             handle.inaudibleMs += event.pcm.byteLength / OUTPUT_PCM_BYTES_PER_MS;
             this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
           }
+          this.#cancelSpeakingHold(handle);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
@@ -1962,19 +2062,17 @@ export class LiveSessionOwner {
       });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
+    // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
+    // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).
+    for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
           this.#armDeadAir(handle);
-          // The model now owes a delegated reply: from here to its first output it is busy, not mute.
-          handle.awaitingDelegated = true;
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
-    for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
-    // A tool result keeps thinking until the model's first output audio or an explicit wait for input,
-    // so the orb never flashes LISTENING between the tool and her speech (F1).
     handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
     this.#noteState(handle, 'tool');
   }

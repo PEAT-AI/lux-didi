@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 if test -n "$(git status --porcelain -- server scripts/check-host-entry.sh)"; then
@@ -22,5 +23,5 @@ cp -R "$builder/dist" "$work/runtime/dist"
 cp "$builder/package.json" "$builder/package-lock.json" "$work/runtime/"
 cp "$builder/test/host-entry.test.mjs" "$work/runtime/test/"
 bash scripts/npm-ci-offline.sh "$work/runtime" ci --offline --omit=dev --ignore-scripts --no-audit --no-fund
-node --test --test-reporter=tap --test-timeout=15000 "$work/runtime/test/host-entry.test.mjs" | tee "$work/test.log"
+node_test_files --test-reporter=tap --test-timeout=15000 "$work/runtime/test/host-entry.test.mjs" | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected host entry tests' >&2; exit 1; }

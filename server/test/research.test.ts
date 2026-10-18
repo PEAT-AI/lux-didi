@@ -776,3 +776,59 @@ test('Q5-R2: a cut result block carries one machine line, and a whole one carrie
   assert.equal(cutLineOf([whole]), undefined, 'a whole read carries no cut line');
   assert.equal(shapeBlock('knowledge_search', [whole]).text.includes('cut:'), false, 'and the block says nothing about cuts');
 });
+
+// --- 3r K1: the voice knowledge lookup asks for bounded bodies with a deadline -------------------
+
+test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline', async () => {
+  const h = harness({ selector: knowledge });
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the connector' }, new AbortController().signal);
+  const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
+  assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query'], 'exactly those fields, and no others');
+  assert.equal(args['limit'], 6);
+  assert.equal(args['detail'], 'bodies');
+  assert.equal(args['max_chars'], 1_200);
+  assert.equal(args['deadline_ms'], 8_000);
+  assert.equal(typeof args['query'], 'string');
+  assert.equal(RESEARCH.knowledgeMaxChars, 1_200);
+  assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
+});
+
+test('3r: a body the server cut at the asked-for window is marked in the reply', async () => {
+  const cutBody = '### Release 3p scope (decision) [id 412]\nThe part of the body that fits.\ntruncated: yes (5,432 chars stored)';
+  const wholeBody = '### Release 3p ledger (pattern) [id 413]\nA short body.\ntruncated: no (14 chars stored)';
+  const h = harness({ selector: knowledge, executeText: `${cutBody}\n${wholeBody}` });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'release 3p scope' }, new AbortController().signal);
+  const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
+  // Hit order is the ranker's, so each hit's own line is read by its heading, never by position.
+  const hits = finding.text.split(/(?=#41[23] )/u);
+  const cutHit = hits.find(hit => hit.startsWith('#412 '))!;
+  const wholeHit = hits.find(hit => hit.startsWith('#413 '))!;
+  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
+  assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
+  assert.equal(wholeHit.includes('cut at'), false, 'an uncut body carries no cut mark');
+});
+
+test('3r: the research receipt records the bounded-body request, metadata only', async () => {
+  const h = harness({ selector: knowledge, executeText: '### Scope [id 412]\nBody.' });
+  const receipts: ResearchSourceLog[] = [];
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
+  const receipt = receipts.find(entry => entry.source === 'knowledge')!;
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
+  assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
+});
+
+// --- K1-R3: the routed voice start logs the same knowledge metadata as the selector loop ----------
+
+test('3r: a routed voice start logs the bounded-body request and its cut flag in the receipt', async () => {
+  const h = harness({ executeText: '### Release 3p scope (decision) [id 412]\nThe part that fits.\ntruncated: yes (5,432 chars stored)' });
+  const receipts: ResearchSourceLog[] = [];
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
+  assert.equal(args['detail'], 'bodies', 'the routed path asks through the same bounded-body args');
+  assert.equal(args['max_chars'], 1_200);
+  const receipt = receipts.find(entry => entry.source === 'knowledge')!;
+  assert.equal(receipt.outcome, 'ok');
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: true });
+});

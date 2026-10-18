@@ -45,6 +45,7 @@ import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
+import { traceMigrations } from '../trace/schema.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
@@ -1129,7 +1130,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
   assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
-    [chatMigrations, domainMigrations, liveMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
+    [chatMigrations, domainMigrations, liveMigrations, traceMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
 test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {
@@ -2839,7 +2840,7 @@ test('F2: speaking holds past generationComplete until the turn completes', asyn
   attachment.close(); await attachment.done;
 });
 
-test('F4: a barge-in clears thinking for a tool that never resolves', async t => {
+test('F4: a barge-in keeps THINKING while the call is still in flight, and her answer ends it', async t => {
   const started = deferred<void>(), finish = deferred<void>();
   const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
   const { session, attachment } = await attached(h, 'f4-barge');
@@ -2848,9 +2849,14 @@ test('F4: a barge-in clears thinking for a tool that never resolves', async t =>
   assert.equal(h.owner.current().state, 'thinking');
   h.f.send({ serverContent: { interrupted: true } });
   await drain(h, session.liveSessionId, 3);
-  assert.notEqual(h.owner.current().state, 'thinking', 'a barge-in never leaves THINKING stuck after a hung tool');
+  // D5 amendment C: a barge-in is the owner talking over her, not a hung tool forgetting its own call. The
+  // open work still reads THINKING; the result and her first audible frame are what end it.
+  assert.equal(h.owner.current().state, 'thinking', 'a barge-in never erases a call still in flight');
   finish.resolve();
   for (let i = 0; i < 200 && h.f.frames.length < 2; i++) await tick();
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  for (let i = 0; i < 200 && h.owner.current().state !== 'speaking'; i++) await tick();
+  assert.equal(h.owner.current().state, 'speaking', 'her answer ends THINKING');
   attachment.close(); await attachment.done;
 });
 
@@ -3079,7 +3085,7 @@ test('an owner turn that ends arms the watchdog, and the next turn arms it again
   attachment.close();
 });
 
-test('a delegated response that thinks for ten seconds is busy, not mute', async t => {
+test('a delegated response with no audible output is nudged, and audible progress restarts the clock', async t => {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
@@ -3102,13 +3108,16 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   assert.deepEqual(phases(), ['armed'], 'the delegated response is watched from its start');
   for (let second = 0; second < 10; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['armed'], 'no nudge and no rebuild while the delegated response generates');
-  assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt');
+  // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
+  // tool. The nudge is the first stage of the obligation, not a rebuild.
+  assert.deepEqual(phases(), ['armed', 'nudged'], 'silence after the completed result earns the nudge');
+  assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
+  // Audible progress speech is output, so it defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['armed', 'nudged'], 'a reply that went silent again is watched again');
+  assert.deepEqual(phases(), ['armed', 'nudged', 'armed', 'nudged'], 'a reply that went silent again is watched again');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
@@ -3175,4 +3184,155 @@ test('Q5-R4: a fresh call carries the previous opener as do-not-repeat context, 
   assert.equal(text.includes('Morning.'), true, 'the earlier opener is named in the start instruction');
   assert.equal(text.includes('merged cleanly'), false, 'only its first sentence is carried');
   assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
+});
+
+/** D3/D5 receipts are read from the host log itself, so the test proves the operator-visible record. */
+function hostLines(dir: string): Record<string, unknown>[] {
+  const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim();
+  return text === '' ? [] : text.split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+}
+const phasesOf = (dir: string): unknown[] => hostLines(dir).filter(line => line.event === 'live_watchdog').map(line => line.phase);
+const fillFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 } as const;
+const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 } as const;
+/** The fixture port forwards any port event; its declared union predates tool calls and the silence model. */
+const portEvent = (event: unknown) => event as never;
+const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
+
+test('D3: fill frames never disarm the watchdog, so a tool result with no audible answer is nudged at 8 s and recovered at 15 s', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-fill-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'd3-fill', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the lookup answered at t=0');
+  // The provider streams a fill frame every 100 ms and never a frame above the audible threshold.
+  for (let elapsed = 0; elapsed < 16_000; elapsed += 100) {
+    fake.emit(fillFrame);
+    await settlePort();
+    h.advance(100);
+    scheduler.runDue();
+  }
+  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'one clock: the nudge at 8 s and the recovery at 15 s');
+  const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
+  assert.ok(stall, 'the stall leaves a live_dead_air receipt');
+  assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');
+  assert.equal(stall!['msSinceAudible'], null, 'and no audible frame had ever played');
+  assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 1, 'exactly one nudge');
+  assert.equal(fake.sessionsOpened, 2, 'the recovery opens one fresh session');
+  attachment.close();
+});
+
+test('D3: one audible frame restarts the deadline from that frame, never from the tool result', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-refill-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'd3-refill', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  for (let elapsed = 0; elapsed < 18_100; elapsed += 100) {
+    fake.emit(elapsed === 3_000 ? audibleFrame : fillFrame);
+    await settlePort();
+    h.advance(100);
+    scheduler.runDue();
+  }
+  const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air');
+  assert.equal(nudges.length, 1, 'one stall receipt for the one nudge');
+  assert.equal(nudges[0]!['msSinceTool'], 11_000, 'the clock runs from the audible frame at 3 s');
+  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'and the recovery follows 7 s after that nudge');
+  assert.equal(fake.sessionsOpened, 2);
+  attachment.close();
+});
+
+test('D3: a progress line followed by silence still recovers on the same clock', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-progress-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'd3-progress', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k3', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  // Progress speech: audible, then silence again with no answer.
+  fake.emit(audibleFrame);
+  for (let elapsed = 0; elapsed < 16_000; elapsed += 1_000) {
+    h.advance(1_000);
+    scheduler.runDue();
+    await settlePort();
+  }
+  const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
+  assert.ok(stall, 'progress speech is not fulfilment, so the stall is still witnessed');
+  assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible progress frame');
+  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
+  assert.equal(fake.sessionsOpened, 2);
+  attachment.close();
+});
+
+test('D5: a lookup is THINKING through the silence model and a barge-in until the result and her first audible frame', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, beforeTool: () => gate, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'd5-thinking', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  assert.equal(h.owner.current().state, 'listening');
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k4', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'the tool call itself enters THINKING');
+  fake.emit(portEvent({ type: 'waitingForInput', value: true }));
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'the adapter silence model never clears a call in flight');
+  fake.emit({ type: 'interrupted' });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'a barge-in leaves the open call thinking');
+  release();
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'the answer is owed from the result until her first audible frame');
+  fake.emit(audibleFrame);
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', 'her first audible frame ends THINKING');
+  attachment.close();
+});
+
+test('D6: the adapter silence model between her sentences never drops the orb out of SPEAKING', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'd6-speaking', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'modelTurnStarted' });
+  fake.emit(audibleFrame);
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking');
+  // The adapter's 500 ms output-silence model reports the between-sentence gap as waiting for input.
+  h.advance(500);
+  scheduler.runDue();
+  fake.emit(portEvent({ type: 'waitingForInput', value: true }));
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', 'half a second of silence is not the end of the turn');
+  h.advance(999);
+  scheduler.runDue();
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', '1,499 ms after her last audible frame it is still speaking');
+  h.advance(1);
+  scheduler.runDue();
+  await settlePort();
+  assert.equal(h.owner.current().state, 'listening', '1,500 ms of audible silence ends it');
+  attachment.close();
 });

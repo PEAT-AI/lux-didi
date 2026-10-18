@@ -2,7 +2,7 @@ import type { CompletedResult, McpPort, ResultScope, StoredPayload } from '../ad
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
 import type { ConnectionEndpoint, ConnectionPolicy, ModelSnapshot } from '../tools/types.js';
-import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
+import { createLuxKnowledgeReader, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
@@ -172,9 +172,17 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
         validate(args) {
           if (!isRecord(args)) return false;
           const keys = Object.keys(args);
-          if (keys.length !== 2 || !keys.includes('query') || !keys.includes('limit')) return false;
+          // 3r K1: the bounded-body fields are accepted from the research path, which is the voice
+          // lookup. They are not offered in `parameters`, so the text-chat call shape is unchanged.
+          if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms')) return false;
+          if (!keys.includes('query') || !keys.includes('limit')) return false;
           const query = args['query']; const limit = args['limit'];
-          return typeof query === 'string' && query.trim().length > 0 && query.length <= bounds.maxQueryChars && Number.isSafeInteger(limit) && (limit as number) > 0 && (limit as number) <= bounds.maxSearchLimit;
+          if (!(typeof query === 'string' && query.trim().length > 0 && query.length <= bounds.maxQueryChars && Number.isSafeInteger(limit) && (limit as number) > 0 && (limit as number) <= bounds.maxSearchLimit)) return false;
+          const detail = args['detail']; const maxChars = args['max_chars']; const deadlineMs = args['deadline_ms'];
+          if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies') return false;
+          if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return false;
+          if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return false;
+          return true;
         },
       },
       {
@@ -203,9 +211,15 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
     });
     return {
       async call(tool, args, signal) {
-        return (tool === 'search_knowledge'
-          ? await reader.search(args as { query: string; limit: number }, signal)
-          : await reader.get(args as { ids: number[]; include_links?: boolean }, signal));
+        if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
+        // The declaration speaks the wire names; the reader takes the connector's own field names.
+        const search = args as { query: string; limit: number; detail?: 'snippets' | 'bodies'; max_chars?: number; deadline_ms?: number };
+        return await reader.search({
+          query: search.query, limit: search.limit,
+          ...(search.detail === undefined ? {} : { detail: search.detail }),
+          ...(search.max_chars === undefined ? {} : { maxChars: search.max_chars }),
+          ...(search.deadline_ms === undefined ? {} : { deadlineMs: search.deadline_ms }),
+        }, signal);
       },
     };
   },

@@ -168,3 +168,14 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, injected: 1.5 }), undefined, 'a non-integer count is refused');
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });
+
+test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried', () => {
+  const receipt = { event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.deepEqual(safeEvent({ event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }),
+    { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no assembly yet is a valid receipt');
+  assert.equal(safeEvent({ ...receipt, digest: '10:00 standup with the board' }), undefined, 'the calendar text never reaches the log');
+  assert.equal(safeEvent({ ...receipt, ageAfterMs: -1 }), undefined, 'a negative age is refused');
+  assert.equal(safeEvent({ ...receipt, assembled: 'yes' }), undefined, 'the flag is a boolean');
+  assert.equal(safeEvent({ event: 'warm_prewarm', assembled: true }), undefined, 'both ages are always present');
+});

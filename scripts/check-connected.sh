@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 git diff --check
@@ -11,8 +12,8 @@ status=0
 for file in server/dist/test/connector-identity.test.js web/test/connector-status.test.ts; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
-node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 server/dist/test/{chat,http,host,connected,connector-identity}.test.js | tee "$log" || status=$?
-node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 web/test/connector-status.test.ts | tee -a "$log" || status=$?
+node_test_files --test-concurrency=1 --test-reporter=tap --test-timeout=15000 server/dist/test/{chat,http,host,connected,connector-identity}.test.js | tee "$log" || status=$?
+node_test_files --test-concurrency=1 --test-reporter=tap --test-timeout=15000 web/test/connector-status.test.ts | tee -a "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 lux-browser-slot run --priority worker --want 1 --wait 1800 -- node server/test/connected-browser.mjs

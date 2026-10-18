@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
@@ -22,6 +23,8 @@ cp -R "$root/server/contracts/." "$out/source/contracts/"
 # The selected tests side-effect import live-remember/live-declarations and host/log,
 # whose transitive modules these directories carry, so the isolated tsc can resolve them.
 cp -R "$root/server/chat" "$root/server/domain" "$root/server/host" "$root/server/http" "$root/server/runtime" "$root/server/memory" "$out/source/"
+# runtime/store.ts applies the trace store migrations and prunes its content, so this tree needs trace too.
+cp -R "$root/server/trace" "$out/source/"
 for name in credential-binding provider-config model live-voice prompt live-remember live-declarations mongoose-auth; do
   cp "$root/server/test/$name.test.ts" "$out/source/test/"
 done
@@ -33,6 +36,6 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/config/*.ts "$out"/source/test/*.ts
 for name in credential-binding provider-config model live-voice prompt mongoose-auth; do
-  node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/$name.test.js" | tee "$out/$name.log"
+  node_test_files --test-reporter=tap --test-timeout=15000 "$out/dist/test/$name.test.js" | tee "$out/$name.log"
   grep -Eq '^# tests [1-9][0-9]*$' "$out/$name.log" || { echo "Zero selected $name tests" >&2; exit 1; }
 done

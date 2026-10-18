@@ -59,7 +59,16 @@ defaulted or clamped, and later caller mutation of `config` cannot change behavi
 
 ## Two methods, strict input
 
-`search({ query, limit }, signal?)` and `get({ ids }, signal?)` only.
+`search({ query, limit, detail?, maxChars?, deadlineMs? }, signal?)` and `get({ ids }, signal?)` only.
+
+The three trailing search fields are the lux-knowledge 3r voice contract: `detail` is `snippets`
+(the default shape) or `bodies`, `maxChars` is within the server's 200..6000 body window and
+`deadlineMs` within its 500..30000 call budget. They travel as `detail`, `max_chars` and
+`deadline_ms` only when the caller asks for them, so a snippet search keeps the old wire shape.
+The research path always asks for bounded bodies, so a voice turn reads the text of a hit instead
+of spending a `get_insight` round trip on it, and the reply marks a hit the server cut at that
+window with `cut at 1200 chars`. There is no silent fallback: a server that rejects a field is
+reported as `tool-error` with its own message, never retried in the old shape.
 
 Both accept an optional `AbortSignal`, forwarded unchanged to the existing MCP
 adapter. Input validation and registry preflight still run first. An already
@@ -76,11 +85,13 @@ outgoing arguments a single time. There is no getter re-read and no caller itera
 - Exactly those own keys; any extra key — including symbol and non-enumerable keys — is refused
   before any dispatch, as is any accessor property or non-plain prototype.
 - `query` is a non-empty string no longer than `maxQueryChars`; `limit` is a positive finite safe
-  integer within `maxSearchLimit`.
+  integer within `maxSearchLimit`. `detail`, `maxChars` and `deadlineMs` are optional and each is
+  checked against the range above before any dispatch.
 - `ids` is a dense array of unique positive safe integers within `maxGetIds`; holes, accessor
   elements, extra own keys, symbols and a custom iterator are refused.
 - The tool name is a literal in the module; the arguments are built exactly as
-  `{ query, limit, include_sensitive: false }` and `{ ids, include_links: false }`. There is no
+  `{ query, limit, include_sensitive: false }` plus the optional `detail`, `max_chars` and
+  `deadline_ms`, and as `{ ids, include_links: false }`. There is no
   arbitrary tool name, no advanced-argument pass-through and no callback that could authorize a
   writer.
 
@@ -129,5 +140,8 @@ malformed/extra-field refusal with zero dispatch, the required grant, writer ref
 schema/scope/generation drift refusal, hostile/sensitive-shaped markdown staying
 unknown/local-only with no extra call, per-response hashes, response/handle budgets, exact slice
 reconstruction, expiry/revocation without refetch, honest `tool-error`/`unknown` outcomes, pre-abort with zero remote calls, in-flight
-abort reaching the real adapter, and unusable late results for both methods.
+abort reaching the real adapter, unusable late results for both methods, the 3r bounded-body fields
+on the wire with their range refusals, and an older server that rejects a field failing loudly with
+its own message and no retry. `server/test/research.test.ts` proves the voice lookup's exact
+bounded-body arguments, the `cut at 1200 chars` mark on a cut body, and the metadata-only receipt.
 `scripts/check-knowledge-connector.sh` compiles the canonical source and runs only this file.

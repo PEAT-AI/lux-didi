@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+# R4-R2/6: the three paths are required arguments, and a caller that omits them must read a usage line instead of
+# `$1: unbound variable` from the middle of a release battery.
+if [ "$#" -ne 3 ]; then
+  echo "usage: $0 <app-bundle> <proof-dir> <node> (three required arguments, got $#)" >&2
+  exit 2
+fi
 app="$1"; proof="$2"; node="$3"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-native-real-host.XXXXXX")"
 cleanup() {
@@ -23,6 +29,16 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+# R4-6: the kernel/LaunchServices observer is a dependency of this proof, not a caller's courtesy. A caller that
+# exports one (the companion producer builds it beside its bundle) is used as is; a caller that does not, such as
+# probe-startup.sh, used to die at the first ${LUX_VERIFICATION_DRIVER:?} with 'parameter null or not set'. Build the
+# same observer here instead, so the startup probe reaches the proof it asked for.
+if [ -z "${LUX_VERIFICATION_DRIVER:-}" ]; then
+  source_root="$(cd "$(dirname "$0")/../.." && pwd)"
+  /usr/bin/nice -n 10 xcrun clang -Wall -Wextra -Werror -c "$source_root/Tests/DidiCompanionTests/launch-probe/Kernel.c" -o "$work/VerificationKernel.o"
+  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$source_root/Tests/DidiCompanionTests/launch-probe/Kernel.h" "$source_root/Tests/DidiCompanionTests/launch-probe/Identity.swift" "$source_root/Tests/DidiCompanionTests/launch-probe/Observer.swift" "$work/VerificationKernel.o" -o "$work/verification-observer"
+  export LUX_VERIFICATION_DRIVER="$work/verification-observer"
+fi
 mkdir "$work/source" "$proof/real-host"
 chmod 700 "$proof/real-host"
 git archive HEAD server web | tar -x -C "$work/source"

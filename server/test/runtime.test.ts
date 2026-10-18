@@ -103,7 +103,13 @@ test('host startup surfaces the typed credential admission failure and leaves no
     assert.notEqual(host.status, 0);
     assert.match(host.stderr, /CREDENTIAL_ADMISSION_FAILED/);
     const db = new DatabaseSync(join(dir, 'state.sqlite'));
-    try { assert.equal((db.prepare('SELECT COUNT(*) AS n FROM runtime_migrations').get() as { n: number }).n, 0); }
+    // The pre-created Store already committed the always-applied trace owner; the refused
+    // admission must still leave zero rows for every migration set the host itself applied.
+    try {
+      const applied = db.prepare('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner')
+        .all().map(row => [String(row['owner']), Number(row['version'])]);
+      assert.deepEqual(applied, [['trace', 1]], 'the host committed no migration set, only the always-applied trace owner');
+    }
     finally { db.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(web, { recursive: true, force: true }); }
 });

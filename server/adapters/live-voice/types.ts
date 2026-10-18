@@ -59,6 +59,10 @@ export interface LiveVoiceAdapterOptions {
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
+/** What a tool answer did to the backend: a socket write is not provider acceptance (3r amendment A).
+ *  `sent` is a `response.create` on the wire, `deferred` an answer recorded while its response was still
+ *  active (the gate sends the continuation on the next terminal event), `failed` nothing written at all. */
+export type LiveToolSendOutcome = 'sent' | 'deferred' | 'failed';
 export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 300_000, sessionMs: 3_600_000, closeMs: 1000 });
 export interface LiveVoiceRequest {
   resumptionHandle?: string;

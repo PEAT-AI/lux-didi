@@ -1,0 +1,88 @@
+#!/usr/bin/env node
+// didi-timeline: read the trace tables in state.sqlite and print one joinable timeline.
+// Read-only, SQL only, no journal and no host.log. See docs/debugging.md.
+const { DatabaseSync } = require('node:sqlite');
+const { existsSync } = require('node:fs');
+const { homedir } = require('node:os');
+const { join } = require('node:path');
+const { fileURLToPath } = require('node:url');
+
+const usage = `didi-timeline <session|latest> [options]
+
+  <session|latest>      a live session id, or the most recent session in the trace tables
+  --turn N              only turn index N
+  --content             add utterances and tool result text from the content tables
+  --json                print the report as JSON (no owner text unless --content)
+  --export-metadata     named columns of the five metadata tables only, never a dump
+  --session <id>        with --export-metadata, restrict the export to one live session
+  --data-dir <path>     the host data directory holding state.sqlite
+`;
+
+const argv = process.argv.slice(2);
+const options = { session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined };
+for (let index = 0; index < argv.length; index += 1) {
+  const arg = argv[index];
+  if (arg === '--turn') options.turn = Number(argv[++index]);
+  else if (arg === '--content') options.content = true;
+  else if (arg === '--json') options.json = true;
+  else if (arg === '--export-metadata') options.exportMetadata = true;
+  else if (arg === '--session') options.session = argv[++index];
+  else if (arg === '--data-dir') options.dataDir = argv[++index];
+  else if (arg === '-h' || arg === '--help') { process.stdout.write(usage); process.exit(0); }
+  else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
+  else if (options.session === undefined) options.session = arg;
+  else fail(`unexpected argument ${arg}`);
+}
+
+function fail(message) {
+  process.stderr.write(`didi-timeline: ${message}\n\n${usage}`);
+  process.exit(2);
+}
+
+function dataDirectory() {
+  if (options.dataDir !== undefined) return options.dataDir;
+  const state = process.env.DIDI_STATE_DIR;
+  if (state) return state;
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
+  if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? homedir(), 'Lux Didi');
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
+}
+
+async function main() {
+  const database = join(dataDirectory(), 'state.sqlite');
+  if (!existsSync(database)) fail(`no state.sqlite under ${dataDirectory()}`);
+  const built = new URL('../server/dist/trace/timeline.js', `file://${__filename}`);
+  if (!existsSync(fileURLToPath(built))) fail('the trace module is not built; run: npm --prefix server run build');
+  const { buildTimeline, exportMetadata, renderTimeline, resolveSession } = await import(built.href);
+
+  const db = new DatabaseSync(database, { readOnly: true });
+  try {
+    const read = {
+      all: (sql, params = []) => db.prepare(sql).all(...params),
+      get: (sql, params = []) => db.prepare(sql).get(...params),
+    };
+    if (options.exportMetadata) {
+      const selection = options.session === 'latest' ? resolveSession(read, 'latest') : options.session;
+      process.stdout.write(`${JSON.stringify(exportMetadata(read, selection), null, 2)}\n`);
+      return;
+    }
+    const spec = options.session ?? 'latest';
+    const liveSessionId = resolveSession(read, spec);
+    if (liveSessionId === undefined) {
+      process.stderr.write(`didi-timeline: no traced session for ${spec}\n`);
+      process.exit(1);
+    }
+    const report = buildTimeline(read, liveSessionId, {
+      ...(options.turn === undefined ? {} : { turn: options.turn }),
+      content: options.content,
+    });
+    process.stdout.write(options.json ? `${JSON.stringify(report, null, 2)}\n` : renderTimeline(report));
+  } finally {
+    db.close();
+  }
+}
+
+main().catch(error => {
+  process.stderr.write(`didi-timeline: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+});

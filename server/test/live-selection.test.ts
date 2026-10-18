@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { currentLiveAccent, currentLivePlaybackRate, loadLiveConfig, saveLiveSelection } from '../config/live.js';
+import { configureDebugJournal, currentDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { resolveRoute } from '../http/routes.js';
 import { ServiceError } from '../contracts/errors.js';
 import { LiveConfigError } from '../live/types.js';
@@ -178,7 +179,9 @@ test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anyt
   const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', '1.08']);
   assert.equal(saved.status, 0, saved.err);
   assert.equal(f.saved()['playbackRate'], 1.08);
-  // The next start is what reads it: the loader is the authority on the process-current pace.
+  // The next start is what reads it: the loader is the authority on the process-current pace, and the
+  // process-current value is assigned by a load, never by a child process: assert it after the load that a
+  // next start performs (d9cc8192, TRAIN3Q-R3), not after the CLI run that only wrote the file.
   const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
   assert.equal(currentLivePlaybackRate(), 1.08);
   assert.equal(loaded.status, 'configured');
@@ -199,4 +202,22 @@ test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anyt
   }
   // A refused value never rewrites the pace the next start would use.
   assert.equal(f.saved()['playbackRate'], 1);
+});
+
+// #397: the debug journal follows the host's own --data-dir, so a host started against another config dir
+// never writes its journal into that config's parent.
+test('the live config roots the debug journal at the host data dir, never at the config dir parent', t => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-journal-root-')); chmodSync(root, 0o700);
+  const configDir = join(root, 'other-install', 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(configDir, 0o700);
+  const dataDir = join(root, 'state');
+  resetDebugJournal();
+  t.after(() => { resetDebugJournal(); rmSync(root, { recursive: true, force: true }); });
+  configureDebugJournal(dataDir, true);
+  assert.deepEqual(loadLiveConfig({ configDir, ownerId: 'synthetic-owner' }), { status: 'unconfigured' });
+  assert.equal(currentDebugJournal()?.dataDir, dataDir, 'the installed host journal keeps its own root');
+  // A caller with no host-installed journal (a unit caller, the CLI) keeps the documented default.
+  resetDebugJournal();
+  loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(currentDebugJournal()?.dataDir, join(root, 'other-install'), 'the default is the config dir parent');
 });

@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
+import { currentLivePlaybackRate } from '../config/live.js';
 import { listenService } from '../http/server.js';
 import type { LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 
@@ -53,10 +54,12 @@ test('cookie principal gets exactly the whitelisted Live summary', async () => {
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const body = (await response.json()).data as Record<string, unknown>;
-    // PV1: the closed shape also carries the provider the 3l release exposed and the accent selection.
-    assert.deepEqual(Object.keys(body).sort(), ['accent', 'limits', 'modelId', 'personaName', 'profileEnabled', 'provider', 'voice']);
+    // PV1: the closed shape also carries the provider the 3l release exposed and the accent selection;
+    // P3 adds the pitch-preserving pace the page shows read-only.
+    assert.deepEqual(Object.keys(body).sort(), ['accent', 'limits', 'modelId', 'personaName', 'playbackRate', 'profileEnabled', 'provider', 'voice']);
     assert.equal(body.modelId, 'gemini-synthetic-live');
     assert.equal(body.voice, 'Aoede');
+    assert.equal(body.playbackRate, currentLivePlaybackRate(), 'the pace the next start plays at, as the process holds it');
     assert.equal(body.personaName, 'Naya');
     assert.deepEqual(body.limits, { sessionMs: 900000, idleMs: 300000 });
     assert.equal(body.profileEnabled, true);
@@ -92,9 +95,10 @@ test('a disabled or missing Live profile answers 200 with profileEnabled false a
       const response = await fetch(`${f.service.origin}/api/v1/live/summary`, { headers: { Cookie: cookie } });
       assert.equal(response.status, 200);
       const body = (await response.json()).data as Record<string, unknown>;
-      // PV1: the summary also names the accent selection, null while no Live profile is running.
-      assert.deepEqual(Object.keys(body).sort(), ['accent', 'limits', 'modelId', 'personaName', 'profileEnabled', 'voice']);
-      assert.deepEqual(body, { accent: null, modelId: null, voice: null, personaName: null, limits: null, profileEnabled: false });
+      // PV1: the summary also names the accent selection, null while no Live profile is running; P3 adds the
+      // pace on the same rule, so both fields are null here rather than absent.
+      assert.deepEqual(Object.keys(body).sort(), ['accent', 'limits', 'modelId', 'personaName', 'playbackRate', 'profileEnabled', 'provider', 'voice']);
+      assert.deepEqual(body, { accent: null, provider: null, modelId: null, voice: null, playbackRate: null, personaName: null, limits: null, profileEnabled: false });
     } finally { await f.cleanup(); }
   }
 });

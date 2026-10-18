@@ -1,0 +1,54 @@
+// Closed codes for the trace store. Every string that reaches a metadata table is one
+// of these, an id, or a count: no free text ever has a column to land in.
+
+export const EVENT_SOURCES = ['host', 'native', 'provider'] as const;
+export type EventSource = (typeof EVENT_SOURCES)[number];
+
+export const TURN_ORIGINS = ['owner', 'assistant', 'recovery'] as const;
+export type TurnOrigin = (typeof TURN_ORIGINS)[number];
+
+export const TURN_CLOSE_REASONS = ['completed', 'interrupted', 'superseded', 'recovered', 'session_end'] as const;
+export type TurnCloseReason = (typeof TURN_CLOSE_REASONS)[number];
+
+export const TURN_OUTCOMES = ['answered', 'silent', 'no_response', 'failed'] as const;
+export type TurnOutcome = (typeof TURN_OUTCOMES)[number];
+
+export const STALL_REASONS = [
+  'no_delegation', 'no_response', 'no_audible_output', 'no_playback_drain', 'no_continuation_decision', 'native_sequence_gap',
+] as const;
+export type StallReason = (typeof STALL_REASONS)[number];
+
+export const RESPONSE_STATUSES = ['pending', 'streaming', 'completed', 'failed', 'cancelled', 'interrupted', 'superseded'] as const;
+export type ResponseStatus = (typeof RESPONSE_STATUSES)[number];
+
+export const RESPONSE_TERMINAL_REASONS = [
+  'completed', 'failed', 'cancelled', 'interrupted', 'superseded', 'provider_error', 'timeout',
+] as const;
+export type ResponseTerminalReason = (typeof RESPONSE_TERMINAL_REASONS)[number];
+
+export const CALL_OUTCOMES = ['completed', 'failed', 'refused', 'cancelled', 'aborted', 'timeout', 'unknown'] as const;
+export type CallOutcome = (typeof CALL_OUTCOMES)[number];
+
+export const PLAYBACK_TERMINATION_REASONS = ['drained', 'flushed', 'interrupted', 'failed', 'session_end'] as const;
+export type PlaybackTerminationReason = (typeof PLAYBACK_TERMINATION_REASONS)[number];
+
+export const UTTERANCE_ROLES = ['owner', 'model'] as const;
+export type UtteranceRole = (typeof UTTERANCE_ROLES)[number];
+
+// The immutable causal spine. A kind names one state transition; its fields are fixed below.
+export const EVENT_KINDS = [
+  'turn.opened', 'turn.closed', 'turn.summary',
+  'response.created', 'response.observed', 'response.terminal',
+  'call.intent', 'call.executed', 'call.output_prepared', 'call.output_written',
+  'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
+  'playback.drained', 'playback.interrupted', 'playback.terminated',
+] as const;
+export type TraceEventKind = (typeof EVENT_KINDS)[number];
+
+export const TRACE_SCHEMA_VERSION = 1;
+export const TRACE_RETENTION_DAYS = 30;
+export const TRACE_DAY_MS = 86_400_000;
+
+export function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === 'string' && (values as readonly string[]).includes(value);
+}

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 # Gate: stdout is the supervised protocol pipe. The only stdout writer in supervised mode is
@@ -20,7 +21,7 @@ for file in server/dist/test/host.test.js server/dist/test/http.test.js server/d
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
 http_status=0
-node --test --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js | tee "$log" || http_status=$?
+node_test_files --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js | tee "$log" || http_status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 # Preserve every HTTP failure while still collecting discriminating real-browser proof.
 # Deliberately not the web fixture producer: this drives the shipped UI on the real host.

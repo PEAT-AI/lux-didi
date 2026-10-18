@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { ServiceError } from '../contracts/errors.js';
 import type { SchemaMigration, SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
+import { traceMigrations } from '../trace/schema.js';
+import { pruneTraceContent, type TraceExec } from '../trace/record.js';
 export type { SchemaMigration, SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
 
 function privateFile(path: string): void {
@@ -99,7 +101,15 @@ export class Store {
       this.#db.exec('BEGIN IMMEDIATE');
       try {
         for (const sql of runtimeSchema) this.#db.exec(sql);
-        this.applyMigrations(migrations);
+        // Trace tables are owned by the same Store and applied on every host: a debugger reads
+        // one state.sqlite, never a second database with its own connection.
+        this.applyMigrations([...migrations, ...traceMigrations]);
+        // Trace content retention: 30 days for the two content tables, metadata rows untouched.
+        const traceExec: TraceExec = {
+          run: (sql, params = []) => Number(this.#db!.prepare(sql).run(...params).changes),
+          all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
+        };
+        pruneTraceContent(traceExec, Date.now());
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an
         // older run, and nothing reads it again. Purging it here keeps old feed text out of every surface.

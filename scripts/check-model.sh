@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 # SERVICE owns installation; this lane never downloads or changes manifests.
@@ -28,4 +29,4 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --noUnusedLocals --noUnusedParameters --skipLibCheck \
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/adapters/model/*.ts "$out/source/test/model.test.ts"
-node --test --test-timeout=15000 "$out/dist/test/model.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/model.test.js"

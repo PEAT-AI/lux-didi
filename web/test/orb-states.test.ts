@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
-  breathe, createOrbStateMachine, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, TRANSITION_MS,
+  breathe, createOrbStateMachine, createStateDebounce, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, TRANSITION_MS,
   type MiniVisualState,
 } from '../src/orb-states.ts';
 
@@ -146,4 +146,20 @@ test('the opacity breathe is a slow sine on the clock', () => {
   assert.ok(breathe(0.35, 9000, 9000 / 4) > 0.35, 'a quarter period later it is fuller');
   assert.ok(breathe(0.35, 9000, (9000 * 3) / 4) < 0.35, 'and then quieter');
   assert.equal(breathe(1, 0, 1234), 1, 'a state without a breathe period holds its opacity');
+});
+
+test('D6: the full-window orb debounces a between-sentence blip, with explicit transition timestamps', () => {
+  const orb = createStateDebounce<string>('CONNECTED');
+  orb.request('SPEAKING', 1_000);
+  assert.equal(orb.dueAt(), 1_000 + DEBOUNCE_MS, 'a request carries its own commit time');
+  assert.equal(orb.settled(1_249), 'CONNECTED', 'nothing paints before the debounce');
+  assert.equal(orb.settled(1_250), 'SPEAKING', 'speaking commits after it');
+  // Speaking, listening, speaking inside 600 ms: one flicker, so the orb stays on speaking.
+  orb.request('LISTENING', 1_300);
+  orb.request('SPEAKING', 1_600);
+  assert.equal(orb.settled(1_800), 'SPEAKING', 'the blip never paints');
+  assert.equal(orb.dueAt(), undefined, 'a reverted blip leaves nothing pending');
+  // A blip that outlasts the debounce is a real state.
+  orb.request('LISTENING', 2_000);
+  assert.equal(orb.settled(2_250), 'LISTENING', 'a held listening state commits');
 });

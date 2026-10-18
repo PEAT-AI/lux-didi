@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 root="$(pwd)"
@@ -149,7 +150,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live-mutated"
 # Accepted dependency tests exercise real one-attach races, durable 1013, isolated revoke, journal exclusion and supervised cleanup.
-node --test --test-reporter=tap --test-timeout=30000 \
+node_test_files --test-reporter=tap --test-timeout=30000 \
   server/dist/test/live-gateway.test.js server/dist/test/live-session.test.js
 # Independent gates all run even when an upstream owner defect fails one; any failure remains producer failure.
 status=0

@@ -18,6 +18,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
+import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
 import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 
@@ -501,4 +502,61 @@ test('a calendar read returns the primary and counts the calendars the deadline 
   assert.deepEqual(data['partial'], { unread: 9 }, 'the nine calendars the deadline cut off are named, not dropped');
   const events = data['events'] as Record<string, unknown>[];
   assert.equal(events.some(event => event['id'] === 'event-primary' && event['calendar'] === 'Me'), true, 'the primary calendar is always returned');
+});
+
+// 339: the warm context's calendar digest. One bounded primary-calendar read, local host time, no
+// model call; unconfigured, empty or failed leaves the slot out so a session start never fails.
+type DigestReader = { calls: GcalListInput[]; gcalList(input: GcalListInput): Promise<GoogleResult> };
+function digestReader(events: readonly Record<string, unknown>[] | 'refused'): DigestReader {
+  const calls: GcalListInput[] = [];
+  return {
+    calls,
+    async gcalList(input: GcalListInput): Promise<GoogleResult> {
+      calls.push(input);
+      if (events === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
+      const data = { events: [...events] };
+      const evidence: GoogleEvidence = {
+        state: 'completed', tool: 'gcal_list', observedAt: 1_760_000_000_000,
+        decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
+        source: {} as ResultScope, coverage: {} as GoogleEvidence['coverage'],
+        projection: {} as GoogleEvidence['projection'], response: {} as GoogleEvidence['response'],
+      };
+      return evidence;
+    },
+  };
+}
+const digestNow = Date.parse('2026-10-18T10:00:00Z');
+const timedEvent = { id: 'e1', summary: 'standup', start: { dateTime: '2026-10-18T09:00:00Z' }, end: { dateTime: '2026-10-18T09:15:00Z' } };
+
+test('the warm calendar digest leaves the slot out when the connector is unconfigured', async () => {
+  assert.equal(await buildCalendarDigest(undefined, { now: digestNow, timeZone: 'UTC' }), undefined);
+});
+
+test('the warm calendar digest reads the primary calendar once and renders the empty day as absent', async () => {
+  const read = digestReader([]);
+  assert.equal(await buildCalendarDigest(read, { now: digestNow, timeZone: 'UTC' }), undefined);
+  assert.equal(read.calls.length, 1, 'exactly one bounded read');
+  assert.equal(read.calls[0]!.calendarId, 'primary', 'the primary calendar only');
+  assert.equal(read.calls[0]!.timeMin, '2026-10-18T00:00:00+00:00');
+  assert.equal(read.calls[0]!.timeMax, '2026-10-19T00:00:00+00:00');
+  assert.equal(read.calls[0]!.maxResults, 10);
+});
+
+test('the warm calendar digest keeps one bounded line and trims a day that does not fit', async () => {
+  const busy = Array.from({ length: 30 }, (_, index) => ({ id: 'e' + index, summary: 'review with the whole team ' + index, start: { dateTime: '2026-10-18T0' + (index % 10) + ':00:00Z' } }));
+  const digest = await buildCalendarDigest(digestReader(busy), { now: digestNow, timeZone: 'UTC' });
+  assert.equal(typeof digest, 'string');
+  assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
+  assert.match(digest ?? '', /^00:00 review with the whole team 0/, 'the first event keeps its local clock time');
+  assert.match(digest ?? '', /team 10$/, 'the last event that fits is kept whole');
+  assert.equal((digest ?? '').endsWith(', '), false, 'a trimmed digest never ends on a separator');
+});
+
+test('the warm calendar digest renders the day in the host time zone', async () => {
+  const utc = await buildCalendarDigest(digestReader([timedEvent]), { now: digestNow, timeZone: 'UTC' });
+  const kolkata = await buildCalendarDigest(digestReader([timedEvent]), { now: digestNow, timeZone: 'Asia/Kolkata' });
+  assert.equal(utc, '09:00 standup');
+  assert.equal(kolkata, '14:30 standup', 'the same instant, the host zone');
+  const refused = await buildCalendarDigest(digestReader('refused'), { now: digestNow, timeZone: 'UTC' });
+  assert.equal(refused, undefined, 'a refused read leaves the slot out rather than failing the start');
 });

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, researchDeclaration, runResearch,
   validateResearch,
-  type ResearchDeps, type ResearchSourceLog, type ResearchRoutedLog, type SourceKind,
+  type ResearchDeps, type ResearchProgress, type ResearchSourceLog, type ResearchRoutedLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { safeEvent } from '../host/log.js';
@@ -37,6 +37,7 @@ interface Harness {
   routed: ResearchRoutedLog[];
   sources: ResearchSourceLog[];
   executed: string[];
+  progress: ResearchProgress[];
   selectorCalls: () => number;
 }
 
@@ -45,20 +46,23 @@ function harness(opts: {
   configured?: readonly SourceKind[];
   execute?: ResearchDeps['execute'];
   memory?: ResearchDeps['memory'];
+  schedule?: ResearchDeps['schedule'];
   selected?: () => void;
 } = {}): Harness {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
   const sources: ResearchSourceLog[] = [];
+  const progress: ResearchProgress[] = [];
   let selectorCalls = 0;
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
+    ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     configured: opts.configured ?? CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push(call.name);
       return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
     }),
-    emit: () => {},
+    emit: event => { progress.push(event); },
     log: () => {},
     logRouted: event => routed.push(event),
     logSource: event => sources.push(event),
@@ -67,7 +71,7 @@ function harness(opts: {
     ledger: new ResearchLedger(),
     ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
   };
-  return { deps, routed, sources, executed, selectorCalls: () => selectorCalls };
+  return { deps, routed, sources, executed, progress, selectorCalls: () => selectorCalls };
 }
 
 test('a routed start skips the selector and reads every named layer at once', async () => {
@@ -355,7 +359,8 @@ test('the per-lookup receipt carries source, outcome and ms and never a query', 
   }, new AbortController().signal);
   assert.equal(h.sources.length, 1);
   const receipt = h.sources[0]!;
-  assert.deepEqual(Object.keys(receipt).sort(), ['deadlineMs', 'event', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given');
+  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'knowledge', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given, the knowledge window metadata (K1) and the batch it shared');
+  assert.equal(receipt.coalesced, 1, 'a lone lookup is a batch of one');
   assert.equal(receipt.source, 'knowledge');
   assert.equal(receipt.outcome, 'ok');
   assert.equal(JSON.stringify(receipt).includes('secret release plan'), false, 'never the query text');
@@ -459,4 +464,66 @@ test('Q5-R1: a lookup that names an insight reads it by id and returns the whole
   assert.ok(findings.length > 0, 'the read reaches the reply');
   assert.ok(findings[0]!.text.includes('End of the entry.'), 'the whole body is returned, up to the connector body cap');
   assert.ok(findings[0]!.text.length > RESEARCH.replyLimitChars, `a read is not trimmed to the search reply budget (${findings[0]!.text.length} chars)`);
+});
+
+// --- 3r R1: honest empty reads, model-facing progress, metadata-only lookup receipts -------------
+
+test('a mail read that matched nothing is searched and nothing matched, never unreachable', async () => {
+  const h = harness({ execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '', true, call.key)) });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'any mail about invoices', lookups: [{ source: 'mail', query: 'subject:invoice' }],
+  }, new AbortController().signal);
+  assert.deepEqual(h.sources.map(event => event.outcome), ['empty'], 'a successful read with no match is empty, never failed');
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /searched your mail/i, 'the reply names the source it searched');
+  assert.match(note, /found nothing matching/i, 'and says that nothing matched');
+  assert.doesNotMatch(note, /could not reach/i, 'a connector that answered is never called unreachable');
+});
+
+test('a slow routed read tells the model it is alive at most five seconds apart', async () => {
+  const clock = { value: 0 };
+  const timers: (() => void)[] = [];
+  const schedule: ResearchTimer = (callback: () => void) => {
+    timers.push(callback);
+    return { unref: () => {}, cancel: () => { const at = timers.indexOf(callback); if (at >= 0) timers.splice(at, 1); } };
+  };
+  const fire = (): number => { const due = timers.splice(0, timers.length); for (const callback of due) callback(); return due.length; };
+  const gate = deferred<void>();
+  const h = harness({
+    now: () => clock.value,
+    schedule,
+    execute: async (subs: readonly IntentSubCall[]) => { await gate.promise; return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)); },
+  });
+  const run = runResearch(h.deps, {
+    action: 'start', question: 'what is waiting on me', lookups: [{ source: 'mail', query: 'is:unread' }],
+  }, new AbortController().signal);
+  // Let the routed read reach its first await, then walk the fake clock past two progress windows.
+  for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+  clock.value = 3_000;
+  assert.ok(fire() > 0, 'the routed read schedules a progress beat instead of going silent');
+  clock.value = 8_000;
+  fire();
+  gate.resolve();
+  await run;
+  const beats = h.progress.map(event => event.elapsedMs).filter(ms => ms > 0);
+  assert.ok(beats.length >= 2, `the model hears progress while the sources run (${beats.length} beats)`);
+  const gaps = [0, ...beats].map((ms, index, all) => ms - (all[index - 1] ?? 0));
+  assert.ok(gaps.every(gap => gap <= 5_000), `no silence longer than five seconds (${gaps.join(', ')})`);
+});
+
+test('every lookup receipt carries its coalesced count, never a query or a result', async () => {
+  const h = harness();
+  await runResearch(h.deps, {
+    action: 'start', question: 'anything from Ana or about the invoice',
+    lookups: [{ source: 'mail', query: 'from:ana' }, { source: 'mail', query: 'subject:invoice' }],
+  }, new AbortController().signal);
+  assert.equal(h.sources.length, 2, 'one receipt per lookup');
+  // Read as a record so the base, whose receipt type carries no count yet, runs this test red at runtime.
+  const coalesced = h.sources.map(event => (event as unknown as Record<string, unknown>)['coalesced']);
+  assert.deepEqual(coalesced, [2, 2], 'both receipts name the batch they shared');
+  const wire = JSON.stringify(h.sources);
+  assert.ok(!wire.includes('ana') && !wire.includes('invoice'), `the receipt carries no query text (${wire})`);
+  const safe = safeEvent(h.sources[0]!);
+  assert.ok(safe !== undefined, 'the host log keeps the receipt');
+  assert.equal(safe['coalesced'], 2, 'and keeps the coalesced count it was given');
 });

@@ -353,7 +353,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_interrupted', liveSessionId: value.liveSessionId, turnCompleteSeen: value.turnCompleteSeen, msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
   if (value.event === 'live_dead_air') {
-    // E1: the wait between input final and first audio only, never any turn content.
+    // Two waits, both durations and never any turn content: E1's gap between input final and first audio,
+    // and D3's stall receipt, how long the answer was owed and how long since any audible output.
+    const stallKeys = ['event', 'msSinceTool', 'msSinceAudible'].sort().join(',');
+    if (Object.keys(value).sort().join(',') === stallKeys) {
+      if (!isSafeCount(value.msSinceTool)) return;
+      if (!(value.msSinceAudible === null || isSafeCount(value.msSinceAudible))) return;
+      return { event: 'live_dead_air', msSinceTool: value.msSinceTool, msSinceAudible: value.msSinceAudible };
+    }
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
@@ -430,9 +437,34 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, ms: value.ms };
   }
   if (value.event === 'live_provider_error') {
-    if (!closedKeys(value, ['event', 'type', 'code'])) return;
-    if (!isSafeToken(value.type) || !isSafeToken(value.code)) return;
-    return { event: 'live_provider_error', type: value.type, code: value.code };
+    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
+    return { event: 'live_provider_error', type: value.type, code: value.code, param: value.param };
+  }
+  if (value.event === 'gptlive_tool_output') {
+    // 3r: one tool answer per delegated response, its call count and whether a continuation reached the wire.
+    if (!closedKeys(value, ['event', 'calls', 'responseCreate'])) return;
+    if (!isSafeCount(value.calls)) return;
+    if (value.responseCreate !== 'sent' && value.responseCreate !== 'retried' && value.responseCreate !== 'failed') return;
+    return { event: 'gptlive_tool_output', calls: value.calls, responseCreate: value.responseCreate };
+  }
+  if (value.event === 'gptlive_delegation_stalled') {
+    // 3r D4: detection only, so this is a receipt and never a command. Milliseconds since the outputs went out.
+    if (!closedKeys(value, ['event', 'ms'])) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: 'gptlive_delegation_stalled', ms: value.ms };
+  }
+  if (value.event === 'delegation_open' || value.event === 'delegation_closed') {
+    // 3r D4: the provider's own delegation window, in milliseconds from its stream offset or from its open, and on
+    // the close, how many responses its chain named (S1-R1).
+    if (value.event === 'delegation_closed') {
+      if (!closedKeys(value, ['event', 'ms', 'responses'])) return;
+      if (!isSafeCount(value.ms) || !isSafeCount(value.responses)) return;
+      return { event: value.event, ms: value.ms, responses: value.responses };
+    }
+    if (!closedKeys(value, ['event', 'ms'])) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: value.event, ms: value.ms };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
@@ -537,12 +569,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
     // given, so a read cut short can be judged against the time the source really had. Never a query.
-    const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs'];
+    const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
-    if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs)) return;
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs };
+    if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs) || !isSafeCount(value.coalesced)) return;
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
@@ -585,6 +617,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'researchId'].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return;
     return { event: 'research_joined', researchId: value.researchId };
+  }
+  if (value.event === 'warm_prewarm') {
+    // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:
+    // never the calendar digest, the summary or any prompt text.
+    if (!closedKeys(value, ['event', 'ageBeforeMs', 'ageAfterMs', 'assembled'])) return;
+    const age = (field: unknown): boolean => field === null || isSafeCount(field);
+    if (!age(value.ageBeforeMs) || !age(value.ageAfterMs)) return;
+    if (typeof value.assembled !== 'boolean') return;
+    return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
   }
 }
 

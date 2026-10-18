@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 # SERVICE owns installation; this lane never downloads or changes manifests.
@@ -37,5 +38,5 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/adapters/model/*.ts "$out"/source/prompt/*.ts "$out"/source/tools/*.ts "$out"/source/test/*.ts
 test -f "$out/dist/test/prompt.test.js" # fresh mktemp output; no stale dist accepted
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-routed.test.js" | tee "$out/results.tap"
+node_test_files --test-reporter=tap --test-timeout=15000 "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-routed.test.js" | tee "$out/results.tap"
 grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"

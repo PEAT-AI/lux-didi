@@ -1,5 +1,10 @@
 import type { ReadStream } from 'node:tty';
 
+/** The one argv flag the installed app passes to mark a supervised start; nothing else grants it. */
+export const SUPERVISION_FLAG = '--supervised';
+/** True when this start carries the supervision marker, so the app itself spawned the host. */
+export function supervisionRequested(argv: readonly string[] = process.argv): boolean { return argv.includes(SUPERVISION_FLAG); }
+
 // Anonymous-pipe rendezvous only: nonce is nonsecret and grants no HTTP authority.
 export function supervise(input: ReadStream = process.stdin) {
   let buffer = Buffer.alloc(0), parsed = false, ended = false;

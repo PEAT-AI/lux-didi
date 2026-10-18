@@ -89,6 +89,54 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(((preset.frames[0] as unknown as Start).session['audio'] as Record<string, unknown>)['output'], { voice: 'cinder' });
   });
 
+  test('a custom voice leaves every other start-frame field identical to the preset frame', async t => {
+    // The bisection (q6-author.md) accepted the whole app frame with a custom voice: the id changes the
+    // audio.output.voice leaf and nothing else, so no tools, seed, delegation or instruction field moves.
+    const custom = await fixture(t);
+    const preset = await fixture(t);
+    const customSession = new OpenAiLiveVoiceAdapter(options({ voice: 'voice_0123456789abcdef', socketFactory: custom.socketFactory })).open(request({ tools: tools() }), control());
+    t.after(() => customSession.close());
+    const presetSession = new OpenAiLiveVoiceAdapter(options({ voice: OPENAI_DEFAULT_VOICE, socketFactory: preset.socketFactory })).open(request({ tools: tools() }), control());
+    t.after(() => presetSession.close());
+    await custom.frame(1);
+    await preset.frame(1);
+    const withCustom = custom.frames[0] as unknown as Start;
+    const withPreset = preset.frames[0] as unknown as Start;
+    assert.deepEqual((withCustom.session['audio'] as Record<string, unknown>)['output'], { voice: { id: 'voice_0123456789abcdef' } });
+    assert.deepEqual((withPreset.session['audio'] as Record<string, unknown>)['output'], { voice: OPENAI_DEFAULT_VOICE });
+    assert.deepEqual(withCustom.session['audio'], { ...(withPreset.session['audio'] as Record<string, unknown>), output: { voice: { id: 'voice_0123456789abcdef' } } });
+    const { audio: customAudio, ...customRest } = withCustom.session as Record<string, unknown>;
+    const { audio: presetAudio, ...presetRest } = withPreset.session as Record<string, unknown>;
+    assert.deepEqual(customRest, presetRest, 'every non-voice field is byte-identical between the two frames');
+    assert.equal(JSON.stringify(withCustom).replace(JSON.stringify({ voice: { id: 'voice_0123456789abcdef' } }), JSON.stringify({ voice: OPENAI_DEFAULT_VOICE })), JSON.stringify(withPreset), 'the frames differ only in the voice leaf');
+  });
+
+  test('a refused setup records the provider error, redacted and bounded, and never the instructions', async t => {
+    const logged = hostReceipts(t);
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ voice: 'voice_0123456789abcdef', socketFactory: f.socketFactory })).open(request(), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    // An error frame before session.started is a refused setup; the provider's words are the whole evidence.
+    f.send({ type: 'error', event_id: 'event_setup', error: {
+      type: 'invalid_request_error', code: 'invalid_value', param: 'session.audio.output.voice',
+      message: `Invalid value for voice: key sk-${CANARY} rejected\n${'x'.repeat(400)}`, client_event_id: null } });
+    assert.deepEqual(await session.done, { status: 'failed', code: 'provider_setup_rejected' });
+    await until(() => logged().some(entry => entry['event'] === 'gptlive_setup_error'));
+    const receipt = logged().find(entry => entry['event'] === 'gptlive_setup_error')!;
+    assert.deepEqual(Object.keys(receipt).sort(), ['code', 'event', 'message', 'param', 'type'], 'the provider fields only, no other field');
+    assert.equal(receipt['type'], 'invalid_request_error');
+    assert.equal(receipt['code'], 'invalid_value');
+    assert.equal(receipt['param'], 'session.audio.output.voice');
+    const message = String(receipt['message']);
+    assert.equal(message.length, 300, 'the message is truncated to 300 characters');
+    assert.ok(!message.includes(CANARY), 'nothing that looks like a key survives');
+    assert.ok(!message.includes('\n'), 'the message is one line');
+    assert.ok(!message.includes(openAiInstructions('Synthetic persona')), 'never the instructions');
+    assert.ok(safeEvent(receipt), 'the host log whitelist accepts the refusal receipt');
+    assert.ok(!logged().some(entry => JSON.stringify(entry).includes('Synthetic persona')), 'no receipt carries instruction text');
+  });
+
   test('the start barrier sends session.start before any audio, with the persona wrapper and wire facts', async t => {
     const f = await fixture(t);
     const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());

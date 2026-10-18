@@ -1,4 +1,4 @@
-import { createSourceFile, ScriptTarget, SyntaxKind } from 'typescript';
+import { createSourceFile, ScriptTarget, SyntaxKind, transpileModule } from 'typescript';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -904,4 +904,77 @@ test('the mini orb renders no step lines, only its one caption', () => {
   assert.equal(mini.includes('Mattermost'), false, 'no source line and no count reaches the mini orb');
   assert.equal(mini.includes('release freeze'), false, 'no subject reaches the mini orb');
   assert.match(liveMarkup(live), /Mattermost: 13 messages/, 'the full view is where the steps live');
+});
+
+// --- Release 3p: the orb, its label and the control answer a Stop press at once ----------------
+import { initialLiveView, machineOwnsOrb as ownsOrb, liveControl as controlOf } from '../src/live-view.ts';
+import type { NativeLiveError, NativeLiveState } from '../src/native-bridge.ts';
+
+/** main.ts's real orb state, orb label and control markup, run with only the state they read. */
+function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | undefined, extra: { stateError?: NativeLiveError } = {}) {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const line = (marker: string) => { const start = source.indexOf(marker); assert.ok(start > 0, marker); return source.slice(start, source.indexOf('\n', start)); };
+  const between = (from: string, to: string) => { const start = source.indexOf(from), end = source.indexOf(to, start); assert.ok(start > 0 && end > start, `${from} .. ${to}`); return source.slice(start, end); };
+  const context: any = {
+    connection: 'Ready', pairingRequired: false,
+    live: projection ? { state: projection, cursor: 0, entries: [] } : undefined,
+    liveMachine: { view: { ...initialLiveView(), state: machine, error: extra.stateError } },
+    liveVoiceState, liveLabel: (current: LiveCurrent) => liveLabel(current), busy: false, error: undefined,
+    connectedView: { active: false }, e: (text: string) => text, lookupLineMarkup: () => '',
+    machineOwnsOrb: ownsOrb, liveControl: controlOf, startAvailable, liveErrorText,
+  };
+  createContext(context);
+  // The slices are TypeScript, so the annotations come off before the vm runs them.
+  runInContext(transpileModule(
+    [line('const LIVE_COPY'), line('function liveStateCopy'), between('function orbState():', 'function orbLabel('),
+      between('function orbStateLineMarkup(', 'function orbControlsMarkup('),
+      between('function orbControlsMarkup(', 'function orbCaptionMarkup(')].join('\n'),
+    { compilerOptions: { target: ScriptTarget.ES2020 } },
+  ).outputText, context);
+  return context as { orbState(): string; orbStateLineMarkup(): string; orbControlsMarkup(): string };
+}
+
+test('the machine owns the orb while stopping, idle or error, and the projection only while live or muted', () => {
+  const at = (state: NativeLiveState) => ownsOrb({ ...initialLiveView(), state });
+  for (const state of ['stopping', 'idle', 'error'] as const) assert.equal(at(state), true, state);
+  for (const state of ['live', 'muted', 'starting'] as const) assert.equal(at(state), false, state);
+});
+
+test('a Stop press changes the orb label before the server projection catches up', () => {
+  const stopping = orbUnder('stopping', 'speaking');
+  assert.equal(stopping.orbStateLineMarkup(), 'Stopping', 'the press is on screen, not the stale projection');
+  assert.equal(stopping.orbState(), 'CONNECTED', 'the orb leaves the speaking look on the press');
+  const idle = orbUnder('idle', 'speaking');
+  assert.equal(idle.orbStateLineMarkup(), 'Live is off', 'a stale speaking projection never outlives the session');
+  assert.equal(idle.orbState(), 'CONNECTED', 'the idle orb stays the idle orb');
+});
+
+test('a live machine still lets the projection name what Naya is doing', () => {
+  const live = orbUnder('live', 'thinking');
+  assert.equal(live.orbStateLineMarkup(), 'Thinking', 'unchanged behaviour while the machine is live');
+  assert.equal(live.orbState(), liveVoiceState('thinking'));
+});
+
+test('a failed stop shows the error state and offers Start again', () => {
+  const failed = orbUnder('error', 'speaking', { stateError: 'micDenied' });
+  assert.equal(failed.orbState(), 'ERROR');
+  assert.equal(failed.orbStateLineMarkup(), 'Needs your attention');
+  assert.match(failed.orbControlsMarkup(), /id="voice-start"/);
+  assert.match(failed.orbControlsMarkup(), /Microphone access is blocked/);
+});
+
+test('the Start/Stop control follows the machine, so the press flips it before the server replies', () => {
+  const at = (state: NativeLiveState) => controlOf({ ...initialLiveView(), state });
+  assert.equal(at('live'), 'stop'); assert.equal(at('muted'), 'stop'); assert.equal(at('starting'), 'stop');
+  assert.equal(at('stopping'), 'stopping');
+  assert.equal(at('idle'), 'start'); assert.equal(at('error'), 'start');
+});
+
+test('the button label and pressed state flip on the press and return to Start at idle', () => {
+  assert.match(orbUnder('live', 'listening').orbControlsMarkup(), /id="voice-stop" class="stop-pill" aria-pressed="true">Stop</);
+  const pressed = orbUnder('stopping', 'speaking').orbControlsMarkup();
+  assert.match(pressed, />Stopping</, 'the press names what is happening');
+  assert.doesNotMatch(pressed, /aria-pressed="true">Stop/, 'the control no longer claims the call is on');
+  assert.match(orbUnder('idle', 'speaking').orbControlsMarkup(), /id="voice-start"[^>]*aria-pressed="false"[^>]*>Start</,
+    'Start comes back though the projection still says speaking');
 });

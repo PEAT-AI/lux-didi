@@ -43,6 +43,8 @@ export interface Projection {
   readonly at: number; readonly cause: string; readonly state: string; readonly lifecycle: string;
   /** The host's terminal state word, when the session settled: an answer cannot be excused by a silent end. */
   readonly terminal: string | null;
+  /** The terminal code the adapter or the owner fixed, when the outcome carries one (LiveTerminalOutcome). */
+  readonly terminalCode: string | null;
 }
 export interface Receipt { readonly at: number; readonly bytes: number; readonly durationMs: number }
 export interface CallObligation {
@@ -228,10 +230,13 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   const sample = (cause: string): void => {
     const snapshot = owner.get(liveSessionId);
     const state = owner.current().state;
-    const terminal = snapshot.terminal?.state ?? null;
+    const outcome = snapshot.terminal;
+    const terminal = outcome?.state ?? null;
+    const terminalCode = outcome !== null && outcome !== undefined && 'code' in outcome ? outcome.code : null;
     const last = projections.at(-1);
-    if (last && last.state === state && last.lifecycle === snapshot.lifecycle && last.terminal === terminal) return;
-    projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle, terminal });
+    if (last && last.state === state && last.lifecycle === snapshot.lifecycle && last.terminal === terminal
+      && last.terminalCode === terminalCode) return;
+    projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle, terminal, terminalCode });
   };
 
   const owner = createLiveSessionOwner({
@@ -544,6 +549,8 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
 export interface Violations { readonly list: readonly string[] }
 
 const ANSWER_COMMANDS = new Set(['response.item.create', 'response.create']);
+/** The only terminal words that are a typed failure of the turn itself (LiveTerminalOutcome). */
+const TYPED_FAILURE = new Set(['failed', 'deadline']);
 
 export function analyse(input: {
   readonly calls: readonly CallObligation[];
@@ -633,13 +640,15 @@ export function analyse(input: {
     if (call.outputs.length !== 1) continue;
     const owedAt = call.outputs[0]!.at;
     const delivered = receipts.find(receipt => receipt.at >= owedAt);
-    // A typed end means the host published an error or timeout code: a silent settle is not an answer.
+    // A typed failure is the only settle that excuses a missing answer: `failed` or `deadline` with the code
+    // the adapter or the owner fixed (LiveTerminalOutcome). Every other terminal word (closed, cancelled,
+    // revoked, expired, not_started, outcome_unknown, journal_limit, consumer_backpressure) is a silent end.
     const settled = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal'
-      && entry.terminal !== null && entry.terminal !== 'ended');
+      && TYPED_FAILURE.has(entry.terminal ?? '') && entry.terminalCode !== null);
     if (delivered === undefined && settled === undefined) {
       const ended = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal');
       list.push(`invariant 6: ${call.callId} was answered but the turn never became audible and never failed with a typed disposition within the ${deadlineMs} ms deadline` +
-        (ended ? ` (the session settled as ${ended.terminal ?? 'unknown'})` : ''));
+        (ended ? ` (the session settled as ${ended.terminal ?? 'unknown'}${ended.terminalCode === null ? '' : `:${ended.terminalCode}`})` : ''));
     } else if (delivered !== undefined && delivered.at - owedAt > deadlineMs) {
       list.push(`invariant 6: ${call.callId} became audible ${delivered.at - owedAt} ms after submission, past the ${deadlineMs} ms deadline`);
     }
@@ -658,7 +667,7 @@ export function trace(input: Replay): string {
   const continued = new Set(input.batches.flatMap(batch => batch.creates.length > 0 ? batch.callIds : []));
   const calls = input.calls.map(call => `${call.callId}:${call.outputs.length}/${continued.has(call.callId) ? 'continued' : 'open'}`).join(' ');
   const terminal = input.projections.find(entry => entry.lifecycle === 'terminal');
-  const outcome = terminal ? `${terminal.terminal ?? 'unknown'}` : 'open';
+  const outcome = terminal ? `${terminal.terminal ?? 'unknown'}${terminal.terminalCode === null ? '' : `:${terminal.terminalCode}`}` : 'open';
   const fill = `${input.inaudibleFrames} fill frames`;
   return `\ncommands: ${commands}\norb: ${orb}\ncalls: ${calls}\nreceipts: ${input.receipts.length} (${fill})\ndisposition: ${outcome}`;
 }

@@ -197,7 +197,7 @@ test('the sanitizer reads a recorded log as one JSON array and as one frame per 
 });
 
 /** The minimum an invariant needs: one call answered once, and the continuation decisions recorded after it. */
-const probe = (creates: number, terminal: { lifecycle: string; terminal: string | null } | undefined, audible: boolean) => {
+const probe = (creates: number, terminal: { state: string; code: string | null } | undefined, audible: boolean) => {
   const output: Command = { seq: 1, at: 1_000, type: 'response.item.create', epoch: 0,
     frame: { item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } } };
   const decisions: Command[] = Array.from({ length: creates }, (_unused, index) =>
@@ -207,7 +207,7 @@ const probe = (creates: number, terminal: { lifecycle: string; terminal: string 
     calls: [call],
     batches: [{ epoch: 0, at: 1_000, callIds: ['call_1'], creates: decisions }],
     commands: [output, ...decisions],
-    projections: terminal ? [{ at: 5_000, cause: 'probe', state: 'ended', lifecycle: terminal.lifecycle, terminal: terminal.terminal }] : [],
+    projections: terminal ? [{ at: 5_000, cause: 'probe', state: 'ended', lifecycle: 'terminal', terminal: terminal.state, terminalCode: terminal.code }] : [],
     receipts: audible ? [{ at: 2_000, bytes: 4_800, durationMs: 100 }] : [],
     dispositions: [],
     deadlineMs: 10_000,
@@ -228,12 +228,19 @@ test('invariant 2 refuses a batch continued twice, and accepts it continued once
     `a withheld continuation must violate invariant 2: ${JSON.stringify(withheld)}`);
 });
 
-test('invariant 6 refuses a silent terminal end and accepts a typed one', () => {
-  const silent = probe(1, { lifecycle: 'terminal', terminal: 'ended' }, false);
-  assert.equal(silent.some(entry => entry.includes('invariant 6')), true,
-    `a silent terminal end must not count as a typed failure: ${JSON.stringify(silent)}`);
-  const unknown = probe(1, { lifecycle: 'terminal', terminal: null }, false);
-  assert.equal(unknown.some(entry => entry.includes('invariant 6')), true, `an unknown terminal state must not count either: ${JSON.stringify(unknown)}`);
-  assert.deepEqual(probe(1, { lifecycle: 'terminal', terminal: 'provider_error' }, false), [], 'a typed provider error ends the turn correctly');
+test('invariant 6 refuses every silent terminal word the host really emits and accepts a typed failure', () => {
+  // LiveTerminalOutcome (server/live/types.ts:127-128): only `failed` and `deadline` carry a code and mean the
+  // turn itself failed. Every other word is a silent end and cannot excuse a missing answer.
+  for (const silent of ['closed', 'cancelled', 'not_started', 'outcome_unknown', 'expired', 'revoked', 'journal_limit', 'consumer_backpressure']) {
+    const violations = probe(1, { state: silent, code: null }, false);
+    assert.equal(violations.some(entry => entry.includes('invariant 6')), true,
+      `a ${silent} end must violate invariant 6: ${JSON.stringify(violations)}`);
+  }
+  assert.equal(probe(1, { state: 'closed', code: 'remote_closed' }, false).some(entry => entry.includes('invariant 6')), true,
+    'a closed end with a code is still a silent end');
+  assert.equal(probe(1, { state: 'failed', code: null }, false).some(entry => entry.includes('invariant 6')), true,
+    'a failed end with no code is not typed');
+  assert.deepEqual(probe(1, { state: 'failed', code: 'provider_error' }, false), [], 'a failed end with a code is a typed failure');
+  assert.deepEqual(probe(1, { state: 'deadline', code: 'deadline' }, false), [], 'a deadline with a code is a typed failure');
   assert.deepEqual(probe(1, undefined, true), [], 'audible output ends the turn correctly');
 });

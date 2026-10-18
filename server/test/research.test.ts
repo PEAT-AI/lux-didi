@@ -782,8 +782,13 @@ test('Q5-R2: a cut result block carries one machine line, and a whole one carrie
 test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline', async () => {
   const h = harness({ selector: knowledge });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the connector' }, new AbortController().signal);
-  const lookup = h.executed.find(entry => entry.name === 'search_knowledge')!;
-  assert.deepEqual(lookup.args, { query: 'connector', limit: 6, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 });
+  const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
+  assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query'], 'exactly those fields, and no others');
+  assert.equal(args['limit'], 6);
+  assert.equal(args['detail'], 'bodies');
+  assert.equal(args['max_chars'], 1_200);
+  assert.equal(args['deadline_ms'], 8_000);
+  assert.equal(typeof args['query'], 'string');
   assert.equal(RESEARCH.knowledgeMaxChars, 1_200);
   assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
 });
@@ -794,9 +799,13 @@ test('3r: a body the server cut at the asked-for window is marked in the reply',
   const h = harness({ selector: knowledge, executeText: `${cut}\n${whole}` });
   const reply = await runResearch(h.deps, { action: 'start', question: 'release 3p scope' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
-  assert.match(finding.text, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
+  // Hit order is the ranker's, so each hit's own line is read by its heading, never by position.
+  const hits = finding.text.split(/(?=#41[23] )/u);
+  const cut = hits.find(hit => hit.startsWith('#412 '))!;
+  const whole = hits.find(hit => hit.startsWith('#413 '))!;
+  assert.match(cut, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
   assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
-  assert.equal(/cut at 1200 chars/u.test(finding.text.split('#413')[1] ?? ''), false, 'an uncut body carries no cut mark');
+  assert.equal(whole.includes('cut at'), false, 'an uncut body carries no cut mark');
 });
 
 test('3r: the research receipt records the bounded-body request, metadata only', async () => {

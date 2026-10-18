@@ -190,7 +190,7 @@ test('P7 a call with no turnComplete renders one bubble per turn, in the order s
     }
   }
   const items = sessionItems({ state: 'speaking', cursor: seq, entries: rows } as LiveCurrent);
-  const turns = items.filter(item => /^[a-z]+:\d+$/.test(item.key));
+  const turns = items.filter(item => /^(user|naya):\d+$/.test(item.key));
   assert.deepEqual(turns.map(item => item.key), expected, '13 bubbles, each keyed by its own first delta');
   assert.equal((liveMarkup({ state: 'speaking', cursor: seq, entries: rows } as LiveCurrent).match(/class="entry (user|assistant)"/g) ?? []).length, 13,
     'no two turns share a bubble');
@@ -272,15 +272,15 @@ test('new session replaces prior entries while same session pages accumulate', (
 
 test('cursor page replay replaces matching seq and a new session resets it', () => {
   const first: LiveCurrent = { state: 'speaking', since: 'session-a', cursor: 2, entries: [
-    { seq: 1, kind: 'outputTranscription', text: 'Hel' },
-    { seq: 2, kind: 'outputTranscription', text: 'l' },
+    { seq: 1, kind: 'outputTranscription', text: 'Hello' },
+    { seq: 2, kind: 'outputTranscription', text: 'there' },
   ] };
   const replay: LiveCurrent = { state: 'speaking', since: 'session-a', cursor: 3, entries: [
-    { seq: 2, kind: 'outputTranscription', text: 'lo' },
+    { seq: 2, kind: 'outputTranscription', text: 'there you go' },
     { seq: 3, kind: 'turnComplete' },
   ] };
   const merged = mergeLive(first, replay);
-  assert.deepEqual(liveTranscript(merged), [{ role: 'naya', text: 'Hello' }]);
+  assert.deepEqual(liveTranscript(merged), [{ role: 'naya', text: 'Hello there you go' }]);
   const reset: LiveCurrent = { state: 'listening', since: 'session-b', cursor: 1, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'new' },
   ] };
@@ -784,7 +784,8 @@ test('FE1 the feed is one surface with headline rows and collapsed detail', () =
 test('FE1 the turn row shows a headline and keeps the full answer in a closed detail', () => {
   const answer = 'Ship the UI. Then run the audit against the release branch before the owner tests it, '
     + 'because the transcript shows only the first sentence above the disclosure and everything else '
-    + 'has to stay one click away, which is the whole point of keeping the full answer closed here.';
+    + 'has to stay one click away, which is the whole point of keeping the full answer closed here. '
+    + 'The threshold is a length, not a sentence count, so a long single sentence still opens a detail.';
   assert.ok(answer.length >= TURN_DETAIL_MIN, 'the fixture is above the disclosure threshold');
   const live = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 5, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'what next?' },
@@ -852,19 +853,21 @@ test('P7 the growing bubble keeps its node and an opened detail stays open', () 
   context.live = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: seed } as unknown as LiveCurrent;
   // The reader opened the tool chip before the answer started growing.
   list.children = liveSegments(context.live).map((segment: any) => makeRow(restoreOpen(segment.html, ['tool:3'])));
-  const growingRow = list.children[2];
+  const growingRow = list.children[3];
+  const toolRow = list.children[2];
   assert.ok(/data-growing/.test(growingRow.outerHTML), 'the last answer is the growing bubble');
   context.live = { ...context.live, cursor: 5, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }] } as unknown as LiveCurrent;
   runInContext(script, context);
-  assert.equal(list.children[2], growingRow, 'the growing bubble is the same DOM node, never replaced');
+  assert.equal(list.children[3], growingRow, 'the growing bubble is the same DOM node, never replaced');
   assert.match(growingRow.querySelector('[data-live-text]').innerHTML, /Right away\./, 'its text node grew in place');
   assert.equal(replaced.includes('naya:4'), false, 'the growing row was never rewritten through outerHTML');
-  assert.match(list.children[1].outerHTML, /live-tool-result[^>]*open>/, 'the opened tool chip is still open');
+  assert.equal(list.children[2], toolRow, 'no other row is rebuilt while the answer grows');
+  assert.match(toolRow.outerHTML, /live-tool-result[^>]*open>/, 'the opened tool chip is still open');
   assert.equal(replaced.includes('tool:3'), false);
   // When the journal closes the run the row becomes an ordinary closed bubble.
   context.live = { ...context.live, cursor: 6, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }, { seq: 6, kind: 'turnComplete' }] } as unknown as LiveCurrent;
   runInContext(script, context);
-  assert.equal(growingText(list.children[2].outerHTML), undefined, 'a closed bubble is no longer growing');
+  assert.equal(growingText(list.children[3].outerHTML), undefined, 'a closed bubble is no longer growing');
 });
 
 test('FE1-R1 a finished session shows its first turn headline and turn count, collapsed', () => {

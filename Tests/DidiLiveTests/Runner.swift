@@ -717,7 +717,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(rejection == LiveFrameRejection(sequence: 5, previous: 5, kind: "turnComplete"),
                         "the refused frame is recorded with its sequence, its predecessor and its kind")
             try await until { await rejectSocket.controls.contains(.close) }
-            try require(await rejectClient.state == .outcomeUnknown(.invalidFrame), "the call ends unknown with the refusal")
+            // The close itself settles last, so the final state is the refusal, not the Stop's own closing state.
+            try await until { await rejectClient.state == .outcomeUnknown(.invalidFrame) }
             try require(await rejectSocket.connections == 1, "a refused frame never reconnects")
             await rejectHTTP.finish()
             print("PASS a refused marker is recorded and ends the host session")

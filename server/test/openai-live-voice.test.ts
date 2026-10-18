@@ -636,6 +636,30 @@ describe('openai gpt-live adapter', () => {
     ]);
   });
 
+  test('S5: every answered call writes its output at answer time, and only the continuation waits', async t => {
+    const clock = new FakeClock();
+    const { f, session, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
+    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
+    // Both calls answered in the order the tools finished, not in the order they were delegated.
+    session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: false } }] });
+    await quiet();
+    assert.deepEqual(withoutIds(f.frames.slice(1)), [
+      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_2', output: '{"ok":false}' } },
+    ], 'the answer is on the wire at once, with no continuation behind a partial batch');
+    // The batch still lacks call_1, so no create may be written yet.
+    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    await quiet();
+    assert.deepEqual(f.frames.filter(frame => frame['type'] === 'response.create'), [], 'a partial batch is never continued');
+    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
+    await f.frame(3);
+    assert.deepEqual(withoutIds(f.frames.slice(2)), [
+      { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
+      { type: 'response.create' },
+    ], 'the last answer completes the batch, and exactly one continuation follows it');
+  });
+
   test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {
     const clock = new FakeClock();
     const logged = hostReceipts(t);

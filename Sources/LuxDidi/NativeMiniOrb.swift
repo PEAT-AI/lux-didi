@@ -117,6 +117,27 @@ final class MiniOrbToggle {
     }
 }
 
+/// Q4-R2: the status menu's "Show mini orb" item. Its action is presentation only, so pressing the
+/// menu never opens a live microphone. The item is built here, next to the toggle it drives, so the
+/// seam test presses the same item the status menu carries instead of a helper nothing calls.
+@MainActor
+final class MiniOrbMenuCommand: NSObject {
+    static let title = "Show mini orb"
+    private let show: @MainActor (SurfaceTrigger) -> Void
+
+    init(show: @escaping @MainActor (SurfaceTrigger) -> Void) { self.show = show }
+
+    /// The item the status menu adds. It carries its own target and action, so the menu's default
+    /// target pass must not claim it.
+    func item() -> NSMenuItem {
+        let item = NSMenuItem(title: Self.title, action: #selector(press), keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc func press() { show(.menu) }
+}
+
 /// Pill position, remembered like `WindowFrameRestore` but at the pill's fixed
 /// 64x26 and without the 980x760 window minimum, so a compact frame is never
 /// rejected. A frame that is still partly on a screen is clamped into that

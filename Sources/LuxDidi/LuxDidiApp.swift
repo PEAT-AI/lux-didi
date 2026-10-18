@@ -503,6 +503,8 @@ struct RootView: View {
         stop: { [weak self] in self?.model.stopLive() })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
+    /// Q4-R2: the status menu's "Show mini orb" is presentation only.
+    private lazy var miniOrbMenu = MiniOrbMenuCommand { [weak self] trigger in self?.miniOrb.showSurface(trigger: trigger) }
     private var miniShell: CompanionWeb?
     private var miniPanel: MiniOrbPanel?
     private var miniCookie: HTTPCookie?
@@ -627,7 +629,6 @@ struct RootView: View {
         loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
         menu.addItem(withTitle: "Show Naya", action: #selector(show), keyEquivalent: "")
-        menu.addItem(withTitle: "Show mini orb", action: #selector(toggleMiniOrb), keyEquivalent: "")
         singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
         singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
         // #3p: the one line that says why a silent key is silent, in the status menu the
@@ -641,7 +642,11 @@ struct RootView: View {
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
         menu.addItem(withTitle: NativeDiagnosticsAction.itemTitle, action: #selector(copyDiagnostics), keyEquivalent: "")
         menu.addItem(withTitle: "Quit Naya", action: #selector(quit), keyEquivalent: "q")
-        for item in menu.items { item.target = self }; statusItem.menu = menu
+        for item in menu.items { item.target = self }
+        // Q4-R2: "Show mini orb" is presentation only and carries its own target, so it joins the
+        // menu after the default target pass. A menu item never opens a live microphone.
+        menu.addItem(miniOrbMenu.item())
+        statusItem.menu = menu
         hotkey.onToggle = { [weak self] in self?.toggleMiniOrb() }
         hotkeyCode = hotkey.register()
         model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · mini orb" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
@@ -931,7 +936,8 @@ struct RootView: View {
     func escape() {
         if coordinator.mode == .mini { miniOrb.hide(caller: "escape"); coordinator.hideMiniSurface() } else { hide() }
     }
-    /// Ctrl-Opt-Space: the mini orb, and a second press brings the window back.
+    /// Ctrl-Opt-Space: the mini orb and a second press brings the window back. The chord starts Live
+    /// when nothing runs, exactly as before; the status menu's item is the presentation-only path.
     @objc func toggleMiniOrb() {
         if coordinator.mode == .mini { _ = coordinator.presentFull(activating: launchKind.activates) } else { miniOrb.show() }
     }
@@ -1027,7 +1033,11 @@ struct RootView: View {
     /// new audio code.
     private func applyPresenceStep(_ step: PresenceStep) {
         switch step {
-        case .connect: if model.live?.isCapturing != true { model.handleBridgeCommand(.start) }
+        case .connect: if model.live?.isCapturing != true {
+            // Q4-R5: an orb press starts the session, so the receipt names `orb` and not a chord.
+            model.recordSurfaceReceipt(["event": "mini_start", "trigger": SurfaceTrigger.orb.rawValue])
+            model.handleBridgeCommand(.start)
+        }
         case .hotMute: if model.live?.isMuted == false { model.handleBridgeCommand(.mute) }
         case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
         }

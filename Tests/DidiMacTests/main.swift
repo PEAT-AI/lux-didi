@@ -709,9 +709,25 @@ let q4Orb = MiniOrbToggle(
     startLive: { q4Starts += 1 }, stopLive: { q4Stops += 1 }, liveIsRunning: { false },
     presentPanel: { trigger in q4Triggers.append(trigger); q4Shows += 1; return .shown(q4Facts) },
     dismissPanel: {}, expandToWindow: {}, receipt: { q4Receipts.append($0) })
+// The status menu's own item, pressed through the selector and target it carries (Q4-R1).
+var menuShows: [SurfaceTrigger] = [], menuStarts = 0, menuStops = 0
+var menuReceipts: [[String: Any]] = []
+let menuOrb = MiniOrbToggle(
+    startLive: { menuStarts += 1 }, stopLive: { menuStops += 1 }, liveIsRunning: { false },
+    presentPanel: { trigger in menuShows.append(trigger); return .shown(q4Facts) },
+    dismissPanel: {}, expandToWindow: {}, receipt: { menuReceipts.append($0) })
+let statusMenuCommand = MiniOrbMenuCommand { trigger in menuOrb.showSurface(trigger: trigger) }
+let showMiniOrbItem = statusMenuCommand.item()
+expect(showMiniOrbItem.title == "Show mini orb", "the status menu carries a Show mini orb item")
+expect(showMiniOrbItem.action == #selector(MiniOrbMenuCommand.press) && showMiniOrbItem.target === statusMenuCommand,
+       "the Show mini orb item carries the presentation-only action, not the chord's toggle")
+_ = (showMiniOrbItem.target as? NSObject)?.perform(showMiniOrbItem.action, with: showMiniOrbItem)
+expect(menuOrb.isVisible && menuShows == [.menu] && menuStarts == 0 && menuStops == 0,
+       "pressing the status menu item shows the mini surface and never starts Live")
+
 q4Orb.showSurface(trigger: .menu)
 expect(q4Orb.isVisible && q4Shows == 1 && q4Starts == 0 && q4Triggers == [.menu],
-       "the menu item shows the mini surface and never starts Live")
+       "a menu-triggered show moves the surface and never starts Live")
 q4Orb.hideSurface(caller: "presence")
 expect(!q4Orb.isVisible && q4Receipts.last?["event"] as? String == "mini_hidden"
        && q4Receipts.last?["caller"] as? String == "presence",

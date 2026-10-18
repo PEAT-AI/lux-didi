@@ -407,20 +407,34 @@ test('an OAuth record carries the bearer through one tool call and logs no crede
     assert.equal(runtime.status().endpoints[0]?.error, undefined);
     assert.deepEqual(stages, []);
     assert.ok(runtime.registry.currentGrant('mongoose'));
-
-    // One real tool call over the same adapter: the fixture only answers with the record's bearer.
-    const registry = new McpRegistry();
-    registry.register({ id: 'source', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp' });
-    registry.enable('source'); registry.allowEgress('source');
-    const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: ref => mongooseAccessToken(configDir, ref) });
-    const digest = await approve(adapter, registry);
-    const result = await reader(adapter, registry, digest).call('get_schema', {});
-    assert.equal(result.state, 'completed');
-    assert.deepEqual(f.calls, [{ name: 'get_schema', arguments: {} }]);
-    await adapter.close();
+    assert.equal(f.calls.length, 0, 'no tool call ran during discovery');
     assert.deepEqual(stages, []);
   } finally {
     if (runtime) await runtime.close();
+    await f.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('one widened read tool call carries the bearer resolved from the OAuth record', async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-oauth-call-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const NOW = Date.now();
+  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
+    schemaVersion: 2, base: f.url.replace(/\/mcp$/, ''), clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
+    accessToken: 'test-token', refreshToken: 'refresh-token', expiresAt: NOW + 3_600_000, consentStartedAt: NOW,
+  }), { mode: 0o600 });
+  const adapter = adapterFor(f.url, ref => mongooseAccessToken(configDir, ref));
+  try {
+    const digest = await approve(adapter.adapter, adapter.registry, ['get_schema']);
+    const result = await reader(adapter.adapter, adapter.registry, digest).call('get_schema', {});
+    assert.equal(result.state, 'completed');
+    assert.deepEqual(f.calls, [{ name: 'get_schema', arguments: {} }]);
+  } finally {
+    await adapter.adapter.close();
     await f.close();
     rmSync(dir, { recursive: true, force: true });
   }

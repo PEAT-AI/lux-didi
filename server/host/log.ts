@@ -32,7 +32,7 @@ const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'session_clos
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
-const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
+const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
 /** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. A call the

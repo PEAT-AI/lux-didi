@@ -15,6 +15,12 @@ export interface SummaryRecord {
   liveSessionId: string;
   status: SummaryStatus;
   summary: string | null;
+  /** Something the owner explicitly said was still to do, at most 120 characters, or null. */
+  openLoop: string | null;
+  /** The distillation prompt version the row was written under; null on rows from before v2. */
+  promptVersion: string | null;
+  /** Why the row was skipped; null when it was not skipped or the reason was never recorded. */
+  skipReason: string | null;
   endedAt: number | null;
   model: string | null;
   inputChars: number | null;
@@ -47,6 +53,9 @@ function toRecord(row: SQLRow): SummaryRecord {
     liveSessionId: String(row['live_session_id']),
     status: String(row['status']) as SummaryStatus,
     summary: row['summary'] === null || row['summary'] === undefined ? null : String(row['summary']),
+    openLoop: row['open_loop'] === null || row['open_loop'] === undefined ? null : String(row['open_loop']),
+    promptVersion: row['prompt_version'] === null || row['prompt_version'] === undefined ? null : String(row['prompt_version']),
+    skipReason: row['skip_reason'] === null || row['skip_reason'] === undefined ? null : String(row['skip_reason']),
     endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']),
     model: row['model'] === null || row['model'] === undefined ? null : String(row['model']),
     inputChars: row['input_chars'] === null || row['input_chars'] === undefined ? null : Number(row['input_chars']),
@@ -62,6 +71,9 @@ export interface InsertSummaryInput {
   liveSessionId: string;
   status: SummaryStatus;
   summary?: string | null;
+  openLoop?: string | null;
+  promptVersion?: string | null;
+  skipReason?: string | null;
   endedAt?: number | null;
   model?: string | null;
   inputChars?: number | null;
@@ -84,9 +96,10 @@ export function insertSummary(tx: Transaction, input: InsertSummaryInput): Summa
   const id = newId();
   tx.run(
     `INSERT INTO conversation_summaries
-       (id, live_session_id, status, summary, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, input.liveSessionId, input.status, input.summary ?? null, input.endedAt ?? null, input.model ?? null,
+       (id, live_session_id, status, summary, open_loop, prompt_version, skip_reason, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, input.liveSessionId, input.status, input.summary ?? null, input.openLoop ?? null, input.promptVersion ?? null,
+      input.skipReason ?? null, input.endedAt ?? null, input.model ?? null,
       input.inputChars ?? null, input.inputTruncated ? 1 : 0, JSON.stringify([...(input.injectedSummaryIds ?? [])]),
       input.retryCount ?? 0, input.errorCode ?? null, input.now],
   );
@@ -118,13 +131,14 @@ export function listSummaries(tx: Transaction): SummaryRecord[] {
   return tx.all('SELECT * FROM conversation_summaries ORDER BY created_at DESC, rowid DESC').map(toRecord);
 }
 
-/** Ended sessions that still have no summary row, oldest first; the reconciler's work list. */
+/** Ended sessions the reconciler may still distil, oldest first: no row, or a row skipped only for a missing text model. */
 export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
   const rows = tx.all(
     `SELECT s.live_session_id AS id, s.terminal_at AS ended_at, s.terminal_outcome AS outcome
        FROM live_sessions s
        LEFT JOIN conversation_summaries c ON c.live_session_id = s.live_session_id
-      WHERE s.lifecycle = 'terminal' AND c.id IS NULL
+      WHERE s.lifecycle = 'terminal'
+        AND (c.id IS NULL OR (c.status = 'skipped' AND c.skip_reason = 'no_text_model'))
       ORDER BY (s.terminal_at IS NULL), s.terminal_at ASC, s.created_at ASC`,
   );
   return rows.map(row => ({ liveSessionId: String(row['id']), endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']),
@@ -162,6 +176,14 @@ export function countFailedDeadlineSessionsWithJournal(tx: Transaction): number 
 /** Remove a failed row so distillation may run once more for its session; refuses any non-failed row. */
 export function removeFailed(tx: Transaction, liveSessionId: string): boolean {
   const row = tx.get("SELECT id FROM conversation_summaries WHERE live_session_id=? AND status='failed'", [liveSessionId]);
+  if (!row) return false;
+  tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [liveSessionId]);
+  return true;
+}
+
+/** Remove a row skipped only because no text model was configured, so a later start distils it; any other row is refused. */
+export function reopenNoModelSkip(tx: Transaction, liveSessionId: string): boolean {
+  const row = tx.get("SELECT id FROM conversation_summaries WHERE live_session_id=? AND status='skipped' AND skip_reason='no_text_model'", [liveSessionId]);
   if (!row) return false;
   tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [liveSessionId]);
   return true;

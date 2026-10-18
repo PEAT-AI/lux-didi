@@ -485,7 +485,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f2.store), [1, 2, 3, 4, 5]);
+      assert.deepEqual(domainVersions(f2.store), [1, 2, 3, 4, 5, 6]);
       const indexSql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
       assert.match(indexSql, /source_references\(owner_id, owner_kind\)/);
       assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', [])), entriesBefore);
@@ -500,7 +500,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     } finally { raw.close(); }
     const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4, 5]);
+      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4, 5, 6]);
       assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
     } finally { f3.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -622,7 +622,7 @@ test('a distilled session A is injected into session B chat context and Live ins
         const bytes = new TextEncoder().encode(`data: ${JSON.stringify(body)}\r\n\r\n`);
         return new Response(new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }), { headers: { 'content-type': 'text/event-stream' } });
       } });
-    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => 0, log: () => {} });
+    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => 0, log: () => {} });
     await summarizer.distill('live-A');
     const row = f.store.transaction(tx => summaries.getBySession(tx, 'live-A'))!;
     assert.equal(row.status, 'complete');

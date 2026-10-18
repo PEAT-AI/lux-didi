@@ -8,7 +8,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, chooseStartContext, withProvenance, type WarmContextSections } from './warm-context.js';
@@ -114,6 +114,13 @@ const PROGRESS_INTERVAL_MS = 8_000;
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, one progress line goes out, and the S2 recovery resumes instead of rebuilding. */
 const DELEGATION_DEADLINE_MS = 25_000;
+/** R6 late findings: a source that settles this long after the first answer is still silent context for the
+ *  model, but it is no longer spoken, because the owner has moved on. */
+const LATE_WINDOW_MS = 20_000;
+/** R6: the biggest late block one source may append, about 400 tokens, well under the 500 token ceiling. */
+const LATE_BLOCK_CHARS = 1_400;
+/** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
+const LATE_SPOKEN_CHARS = 280;
 
 /** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
 const LIVE_STEPS_MAX = 8;
@@ -172,6 +179,8 @@ interface ActiveSession {
   /** S4a progress speech and the delegation deadline that outlives the S2 watchdog window. */
   progressTimer?: ReturnType<JobTimer> | undefined; progressSentAt?: number | undefined;
   delegationTimer?: ReturnType<JobTimer> | undefined;
+  /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
+  researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
   /** S4a-R2 (e): one execution receipt per call of this turn, the only source a progress line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
   /** S4a-R2 (a): calls the provider had already cancelled when the ceiling settled them. */
@@ -1986,8 +1995,13 @@ export class LiveSessionOwner {
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      // R6: the loop's own clocks (the first answer point, the dead-air beat) run on the owner's scheduler,
+      // so a test drives whole seconds instead of sleeping through them.
+      schedule: this.#schedule,
       // U-k3: each source's read opens and closes one line in the voice view while it runs.
       step: step => { if (this.#settled(handle) || generation !== handle.generation) return; this.#recordStep(handle, step); },
+      // R6: a source that settles after the first answer. The host owns the block and the delivery rule.
+      late: event => this.#lateFindings(handle, generation, event),
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
@@ -1998,6 +2012,10 @@ export class LiveSessionOwner {
         if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
         response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
       } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+      // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
+      // window and the one late commentary of this call both count from here.
+      const pending = response['pending'];
+      if (Array.isArray(pending) && pending.length > 0) { handle.researchAnsweredAt = this.#now(); handle.lateCommentaryFor = undefined; }
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {
@@ -2025,6 +2043,47 @@ export class LiveSessionOwner {
       : `Reading ${joinWords(sources)}.`;
     try { typed.call(handle.session, { text }); } catch { return; }
     hostLogEvent({ event: 'thinking_sent', chars: text.length });
+  }
+
+  /**
+   * R6: what a source found after the call had already answered. The block is always silent context for the
+   * model, so "what else did you find?" is answered truthfully, and it is spoken only when the turn is quiet:
+   * the owner is not talking, no answer audio is playing, no new question has started, and the answer is young.
+   * One late line per call, and one delivery per source, so a slow source is never reported twice.
+   */
+  #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
+    const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
+    const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
+    if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
+    if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    const think = handle.session.sendThinking;
+    // Gemini carries no thinking channel on this path, so the finding is dropped and the receipt says so.
+    if (think === undefined) return drop('no_thinking_channel');
+    const block = `Later findings from ${event.source} (${event.ms} ms): ${event.items.join('; ')}`.slice(0, LATE_BLOCK_CHARS);
+    try { think.call(handle.session, { text: block }); } catch { return drop('send_failed'); }
+    hostLogEvent({ event: 'thinking_sent', chars: block.length });
+    const reason = this.#lateCommentaryReason(handle, event);
+    if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
+    const speak = handle.session.sendCommentary;
+    const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
+    try { speak!.call(handle.session, { text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
+    handle.lateCommentaryFor = event.researchId;
+    hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
+    hostLogEvent({ ...receipt, delivered: 'commentary', reason: 'quiet' });
+  }
+
+  /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
+  #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings): string | null {
+    const now = this.#now();
+    const answeredAt = handle.researchAnsweredAt ?? now;
+    if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
+    if (typeof handle.session.sendCommentary !== 'function') return 'no_commentary_channel';
+    if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+    if (handle.speaking) return 'owner_speaking';
+    // A question begun after the first answer means the owner moved on: the block stays context only.
+    if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';
+    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return 'answer_playing';
+    return null;
   }
 
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.

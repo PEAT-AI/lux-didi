@@ -4,7 +4,7 @@ import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
   parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
-  researchCallBudgetMs, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
+  researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
@@ -27,7 +27,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: ResearchDeps['memory'] } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -48,6 +48,7 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
+    ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
   };
   return { deps, progress, logs, subcalls, executed, joined };
 }
@@ -524,6 +525,7 @@ function fakeClock(): FakeClock {
 }
 
 const settle = async (): Promise<void> => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
+const tick = async (): Promise<void> => { for (let i = 0; i < 2; i++) await new Promise(resolve => setImmediate(resolve)); };
 
 function maxGapMs(stamps: readonly number[]): number {
   return stamps.slice(1).reduce((worst, stamp, index) => Math.max(worst, stamp - stamps[index]!), 0);
@@ -831,4 +833,124 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
   assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: true });
+});
+
+// --- R6: the first answer point, and what a late source hands over --------------------------------
+
+test('R6: a call answers at 4.5 s with the layers still reading, then hands over what landed later', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      if (subs[0]!.name === 'search_knowledge') await gate.promise;
+      return subs.map(call => sub(call.name, 'Release 3t ships progressive research', true, call.key));
+    },
+  });
+  const first: ResearchFirstAnswer[] = [];
+  const late: ResearchLateFindings[] = [];
+  let reading: Promise<void> | undefined;
+  h.deps.logFirstAnswer = entry => { first.push(entry); };
+  h.deps.late = entry => { late.push(entry); };
+  h.deps.background = done => { reading = done; };
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did he ask me to remember',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal);
+  // The memory layer answers in process, the knowledge read is still open: this is the owner's 4.5 s.
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const reply = await call;
+  assert.deepEqual(reply['pending'], ['knowledge'], 'the reply names the layer still reading');
+  assert.equal(reply['status'], 'partial');
+  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'memory'), 'the finding in hand is in the reply');
+  assert.deepEqual(first.map(entry => [entry.ms, entry.settled, entry.pending]), [[4_500, ['memory'], ['knowledge']]], 'one receipt names the moment and the two lists');
+  assert.equal(late.length, 0, 'nothing is reported while the reader is still working');
+  gate.resolve();
+  await reading;
+  assert.deepEqual(late.map(entry => [entry.source, entry.items, entry.ok]), [['knowledge', ['Release 3t ships progressive research'], true]], 'the late source is reported once, with what it returned');
+  assert.equal(h.deps.ledger.find(first[0]!.researchId) !== undefined, true, 'the run is the one the receipt named');
+});
+
+test('R6: a call with no findings at 4.5 s waits for its sources instead of answering empty', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: [], text: '', total: 0 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      await gate.promise;
+      return subs.map(call => sub(call.name, 'Release 3t ships progressive research', true, call.key));
+    },
+  });
+  const first: ResearchFirstAnswer[] = [];
+  h.deps.logFirstAnswer = entry => { first.push(entry); };
+  let answered = false;
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal).then(reply => { answered = true; return reply; });
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  await settle();
+  assert.equal(answered, false, 'nothing to say at 4.5 s, so the call waits');
+  gate.resolve();
+  const reply = await call;
+  assert.equal(reply['pending'], undefined, 'a call that waited names no pending source');
+  assert.equal(reply['status'], 'answered');
+  assert.deepEqual(first, [], 'no first answer receipt without a first answer');
+});
+
+test('R6: a late source whose lines the first reply already carried appends nothing', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['Release 3t ships progressive research'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      if (subs[0]!.name === 'search_knowledge') await gate.promise;
+      return subs.map(call => sub(call.name, 'Release 3t ships progressive research', true, call.key));
+    },
+  });
+  const late: ResearchLateFindings[] = [];
+  let reading: Promise<void> | undefined;
+  h.deps.late = entry => { late.push(entry); };
+  h.deps.background = done => { reading = done; };
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did he ask me to remember',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal);
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  await call;
+  gate.resolve();
+  await reading;
+  assert.deepEqual(late.map(entry => [entry.source, entry.items]), [['knowledge', []]], 'one receipt, no repeated line');
+});
+
+test('R6: a late source that fails says nothing and still leaves one receipt', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      await gate.promise;
+      return subs.map(call => sub(call.name, '', false, call.key));
+    },
+  });
+  const late: ResearchLateFindings[] = [];
+  let reading: Promise<void> | undefined;
+  h.deps.late = entry => { late.push(entry); };
+  h.deps.background = done => { reading = done; };
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did he ask me to remember',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal);
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  await call;
+  gate.resolve();
+  await reading;
+  assert.deepEqual(late.map(entry => [entry.source, entry.items, entry.ok]), [['knowledge', [], false]], 'a failed read never invents a finding');
 });

@@ -3336,3 +3336,37 @@ test('D6: the adapter silence model between her sentences never drops the orb ou
   assert.equal(h.owner.current().state, 'listening', '1,500 ms of audible silence ends it');
   attachment.close();
 });
+
+// O1b-N: the app's playback receipts ride the live socket the call already holds. One closed frame
+// shape in, native trace rows out; a malformed frame is refused and journaled, never stored.
+test('O1b-N: a forwarded playback receipt records native rows and a refused frame writes none', async t => {
+  const h = await harness(t);
+  configureDebugJournal(h.dir, true);
+  t.after(() => resetDebugJournal());
+  const { session, attachment } = await attached(h, 'playback-receipts');
+  const frame = (receipt: string, seq: number, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-b2', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq, ...extra });
+
+  attachment.playbackReceipt(frame('received', 1));
+  attachment.playbackReceipt(frame('enqueued', 2));
+  attachment.playbackReceipt(frame('started', 3));
+  attachment.playbackReceipt(frame('drained', 4));
+  const events = h.store.transaction(tx => tx.all('SELECT kind, source, source_seq FROM trace_event WHERE live_session_id=? ORDER BY seq', [session.liveSessionId]));
+  assert.deepEqual(events.map(row => row['kind']), ['playback.received', 'playback.enqueued', 'playback.started', 'playback.drained']);
+  assert.ok(events.every(row => row['source'] === 'native'));
+  const row = h.store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', ['inst-b2:1']))!;
+  assert.equal(row['drained_at'], 1_700_000_000_004, 'the producer wall ms lands in the summary row');
+  assert.equal(row['turn_id'], null, 'the host never guesses the turn it does not know');
+
+  const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_event')!['n']));
+  attachment.playbackReceipt(frame('drained', 5, { note: 'free text never reaches a column' }));
+  attachment.playbackReceipt('{ not json');
+  assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_event')!['n'])), before, 'a refused frame writes nothing');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, null, 'a refused frame cannot end the call');
+
+  const rejected = journalRecords(h.dir).filter(record => record['event'] === 'playback_receipt_rejected');
+  assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is journaled by typed code');
+  attachment.close();
+  await attachment.done;
+});

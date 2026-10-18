@@ -817,3 +817,18 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 });
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
 });
+
+// --- K1-R3: the routed voice start logs the same knowledge metadata as the selector loop ----------
+
+test('3r: a routed voice start logs the bounded-body request and its cut flag in the receipt', async () => {
+  const h = harness({ executeText: '### Release 3p scope (decision) [id 412]\nThe part that fits.\ntruncated: yes (5,432 chars stored)' });
+  const receipts: ResearchSourceLog[] = [];
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
+  assert.equal(args['detail'], 'bodies', 'the routed path asks through the same bounded-body args');
+  assert.equal(args['max_chars'], 1_200);
+  const receipt = receipts.find(entry => entry.source === 'knowledge')!;
+  assert.equal(receipt.outcome, 'ok');
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: true });
+});

@@ -295,6 +295,8 @@ class Session implements LiveVoiceSession {
   /** Head starts re-armed after a drain in the current turn (3o receipt `playback_rearm`). */
   private playbackRearms = 0;
   private awaitingPong = false;
+  /** Whether any inbound frame arrived inside the ping window that is now closing (3o `no_pong`). */
+  private inboundThisPing = false;
   private missedPongs = 0;
   private pingTimer: ReturnType<typeof setTimeout> | undefined;
   private lastQueueLogAt: number | undefined;
@@ -445,11 +447,12 @@ class Session implements LiveVoiceSession {
       if (socket.readyState !== WebSocket.OPEN) return;
       try { socket.ping(); } catch { return; }
       this.watchUpstreamStall(socket);
-      if (this.awaitingPong) {
+      if (this.awaitingPong && !this.inboundThisPing) {
         this.missedPongs += 1;
         if (this.missedPongs >= PING_MISSED_LIMIT) { this.dropUpstream('no_pong', socket); return; }
       }
       this.awaitingPong = true;
+      this.inboundThisPing = false;
       this.schedulePing(socket);
     }, PING_INTERVAL_MS);
     this.timers.add(this.pingTimer);
@@ -475,7 +478,8 @@ class Session implements LiveVoiceSession {
   private dropUpstream(errorKind: string, socket: WebSocket): void {
     if (this.terminal) return;
     const errorKindValue = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(errorKind) ? errorKind : 'write_error';
-    this.upstreamDrop = { errorKind: errorKindValue, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
+    const now = Date.now();
+    this.upstreamDrop = { errorKind: errorKindValue, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, now - this.startedAt), lastInboundAgeMs: Math.max(0, now - this.lastInboundAt) };
     this.recoverable = true;
     this.finish('transport_error', this.upstreamDrop);
   }
@@ -508,6 +512,7 @@ class Session implements LiveVoiceSession {
     catch { this.finish('protocol_error'); return; }
     if (!object(message) || typeof message.type !== 'string') { this.finish('protocol_error'); return; }
     this.lastInboundAt = Date.now();
+    this.inboundThisPing = true;
     // Every provider frame is untrusted: a shape refusal becomes a typed outcome, never an uncaught throw.
     try { this.dispatch(message); } catch { this.finish('protocol_error'); }
   };

@@ -86,6 +86,9 @@ export type LiveVoiceErrorCode =
 // closeCode is filled from the socket close event after the drop is detected, so it may be null until then.
 export interface LiveVoiceUpstreamDrop {
   errorKind: string; closeCode: number | null; bufferedAmount: number; writesFailed: number; sessionMs: number;
+  /** Age of the last inbound frame at the drop: an adapter that judged pongs reports it, so `no_pong` is
+   *  readable against real provider traffic (3o). */
+  lastInboundAgeMs?: number;
 }
 export interface LiveVoiceOutcome {
   recoverable?: boolean;

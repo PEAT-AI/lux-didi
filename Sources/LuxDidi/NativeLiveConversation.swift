@@ -177,6 +177,13 @@ enum State: String, CaseIterable {
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
+                    // 3o: a refused frame is never a silent throw; the sequence, the one it had to exceed and the
+                    // kind land in native-live.log before the presentation moves to outcomeUnknown.
+                    if let rejection = await coordinator.takeFrameRejection() {
+                        self.appendLocalDiagnostic(["event": "native_frame_rejected",
+                            "timestamp": ISO8601DateFormatter().string(from: Date()),
+                            "sequence": rejection.sequence, "previous": rejection.previous, "kind": rejection.kind])
+                    }
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     if case .socketClosed(let code, _) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.providerClosed, detail: NativeLiveEndDetail.providerClosed(closeCode: code)) }
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."

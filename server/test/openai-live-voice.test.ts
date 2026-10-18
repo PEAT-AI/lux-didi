@@ -899,6 +899,24 @@ describe('openai gpt-live turn states', () => {
     session.close();
   });
 
+  test('pongs go missing while provider frames keep arriving: the session is not dropped', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    // 3o: the peer answered no ping for the whole call while the provider never stopped sending, which is
+    // inbound traffic and not a dead transport.
+    socket.answersPings = false;
+    for (let window = 0; window < 3; window += 1) {
+      t.mock.timers.tick(5_000);
+      socket.deliver({ type: 'session.usage.updated' });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(socket.pings, 3, 'a ping every five seconds');
+    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'inbound frames are a live transport');
+    assert.equal(receipts().filter(record => record.event === 'live_upstream_drop').length, 0, 'and no drop receipt');
+    session.close();
+  });
+
   test('no inbound frame and no pong for eight seconds is a stall on the existing recovery path', async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     const receipts = hostReceipts(t);
@@ -914,6 +932,7 @@ describe('openai gpt-live turn states', () => {
     assert.equal(outcome.outcome.code, 'transport_error');
     assert.equal(outcome.outcome.recoverable, true, 'the R1F rebuild still owns the recovery');
     assert.equal(outcome.outcome.upstream?.errorKind, 'stalled');
+    assert.ok((outcome.outcome.upstream?.lastInboundAgeMs ?? 0) >= 8_000, 'the drop carries the inbound age it judged');
     const stall = receipts().filter(record => record.event === 'live_stall');
     assert.equal(stall.length, 1, 'one stall receipt');
     assert.ok(Number(stall[0]!.silentMs) >= 8_000, 'and it carries the inbound silence that ended the transport');

@@ -2320,6 +2320,39 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
 });
 
 
+/** Read the output stream until one marker of `kind` arrives, and return the sequence the Mac sees. */
+async function markerSequence(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, kind: string): Promise<number> {
+  for (;;) {
+    const item = await output.next();
+    assert.equal(item.done, false, 'consumer remains attached across the rebuild');
+    const chunk = item.value;
+    if (chunk.kind === 'marker' && chunk.marker.kind === kind && chunk.marker.sequence !== null) return chunk.marker.sequence;
+  }
+}
+
+test('a provider rebuild never lowers the marker sequence the Mac sees', async t => {
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'resume-sequence');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ serverContent: { inputTranscription: { text: 'before the rebuild', finished: true } } });
+  const before = await markerSequence(output, 'inputTranscription');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-sequence-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  await continuity(output, 'resumed');
+  // The rebuilt provider session counts its own events from one again; the sequence the Mac sees must not.
+  h.f.send({ serverContent: { inputTranscription: { text: 'after the rebuild', finished: true } } });
+  const after = await markerSequence(output, 'inputTranscription');
+  assert.ok(after > before, `marker sequence ${after} after the rebuild must exceed ${before}`);
+  attachment.close(); await attachment.done;
+});
+
+test('live_upstream_drop carries the inbound age when the judging adapter reports one', () => {
+  const accepted = safeEvent({ event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 49_450, writesFailed: 0, sessionMs: 12_000, lastInboundAgeMs: 9_000, rebuilt: true });
+  assert.deepEqual(accepted, { event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 49_450, writesFailed: 0, sessionMs: 12_000, lastInboundAgeMs: 9_000, rebuilt: true });
+  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 0, writesFailed: 0, sessionMs: 0, lastInboundAgeMs: -1, rebuilt: true }), undefined, 'a negative age is refused');
+  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 0, writesFailed: 0, sessionMs: 0, lastInboundAgeMs: 9_000, rebuilt: true, text: 'leak' }), undefined, 'the shape stays closed');
+});
+
 test('an exhausted original budget never opens a replacement connection', async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { sessionMs: 100, idleMs: 1000 } });

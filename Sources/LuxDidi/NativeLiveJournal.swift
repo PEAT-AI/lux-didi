@@ -185,15 +185,18 @@ final class NativeLiveJournal {
         var record: [String: Any] = detail
         record["event"] = "live_end"
         record["reason"] = reason.rawValue
-        record.merge(NativeLogClock.shared.stamp("native-live", at: date)) { current, _ in current }
-        append(record)
+        append(record, at: date)
     }
 
+    /// Append any existing native-live record, stamped now.
+    func append(_ record: [String: Any]) { append(record, at: now()) }
+
     /// Append any existing native-live record. Every line gets the launch identity, both clocks, a
-    /// sequence and, inside a call, the session id; a caller's own timestamp is kept.
-    func append(_ record: [String: Any]) {
+    /// sequence and, inside a call, the session id; a caller's own timestamp is kept. One line costs
+    /// exactly one sequence number, so the range a reader sees has no free gaps.
+    func append(_ record: [String: Any], at date: Date) {
         var fields = record
-        var stamp = NativeLogClock.shared.stamp("native-live", at: now())
+        var stamp = NativeLogClock.shared.stamp("native-live", at: date)
         if let sessionID, fields["liveSessionId"] == nil { fields["liveSessionId"] = sessionID }
         for (key, value) in fields { stamp[key] = value }
         events.append(stamp)
@@ -215,7 +218,7 @@ final class NativeLiveJournal {
         ]
         record[phase == .pre ? "preRms" : "postRms"] =
             ["mean": Double(rms.mean), "max": Double(rms.max), "speechBuffers": rms.speechBuffers]
-        append(record)
+        append(record, at: date)
     }
 
     /// P2-R1: one metadata-only `playback_overflow_flush` line: the playback memory guard dropped

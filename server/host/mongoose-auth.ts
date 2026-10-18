@@ -106,7 +106,7 @@ export interface MongooseAuthOptions {
   now?: () => number;
   fetch?: typeof fetch;
   /** One closed-token notice for the owner, never a message and never a token. */
-  notify?: (reason: 'consent-expiring') => void;
+  notify?: (reason: 'consent-expiring' | 'refresh-failed') => void;
 }
 
 export async function mongooseAccessToken(configDir: string, reference: string, options: MongooseAuthOptions = {}): Promise<string> {
@@ -132,7 +132,9 @@ async function resolveMongooseToken(configDir: string, reference: string, option
     // Re-read under the lock: another writer may have rotated the family while we waited.
     const current = readMongooseOAuth(configDir, reference) ?? record;
     if (now() < current.expiresAt - MONGOOSE_REFRESH_MARGIN_MS) return current.accessToken;
-    const next = await refreshMongooseOAuth(current, options);
+    let next: MongooseOAuthRecord;
+    try { next = await refreshMongooseOAuth(current, options); }
+    catch (error) { options.notify?.('refresh-failed'); throw error; }
     writeMongooseOAuth(configDir, reference, next);
     if (!warned.has(key) && now() >= next.consentStartedAt + MONGOOSE_CONSENT_CAP_MS - MONGOOSE_CONSENT_WARN_MS) {
       warned.add(key);

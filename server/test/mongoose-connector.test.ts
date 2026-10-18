@@ -13,7 +13,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
-import { createMongooseReader, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseFailureStage } from '../connectors/index.js';
+import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseFailureStage } from '../connectors/index.js';
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
@@ -292,4 +292,86 @@ test("mongoose connect failures map to a closed stage", () => {
   assert.equal(mongooseFailureStage("unknown", "discovery-unavailable"), "handshake");
   assert.equal(mongooseFailureStage("timeout"), "first_call");
   assert.equal(mongooseFailureStage("cancelled-before-dispatch"), "first_call");
+});
+
+// The published 64-tool surface, as documented in the Mongoose catalog. The classifier must agree
+// with it: 49 reads and 15 writes, disjoint, with no name left unclassified.
+const CATALOG_64 = [
+  'ask_mongoose', 'check_data_capability', 'claim_ticket', 'create_knowledge_item',
+  'create_ticket', 'get_commercial_paths', 'get_company_crm', 'get_company_profile',
+  'get_knowledge_graph', 'get_knowledge_item', 'get_knowledge_versions', 'get_market_profile',
+  'get_reach', 'get_schema', 'get_started', 'get_ticket',
+  'inbound_lead_events', 'lightdash_create_content', 'lightdash_create_scheduled_delivery', 'lightdash_edit_content',
+  'lightdash_find_content', 'lightdash_generate_hashes', 'lightdash_get_context', 'lightdash_get_current_project',
+  'lightdash_get_lightdash_version', 'lightdash_get_metadata', 'lightdash_get_query_result', 'lightdash_grep_fields',
+  'lightdash_list_content', 'lightdash_list_explores', 'lightdash_list_projects', 'lightdash_list_verified_content',
+  'lightdash_read_content', 'lightdash_resolve_url', 'lightdash_run_metric_query', 'lightdash_run_sql',
+  'lightdash_search_field_values', 'lightdash_set_project', 'lint_knowledge', 'list_companies',
+  'list_company_products', 'list_data_capabilities', 'list_inbound_leads', 'list_knowledge_domains',
+  'list_knowledge_edges', 'list_knowledge_items', 'list_markets', 'list_offerings',
+  'list_seed_conflicts', 'list_tickets', 'list_user_handles', 'list_users',
+  'lookup_efficacy_evidence', 'patch_knowledge_body', 'provision_user', 'read_knowledge_body',
+  'resolve_seed_conflict', 'search_mongoose', 'set_knowledge_edge', 'set_knowledge_item_status',
+  'set_user_access', 'summarize_email_engagements', 'update_knowledge_item', 'update_ticket',
+];
+
+const CATALOG_READS = [...MONGOOSE_READ_TOOLS];
+const CATALOG_WRITES = [...MONGOOSE_KNOWN_WRITES];
+
+test('the read classifier covers the published 64-tool catalog and never admits a write', () => {
+  assert.equal(CATALOG_READS.length, 49);
+  assert.equal(CATALOG_WRITES.length, 15);
+  assert.deepEqual([...new Set([...CATALOG_READS, ...CATALOG_WRITES])].sort(), [...CATALOG_64].sort());
+  for (const name of CATALOG_READS) {
+    // A read needs the server's own annotation once it sends any.
+    assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), true, name);
+    // With no annotations at all, only a read prefix stands; the rest needs the annotation.
+    const prefixed = ['get_', 'list_', 'search_', 'ask_', 'read_', 'lookup_', 'check_'].some(prefix => name.startsWith(prefix));
+    assert.equal(mongooseReadOnly({ name }), prefixed, name);
+  }
+  for (const name of CATALOG_WRITES) {
+    // A known write is never authority, even when the remote annotates it read-only.
+    assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), false, name);
+    assert.equal(mongooseReadOnly({ name }), false, name);
+  }
+});
+
+test('annotations without a read hint never authorize a name on its spelling alone', () => {
+  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: {} }), false);
+  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { destructiveHint: false } }), false);
+  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { readOnlyHint: 'yes' } }), false);
+  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { readOnlyHint: false } }), false);
+  assert.equal(mongooseReadOnly({ name: 'custom_reader' }), false);
+  assert.equal(mongooseReadOnly({ name: 'ask_mongoose' }), true);
+});
+
+test('the runtime grants every annotated read tool and no write, and forwards one widened read', async () => {
+  const reads: ToolDefinition[] = [
+    { name: 'get_schema', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
+    { name: 'list_markets', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
+    { name: 'create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+    { name: 'lightdash_run_sql', inputSchema: { type: 'object', properties: { sql: { type: 'string' } } }, annotations: { readOnlyHint: true } },
+  ];
+  const f = await fixture({ requireBearer: false, tools: reads });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-widened-'));
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  try {
+    const configDir = join(dir, 'provider-config');
+    mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+      schemaVersion: 1, grantMode: 'owner-trusted-reads',
+      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
+    }), { mode: 0o600 });
+    writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({ schemaVersion: 1, token: 'test-token' }), { mode: 0o600 });
+    const store = new Store(join(dir, 'data'), toolsMigrations);
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    const grant = runtime.registry.currentGrant('mongoose');
+    assert.ok(grant);
+    assert.deepEqual([...grant.toolNames].sort(), ['get_schema', 'lightdash_run_sql', 'list_markets']);
+    assert.equal(grant.toolNames.includes('create_ticket'), false);
+  } finally {
+    if (runtime) await runtime.close();
+    await f.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -548,12 +548,14 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   for (const fragment of page.fragments) assert.deepEqual(Object.keys(fragment).sort(), keys);
   attachment.close();
   const terminal = await attachment.done;
-  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'closed' });
+  // 3p: the client closing the session is the Stop, and the Stop has its own reason.
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'user_stop' });
   assert.equal(terminal.journal.complete, true);
 });
 
 // 3o: the app let go at 19:23:49Z and the host kept the model speaking to a detached client for 62 s.
-test('a consumer detached for five seconds ends the session cleanly and keeps its journal', async t => {
+// 3p: a socket that closed with no Stop is a call that ended, so the end is one second, not five.
+test('a consumer whose socket closed ends the session within one second as consumer_closed and keeps its journal', async t => {
   const scheduler = new DeadlineClock();
   const receipts: Record<string, unknown>[] = [];
   const detachSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
@@ -562,17 +564,47 @@ test('a consumer detached for five seconds ends the session cleanly and keeps it
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   const { session, attachment } = await attached(h);
   attachment.detach();
-  h.advance(4_999); scheduler.runDue();
-  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a detach on its own is not an end');
+  h.advance(999); scheduler.runDue();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a re-attach still has its second');
   h.advance(1); scheduler.runDue();
   const terminal = await attachment.done;
-  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_gone' });
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_closed' });
   assert.equal(terminal.journal.complete, true, 'the journal is kept');
   assert.ok(terminal.journal.events > 0, 'and it still holds what was said');
-  const gone = receipts.filter(record => record.event === 'consumer_gone_end');
-  assert.equal(gone.length, 1, 'one receipt for the end');
-  assert.equal(gone[0]!['detachedMs'], 5_000);
-  assert.ok(safeEvent(gone[0]), 'the host log whitelist accepts the end receipt');
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.equal(end.length, 1, 'one receipt for the end');
+  assert.deepEqual(end[0], { event: 'session_end', reason: 'consumer_closed', msAfterStop: 1_000 });
+  assert.ok(safeEvent(end[0]), 'the host log whitelist accepts the end receipt');
+  // The five second rule stays behind it as the last net and never fires once the session is settled.
+  h.advance(10_000); scheduler.runDue();
+  assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'no second end');
+  assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
+});
+
+test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const stopSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => stopSink());
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session, attachment } = await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
+  await drain(h, session.liveSessionId, 2);
+  // No clock advance: a Stop is felt now, not after a countdown.
+  attachment.close();
+  const terminal = await attachment.done;
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'user_stop' });
+  assert.equal(terminal.journal.complete, true, 'the journal is kept');
+  assert.ok(terminal.journal.events > 0, 'and it still holds what was said');
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.equal(end.length, 1, 'one receipt for the end');
+  assert.deepEqual(end[0], { event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
+  assert.ok(safeEvent(end[0]), 'the host log whitelist accepts the end receipt');
+  // The socket closing right behind the Stop is the same end, never a second one.
+  attachment.detach();
+  h.advance(10_000); scheduler.runDue();
+  assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'cancelled', code: 'user_stop' }, 'the first reason stands');
 });
 
 test('excluded transport facts and raw secrets never persist; Domain and CHAT stay untouched', async t => {

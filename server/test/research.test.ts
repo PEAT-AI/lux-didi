@@ -878,7 +878,7 @@ test('R6: a call answers at 4.5 s with the layers still reading, then hands over
   assert.deepEqual(reply['pending'], ['knowledge'], 'the reply names the layer still reading');
   assert.equal(reply['status'], 'partial');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'memory'), 'the finding in hand is in the reply');
-  assert.deepEqual(first.map(entry => [entry.ms, entry.settled, entry.pending]), [[4_500, ['memory'], ['knowledge']]], 'one receipt names the moment and the two lists');
+  assert.deepEqual(first.map(entry => [entry.event, entry.ms, entry.settled, entry.pending]), [['research_first_answer', 4_500, ['memory'], ['knowledge']]], 'one receipt names the moment and the two lists');
   assert.equal(late.length, 0, 'nothing is reported while the reader is still working');
   gate.resolve();
   await reading;

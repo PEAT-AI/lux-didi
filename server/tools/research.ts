@@ -700,7 +700,7 @@ export class ResearchLedger {
 
 /** R6: one metadata-only line for the moment a call answered ahead of the sources still reading. */
 export interface ResearchFirstAnswer {
-  researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
+  event: 'research_first_answer'; researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
 }
 
 /** R6: one event per source that settles after the first answer. Only what the source really returned. */
@@ -1535,7 +1535,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const reply = buildReply(view.run, 'partial', view.configured, false, view.limit);
   first.at = deps.now();
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
-  (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
+  (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
   return { ...reply, pending };
 }
 

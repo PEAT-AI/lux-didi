@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
+import { WarmContextCache, chooseStartContext } from '../live/warm-context.js';
 import { listenService } from '../http/server.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
@@ -689,4 +690,34 @@ test('the host owner prewarm returns a receipt and logs one closed warm_prewarm 
     assert.equal(typeof timestamp, 'string');
     assert.equal(pid, process.pid);
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+// 338: the forced prewarm and what the next session start takes from it. The refresh assembles
+// from the prepared sources, keeps the digest the owner just read, and a start inside the window
+// uses those sections instead of asking the store a second time.
+test('a forced warm refresh carries the calendar digest and the next start reads no source again', () => {
+  const sections = { persona: 'Naya is the owner\'s assistant.', memory: ['Prefers morning calls'],
+    summary: 'Yesterday: release planning.', calendar: '10:00 standup, 15:00 review.' };
+  const calls = { persona: 0, memory: 0, summary: 0, calendar: 0 };
+  let now = 1_000;
+  const cache = new WarmContextCache({ budget: 4_000, now: () => now, sources: {
+    persona: () => { calls.persona += 1; return sections.persona; },
+    memory: () => { calls.memory += 1; return sections.memory; },
+    summary: () => { calls.summary += 1; return sections.summary; },
+    calendar: () => { calls.calendar += 1; return sections.calendar; },
+  } });
+  assert.equal(cache.ageMs, undefined, 'nothing is assembled until a refresh asks for it');
+  const forced = cache.refresh(true);
+  assert.equal(forced?.sections.calendar, sections.calendar, 'the digest the owner read is in the assembly');
+  assert.match(forced?.text ?? '', /Today: 10:00 standup, 15:00 review\./);
+  assert.deepEqual(calls, { persona: 1, memory: 1, summary: 1, calendar: 1 }, 'one read per source per assembly');
+  now += 5;
+  cache.refresh(true);
+  assert.deepEqual(calls, { persona: 2, memory: 2, summary: 2, calendar: 2 }, 'a forced refresh assembles again');
+  assert.equal(cache.ageMs, 0, 'the receipt ages run from the forced assembly');
+  let assembled = 0;
+  const start = chooseStartContext(cache.take(), () => { assembled += 1; return { ...sections, summaryIds: [], summaryOmitted: [] }; });
+  assert.equal(start.warm, true, 'the forced assembly is what the next start takes');
+  assert.equal(assembled, 0, 'the store is not read a second time');
+  assert.equal(start.sections.calendar, sections.calendar);
 });

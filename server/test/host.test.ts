@@ -947,9 +947,9 @@ test('1015: a start reports the digest state the cache reached and never folds a
     assert.equal((await start(async () => ({ state: 'timeout', text: undefined, items: 0, fetchedAt: clock.now }))).snapshot.state, 'timeout', 'nor is a cut-off one');
     const stale = await start(async () => ({ state: 'present', text: '09:30 standup', items: 1, fetchedAt: clock.now }));
     clock.now += 31 * 60 * 1000;
-    const aged = await stale.cache.forStart();
-    assert.equal(aged.state, 'stale', 'a digest over 30 minutes old does not answer a start');
-    assert.equal(aged.text, undefined, 'and its text never rides the assembly');
+    const aged = stale.cache.current();
+    assert.equal(aged?.state, 'stale', 'a digest over 30 minutes old does not answer a start');
+    assert.equal(aged?.text, undefined, 'and its text never rides the assembly');
   } finally { await cleanup(); }
 });
 // R7: mail and calendar are both `connector: google`, so the first google endpoint is not the calendar

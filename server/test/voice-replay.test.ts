@@ -9,9 +9,10 @@ import { sanitize } from './voice-replay/sanitize.js';
  * adapter and the real host live session together over a virtual clock and asserts the six invariants the
  * council named, plus the scenario's own fault.
  *
- * A scenario the current code fails is marked `todo` with the falsified assertion quoted, and named in
- * voice-replay/parked.txt together with the wagon that owes the fix. An invariant is never softened to make a
- * scenario pass.
+ * A scenario the current code fails is marked `todo` with the falsified assertion and the wagon that owes the
+ * fix quoted in its own message, and the same four are named in docs/debugging.md under "Release gates". The
+ * suite runs inside the voice release gate, `scripts/check-live-session.sh`. An invariant is never softened to
+ * make a scenario pass.
  */
 
 const invariants = (played: Played, options: { allowUnanswered?: boolean } = {}): void => {

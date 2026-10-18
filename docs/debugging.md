@@ -174,24 +174,23 @@ line that matters before reading a transcript.
 ## Release gates
 
 A gate is a script under `scripts/` that builds first, runs its own compiled suite and refuses to be green on a
-zero test count. Run it before a voice release; each one prints its verdict and its own refusals.
+zero test count. Run it before a voice release; it prints its verdict and its own refusals.
 
 ```sh
-bash scripts/check-live-session.sh    # the host live session, its summaries, journals and adapters
-bash scripts/check-voice-replay.sh    # the twelve fault-replay scenarios (release gate F1)
+bash scripts/check-live-session.sh    # the host live session, its summaries, journals, adapters and the voice
+                                      # fault-replay scenarios (release gate F1)
 ```
 
-`check-voice-replay.sh` drives the real OpenAI adapter and the real host live session together over a virtual
-monotonic clock, against a scriptable fake provider socket, scriptable fake tools and the driver's own playback
-receipts, so no test in it sleeps, opens a provider or reads the owner's data directory. Each scenario asserts the
-six council invariants: one terminal disposition and one output submission per observed call, one continuation per
-ready batch, no write for a settled generation, no repeated uncertain action, no obligation dropped because audio
-went quiet, and an answer or a typed failure inside the scenario's virtual deadline.
+The fault-replay part of that gate drives the real OpenAI adapter and the real host live session together over a
+virtual monotonic clock, against a scriptable fake provider socket, scriptable fake tools and the driver's own
+playback receipts, so no test in it sleeps, opens a provider or reads the owner's data directory. Each scenario
+asserts the six council invariants: one terminal disposition and one output submission per observed call, one
+continuation per ready batch, no write for a settled generation, no repeated uncertain action, no obligation
+dropped because audio went quiet, and an answer or a typed failure inside the scenario's virtual deadline.
 
-A scenario the current code fails is marked `todo` with the assertion it falsifies quoted, and listed with the wagon
-that owes the fix in `server/test/voice-replay/parked.txt`. The gate cross-checks that file in both directions: an
-undeclared park fails the gate, and a declaration whose scenario has started passing fails it too, because a stale
-park hides a recovered invariant. A trace is a list of `{at_ms, direction, event}` built by
+A scenario the current code fails is marked `todo` with the assertion it falsifies quoted, and named here with the
+wagon that owes the fix: wagon S4a owns the late-callback repeat, the partial-batch continuation, the duplicate
+terminal event and the failed backend response. A trace is a list of `{at_ms, direction, event}` built by
 `server/test/voice-replay/sanitize.ts` from a recorded provider log of test data only, with every free text field
 replaced by a placeholder.
 

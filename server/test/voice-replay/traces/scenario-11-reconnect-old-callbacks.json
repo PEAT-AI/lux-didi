@@ -1,0 +1,185 @@
+{
+  "scenario": "a reconnect followed by old callbacks",
+  "deadline_ms": 20000,
+  "steps": [
+    {
+      "at_ms": 0,
+      "direction": "client",
+      "event": {
+        "type": "speak"
+      }
+    },
+    {
+      "at_ms": 0,
+      "direction": "client",
+      "event": {
+        "type": "end_input"
+      }
+    },
+    {
+      "at_ms": 950,
+      "direction": "in",
+      "event": {
+        "type": "session.input_transcript.delta",
+        "delta": "synthetic owner question",
+        "start_ms": 0,
+        "end_ms": 900
+      }
+    },
+    {
+      "at_ms": 1000,
+      "direction": "in",
+      "event": {
+        "type": "session.delegation.created",
+        "delegation": {
+          "id": "d_1",
+          "response_id": "resp_1",
+          "offset_ms": 0
+        }
+      }
+    },
+    {
+      "at_ms": 1020,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_1",
+        "event": {
+          "type": "response.created",
+          "response": {
+            "id": "resp_1"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 1200,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_1",
+        "event": {
+          "type": "response.output_item.done",
+          "item": {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "search_knowledge",
+            "arguments": "{\"query\": \"synthetic query\", \"limit\": 2}"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 1250,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_1",
+        "event": {
+          "type": "response.done",
+          "response": {
+            "id": "resp_1",
+            "status": "completed"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 4650,
+      "direction": "in",
+      "event": {
+        "type": "session.closed",
+        "session": {
+          "id": "sess_replay",
+          "reason": "connection_lost"
+        }
+      }
+    },
+    {
+      "at_ms": 4800,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_2",
+        "event": {
+          "type": "response.created",
+          "response": {
+            "id": "resp_2"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 5000,
+      "direction": "in",
+      "event": {
+        "type": "session.output_audio.delta",
+        "delta": "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"
+      }
+    },
+    {
+      "at_ms": 5100,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_2",
+        "event": {
+          "type": "response.done",
+          "response": {
+            "id": "resp_2"
+          }
+        }
+      }
+    }
+  ],
+  "recovery": [
+    {
+      "at_ms": 500,
+      "direction": "in",
+      "event": {
+        "type": "session.delegation.created",
+        "delegation": {
+          "id": "d_9",
+          "response_id": "resp_9",
+          "offset_ms": 0
+        }
+      }
+    },
+    {
+      "at_ms": 520,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_9",
+        "event": {
+          "type": "response.created",
+          "response": {
+            "id": "resp_9"
+          }
+        }
+      }
+    },
+    {
+      "at_ms": 900,
+      "direction": "in",
+      "event": {
+        "type": "session.output_audio.delta",
+        "delta": "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"
+      }
+    },
+    {
+      "at_ms": 1000,
+      "direction": "in",
+      "event": {
+        "type": "response.event",
+        "delegation_id": "d_9",
+        "event": {
+          "type": "response.done",
+          "response": {
+            "id": "resp_9"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -776,3 +776,35 @@ test('Q5-R2: a cut result block carries one machine line, and a whole one carrie
   assert.equal(cutLineOf([whole]), undefined, 'a whole read carries no cut line');
   assert.equal(shapeBlock('knowledge_search', [whole]).text.includes('cut:'), false, 'and the block says nothing about cuts');
 });
+
+// --- 3r K1: the voice knowledge lookup asks for bounded bodies with a deadline -------------------
+
+test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline', async () => {
+  const h = harness({ selector: knowledge });
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the connector' }, new AbortController().signal);
+  const lookup = h.executed.find(entry => entry.name === 'search_knowledge')!;
+  assert.deepEqual(lookup.args, { query: 'connector', limit: 6, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 });
+  assert.equal(RESEARCH.knowledgeMaxChars, 1_200);
+  assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
+});
+
+test('3r: a body the server cut at the asked-for window is marked in the reply', async () => {
+  const cut = '### Release 3p scope (decision) [id 412]\nThe part of the body that fits.\ntruncated: yes (5,432 chars stored)';
+  const whole = '### Release 3p ledger (pattern) [id 413]\nA short body.\ntruncated: no (14 chars stored)';
+  const h = harness({ selector: knowledge, executeText: `${cut}\n${whole}` });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'release 3p scope' }, new AbortController().signal);
+  const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
+  assert.match(finding.text, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
+  assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
+  assert.equal(/cut at 1200 chars/u.test(finding.text.split('#413')[1] ?? ''), false, 'an uncut body carries no cut mark');
+});
+
+test('3r: the research receipt records the bounded-body request, metadata only', async () => {
+  const h = harness({ selector: knowledge, executeText: '### Scope [id 412]\nBody.' });
+  const receipts: ResearchSourceLog[] = [];
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
+  const receipt = receipts.find(entry => entry.source === 'knowledge')!;
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 });
+  assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
+});

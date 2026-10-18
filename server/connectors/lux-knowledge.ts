@@ -21,7 +21,22 @@ export interface LuxKnowledgeConfig {
   maxQueryChars: number;
 }
 
-export interface LuxKnowledgeSearchInput { query: string; limit: number }
+/** The lux-knowledge 3r search bounds: `max_chars` and `deadline_ms` are validated here, not trusted from the caller. */
+export const KNOWLEDGE_BODY_MIN_CHARS = 200;
+export const KNOWLEDGE_BODY_MAX_CHARS = 6_000;
+export const KNOWLEDGE_DEADLINE_MIN_MS = 500;
+export const KNOWLEDGE_DEADLINE_MAX_MS = 30_000;
+
+export interface LuxKnowledgeSearchInput {
+  query: string;
+  limit: number;
+  /** 3r: snippets (the old shape) or bounded stored bodies. */
+  detail?: 'snippets' | 'bodies';
+  /** 3r: per-body character cap, within the server's own 200..6000 range. */
+  maxChars?: number;
+  /** 3r: the search's own time budget, within the server's own 500..30000 range. */
+  deadlineMs?: number;
+}
 export interface LuxKnowledgeGetInput { ids: number[]; include_links?: boolean }
 
 export interface HttpLuxKnowledgeSource {
@@ -102,19 +117,23 @@ function requirePositiveSafeInteger(value: unknown): number {
  * from the same descriptor read. This is a strict data DTO boundary, not a Proxy sandbox.
  */
 function readExactRecord(value: unknown, keys: readonly string[]): { [key: string]: PropertyDescriptor } | undefined {
+  return readAllowedRecord(value, keys);
+}
+
+/** The same strict read for an argument set whose trailing keys are optional; an unknown key still refuses. */
+function readAllowedRecord(value: unknown, required: readonly string[], optional: readonly string[] = []): { [key: string]: PropertyDescriptor } | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const prototype: unknown = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return undefined;
   const own = Reflect.ownKeys(value);
-  if (own.length !== keys.length) return undefined;
   const record: { [key: string]: PropertyDescriptor } = {};
   for (const key of own) {
-    if (typeof key !== 'string' || !keys.includes(key)) return undefined;
+    if (typeof key !== 'string' || !(required.includes(key) || optional.includes(key))) return undefined;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !('value' in descriptor)) return undefined;
     record[key] = descriptor;
   }
-  for (const key of keys) if (!(key in record)) return undefined;
+  for (const key of required) if (!(key in record)) return undefined;
   return record;
 }
 
@@ -149,14 +168,28 @@ interface Settings extends Budgets {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
 }
 
-function validateSearch(input: unknown, budgets: Budgets): { ok: true; query: string; limit: number } | { ok: false; reason: string } {
-  const record = readExactRecord(input, ['query', 'limit']);
+function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
+  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs']);
   if (record === undefined) return { ok: false, reason: 'invalid-search-input' };
   const query = record['query']!.value;
   const limit = record['limit']!.value;
   if (typeof query !== 'string' || query.trim().length === 0 || query.length > budgets.maxQueryChars) return { ok: false, reason: 'invalid-query' };
   if (!Number.isSafeInteger(limit) || (limit as number) <= 0 || (limit as number) > budgets.maxSearchLimit) return { ok: false, reason: 'search-limit-out-of-budget' };
-  return { ok: true, query, limit: limit as number };
+  const detail = record['detail']?.value;
+  const maxChars = record['maxChars']?.value;
+  const deadlineMs = record['deadlineMs']?.value;
+  if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies') return { ok: false, reason: 'invalid-detail' };
+  if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return { ok: false, reason: 'max-chars-out-of-range' };
+  if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return { ok: false, reason: 'deadline-ms-out-of-range' };
+  return {
+    ok: true,
+    args: {
+      query, limit: limit as number,
+      ...(detail === undefined ? {} : { detail: detail as 'snippets' | 'bodies' }),
+      ...(maxChars === undefined ? {} : { maxChars: maxChars as number }),
+      ...(deadlineMs === undefined ? {} : { deadlineMs: deadlineMs as number }),
+    },
+  };
 }
 function validateGet(input: unknown, budgets: Budgets): { ok: true; ids: number[]; includeLinks: boolean } | { ok: false; reason: string } {
   const hasLinks = typeof input === 'object' && input !== null && !Array.isArray(input) && 'include_links' in (input as Record<string, unknown>);
@@ -239,8 +272,12 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (!validated.ok) return { state: 'refused', reason: validated.reason };
       const denied = preflight(registry, settings, 'search_knowledge');
       if (denied) return { state: 'refused', reason: denied };
-      // Copy the validated primitives into the exact outgoing arguments once.
-      const args: Record<string, unknown> = { query: validated.query, limit: validated.limit, include_sensitive: false };
+      // Copy the validated primitives into the exact outgoing arguments once. The 3r fields travel
+      // only when the caller asked for them, so a snippet search keeps the old wire shape.
+      const args: Record<string, unknown> = { query: validated.args.query, limit: validated.args.limit, include_sensitive: false };
+      if (validated.args.detail !== undefined) args['detail'] = validated.args.detail;
+      if (validated.args.maxChars !== undefined) args['max_chars'] = validated.args.maxChars;
+      if (validated.args.deadlineMs !== undefined) args['deadline_ms'] = validated.args.deadlineMs;
       return dispatch('search_knowledge', args, signal);
     },
     async get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {

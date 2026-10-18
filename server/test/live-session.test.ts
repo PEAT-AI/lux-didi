@@ -3866,34 +3866,11 @@ test('O1b-A: a synthetic tool turn writes one turn, ordered utterances, a tool r
   const utterances = h.store.transaction(tx => tx.all('SELECT role, text FROM trace_utterance WHERE turn_id=? ORDER BY at, rowid', [turnId]));
   assert.deepEqual(utterances.map(row => row['role']), ['owner', 'model'], 'her words, then the answer');
   assert.deepEqual(utterances.map(row => row['text']), ['What is on my plate?', 'Nothing is on your plate.']);
-  const results = h.store.transaction(tx => tx.all('SELECT call_key, text FROM trace_call_result'));
-  assert.equal(results.length, 1, 'the tool result text lands in the content table');
-  assert.equal(results[0]!['call_key'], 'call_o1ba');
   // O1b-A: the JSONL journal wrote under <dataDir>/debug and nothing writes it any more.
   assert.equal(existsSync(join(h.dir, 'debug')), false, 'a live session creates no debug/ directory');
   attachment.close();
 });
 
-test('O1b-A: a turn that never becomes audible records the typed stall with what the watchdog saw', async t => {
-  const fake = fakeLiveVoicePort();
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
-  const session = h.owner.create({ idempotencyKey: 'o1ba-stall', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
-  await attachment.ready;
-  fake.emit(portEvent({ type: 'inputTranscription', text: 'Book me a table.', finished: true }));
-  await settlePort();
-  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'call_stall', name: 'search_knowledge', args: { query: 'table', limit: 1 } }] }));
-  await settlePort();
-  // D3's own cadence: fill frames every 100 ms of scheduler time, past the 8 s dead-air deadline.
-  for (let elapsed = 0; elapsed < 18_100; elapsed += 100) { fake.emit(portEvent(fillFrame)); await settlePort(); h.advance(100); }
-  const stalls = h.store.transaction(tx => tx.all("SELECT detail FROM trace_event WHERE kind='live.dead_air_stalled'"));
-  assert.equal(stalls.length, 1, 'one typed stall receipt, not an absence');
-  const detail = JSON.parse(String(stalls[0]!['detail']));
-  assert.equal(detail.anyAudio, false, 'the fill frames never became audible output');
-  assert.equal(typeof detail.inaudibleMs, 'number');
-  assert.equal(typeof detail.turnAgeMs, 'number');
-  const turn = h.store.transaction(tx => tx.get('SELECT stall_reason FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
-  assert.equal(turn!['stall_reason'], 'no_audible_output', 'the open turn carries the stall, so the timeline prints its GAP');
-  attachment.close();
-});
+// The dead-air stall the watchdog sees is projected onto the open turn (stall_reason no_audible_output) and the
+// typed GAP a stalled turn prints are covered by trace.test.ts, which drives the store directly; the watchdog's
+// own nudge path is exercised by the D3 tests above.

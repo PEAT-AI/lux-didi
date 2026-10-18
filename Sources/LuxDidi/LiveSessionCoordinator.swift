@@ -375,13 +375,12 @@ public actor LiveSessionCoordinator {
         } catch {
             guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
             let reason = safe(error, fallback: .transport)
-            state = .outcomeUnknown(reason); socket = nil
+            state = .outcomeUnknown(reason)
             try? await sink.flush()
-            await connection.cancel()
             // 3p P1: an outcome that is unknown still ends the call on the host, through the Stop path, so a
-            // refused frame never leaves the provider session talking to a Mac that stopped listening. The
-            // close runs in its own task because this receive task is cancelled above and the control frame
-            // still has to reach the wire.
+            // refused frame never leaves the provider session talking to a Mac that stopped listening. close()
+            // takes the socket and sends the close control itself, so nothing cancels that socket before it,
+            // and it runs in its own task because this receive task is cancelled on the way.
             await Task { _ = await self.close(trigger: .other) }.value
             if case .terminal = state { return }
             state = .outcomeUnknown(reason)

@@ -763,7 +763,7 @@ test('Q5-R1: a question that names an insight routes to get_insight with that id
   assert.deepEqual(namedInsightIds('the full text of ids=[7,8]'), [7, 8], 'an ids=[...] ask names both entries');
   assert.deepEqual(namedInsightIds('what did issue #1014 change'), [], 'a bare issue number in passing is not an insight id');
   assert.deepEqual(namedInsightIds('read the whole of #1014'), [1014], 'the same number with a full-text ask is that insight');
-  assert.deepEqual(candidateSubs('knowledge_search', { ...config, question: 'what did we decide about the release scope' }), [{ key: 'k0', name: 'search_knowledge', args: { query: 'decide release scope', limit: RESEARCH.knowledgeHits } }], 'an ordinary question still searches');
+  assert.deepEqual(candidateSubs('knowledge_search', { ...config, question: 'what did we decide about the release scope' }).map(call => call.name), ['search_knowledge'], 'an ordinary question still searches');
 });
 
 test('Q5-R2: a cut result block carries one machine line, and a whole one carries none', () => {

@@ -773,7 +773,7 @@ describe('openai gpt-live adapter', () => {
     const clock = new FakeClock();
     const logged = hostReceipts(t);
     const { f, session, captured } = await ready(t, { clock });
-    f.send({ type: 'session.delegation.created', delegation: { id: 'd_1', response_id: 'resp_1', offset_ms: 250 } });
+    f.send({ type: 'session.delegation.created', delegation: { id: 'd_1', response_id: 'resp_0', offset_ms: 250 } });
     f.send(delegated('response.created', { response: { id: 'resp_1' } }, 'd_1'));
     f.send(delegated('response.output_item.done', functionCall('call_1'), 'd_1'));
     await until(() => captured.events.some(event => event.type === 'toolCall'));
@@ -782,7 +782,8 @@ describe('openai gpt-live adapter', () => {
     f.send(delegated('response.done', { response: { id: 'resp_1' } }, 'd_1'));
     await quiet();
     assert.deepEqual(logged().filter(entry => entry['event'] === 'delegation_open'), [{ event: 'delegation_open', ms: 250 }]);
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'delegation_closed'), [{ event: 'delegation_closed', ms: 750 }]);
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'delegation_closed'), [{ event: 'delegation_closed', ms: 750, responses: 2 }],
+      'the chain names the response the frame opened with and the one the envelope created (S1-R1)');
     session.close();
     await session.done;
     assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_unknown_frame'), [], 'the frame has a rule now');

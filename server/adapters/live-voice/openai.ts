@@ -985,7 +985,10 @@ class Session implements LiveVoiceSession {
     if (id === undefined) { this.touch(); return; }
     if (this.delegations.has(id)) fail('protocol_error');
     const offsetMs = typeof inner.offset_ms === 'number' && Number.isFinite(inner.offset_ms) && inner.offset_ms >= 0 ? Math.round(inner.offset_ms) : 0;
-    this.delegations.set(id, { id, openedAt: this.clock.now(), responses: [], awaiting: new Set(), outputsAt: undefined, stallTimer: undefined, stalled: false });
+    // S1-R1: the frame names the response this delegation opens with, so the chain starts here and not at the first
+    // nested `response.created`.
+    const responseId = typeof inner.response_id === 'string' && inner.response_id.length ? inner.response_id : undefined;
+    this.delegations.set(id, { id, openedAt: this.clock.now(), responses: responseId ? [responseId] : [], awaiting: new Set(), outputsAt: undefined, stallTimer: undefined, stalled: false });
     hostLogEvent({ event: 'delegation_open', ms: offsetMs });
     this.touch();
   }
@@ -1006,7 +1009,7 @@ class Session implements LiveVoiceSession {
     if (!delegation || delegation.awaiting.size) return;
     this.clearStall(delegation);
     this.delegations.delete(delegation.id);
-    hostLogEvent({ event: 'delegation_closed', ms: Math.round(this.clock.now() - delegation.openedAt) });
+    hostLogEvent({ event: 'delegation_closed', ms: Math.round(this.clock.now() - delegation.openedAt), responses: delegation.responses.length });
   }
 
   private delegationOf(message: ObjectValue): Delegation | undefined {

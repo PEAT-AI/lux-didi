@@ -440,7 +440,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'gptlive_delegation_stalled', ms: value.ms };
   }
   if (value.event === 'delegation_open' || value.event === 'delegation_closed') {
-    // 3r D4: the provider's own delegation window, in milliseconds from its stream offset or from its open.
+    // 3r D4: the provider's own delegation window, in milliseconds from its stream offset or from its open, and on
+    // the close, how many responses its chain named (S1-R1).
+    if (value.event === 'delegation_closed') {
+      if (!closedKeys(value, ['event', 'ms', 'responses'])) return;
+      if (!isSafeCount(value.ms) || !isSafeCount(value.responses)) return;
+      return { event: value.event, ms: value.ms, responses: value.responses };
+    }
     if (!closedKeys(value, ['event', 'ms'])) return;
     if (!isSafeCount(value.ms)) return;
     return { event: value.event, ms: value.ms };

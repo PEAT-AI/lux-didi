@@ -3217,8 +3217,13 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored summaries');
   assert.notEqual(loops[0], loops[1], `consecutive starts offer different loops (${loops.join(' / ')})`);
   assert.ok(snapshot(first.liveSessionId).includes('# Opening options'), 'the plan is one section of the instruction');
-  const plans = journalRecords(h.dir).filter(record => record['event'] === 'session_start').map(record => record['openerPlan'] as Record<string, unknown> | undefined);
-  assert.equal(plans.length, 2, 'each start records its own plan');
+  // The debug journal writes one file per session, so the records are keyed by their own session id
+  // and never by the order the day directory happens to list them in.
+  const records = journalRecords(h.dir).filter(record => record['event'] === 'session_start');
+  const planFor = (liveSessionId: string): Record<string, unknown> | undefined => records
+    .find(record => record['sessionId'] === liveSessionId)?.['openerPlan'] as Record<string, unknown> | undefined;
+  const plans = [planFor(first.liveSessionId), planFor(second.liveSessionId)];
+  assert.equal(records.length, 2, 'each start records its own plan');
   assert.deepEqual(plans.map(plan => Object.keys(plan ?? {}).sort().join(',')), ['kinds,rotation', 'kinds,rotation'], 'the receipt carries kinds and rotation only');
   assert.deepEqual(plans.map(plan => plan?.['kinds']), [['open-loop', 'recent-thread'], ['open-loop', 'recent-thread']], 'an empty calendar offers no calendar kind');
   assert.equal((plans[0]?.['rotation'] as number) + 1, plans[1]?.['rotation'], 'the persisted start counter advances by one');

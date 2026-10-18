@@ -109,6 +109,12 @@ export const RESEARCH = Object.freeze({
    * reply's per-source line bound: it caps what the answer shows, never what the search may return.
    */
   knowledgeHits: 8,
+  /**
+   * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
+   * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
+   * budget, which would drop the very text the owner asked for.
+   */
+  readReplyChars: 24_000,
   /** K6: how many memory lines one routed memory lookup may show. */
   memoryLines: 12,
   mailSnippetChars: 200, chatTextChars: 300, openedBodyChars: 1_500,
@@ -492,11 +498,37 @@ export function offerableCandidates(configured: readonly SourceKind[], completed
   }).map(candidate => candidate.kind);
 }
 
+/**
+ * Q5-R1: the three asks that want one entry's whole body rather than another search: a named entry,
+ * a request for the full text, and going deeper on something a previous lookup already returned.
+ */
+const NAMED_ID_LIST = /\bids?\s*=\s*\[([\d,\s]+)\]/giu;
+const NAMED_ID = /(?:\bids?\s+|\binsight\s+)(\d{1,12})\b/giu;
+const HASH_ID = /#(\d{1,12})\b/gu;
+const FULL_READ_ASK = /\b(?:full|whole|entire|complete|in full)\b|\bdeeper?\b/iu;
+
+/** Q5-R1: the insight ids a question names outright, to be read through `get_insight`, not searched. */
+export function namedInsightIds(question: string, query?: string): number[] {
+  const text = `${question}\n${query ?? ''}`;
+  const ids = [...text.matchAll(NAMED_ID_LIST)].flatMap(match => (match[1] ?? '').split(',').map(Number));
+  ids.push(...[...text.matchAll(NAMED_ID)].map(match => Number(match[1])));
+  // A bare `#123` is only an id here when the question also asks for the whole entry: an issue number
+  // in passing still deserves a search, never a read of whatever insight happens to carry that number.
+  if (FULL_READ_ASK.test(text)) ids.push(...[...text.matchAll(HASH_ID)].map(match => Number(match[1])));
+  return [...new Set(ids.filter(id => Number.isSafeInteger(id) && id > 0))].slice(0, RESEARCH.knowledgeHits);
+}
+
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
 export function candidateSubs(kind: CandidateKind, config: { question: string; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
   const keywords = contentKeywords(config.question).join(' ');
-  if (kind === 'knowledge_search') return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeHits }, 'k0')];
+  if (kind === 'knowledge_search') {
+    // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
+    // again; the connector returns its whole body up to the knowledge body cap.
+    const ids = namedInsightIds(config.question, config.query);
+    if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
+    return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeHits }, 'k0')];
+  }
   if (kind === 'calendar_window') {
     // One call covers every selected calendar: the connector resolves the set and merges the reads.
     const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now());
@@ -968,11 +1000,40 @@ function calendarNotRead(results: readonly IntentSubResult[]): string | undefine
 }
 
 /**
+ * Q5-R2: the cut notes a connector already writes in its own text. They are parsed rather than trusted
+ * to reach the model, because `itemLines` drops them and a cut body must never read as a whole one.
+ */
+const OMITTED_CHARS = /\[omitted:?\s*(\d+) characters?\b/gu;
+const OMITTED_ITEMS = /\[omitted:?\s*(\d+) more\b/gu;
+const EXTRA_CHARS = /\[\+(\d+) chars\]/gu;
+
+/** Q5-R2: one machine line for text that was cut, withheld or omitted, or nothing when nothing was. */
+export function cutLineOf(results: readonly IntentSubResult[]): string | undefined {
+  let cut = 0, shown = 0, withheld = 0;
+  for (const result of results) {
+    if (!result.ok || !result.text.trim()) continue;
+    shown += result.text.length;
+    for (const match of result.text.matchAll(OMITTED_CHARS)) cut += Number(match[1]);
+    for (const match of result.text.matchAll(EXTRA_CHARS)) cut += Number(match[1]);
+    for (const match of result.text.matchAll(OMITTED_ITEMS)) withheld += Number(match[1]);
+  }
+  const parts = [
+    ...(cut > 0 ? [`cut: ${cut} of ${shown + cut} chars`] : []),
+    ...(withheld > 0 ? [`withheld: ${withheld} ${withheld === 1 ? 'entry' : 'entries'}`] : []),
+  ];
+  return parts.length ? parts.join('; ') : undefined;
+}
+
+/**
  * Q1-R0: one telegraphic line per item, a per-source count line, never prose. Item ids ride in the
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
-  if (kind === 'calendar_window') return shapeCalendarBlock(results);
+  if (kind === 'calendar_window') {
+    const block = shapeCalendarBlock(results);
+    const cutLine = cutLineOf(results);
+    return cutLine === undefined ? block : { ...block, text: `${block.text}\n${cutLine}` };
+  }
   const ok = results.filter(result => result.ok && result.text.trim());
   const source = sourceKindOf(kind) ?? (ok.length ? sourceKindOfKindName(ok[0]!.name) : null);
   const lines: string[] = [];
@@ -1037,7 +1098,8 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   const shown = lines.slice(0, cap);
   if (!shown.length) return { text: '', source, lines: [], total: 0 };
   const label = SOURCE_LABEL[source ?? 'knowledge'];
-  return { text: `${label}: ${shown.length} of ${total} shown\n${shown.join('\n')}`, source, lines: shown, total };
+  const cutLine = cutLineOf(results);
+  return { text: `${label}: ${shown.length} of ${total} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total };
 }
 
 
@@ -1081,7 +1143,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
   const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source))
-    .map(([, label]) => `My ${label} read was cut short before it finished, so ask me again with a narrower question if it matters.`);
+    .map(([, label]) => `My ${label} read was cut short before it finished, so I say what I have and ask one precise follow-up.`);
   const clauses = [
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
     ...cutShort,
@@ -1249,6 +1311,9 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     groups.set(plan.read.source, bucket);
   }
   const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+  // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
+  // way the selector path does, so a routed read is never trimmed to a search reply's length.
+  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
   // P5: the receipt carries the deadline the read was given, so a cut read is never judged by a bound it
   // never had. A same-source batch shares one bound, so the count is the group's own size.
   const batchSizes = new Map<SourceKind | 'memory', number>();
@@ -1287,7 +1352,12 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */
 export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
-  const limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
+  let limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
+  // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, so the
+  // body the owner asked for is never trimmed away for the length of a search reply.
+  const widenFor = (subs: readonly IntentSubCall[]): void => {
+    if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
+  };
   const now = () => deps.now();
   const configured = (deps.configuredNow ?? (() => deps.configured))();
   // P5: a source that cannot serve a read says why. The composition may hand over the connector's own
@@ -1381,6 +1451,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
   const knowledgeSubs = candidateSubs('knowledge_search', { question, configured, evidence: run.evidence });
+  widenFor(knowledgeSubs);
   const knowledgeWanted = configured.includes('knowledge') && knowledgeSubs.length > 0 && !run.readKinds.has('knowledge_search')
     && !(hint.length === 1 && hint[0] !== 'knowledge');
   let knowledgeStartedAt = 0;
@@ -1500,6 +1571,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const action = selection.actions.find(entry => entry.kind === kind);
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
         if (subs.length === 0) return;
+        widenFor(subs);
         readStarted.add(kind);
         // The voice view sees each source start now and end where its part is credited below. One
         // step id per source of this read, so the end line replaces its own start line in place.

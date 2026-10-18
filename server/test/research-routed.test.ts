@@ -440,3 +440,23 @@ test('P5-R5: a routed read that returns a failure is failed, never empty', async
   assert.equal(note.includes('found nothing'), false, 'an errored read is never voiced as an empty search');
   assert.match(note, /could not reach/, 'and the reply says the source could not be reached');
 });
+
+// --- Q5-R1: a named entry is read whole, never searched for again ------------------------------
+
+test('Q5-R1: a lookup that names an insight reads it by id and returns the whole body, never a second search', async () => {
+  const body = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
+  const executed: string[] = [];
+  const h = harness({ execute: async (subs: readonly IntentSubCall[]) => {
+    for (const call of subs) executed.push(call.name);
+    return subs.map(call => sub(call.name, call.name === 'get_insight' ? `### Release 3p scope [id 412]\n${body}` : 'evidence', true, call.key));
+  } });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'go deep on insight 412, the release 3p scope',
+    lookups: [{ source: 'knowledge', query: 'insight 412' }],
+  }, new AbortController().signal);
+  assert.deepEqual(executed, ['get_insight'], 'one read call by id, and no search at all');
+  const findings = reply['findings'] as { text: string }[];
+  assert.ok(findings.length > 0, 'the read reaches the reply');
+  assert.ok(findings[0]!.text.includes('End of the entry.'), 'the whole body is returned, up to the connector body cap');
+  assert.ok(findings[0]!.text.length > RESEARCH.replyLimitChars, `a read is not trimmed to the search reply budget (${findings[0]!.text.length} chars)`);
+});

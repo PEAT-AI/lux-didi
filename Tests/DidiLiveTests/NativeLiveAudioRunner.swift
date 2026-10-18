@@ -577,6 +577,55 @@ private func checkPrimaryChannelConversion() throws {
             } catch NativeLiveAudioError.formatUnavailable { }
         } catch { fatalError("Playback negotiation: \(error)") }
         do {
+            // P3: the same graph at 1.08x. The stretcher sits between the player and the mixer, her pitch
+            // never moves, and the format the player emits is untouched.
+            let graph = AVAudioEngine(), player = AVAudioPlayerNode(), output = AVAudioMixerNode()
+            graph.attach(output)
+            let required = output.inputFormat(forBus: 0)
+            let unit = try NativeLiveAudioDevice.connectPlayback(engine: graph, player: player, outputNode: output, rate: 1.08)
+            try audioRequire(unit?.rate == 1.08, "the stretcher plays at the configured rate")
+            try audioRequire(unit?.pitch == 0, "the pitch never moves")
+            let stretched = player.outputFormat(forBus: 0)
+            try audioRequire(stretched.sampleRate == 24000 && stretched.channelCount == 1,
+                             "the player still emits 24 kHz mono")
+            let negotiated = graph.mainMixerNode.outputFormat(forBus: 0)
+            try audioRequire(negotiated.sampleRate == required.sampleRate && negotiated.channelCount == required.channelCount,
+                             "the output node still receives the bus format it negotiated")
+            // Nothing is inserted at 1.0, so today's graph is byte for byte the two connections it was.
+            let plainGraph = AVAudioEngine(), plainPlayer = AVAudioPlayerNode(), plainOutput = AVAudioMixerNode()
+            plainGraph.attach(plainOutput)
+            let inserted = try NativeLiveAudioDevice.connectPlayback(engine: plainGraph, player: plainPlayer, outputNode: plainOutput)
+            try audioRequire(inserted == nil, "rate 1.0 inserts no unit")
+            // P3: a drain at 1.08x is shorter than its source audio, so turn end follows audible time.
+            try audioRequire(NativePlaybackQueue.ms(24000) == 1000, "rate 1.0 keeps today's integer milliseconds")
+            let scaled = NativePlaybackQueue.ms(24000, rate: 1.08)
+            try audioRequire(abs(scaled - Int((1000.0 / 1.08).rounded())) <= 50,
+                             "a drained second of audio ends at the scaled duration, got \(scaled) ms")
+            var queue = NativePlaybackQueue(); queue.rate = 1.08
+            var starts = 0
+            for index in 0..<10 {
+                if queue.arrival(frames: 2400, atMs: index * 100).start { starts += 1 }
+            }
+            try audioRequire(starts == 1, "one second of source audio starts the player exactly once")
+            try audioRequire(NativePlaybackQueue.ms(queue.scheduledFrames, rate: queue.rate) == scaled,
+                             "the queue reports the same audible duration the turn ends on")
+            // A barge-in clears the stretcher's tail too, so no syllable survives the flush.
+            let device = NativeLiveAudioDevice()
+            let stretcher = AVAudioUnitTimePitch(); stretcher.rate = 1.08
+            device.adoptTimePitchForTesting(stretcher)
+            try await device.flush()
+            try audioRequire(device.timePitchTailFlushes == 1, "a barge-in flush resets the stretcher")
+            let plainDevice = NativeLiveAudioDevice()
+            try await plainDevice.flush()
+            try audioRequire(plainDevice.timePitchTailFlushes == 0, "a 1.0 session has no stretcher to flush")
+            // A rate outside the band is clamped to 1.0 here; the config layer refuses it before this point.
+            try audioRequire(NativePlaybackRate.valid(1.08) == 1.08 && NativePlaybackRate.valid(1.2) == 1.2,
+                             "the band is inclusive of both ends")
+            try audioRequire(NativePlaybackRate.valid(1.3) == 1 && NativePlaybackRate.valid(0.9) == 1,
+                             "a rate outside 1.0 to 1.2 falls back to today's speed")
+            print("PASS pitch-preserving playback rate: 1.0 inserts no unit, 1.08 stretches between player and mixer with pitch 0, drain scales, flush clears the tail")
+        } catch { fatalError("Playback rate: \(error)") }
+        do {
             let routeTestStarted = Date()
             var builds = 0, releases = 0, paused = "", failures = 0
             var input = "Built-in microphone"

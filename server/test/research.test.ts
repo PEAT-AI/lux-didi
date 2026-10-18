@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, createGeminiSelector, fallbackSelection, offerableCandidates,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
   parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import type { CandidateKind } from '../tools/research.js';
 import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
 import { safeEvent } from '../host/log.js';
 import './research-shape.test.js';
@@ -751,4 +752,27 @@ test('P5-R5: a connector that returns a failure is a failed read, never a search
   const note = String(reply['note'] ?? '');
   assert.match(note, /could not reach/, 'and the owner hears that the source could not be read');
   assert.equal(note.includes('found nothing'), false, 'an errored read is never voiced as an empty search');
+});
+
+// --- Q5: a named entry is read by id, and a cut body is never passed as a whole one --------------
+
+test('Q5-R1: a question that names an insight routes to get_insight with that id, never a second search', () => {
+  const config = { question: 'go deep on insight 412, the release 3p decision', configured: CONFIGURED, evidence: new Map<CandidateKind, string>() };
+  const subs = candidateSubs('knowledge_search', config);
+  assert.deepEqual(subs, [{ key: 'kr0', name: 'get_insight', args: { ids: [412] } }], 'one read call by id, and no search');
+  assert.deepEqual(namedInsightIds('the full text of ids=[7,8]'), [7, 8], 'an ids=[...] ask names both entries');
+  assert.deepEqual(namedInsightIds('what did issue #1014 change'), [], 'a bare issue number in passing is not an insight id');
+  assert.deepEqual(namedInsightIds('read the whole of #1014'), [1014], 'the same number with a full-text ask is that insight');
+  assert.deepEqual(candidateSubs('knowledge_search', { ...config, question: 'what did we decide about the release scope' }).map(call => call.name), ['search_knowledge'], 'an ordinary question still searches');
+});
+
+test('Q5-R2: a cut result block carries one machine line, and a whole one carries none', () => {
+  const cut: IntentSubResult = { key: 'k0', name: 'search_knowledge', ok: true, omittedCharacters: 7_600, originalCharacters: 9_100,
+    text: '### Release 3p scope (decision) [id 412]\nShort excerpt here.\n[omitted: 7600 characters; call get_insight with ids=[412] for the full insight]\n[omitted: 5 more hits; call search_knowledge again with limit=8 for the rest]' };
+  const block = shapeBlock('knowledge_search', [cut]);
+  assert.match(block.text, /^cut: 7600 of \d+ chars; withheld: 5 entries$/mu, 'the block says how much was cut and how many entries were withheld');
+  assert.equal(block.text.includes('Short excerpt here.'), true, 'the shown text still leads');
+  const whole: IntentSubResult = { key: 'kz', name: 'get_insight', ok: true, omittedCharacters: 0, originalCharacters: 120, text: '### Release 3p scope [id 412]\nThe whole body.' };
+  assert.equal(cutLineOf([whole]), undefined, 'a whole read carries no cut line');
+  assert.equal(shapeBlock('knowledge_search', [whole]).text.includes('cut:'), false, 'and the block says nothing about cuts');
 });

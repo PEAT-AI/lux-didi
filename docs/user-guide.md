@@ -33,10 +33,20 @@ window back, and clicking the pill opens the full window.
 ### The single key
 
 If you prefer one key to the chord, turn on **Right Command tap** in the menu bar
-menu (it is on by default). A short tap of the right Command key starts or stops
-Naya exactly like Control Option Space: it ignores the key while you are using it in
-a chord such as Cmd+C, and it ignores a press held longer than 300 milliseconds, so
-ordinary typing never triggers it. The first time you launch Naya by hand, macOS
+menu (it is on by default), then use the right Command key the way Superwhisper uses
+Right Option:
+
+- **Tap** it to start, and tap it again to stop. A tap stops Live the same way the
+  **Stop** button does, so nothing waits out the mute grace.
+- **Hold** it to talk. The microphone is open only while you hold the key, and letting
+  go closes it: Naya finishes the answer it already started and ends Live after that
+  answer, or after 30 seconds of silence.
+
+The key ignores itself while you are using it in a chord such as Cmd+C, so ordinary
+Command shortcuts keep working, and a chord pressed during a hold ends that hold there
+and then: the microphone closes as you press it, so no shortcut leaves it listening.
+**Mute** stays on the app's mic button and on
+Control Option Shift M, not on the key. The first time you launch Naya by hand, macOS
 asks for Accessibility (or Input Monitoring) permission with a one-line
 explanation, and asks again once after each update, because macOS can drop the grant
 when the app is replaced; the chord keeps working whether or not you allow it, and
@@ -65,6 +75,31 @@ this build, then only when you reopen it. It shows microphone and notification
 permissions, Open at login, shortcuts, and connector status. Nothing requests
 permission until you press a setup button. The page's Settings panel shows the
 same connector next steps and is read-only.
+
+## Stable signing
+
+A Lux Didi install keeps the same code requirement across rebuilds, so macOS
+keeps the Accessibility grant you gave it. An ad-hoc build has no certificate:
+macOS describes it by a `cdhash` that changes on every build, so it discards the
+grant on every install. A local signing identity fixes that once.
+
+Create it, once, on your own machine:
+
+```bash
+scripts/create-signing-identity.sh
+```
+
+That makes a self-signed code-signing certificate named **Lux Didi Local
+Signing** in your login keychain and prints one `security add-trusted-cert`
+command. Run that command and enter your login keychain password; nothing else
+is needed. `scripts/create-signing-identity.sh --dry-run` prints the plan and
+changes nothing. Running it again when the identity exists does nothing.
+
+The build and the install then both report the designated requirement.
+`identifier "ai.peat.lux-didi" and certificate ... = H"..."` is the stable
+shape; a bare `cdhash H"..."` means the identity was not used, and the build
+says so in a warning. With the identity configured, the install refuses an
+ad-hoc build instead of installing one that would drop your grant again.
 
 ## Connector setup
 

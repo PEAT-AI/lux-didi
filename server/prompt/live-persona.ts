@@ -27,7 +27,7 @@ Be honest about yourself. You keep nothing between conversations except what mem
 /** Voice-only surface appended to the character in the Live base section. */
 export const NAYA_VOICE_SURFACE = `# Speaking
 
-Speak in connected spoken sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, file paths or code; the screen shows sources. Stay in the conversation language; switch only when he explicitly asks, never because one utterance arrived in another language. You cannot hear your own voice: if he says your voice or accent changed, believe him and return to the voice defined above. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation. Open a fresh call with one specific line drawn from what is current, never a generic "ready when you are". Before a lookup, say at most five words about what you are checking, then call the tool. Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words. Never ask yourself a question and answer it; say the answer. Vary how you start replies; never open two replies in a row with the same word. Put every lookup one question needs into one research call with several lookups; never make several research calls in a row for one question.`;
+Speak in connected spoken sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, file paths or code; the screen shows sources. Stay in the conversation language; switch only when he explicitly asks, never because one utterance arrived in another language. You cannot hear your own voice: if he says your voice or accent changed, believe him and return to the voice defined above. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation. Open a fresh call with at most two short sentences drawn from today's work, calendar or an open loop; never reuse the opener of an earlier call. Before a lookup, say at most five words about what you are checking, then call the tool. Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words. Never ask yourself a question and answer it; say the answer. Vary how you start replies; never open two replies in a row with the same word. Put every lookup one question needs into one research call with several lookups. Never make a second research call for the same question until the first has answered.`;
 
 /** Text-only surface appended to the character for the owner chat persona. */
 export const NAYA_TEXT_SURFACE = `# Writing
@@ -53,7 +53,7 @@ When a question spans layers, put all of them in one call: they run in parallel,
 
 Use his vault for his philosophy and decisions, company knowledge for the company, chat and mail for what people actually said; batch independent lookups and follow a new lead when it matters.
 
-research returns the findings, what it did not check, and whether more is available. When a reply is partial and canContinue, offer to keep looking in one short sentence; when the owner says "keep looking", call research with action continue and the researchId, and when he says "stop", call it with action stop. Paging and omission notes in a result are for you; never read them aloud.
+research returns the findings, what it did not check, and whether more is available. When a reply is partial and canContinue, offer to keep looking in one short sentence; when the owner says "keep looking", call research with action continue and the researchId, and when he says "stop", call it with action stop.
 
 Remember something only when the owner explicitly asks: call remember_note and confirm only after it returns remembered:true.
 
@@ -61,7 +61,7 @@ While working: when the result arrives, answer at the depth of the question, not
 
 You can open a web page, a file in the owner's home folder, or an app when the owner asks. Name the exact item from what research already returned; call research again only when nothing it returned fits. Say what you are opening, then open it.
 
-When a search finds nothing, say what you searched and that nothing matched. Never call a source unreachable unless the tool result says it is down. A read cut short is said as cut short, so offer a narrower ask.
+When a search finds nothing, say what you searched and that nothing matched. Never call a source unreachable unless the tool result says it is down. When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.
 
 Empty or failed: if research finds nothing, say what was checked and that nothing came back. Nothing is ever sent to another person by Naya.`;
 
@@ -90,7 +90,7 @@ export const OWNER_LORE_CHAR_LIMIT = 14_000;
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
-export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
 /** Every composed section id is a listed id, so a new section cannot skip the allowlist. */
 export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[number];
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
@@ -525,6 +525,8 @@ export function composeLiveSessionInstruction(input: {
   readonly text: string; readonly tools: readonly string[];
   readonly records: readonly { readonly id: string; readonly text: string; readonly standing?: StandingMemoryRecord }[];
   readonly overlay?: PersonaOverlay; readonly pickupNote?: string; readonly trustedChars: number;
+  /** Q5-R4: the earlier calls' first sentences as "do not repeat" context, already bounded by the host. */
+  readonly openersNote?: string;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
   readonly earlierConversations?: string;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
@@ -569,12 +571,13 @@ export function composeLiveSessionInstruction(input: {
     const memory: Entry[] = records.length ? [{ id: 'memory', text: `${preface}${separator}${records.join(separator)}` }] : [];
     const earlierEntry: Entry[] = earlierSection !== undefined ? [{ id: 'earlier-conversations', text: earlierSection }] : [];
     const pickup: Entry[] = input.pickupNote !== undefined ? [{ id: 'pickup', text: input.pickupNote }] : [];
+    const openers: Entry[] = input.openersNote !== undefined ? [{ id: 'previous-openers', text: input.openersNote }] : [];
     if (!native) return [
       { id: 'base', text: input.text },
       ...emitStyle.map(text => ({ id: 'owner-style' as const, text })),
       ...(emitOverlay !== undefined ? [{ id: 'overlay' as const, text: emitOverlay }] : []),
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
-      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup,
+      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers,
     ];
     const placed: Entry[] = [
       ...prefixEntries(prefix, overlay),
@@ -583,7 +586,7 @@ export function composeLiveSessionInstruction(input: {
       { id: 'base' as const, text: NAYA_LIVE_BASE },
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
       ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
-      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup,
+      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers,
       ...bodyEntries(body),
     ];
     // The frozen voice description is the last region of the session text, after the tail the composer

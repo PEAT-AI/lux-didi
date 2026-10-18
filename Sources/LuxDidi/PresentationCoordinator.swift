@@ -39,52 +39,70 @@ final class PresentationCoordinator {
     private(set) var mode: Mode = .hidden
     private let showFullWindow: @MainActor (Bool) -> Void
     private let hideFullWindow: @MainActor () -> Void
-    /// Returns false when there is no page to host, so the coordinator can fall
-    /// back to the window instead of leaving no surface at all.
-    private let showMiniOrb: @MainActor () -> Bool
-    private let hideMiniOrb: @MainActor () -> Void
+    /// The show answer: the panel's own facts when the surface landed, or the reason it could
+    /// not be hosted (Q4-R1).
+    private let showMiniOrb: @MainActor (SurfaceTrigger) -> MiniPresentOutcome
+    /// The caller travels with the hide, so `mini_hidden {caller}` says which switch took the
+    /// orb away (Q4-R3).
+    private let hideMiniOrb: @MainActor (String) -> Void
     private let liveIsRunning: @MainActor () -> Bool
+    /// Every surface transition leaves a receipt, so a pill that went away has a named caller.
+    private let log: @MainActor ([String: Any]) -> Void
 
     init(showFull: @escaping @MainActor (Bool) -> Void, hideFull: @escaping @MainActor () -> Void,
-         showMini: @escaping @MainActor () -> Bool, hideMini: @escaping @MainActor () -> Void,
-         liveIsRunning: @escaping @MainActor () -> Bool) {
+         showMini: @escaping @MainActor (SurfaceTrigger) -> MiniPresentOutcome,
+         hideMini: @escaping @MainActor (String) -> Void,
+         liveIsRunning: @escaping @MainActor () -> Bool,
+         log: @escaping @MainActor ([String: Any]) -> Void = { _ in }) {
         self.showFullWindow = showFull
         self.hideFullWindow = hideFull
         self.showMiniOrb = showMini
         self.hideMiniOrb = hideMini
         self.liveIsRunning = liveIsRunning
+        self.log = log
     }
 
     /// The Dock click, the orb click, the menu and the mode button all end here:
     /// the FULL window, and never the orb as well.
     @discardableResult
     func presentFull(activating: Bool) -> Bool {
-        hideMiniOrb()
+        hideMiniOrb("present_full")
         showFullWindow(activating)
         mode = .full
         return true
     }
 
-    /// The mini button and the Dock-less switch: the orb, and never the window
-    /// as well. A page that cannot be hosted falls back to the FULL window.
+    /// The mini button and the Dock-less switch: the orb, and never the window as well. A page
+    /// that cannot be hosted fails loud (Q4-R1): the owner asked for the orb, so quietly opening
+    /// the FULL window answers a question nobody asked, and leaves no trace of why the orb is
+    /// missing. The page-ready edge asks again once the host connection exists.
     @discardableResult
-    func presentMini() -> Bool {
+    func presentMini(trigger: SurfaceTrigger = .other) -> MiniPresentOutcome {
         hideFullWindow()
-        guard showMiniOrb() else { return presentFull(activating: false) }
-        mode = .mini
-        return true
+        let outcome = showMiniOrb(trigger)
+        switch outcome {
+        case .shown(let facts):
+            mode = .mini
+            log(["event": "mini_presented", "trigger": trigger.rawValue, "frame": facts.frame,
+                 "screen": facts.screen, "alpha": facts.alpha, "occluded": facts.occluded,
+                 "pageState": facts.pageState])
+        case .failed(let reason):
+            mode = .hidden
+            log(["event": "mini_present_failed", "trigger": trigger.rawValue, "reason": reason])
+        }
+        return outcome
     }
 
     /// The orb is gone from screen without any window taking its place.
     func hideMiniSurface() {
-        hideMiniOrb()
+        hideMiniOrb("hide_mini_surface")
         if mode == .mini { mode = .hidden }
     }
 
     /// Nothing on screen: Cmd+W while no Live session runs.
     func hideAll() {
         hideFullWindow()
-        hideMiniOrb()
+        hideMiniOrb("hide_all")
         mode = .hidden
     }
 

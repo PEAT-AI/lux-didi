@@ -42,11 +42,13 @@ expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "ac
 // expands to the full window and keeps Live running, and the frame is remembered.
 var liveStarted = 0, liveStopped = 0, presented = 0, dismissed = 0, expanded = 0
 var liveRunning = false
+let miniFacts = MiniSurfaceFacts(frame: "{{700, 860}, {64, 26}}", screen: "main", alpha: 1,
+                                 occluded: false, pageState: "ready")
 let miniOrb = MiniOrbToggle(
     startLive: { liveStarted += 1; liveRunning = true },
     stopLive: { liveStopped += 1; liveRunning = false },
     liveIsRunning: { liveRunning },
-    presentPanel: { presented += 1 },
+    presentPanel: { _ in presented += 1; return .shown(miniFacts) },
     dismissPanel: { dismissed += 1 },
     expandToWindow: { expanded += 1 })
 expect(!miniOrb.isVisible, "mini orb starts hidden")
@@ -62,7 +64,7 @@ miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
 // M3-R12: this build has one mini surface, and nothing hides it on microphone state.
-// Presence owns its visibility and its opacity (cold 0.35, hot-muted 0.55, live 1.0), so the
+// Presence owns its visibility and its opacity (cold 0.6, hot-muted 0.55, live 1.0), so the
 // surface stays on screen in cold and in hot-muted, and only an explicit hide or expand
 // takes it away.
 var miniPresence = "cold"
@@ -70,48 +72,55 @@ var gateDismissals = 0
 var gatePresents = 0
 let surface = MiniOrbToggle(startLive: { miniPresence = "live" }, stopLive: { miniPresence = "cold" },
                             liveIsRunning: { miniPresence == "live" },
-                            presentPanel: { gatePresents += 1 },
+                            presentPanel: { _ in gatePresents += 1; return .shown(miniFacts) },
                             dismissPanel: { gateDismissals += 1 },
                             expandToWindow: {})
-surface.showSurface()
+surface.showSurface(trigger: .other)
 expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
 miniPresence = "hot-muted"
 expect(surface.isVisible && gateDismissals == 0, "hot-muted leaves the surface on screen")
 miniPresence = "cold"
 expect(surface.isVisible && gateDismissals == 0, "cold leaves the surface on screen")
 
-// MINI2: the single key. Right Command is Naya's key; Right Option belongs to
-// SuperWhisper and is never watched. A tap fires, a chord use and a long hold do
-// not, and a repeated press is still one press.
-expect(RightCommandTapDetector.keyCode == 54 && RightCommandTapDetector.holdLimit == 0.3, "the single key is Right Command with a 300 ms hold limit")
+// MINI2 / Q2 (owner order 2026-10-18): the single key. Right Command is Naya's key;
+// Right Option belongs to SuperWhisper and is never watched. A tap fires, a chord use
+// is ignored, and a press held to the hold threshold is push-to-talk, never dead.
+expect(RightCommandTapDetector.keyCode == 54 && RightCommandTapDetector.holdThreshold == 0.4,
+    "the single key is Right Command with a 400 ms hold threshold")
 var singleKeyDetector = RightCommandTapDetector()
-expect(singleKeyDetector.handle(.rightCommandDown, at: 10) == false, "a Right Command press alone is not a tap")
-expect(singleKeyDetector.handle(.rightCommandUp, at: 10.12), "a short Right Command tap fires")
-expect(singleKeyDetector.handle(.rightCommandUp, at: 11) == false, "a release without a press never fires")
+expect(singleKeyDetector.handle(.rightCommandDown, at: 10) == [], "a Right Command press alone is not a tap")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 10.12) == [.tap], "a short Right Command tap fires")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 11) == [], "a release without a press never fires")
 _ = singleKeyDetector.handle(.rightCommandDown, at: 20)
 _ = singleKeyDetector.handle(.otherKeyDown, at: 20.05)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 20.1) == false, "Right Command in a chord (Cmd+C) never fires")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 20.1) == [.ignored("chord")],
+    "Right Command in a chord (Cmd+C) is ignored, not a tap")
 _ = singleKeyDetector.handle(.rightCommandDown, at: 30)
 _ = singleKeyDetector.handle(.otherModifiers(held: true), at: 30.02)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 30.1) == false, "a second modifier in the press makes it a chord")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 30.1) == [.ignored("chord")],
+    "a second modifier in the press makes it a chord")
 
 // B2 regression: a modifier already held BEFORE Right Command is a chord too, so
 // Shift (or the owner's Right Option) plus a Right Command tap never fires.
 _ = singleKeyDetector.handle(.otherModifiers(held: true), at: 100)
 _ = singleKeyDetector.handle(.rightCommandDown, at: 100.1)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 100.2) == false, "a modifier held before the press makes it a chord")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 100.2) == [.ignored("chord")],
+    "a modifier held before the press makes it a chord")
 _ = singleKeyDetector.handle(.otherModifiers(held: false), at: 101)
 _ = singleKeyDetector.handle(.rightCommandDown, at: 102)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 102.05), "a plain tap after the modifier is released still fires")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 102.05) == [.tap],
+    "a plain tap after the modifier is released still fires")
 
 // B3 regression: with Left Command held the release is a release, so the next
 // standalone tap is not swallowed.
 _ = singleKeyDetector.handle(.otherModifiers(held: true), at: 110)
 _ = singleKeyDetector.handle(.rightCommandDown, at: 110.1)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 110.2) == false, "Right Command released under Left Command never fires")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 110.2) == [.ignored("chord")],
+    "Right Command released under Left Command never fires")
 _ = singleKeyDetector.handle(.otherModifiers(held: false), at: 110.5)
 _ = singleKeyDetector.handle(.rightCommandDown, at: 111)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 111.05), "the release under Left Command does not swallow the next tap")
+expect(singleKeyDetector.handle(.rightCommandUp, at: 111.05) == [.tap],
+    "the release under Left Command does not swallow the next tap")
 
 // The decode itself: the device bits tell the two Command keys apart, which the
 // shared .maskCommand bit cannot.
@@ -120,31 +129,80 @@ expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x100008) == fa
 expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x20000), "Shift is another modifier")
 expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100010) == false, "Right Command alone is not another modifier")
 expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100008), "Left Command is another modifier")
-_ = singleKeyDetector.handle(.rightCommandDown, at: 40)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 40.31) == false, "a hold longer than 300 ms is not a tap")
-_ = singleKeyDetector.handle(.rightCommandDown, at: 50)
-_ = singleKeyDetector.handle(.rightCommandDown, at: 50.1)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 50.2), "a repeated press is debounced into one tap")
-_ = singleKeyDetector.handle(.rightCommandDown, at: 60)
-_ = singleKeyDetector.handle(.otherKeyDown, at: 60.01)
-_ = singleKeyDetector.handle(.rightCommandUp, at: 60.02)
-_ = singleKeyDetector.handle(.rightCommandDown, at: 61)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 61.05), "a tap after a chord fires again")
-_ = singleKeyDetector.handle(.otherKeyDown, at: 62)
-expect(singleKeyDetector.handle(.rightCommandUp, at: 63) == false, "a chord before any press never fires")
 
-// P1-R1: the Right Command tap the detector fires is the one presence toggle, and Right
-// Option is SuperWhisper's: the detector has no case for it and never consumes an event.
-// The binding the app installs, not a copy: bindRightCommandTap is what LuxDidiApp calls.
+// Q2: the hold starts on the app's own hold timer at the threshold, never on the
+// release, so the mic can open while the key is still down. A late timer is not a
+// lost gesture: a release past the threshold completes the whole hold at once.
+var holdDetector = RightCommandTapDetector()
+_ = holdDetector.handle(.rightCommandDown, at: 40)
+expect(holdDetector.poll(at: 40.39) == [], "a press under the hold threshold has no gesture yet")
+expect(holdDetector.poll(at: 40.401) == [.holdStart], "the 400 ms threshold starts a hold")
+expect(holdDetector.poll(at: 41) == [], "a hold starts once, however often the timer fires")
+expect(holdDetector.handle(.rightCommandUp, at: 41.2) == [.holdEnd], "the release ends a started hold")
+_ = holdDetector.handle(.rightCommandDown, at: 50)
+_ = holdDetector.handle(.otherKeyDown, at: 50.1)
+expect(holdDetector.poll(at: 50.5) == [], "a chord before the threshold never becomes a hold")
+expect(holdDetector.handle(.rightCommandUp, at: 50.6) == [.ignored("chord")],
+    "a cancelled press releases as a chord, not as a hold end")
+_ = holdDetector.handle(.rightCommandDown, at: 60)
+expect(holdDetector.handle(.rightCommandUp, at: 60.45) == [.holdStart, .holdEnd],
+    "a release past the threshold with a late timer is still a hold")
+_ = holdDetector.handle(.rightCommandDown, at: 70)
+_ = holdDetector.handle(.rightCommandDown, at: 70.1)
+expect(holdDetector.handle(.rightCommandUp, at: 70.2) == [.tap], "a repeated press is debounced into one tap")
+_ = holdDetector.handle(.rightCommandDown, at: 80)
+_ = holdDetector.handle(.otherKeyDown, at: 80.01)
+_ = holdDetector.handle(.rightCommandUp, at: 80.02)
+_ = holdDetector.handle(.rightCommandDown, at: 81)
+expect(holdDetector.handle(.rightCommandUp, at: 81.05) == [.tap], "a tap after a chord fires again")
+_ = holdDetector.handle(.otherKeyDown, at: 82)
+expect(holdDetector.handle(.rightCommandUp, at: 83) == [], "a chord before any press never fires")
+
+// Q2 review B1, contract outcome 3: a chord during a hold cancels the gesture there and
+// then, so the microphone closes at the chord instead of staying open while Command is
+// used, and the rest of that press is inert.
+_ = holdDetector.handle(.rightCommandDown, at: 90)
+expect(holdDetector.poll(at: 90.5) == [.holdStart], "a hold is open before the chord")
+expect(holdDetector.handle(.otherKeyDown, at: 90.6) == [.holdEnd],
+    "a key pressed during a hold ends the hold at that moment")
+expect(holdDetector.poll(at: 91) == [], "an ended hold does not restart")
+expect(holdDetector.handle(.rightCommandUp, at: 91.2) == [],
+    "the release of a cancelled hold is not a second gesture")
+_ = holdDetector.handle(.rightCommandDown, at: 92)
+expect(holdDetector.poll(at: 92.5) == [.holdStart], "a second hold is open before the modifier")
+expect(holdDetector.handle(.otherModifiers(held: true), at: 92.6) == [.holdEnd],
+    "a modifier during a hold ends the hold at that moment")
+expect(holdDetector.handle(.rightCommandUp, at: 93) == [],
+    "the release after a cancelled hold logs nothing")
+_ = holdDetector.handle(.otherModifiers(held: false), at: 93.1)
+_ = holdDetector.handle(.rightCommandDown, at: 94)
+expect(holdDetector.handle(.rightCommandUp, at: 94.05) == [.tap],
+    "a tap is a tap again once the modifier is released")
+
+// Q2 review B2: the system can disable the tap mid-press, and the key-up can be one of
+// the events it swallows. A hold open at that moment ends, so no fence is left closed
+// with no timer to close it.
+_ = holdDetector.handle(.rightCommandDown, at: 95)
+_ = holdDetector.poll(at: 95.5)
+expect(holdDetector.abandonPress() == [.holdEnd], "a press lost to a disabled tap ends its open hold")
+expect(holdDetector.handle(.rightCommandUp, at: 96) == [], "the lost press leaves nothing behind")
+_ = holdDetector.handle(.rightCommandDown, at: 97)
+expect(holdDetector.abandonPress() == [], "a press that had not reached the threshold ends nothing")
+expect(holdDetector.handle(.rightCommandUp, at: 97.1) == [], "and its release adds nothing either")
+
+// P1-R1 / Q2 (owner order 2026-10-18): the Right Command key is bound to the presence
+// machine by the one function the app installs, not by a copy in the test. Right Option
+// is SuperWhisper's: the detector has no case for it and never consumes an event.
 var presenceSurfaces: [PresenceState] = []
 let presence = NativePresence(effects: PresenceEffects(setCaptureMuted: { _ in },
     surface: { posture in presenceSurfaces.append(posture.state) }))
 let wiredSingleKey = SingleKeyTrigger()
-bindRightCommandTap(wiredSingleKey, to: presence)
+wiredSingleKey.scheduleHold = { _, _ in }
+bindRightCommandKey(wiredSingleKey, to: presence)
 expect(presence.state == .cold, "presence starts cold and silent")
 var presenceTap = RightCommandTapDetector()
-let presenceTapped = presenceTap.handle(.rightCommandDown, at: 200) == false
-    && presenceTap.handle(.rightCommandUp, at: 200.1)
+let presenceTapped = presenceTap.handle(.rightCommandDown, at: 200) == []
+    && presenceTap.handle(.rightCommandUp, at: 200.1) == [.tap]
 expect(presenceTapped, "a Right Command tap is the presence toggle")
 if presenceTapped { wiredSingleKey.onTap?() }
 expect(presence.state == .connecting, "the installed Right Command binding opens the presence session")
@@ -152,10 +210,196 @@ expect(presenceSurfaces.last == .connecting, "the tap renders the presence surfa
 wiredSingleKey.onTap?()
 expect(presence.state == .cold, "a second tap while connecting returns to cold")
 var rightOptionTap = RightCommandTapDetector()
-expect(rightOptionTap.handle(.otherModifiers(held: true), at: 210) == false, "a Right Option press is never a tap")
-expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == false, "a key pressed under Right Option is a chord")
-expect(RightCommandTapDetector.rightCommandIsDown(flagsRawValue: 0x40) == false, "the Right Option device bit is never a Right Command press")
-expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x80040), "a Right Option press is another modifier, so a press under it is a chord")
+expect(rightOptionTap.handle(.otherModifiers(held: true), at: 210) == [], "a Right Option press is never a tap")
+expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == [], "a key pressed under Right Option is a chord")
+
+// Q2 (owner order 2026-10-18): the whole key, through the shipped binding, with a fake
+// clock and a fake hold timer. A tap starts when idle and STOPS when live or muted
+// through the Stop path; a press held to the threshold is push-to-talk.
+@MainActor final class HotkeyKey {
+    var opened = 0
+    var cancelled = 0
+    var closed = 0
+    var fences: [Bool] = []
+    var receipts: [[String: Any]] = []
+    var clock: TimeInterval = 700
+    var holdDelay: TimeInterval?
+    var holdTimer: (() -> Void)?
+    lazy var presence = NativePresence(now: { self.clock }, effects: PresenceEffects(
+        openSession: { self.opened += 1 },
+        cancelConnecting: { self.cancelled += 1 },
+        closeSession: { self.closed += 1 },
+        setCaptureMuted: { self.fences.append($0) }))
+    lazy var key: SingleKeyTrigger = {
+        let key = SingleKeyTrigger()
+        key.now = { [weak self] in self?.clock ?? 0 }
+        key.presenceState = { [weak self] in self?.presence.state ?? .cold }
+        key.onReceipt = { [weak self] record in self?.receipts.append(record) }
+        key.scheduleHold = { [weak self] work, delay in
+            self?.holdDelay = delay
+            self?.holdTimer = { work() }
+        }
+        bindRightCommandKey(key, to: presence)
+        return key
+    }()
+    func press(at time: TimeInterval) { key.receive(.rightCommandDown, at: time) }
+    func release(at time: TimeInterval) { key.receive(.rightCommandUp, at: time) }
+    func fireHold() { holdTimer?() }
+    func lastAction() -> String? { receipts.last?["action"] as? String }
+    func lastReason() -> String? { receipts.last?["reason"] as? String }
+}
+
+let hotkey = HotkeyKey()
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .connecting && hotkey.opened == 1, "an idle Right Command tap starts a session")
+expect(hotkey.lastAction() == "start" && hotkey.lastReason() == "connecting", "the idle tap logs single_key_tap start")
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live && hotkey.fences.last == false, "readiness opens the mic")
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .cold && hotkey.closed == 1,
+    "a live tap STOPS the session through the Stop path; it no longer mutes")
+expect(hotkey.presence.dropDeadline == nil, "a stopped session has no mute grace to wait out")
+expect(hotkey.lastAction() == "stop" && hotkey.lastReason() == "cold", "the live tap logs single_key_tap stop")
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+hotkey.presence.ready()
+hotkey.presence.mute(.app)
+expect(hotkey.presence.state == .hotMuted, "the menu's mute still mutes, it is only off the key")
+var closedBeforeMutedTap = hotkey.closed
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeMutedTap + 1,
+    "a tap while muted stops the session; no 300 s grace on a tap")
+expect(hotkey.lastAction() == "stop", "the muted tap logs single_key_tap stop")
+
+// A hold from idle: the timer at the threshold opens the session, the mic stays open
+// while held, and the release closes the fence and leaves the answer to finish.
+hotkey.clock += 10
+var openedBeforeHold = hotkey.opened
+hotkey.press(at: hotkey.clock)
+expect(hotkey.holdDelay == RightCommandTapDetector.holdThreshold, "the press arms the hold timer at the 400 ms threshold")
+expect(hotkey.presence.state == .cold && hotkey.opened == openedBeforeHold, "a press alone opens nothing before the threshold")
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+expect(hotkey.presence.state == .connecting && hotkey.opened == openedBeforeHold + 1, "the hold opens the session")
+expect(hotkey.lastAction() == "hold_start", "the hold logs single_key_tap hold_start")
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live && hotkey.fences.last == false, "the mic is open while the key is held")
+var closedBeforeHoldRelease = hotkey.closed
+hotkey.clock += 1.2
+hotkey.release(at: hotkey.clock)
+expect(hotkey.presence.state == .hotMuted && hotkey.fences.last == true, "the release closes the capture fence")
+expect(hotkey.closed == closedBeforeHoldRelease, "the release keeps the session while the answer finishes")
+expect(hotkey.presence.dropDeadline == hotkey.clock + NativePresence.holdReleaseGrace,
+    "the hold's own 30 s grace, not the 5 minute mute grace")
+expect(hotkey.lastAction() == "hold_end", "the release logs single_key_tap hold_end")
+hotkey.presence.answerCompleted()
+expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeHoldRelease + 1,
+    "the answer's end closes the session the hold left open")
+
+// The same hold, ended by 30 s of silence instead of by the answer.
+hotkey.clock += 10
+var closedBeforeSilence = hotkey.closed
+hotkey.press(at: hotkey.clock)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+hotkey.presence.ready()
+hotkey.clock += 1
+hotkey.release(at: hotkey.clock)
+hotkey.clock += NativePresence.holdReleaseGrace - 0.5
+hotkey.presence.tick()
+expect(hotkey.presence.state == .hotMuted, "a tick before the hold grace changes nothing")
+hotkey.clock += 0.5
+hotkey.presence.tick()
+expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeSilence + 1,
+    "30 s of silence ends the session a hold left open")
+
+// A hold while already live keeps the mic open and releases to the normal live state.
+hotkey.clock += 10
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live, "a tap starts the session the hold is measured in")
+var closedAtLiveHold = hotkey.closed
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+expect(hotkey.presence.state == .live && hotkey.fences.last == false, "a hold while live keeps the mic open")
+expect(hotkey.lastAction() == "hold_start", "the live hold logs single_key_tap hold_start")
+hotkey.clock += 0.8
+hotkey.release(at: hotkey.clock)
+expect(hotkey.presence.state == .live && hotkey.closed == closedAtLiveHold,
+    "a hold while live releases to the normal live state")
+expect(hotkey.lastAction() == "hold_end", "the live hold's release logs single_key_tap hold_end")
+
+// A chord during a hold from idle cancels the hold where it happens: the fence closes at
+// the chord while the key is still down, and the release adds nothing.
+hotkey.clock += 10
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .cold, "the session before the cancelled hold is stopped")
+var closedBeforeChordHold = hotkey.closed
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live && hotkey.fences.last == false, "the hold opens the mic")
+var receiptsBeforeChordHold = hotkey.receipts.count
+hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
+expect(hotkey.presence.state == .hotMuted && hotkey.fences.last == true,
+    "a chord during the hold closes the capture fence at the chord, not at the release")
+expect(hotkey.lastAction() == "hold_end", "a chord during the hold logs single_key_tap hold_end")
+hotkey.release(at: hotkey.clock + 0.2)
+expect(hotkey.presence.state == .hotMuted && hotkey.receipts.count == receiptsBeforeChordHold + 1,
+    "the release of a cancelled hold adds no gesture")
+expect(hotkey.closed == closedBeforeChordHold, "the cancelled hold keeps the session for the answer")
+hotkey.presence.answerCompleted()
+expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeChordHold + 1,
+    "the answer's end still closes the session a cancelled hold left open")
+
+// A hold that starts while Naya is already live is cancelled the same way: the gesture
+// ends, and the session it was talking in is not sent into the mute grace.
+hotkey.clock += 10
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live, "a session is live before the cancelled live hold")
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+expect(hotkey.presence.state == .live, "a hold while live keeps the session live")
+var receiptsBeforeLiveChord = hotkey.receipts.count
+hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
+expect(hotkey.presence.state == .live && hotkey.presence.dropDeadline == nil,
+    "a chord during a live hold cancels the gesture and leaves no mute grace behind")
+expect(hotkey.lastAction() == "hold_end", "the cancelled live hold still logs single_key_tap hold_end")
+hotkey.release(at: hotkey.clock + 0.2)
+expect(hotkey.receipts.count == receiptsBeforeLiveChord + 1
+    && hotkey.presence.state == .live, "the release of the cancelled live hold adds no gesture")
+
+// A Command chord during the press cancels the gesture: no start, no hold, one receipt.
+var receiptsBeforeChord = hotkey.receipts.count
+hotkey.clock += 1
+let stateBeforeChord = hotkey.presence.state
+hotkey.press(at: hotkey.clock)
+hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+expect(hotkey.presence.state == stateBeforeChord, "a Cmd+C press opens nothing, even past the threshold")
+expect(hotkey.receipts.count == receiptsBeforeChord, "a cancelled press logs no hold start")
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == stateBeforeChord, "a Cmd+C tap leaves the live session alone")
+expect(hotkey.receipts.count == receiptsBeforeChord + 1, "a cancelled press leaves exactly one receipt")
+expect(hotkey.lastAction() == "ignored" && hotkey.lastReason() == "chord",
+    "a cancelled press logs single_key_tap ignored, reason chord")
 
 // B6 regression: a tap the system disabled is re-armed, everything else is not.
 expect(RightCommandTapDetector.shouldReArm(.tapDisabledByTimeout), "a timed out tap is re-armed")
@@ -208,6 +452,8 @@ expect(untrustedState["event"] as? String == "single_key_state" && untrustedStat
 let trustedKey = SingleKeyTrigger()
 trustedKey.system = .init(trusted: { true }, install: { true })
 trustedKey.onReceipt = { singleKeyReceipts.append($0) }
+// No real hold timer here: each gesture is fired by the events this test sends.
+trustedKey.scheduleHold = { _, _ in }
 expect(trustedKey.start() && trustedKey.tapCreated, "a trusted launch creates the tap")
 let trustedState = SingleKeyTrigger.stateReceipt(enabled: true, trusted: true, tapCreated: trustedKey.tapCreated, signing: "identity")
 expect(trustedState["tapCreated"] as? Bool == true && trustedState["signing"] as? String == "identity",
@@ -230,14 +476,28 @@ trustedKey.receive(.rightCommandUp, at: 320.1)
 expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "ignored"
     && singleKeyReceipts[2]["reason"] as? String == "hotMuted", "a tap the machine does not move is logged as ignored with the state it stayed in")
 trustedKey.receive(.rightCommandDown, at: 330)
-trustedKey.receive(.rightCommandUp, at: 330.4)
-expect(singleKeyReceipts.count == 3, "a hold is not a tap and leaves no receipt")
+trustedKey.receive(.rightCommandUp, at: 331)
+expect(singleKeyReceipts.count == 5 && singleKeyReceipts[3]["action"] as? String == "hold_start"
+    && singleKeyReceipts[4]["action"] as? String == "hold_end",
+    "a press held past the threshold logs single_key_tap hold_start, then hold_end on the release")
+expect(SingleKeyTapOutcome(action: .holdStart, state: .connecting).reason == "connecting",
+    "a hold receipt names the state it left the machine in")
 expect(SingleKeyTapOutcome(from: .live, to: .live).action == .ignored && SingleKeyTapOutcome(from: .live, to: .live).reason == "live",
     "a tap the machine does not move is a receipt naming the state, proven directly")
 expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .start && SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
     "a move out of cold or back from hot-muted starts, a move to cold stops")
 expect(SingleKeyTrigger.signing == "adhoc" || SingleKeyTrigger.signing == "identity" || SingleKeyTrigger.signing == "unknown",
     "the signing fact is one of the three the receipt knows")
+// The signing label is pure over the code-signature flags, so it is testable with
+// an injected stub: an ad-hoc build can never report the label that promises a
+// grant survives an install.
+let adhocFlags: UInt32 = 0x0002
+let developerIDFlags: UInt32 = 0x0000
+expect(SingleKeyTrigger.signingLabel(codeFlags: { adhocFlags }) == "adhoc", "an ad-hoc signature reports adhoc, never identity")
+expect(SingleKeyTrigger.signingLabel(codeFlags: { developerIDFlags }) == "identity", "a certificate-backed signature reports identity")
+expect(SingleKeyTrigger.signingLabel(codeFlags: { nil }) == "unknown", "a signature the system will not describe is unknown, never identity")
+expect(SingleKeyTrigger.signingLabel(codeFlags: { adhocFlags | developerIDFlags }) != "identity",
+    "the injected stub cannot turn ad-hoc flags into identity")
 SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
@@ -274,8 +534,10 @@ let liveSession = "live-session-42"
 let coordinator = PresentationCoordinator(
     showFull: { _ in visibleSurfaces.remove("mini"); visibleSurfaces.insert("full") },
     hideFull: { visibleSurfaces.remove("full") },
-    showMini: { visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return miniPageHostable },
-    hideMini: { visibleSurfaces.remove("mini") },
+    showMini: { _ in
+        guard miniPageHostable else { return .failed("page_not_ready") }
+        visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return .shown(miniFacts) },
+    hideMini: { _ in visibleSurfaces.remove("mini") },
     liveIsRunning: { liveActive })
 expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
 coordinator.presentFull(activating: true)
@@ -323,7 +585,8 @@ expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the close comman
 miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a mini orb with no page falls back to the FULL window")
+// Q4-R1: a page that cannot be hosted fails loud; it never answers with the FULL window.
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a mini orb with no page never falls back to the FULL window")
 miniPageHostable = true
 
 // UI3A: the orb never becomes key or main, floats above normal windows over every
@@ -681,3 +944,103 @@ expect(!personalRoute.contains("Alice") && !personalRoute.contains("AirPods"), "
 for capability in [NotificationCapability.notDetermined, .denied, .authorized, .provisional, .unknown] {
     expect(!capability.presentation.contains(capability.rawValue), "no raw notification case reaches a label")
 }
+
+// W-Q4: the mini surface is there from launch, it says so when it cannot be, and every
+// transition leaves a receipt. The launch-time surface request runs before the host
+// connection exists, so it finds no descriptor; the page-ready edge asks again, a show with
+// still no page fails loud instead of opening the FULL window nobody asked for, and the
+// menu item only moves the surface (the hotkey, an orb press and Start keep starting Live).
+expect(MiniOrbSurface.failure(host: nil, environment: nil) == "page_not_ready",
+       "a surface request before the host connection has no page to host")
+expect(MiniOrbSurface.failure(host: "http://127.0.0.1:6180", environment: nil) == nil,
+       "the page-ready surface request yields the mini descriptor")
+expect(MiniOrbSurface.failure(host: nil, environment: "http://127.0.0.1:6180") == nil,
+       "a proof launch still hosts the mini page from its environment descriptor")
+
+// The menu item and the full window's mode button are presentation only (Q4-R2).
+var q4Starts = 0, q4Stops = 0, q4Shows = 0
+var q4Receipts: [[String: Any]] = []
+var q4Triggers: [SurfaceTrigger] = []
+let q4Facts = MiniSurfaceFacts(frame: "{{100, 800}, {64, 26}}", screen: "main", alpha: 0.6,
+                               occluded: false, pageState: "ready")
+let q4Orb = MiniOrbToggle(
+    startLive: { q4Starts += 1 }, stopLive: { q4Stops += 1 }, liveIsRunning: { false },
+    presentPanel: { trigger in q4Triggers.append(trigger); q4Shows += 1; return .shown(q4Facts) },
+    dismissPanel: {}, expandToWindow: {}, receipt: { q4Receipts.append($0) })
+// The status menu's own item, pressed through the selector and target it carries (Q4-R1).
+var menuShows: [SurfaceTrigger] = [], menuStarts = 0, menuStops = 0
+var menuReceipts: [[String: Any]] = []
+let menuOrb = MiniOrbToggle(
+    startLive: { menuStarts += 1 }, stopLive: { menuStops += 1 }, liveIsRunning: { false },
+    presentPanel: { trigger in menuShows.append(trigger); return .shown(q4Facts) },
+    dismissPanel: {}, expandToWindow: {}, receipt: { menuReceipts.append($0) })
+let statusMenuCommand = MiniOrbMenuCommand { trigger in menuOrb.showSurface(trigger: trigger) }
+let showMiniOrbItem = statusMenuCommand.item()
+expect(showMiniOrbItem.title == "Show mini orb", "the status menu carries a Show mini orb item")
+expect(showMiniOrbItem.action == #selector(MiniOrbMenuCommand.press) && showMiniOrbItem.target === statusMenuCommand,
+       "the Show mini orb item carries the presentation-only action, not the chord's toggle")
+_ = (showMiniOrbItem.target as? NSObject)?.perform(showMiniOrbItem.action, with: showMiniOrbItem)
+expect(menuOrb.isVisible && menuShows == [.menu] && menuStarts == 0 && menuStops == 0,
+       "pressing the status menu item shows the mini surface and never starts Live")
+
+q4Orb.showSurface(trigger: .menu)
+expect(q4Orb.isVisible && q4Shows == 1 && q4Starts == 0 && q4Triggers == [.menu],
+       "a menu-triggered show moves the surface and never starts Live")
+q4Orb.hideSurface(caller: "presence")
+expect(!q4Orb.isVisible && q4Receipts.last?["event"] as? String == "mini_hidden"
+       && q4Receipts.last?["caller"] as? String == "presence",
+       "a hide names its caller on the mini_hidden receipt")
+q4Orb.show(trigger: .hotkey)
+expect(q4Starts == 1, "the hotkey still starts Live")
+expect(q4Receipts.contains { $0["event"] as? String == "mini_start" && $0["trigger"] as? String == "hotkey" },
+       "a start receipt carries the trigger that started it")
+q4Orb.hide(caller: "chord", trigger: .hotkey)
+expect(q4Stops == 1, "the chord still stops Live")
+expect(q4Receipts.contains { $0["event"] as? String == "mini_stop" && $0["trigger"] as? String == "hotkey" },
+       "a stop receipt carries the trigger that stopped it")
+
+// A show that cannot be hosted fails loud and never falls back (Q4-R1).
+var q4FullShows = 0, q4MiniShows = 0
+var q4Log: [[String: Any]] = []
+let q4Failing = PresentationCoordinator(
+    showFull: { _ in q4FullShows += 1 }, hideFull: {},
+    showMini: { _ in q4MiniShows += 1; return .failed("page_not_ready") },
+    hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
+expect(q4Failing.presentMini(trigger: .menu) == .failed("page_not_ready") && q4MiniShows == 1 && q4FullShows == 0,
+       "a mini show with no page never falls back to the FULL window")
+expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_failed"
+       && q4Log.last?["reason"] as? String == "page_not_ready",
+       "a failed mini show logs mini_present_failed with its reason")
+
+q4Log = []
+let q4Landing = PresentationCoordinator(
+    showFull: { _ in }, hideFull: {},
+    showMini: { _ in .shown(q4Facts) },
+    hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
+expect(q4Landing.presentMini(trigger: .button) == .shown(q4Facts) && q4Landing.mode == .mini,
+       "a hosted mini show lands as the MINI surface")
+expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigger"] as? String == "button"
+       && q4Log.last?["frame"] as? String == q4Facts.frame && q4Log.last?["screen"] as? String == "main"
+       && q4Log.last?["alpha"] as? Double == 0.6 && q4Log.last?["occluded"] as? Bool == false
+       && q4Log.last?["pageState"] as? String == "ready",
+       "a show logs mini_presented with its frame, screen, alpha, occlusion, page state and trigger")
+
+// Q4-R3: the idle pill is never more transparent than the named floor, and a first show
+// after an install puts a saved frame that sits far below the top band back in the slot.
+expect(PresenceSurfaceState.minimumIdleOpacity == 0.6, "the idle opacity floor is the named 0.6 constant")
+expect(PresenceSurfaceState.shown(PresencePosture(state: .cold, alwaysShow: true, failed: false)).opacity == 0.6,
+       "the cold pill draws at the floor and never reads as nothing")
+expect(PresenceSurfaceState.shown(PresencePosture(state: .connecting, alwaysShow: true, failed: false)).opacity == 0.6,
+       "the connecting pill draws at the floor too")
+let q4LowPill = CGRect(x: 688, y: 600, width: 64, height: 26)
+expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen], firstShowAfterInstall: true)
+       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
+       "a first show after an install resets a saved pill frame that sits below the top band")
+expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen]) == q4LowPill,
+       "a later show honours the saved pill frame the owner chose")
+expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 26), screens: [miniScreen], firstShowAfterInstall: true)
+       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
+       "a first show after an install resets a saved pill frame that is off every screen")
+let q4HighPill = CGRect(x: 688, y: 820, width: 64, height: 26)
+expect(MiniOrbFrameRestore.resolve(q4HighPill, screens: [miniScreen], firstShowAfterInstall: true) == q4HighPill,
+       "a first show after an install keeps a saved pill frame inside the top band")

@@ -30,6 +30,13 @@ node_test_files() {
   node --test "$@"
 }
 
+# A bounded call: `timeout` runs a program and never a shell function, so the helper goes back
+# through bash, which sources itself in the child before running the same check.
+node_test_files_bounded() {
+  local secs="$1" lib="${BASH_SOURCE[0]}"; shift
+  timeout "$secs" bash -c 'source "$1"; shift; node_test_files "$@"' _ "$lib" "$@"
+}
+
 # The helper's own proof: a tiny fixture list proves the missing branch names the file and starts
 # no runner, and that a present file still runs through node --test unchanged.
 node_test_files_self_test() {

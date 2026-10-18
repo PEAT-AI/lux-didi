@@ -54,7 +54,7 @@ trap 'rm -f "$log"' EXIT
 status=0
 # New selected-memory HTTP behavior + impacted MEMORY/NCS accept/fingerprint/recovery and
 # CHAT/HTTP regressions, against the real compiled build.
-timeout 1200 node_test_files --test-reporter=tap --test-timeout=30000 \
+node_test_files_bounded 1200 --test-reporter=tap --test-timeout=30000 \
   server/dist/test/selected-memory-ui.test.js server/dist/test/memory-context.test.js \
   server/dist/test/native-conversation.test.js server/dist/test/http.test.js \
   server/dist/test/chat.test.js \

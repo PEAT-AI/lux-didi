@@ -152,6 +152,9 @@ test('a duplicate native receipt is deduplicated on (source_instance_id, source_
     assert.throws(
       () => record(store, 'playback.received', { liveSessionId: SESSION, playbackKey: 'p2', source: 'native', sourceInstanceId: 'inst-1' }, { segmentSeq: 1, receivedAt: T0 }),
       (error: unknown) => error instanceof TraceRecordError && error.code === 'MISSING_FIELD');
+    assert.throws(
+      () => record(store, 'playback.received', { liveSessionId: SESSION, playbackKey: 'p3', source: 'native', sourceInstanceId: 'inst-1', sourceSeq: 3 }, { segmentSeq: 2, receivedAt: T0 }),
+      (error: unknown) => error instanceof TraceRecordError && error.code === 'MISSING_FIELD', 'a native receipt without its own clock is refused');
   });
 });
 

@@ -139,6 +139,11 @@ function validateEvent(kind: TraceEventKind, ids: TraceEventIds, detail: unknown
   if (source === 'native' && (ids.sourceInstanceId === undefined || ids.sourceSeq === undefined)) {
     throw new TraceRecordError('MISSING_FIELD', `${kind}: a native receipt needs sourceInstanceId and sourceSeq`);
   }
+  // A native receipt carries its own clock. Defaulting it to this host's monotonic value would
+  // silently put two clock domains in one column, which the timeline must never subtract.
+  if (source === 'native' && (ids.at === undefined || ids.monoMs === undefined)) {
+    throw new TraceRecordError('MISSING_FIELD', `${kind}: a native receipt needs the producer's wall ms and monotonic ms`);
+  }
   for (const field of REQUIRED_IDS[kind]) if (ids[field as keyof TraceEventIds] === undefined) throw new TraceRecordError('MISSING_FIELD', `${kind}: ${field} is required`);
 
   const spec = DETAIL_SPECS[kind];

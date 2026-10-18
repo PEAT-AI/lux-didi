@@ -428,6 +428,8 @@ class Session implements LiveVoiceSession {
   /** A continuation the gate owes but has not sent, and the single retry an active-response rejection allows
    *  (3r A). A deferred continuation is sent by the next terminal event, never by a timer of its own. */
   private continuationOwed = false;
+  /** Every `response.create` this session has written: one per backend response, and the S5 failure rule counts them. */
+  private continuationsSent = 0;
   /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
   private continuationCalls = 0;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
@@ -1012,13 +1014,14 @@ class Session implements LiveVoiceSession {
             ...(typeof usage.input_tokens === 'number' ? { promptTokens: usage.input_tokens } : {}),
             ...(typeof usage.output_tokens === 'number' ? { responseTokens: usage.output_tokens } : {}) });
         }
-        // S5: a backend response that ends failed, incomplete or errored is a typed failure, never a silent
-        // stall: the turn settles with the provider's own code, and no continuation is sent for it.
+        // S5: a backend response that ends failed, incomplete or errored still ends the response, so a batch it
+        // answered is flushed and an owed continuation is resumed (3r E). A failure that leaves nothing to say is
+        // the turn's failure: one typed disposition with the provider's own code, never a silent stall.
         const status = typeof response?.status === 'string' ? response.status : event.type.replace('response.', '');
         if (status !== 'completed' && status !== 'done') {
-          this.continuationOwed = false;
-          this.continuationCalls = 0;
-          this.emit({ type: 'turnFailed', code: failureCode(status, response?.error) });
+          const createsBefore = this.continuationsSent;
+          this.endResponse(message);
+          if (this.continuationsSent === createsBefore) this.emit({ type: 'turnFailed', code: failureCode(status, response?.error) });
           this.touch();
           return;
         }
@@ -1348,6 +1351,7 @@ class Session implements LiveVoiceSession {
     }
     this.continuationOwed = false;
     this.continuationRejected = false;
+    this.continuationsSent += 1;
     if (attempt) this.continuationRetries += 1;
     const answered = this.continuationCalls;
     this.continuationCalls = 0;

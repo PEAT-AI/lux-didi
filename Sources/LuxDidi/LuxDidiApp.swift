@@ -569,7 +569,7 @@ struct RootView: View {
         showFull: { [weak self] activating in self?.presentWindow(activating: activating) },
         hideFull: { [weak self] in self?.orderOutFullWindow() },
         showMini: { [weak self] _ in self?.presentMiniPanel() ?? .failed("no_app") },
-        hideMini: { [weak self] in self?.dismissMiniSurface() },
+        hideMini: { [weak self] caller in self?.miniOrb.hideSurface(caller: caller) },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
         log: { [weak self] record in self?.model.recordSurfaceReceipt(record) })
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -929,7 +929,7 @@ struct RootView: View {
     /// an explicit action (menu, Ctrl-Opt-Shift-L, or hiding the mini orb).
     func hide() { coordinator.hideAll() }
     func escape() {
-        if coordinator.mode == .mini { miniOrb.hide(); coordinator.hideMiniSurface() } else { hide() }
+        if coordinator.mode == .mini { miniOrb.hide(caller: "escape"); coordinator.hideMiniSurface() } else { hide() }
     }
     /// Ctrl-Opt-Space: the mini orb, and a second press brings the window back.
     @objc func toggleMiniOrb() {
@@ -1033,8 +1033,6 @@ struct RootView: View {
         // M3-R5: muting takes the pill off the screen and unmuting brings it back.
     }
 
-    /// The coordinator's hide: the FULL window is taking the screen, so the orb goes away.
-    private func dismissMiniSurface() { miniOrb.hideSurface(caller: "coordinator") }
     private func presentMiniThroughCoordinator(trigger: SurfaceTrigger) -> MiniPresentOutcome {
         coordinator.presentMini(trigger: trigger)
     }

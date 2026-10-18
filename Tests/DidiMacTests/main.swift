@@ -279,7 +279,7 @@ let coordinator = PresentationCoordinator(
     showMini: { _ in
         guard miniPageHostable else { return .failed("page_not_ready") }
         visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return .shown(miniFacts) },
-    hideMini: { visibleSurfaces.remove("mini") },
+    hideMini: { _ in visibleSurfaces.remove("mini") },
     liveIsRunning: { liveActive })
 expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
 coordinator.presentFull(activating: true)
@@ -731,7 +731,7 @@ var q4Log: [[String: Any]] = []
 let q4Failing = PresentationCoordinator(
     showFull: { _ in q4FullShows += 1 }, hideFull: {},
     showMini: { _ in q4MiniShows += 1; return .failed("page_not_ready") },
-    hideMini: {}, liveIsRunning: { false }, log: { q4Log.append($0) })
+    hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
 expect(q4Failing.presentMini(trigger: .menu) == .failed("page_not_ready") && q4MiniShows == 1 && q4FullShows == 0,
        "a mini show with no page never falls back to the FULL window")
 expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_failed"
@@ -742,7 +742,7 @@ q4Log = []
 let q4Landing = PresentationCoordinator(
     showFull: { _ in }, hideFull: {},
     showMini: { _ in .shown(q4Facts) },
-    hideMini: {}, liveIsRunning: { false }, log: { q4Log.append($0) })
+    hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
 expect(q4Landing.presentMini(trigger: .button) == .shown(q4Facts) && q4Landing.mode == .mini,
        "a hosted mini show lands as the MINI surface")
 expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigger"] as? String == "button"

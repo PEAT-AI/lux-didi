@@ -42,14 +42,16 @@ final class PresentationCoordinator {
     /// The show answer: the panel's own facts when the surface landed, or the reason it could
     /// not be hosted (Q4-R1).
     private let showMiniOrb: @MainActor (SurfaceTrigger) -> MiniPresentOutcome
-    private let hideMiniOrb: @MainActor () -> Void
+    /// The caller travels with the hide, so `mini_hidden {caller}` says which switch took the
+    /// orb away (Q4-R3).
+    private let hideMiniOrb: @MainActor (String) -> Void
     private let liveIsRunning: @MainActor () -> Bool
     /// Every surface transition leaves a receipt, so a pill that went away has a named caller.
     private let log: @MainActor ([String: Any]) -> Void
 
     init(showFull: @escaping @MainActor (Bool) -> Void, hideFull: @escaping @MainActor () -> Void,
          showMini: @escaping @MainActor (SurfaceTrigger) -> MiniPresentOutcome,
-         hideMini: @escaping @MainActor () -> Void,
+         hideMini: @escaping @MainActor (String) -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool,
          log: @escaping @MainActor ([String: Any]) -> Void = { _ in }) {
         self.showFullWindow = showFull
@@ -64,7 +66,7 @@ final class PresentationCoordinator {
     /// the FULL window, and never the orb as well.
     @discardableResult
     func presentFull(activating: Bool) -> Bool {
-        hideMiniOrb()
+        hideMiniOrb("present_full")
         showFullWindow(activating)
         mode = .full
         return true
@@ -93,14 +95,14 @@ final class PresentationCoordinator {
 
     /// The orb is gone from screen without any window taking its place.
     func hideMiniSurface() {
-        hideMiniOrb()
+        hideMiniOrb("hide_mini_surface")
         if mode == .mini { mode = .hidden }
     }
 
     /// Nothing on screen: Cmd+W while no Live session runs.
     func hideAll() {
         hideFullWindow()
-        hideMiniOrb()
+        hideMiniOrb("hide_all")
         mode = .hidden
     }
 

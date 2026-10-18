@@ -23,6 +23,19 @@ const VOICE: Record<LiveState, VoiceState> = {
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
 
+/** True once Naya's first audible frame has arrived in this session: the projection holds an
+ * output transcription, which only a played model turn writes. */
+export function heardModelSpeech(live: LiveCurrent | undefined): boolean {
+  return (live?.entries ?? []).some(entry => entry.kind === 'outputTranscription' && (entry.text ?? '').trim().length > 0);
+}
+
+/** Q4: `listening` before the first model frame has only opened the microphone, up to 4.6 s
+ * before Naya speaks. Until that frame the orb and the pill say Connecting, so a silent
+ * session never reads as if she were listening. */
+export function connectingBeforeFirstSpeech(live: LiveCurrent | undefined): boolean {
+  return live?.state === 'listening' && !heardModelSpeech(live);
+}
+
 /** Tool names whose call is in flight: the calls after the last tool result.
  * A batch of several calls is one set, so the activity line reads as one line. */
 export function pendingToolNames(live: LiveCurrent): string[] {
@@ -49,6 +62,7 @@ export function liveLabel(live: LiveCurrent | undefined): string {
     const normal = ['closed', 'cancelled', 'revoked', 'expired'].includes(past.outcome);
     return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
   }
+  if (connectingBeforeFirstSpeech(live)) return 'Connecting';
   return liveStateLabel(live?.state ?? 'idle');
 }
 

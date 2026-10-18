@@ -339,6 +339,14 @@ import WebKit
     func cancelPresencePlayback() { live?.device.cancelPlayback() }
     /// The presence receipt: a `presence_state` record in the native log, never audio or text.
     func appendPresenceReceipt(_ record: [String: Any]) { liveJournal.append(record) }
+    /// The surface receipts of this launch. `mini_present_failed` and `mini_presented` name the
+    /// reason and the panel's own facts, so a pill that is not there leaves a trace instead of
+    /// an absence; the copy in memory lets the UI proof assert the record without reading a file.
+    private(set) var surfaceReceipts: [[String: Any]] = []
+    func recordSurfaceReceipt(_ record: [String: Any]) {
+        surfaceReceipts.append(record)
+        appendPresenceReceipt(record)
+    }
 
     // MARK: - Mic Mode (#352)
     /// The observer's wiring. KVO over the two class properties, and nothing else.
@@ -502,10 +510,11 @@ struct RootView: View {
         startLive: { [weak self] in self?.model.startLive() },
         stopLive: { [weak self] in self?.model.stopLive() },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
-        presentPanel: { [weak self] in self?.presentMiniThroughCoordinator() },
+        presentPanel: { [weak self] trigger in self?.presentMiniThroughCoordinator(trigger: trigger) ?? .failed("no_app") },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
         expandToWindow: { [weak self] in self?.expandThroughCoordinator() },
-        present: { [weak self] posture in self?.applyPresenceSurface(PresenceSurfaceState.shown(posture)) })
+        present: { [weak self] posture in self?.applyPresenceSurface(PresenceSurfaceState.shown(posture)) },
+        receipt: { [weak self] record in self?.model.recordSurfaceReceipt(record) })
     /// Council 2026-10-17 (option C, `council-presence-1017.md`): one state machine
     /// behind Right Command, a click on the mini orb and the app's mic control. The
     /// coordinator's mute fence, the device's playback cancel and the provider's
@@ -559,9 +568,10 @@ struct RootView: View {
     private(set) lazy var coordinator = PresentationCoordinator(
         showFull: { [weak self] activating in self?.presentWindow(activating: activating) },
         hideFull: { [weak self] in self?.orderOutFullWindow() },
-        showMini: { [weak self] in self?.hostMiniSurface() ?? false },
+        showMini: { [weak self] _ in self?.presentMiniPanel() ?? .failed("no_app") },
         hideMini: { [weak self] in self?.dismissMiniSurface() },
-        liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true })
+        liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
+        log: { [weak self] record in self?.model.recordSurfaceReceipt(record) })
     func applicationDidFinishLaunching(_ notification: Notification) {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
@@ -663,6 +673,9 @@ struct RootView: View {
             .sink { [weak self] pair in
                 guard pair.state == .ready, self?.model.shell === pair.shell else { return }
                 self?.pushSingleKeyState()
+                // Q4-R1: the launch asked for the surfaces before the host connection existed, so
+                // the mini page had no descriptor to host. The page-ready edge asks again.
+                self?.presence.setSurfaces()
             }
         menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
@@ -959,8 +972,13 @@ struct RootView: View {
     }
     /// Presence surfaces: the orb is there in every state, grey while Naya is silent, and
     /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
+    /// Q4-R1: the presence surface never takes the screen from a FULL window the owner opened.
+    /// One coordinator, one visible surface (D-30): a posture change while the window is up must
+    /// not hide it, which is the hide/show cycle call e283ef09 recorded 10 times with no owner
+    /// action. The page-ready edge re-asks for the surfaces once the mini page can be hosted.
     private func applyPresenceSurface(_ surface: PresenceSurfaceState) {
-        if surface.visible { miniOrb.showSurface() } else { miniOrb.hideSurface() }
+        if !surface.visible { miniOrb.hideSurface(caller: "presence") }
+        else if coordinator.mode != .full { miniOrb.showSurface(trigger: .other) }
         miniPanel?.alphaValue = surface.opacity
         pushPresenceState()
         schedulePresenceGrace()
@@ -990,13 +1008,11 @@ struct RootView: View {
         case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }
-    /// The FULL window's mode button (#311), and the same path the web button
-    /// takes through the bridge. Presentation only: Live keeps running.
+    /// The FULL window's mode button (#311), and the same path the web button takes through the
+    /// bridge. Presentation only: Live keeps running, and only the chord, an orb press and Start
+    /// open a session (Q4-R2: a menu item that started a live microphone was a privacy surprise).
     @objc func showMiniOrb() {
-        // M3-R2: presenting the pill starts the session it belongs to, the same way the
-        // chord does, so the pill is never on screen with the microphone never live.
-        if model.live?.isCapturing != true { model.startLive() }
-        _ = coordinator.presentMini()
+        miniOrb.showSurface(trigger: .menu)
     }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.
@@ -1017,24 +1033,36 @@ struct RootView: View {
         // M3-R5: muting takes the pill off the screen and unmuting brings it back.
     }
 
-    private func hostMiniSurface() -> Bool { presentMiniPanel() }
-    private func dismissMiniSurface() { miniOrb.hideSurface() }
-    private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }
+    /// The coordinator's hide: the FULL window is taking the screen, so the orb goes away.
+    private func dismissMiniSurface() { miniOrb.hideSurface(caller: "coordinator") }
+    private func presentMiniThroughCoordinator(trigger: SurfaceTrigger) -> MiniPresentOutcome {
+        coordinator.presentMini(trigger: trigger)
+    }
     private func expandThroughCoordinator() { _ = coordinator.presentFull(activating: true) }
     @discardableResult
-    private func presentMiniPanel() -> Bool {
-        guard let shell = miniShellForDisplay() else {
-            // No page to host: the coordinator falls back to the FULL window.
-            return false
+    private func presentMiniPanel() -> MiniPresentOutcome {
+        // Q4-R1: the page is hosted from a descriptor and nothing else. The launch-time surface
+        // request has none yet, so it reports why the show failed instead of opening the FULL
+        // window the owner did not ask for; the page-ready edge asks again.
+        let environment = (try? ServiceDescriptor.configured())?.origin
+        if let failure = MiniOrbSurface.failure(host: model.shell?.descriptor.origin, environment: environment) {
+            return .failed(failure)
         }
-           let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] step in self?.applyPresenceStep(step) }
+        guard let shell = miniShellForDisplay() else { return .failed("page_unavailable") }
+        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] step in self?.applyPresenceStep(step) }
         miniPanel = panel
+        // Q4-R3: the receipt reads the alpha the surface actually draws at, so a dim pill is on
+        // the record instead of looking like a surface that was never there.
+        panel.alphaValue = PresenceSurfaceState.shown(presence.posture).opacity
         panel.orderFrontRegardless()
         if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {
             miniCookie = cookie
             Task { await shell.load(cookie: cookie) }
         }
-        return true
+        return .shown(MiniSurfaceFacts(frame: NSStringFromRect(panel.frame),
+            screen: panel.screen.map { NSStringFromRect($0.frame) } ?? "none",
+            alpha: Double(panel.alphaValue), occluded: !panel.occlusionState.contains(.visible),
+            pageState: String(describing: shell.state)))
     }
     /// The mini view reuses the one live page session: same service origin, same
     /// page cookie, never a second bootstrap (which would revoke the first view).
@@ -1100,7 +1128,14 @@ struct RootView: View {
         model.draft = "Synthetic draft retained through close and Escape"
         guard !windowShouldClose(window), !window.isVisible else { failProof("close must retain agent"); return }
         hotkey.onToggle?()
-        guard window.isVisible else { failProof("registered hotkey callback must show"); return }
+        // Q4-R1: this launch has no service descriptor, so the mini page cannot be hosted. The
+        // registered callback still runs, and the show fails loud on the record instead of
+        // opening the FULL window the owner did not ask for; no surface pretends to be there.
+        guard !window.isVisible, coordinator.mode == .hidden, !miniOrb.isVisible,
+              model.surfaceReceipts.contains(where: {
+                  $0["event"] as? String == "mini_present_failed" && $0["reason"] as? String == "page_not_ready"
+              })
+        else { failProof("registered hotkey callback must report the mini surface"); return }
         escape()
         guard !window.isVisible, model.draft.contains("retained"), !applicationShouldTerminateAfterLastWindowClosed(NSApp) else { failProof("Escape/lifecycle retention"); return }
         show()

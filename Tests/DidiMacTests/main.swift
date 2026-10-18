@@ -42,11 +42,13 @@ expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "ac
 // expands to the full window and keeps Live running, and the frame is remembered.
 var liveStarted = 0, liveStopped = 0, presented = 0, dismissed = 0, expanded = 0
 var liveRunning = false
+let miniFacts = MiniSurfaceFacts(frame: "{{700, 860}, {64, 26}}", screen: "main", alpha: 1,
+                                 occluded: false, pageState: "ready")
 let miniOrb = MiniOrbToggle(
     startLive: { liveStarted += 1; liveRunning = true },
     stopLive: { liveStopped += 1; liveRunning = false },
     liveIsRunning: { liveRunning },
-    presentPanel: { presented += 1 },
+    presentPanel: { _ in presented += 1; return .shown(miniFacts) },
     dismissPanel: { dismissed += 1 },
     expandToWindow: { expanded += 1 })
 expect(!miniOrb.isVisible, "mini orb starts hidden")
@@ -62,7 +64,7 @@ miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
 // M3-R12: this build has one mini surface, and nothing hides it on microphone state.
-// Presence owns its visibility and its opacity (cold 0.35, hot-muted 0.55, live 1.0), so the
+// Presence owns its visibility and its opacity (cold 0.6, hot-muted 0.55, live 1.0), so the
 // surface stays on screen in cold and in hot-muted, and only an explicit hide or expand
 // takes it away.
 var miniPresence = "cold"
@@ -70,10 +72,10 @@ var gateDismissals = 0
 var gatePresents = 0
 let surface = MiniOrbToggle(startLive: { miniPresence = "live" }, stopLive: { miniPresence = "cold" },
                             liveIsRunning: { miniPresence == "live" },
-                            presentPanel: { gatePresents += 1 },
+                            presentPanel: { _ in gatePresents += 1; return .shown(miniFacts) },
                             dismissPanel: { gateDismissals += 1 },
                             expandToWindow: {})
-surface.showSurface()
+surface.showSurface(trigger: .other)
 expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
 miniPresence = "hot-muted"
 expect(surface.isVisible && gateDismissals == 0, "hot-muted leaves the surface on screen")
@@ -274,7 +276,9 @@ let liveSession = "live-session-42"
 let coordinator = PresentationCoordinator(
     showFull: { _ in visibleSurfaces.remove("mini"); visibleSurfaces.insert("full") },
     hideFull: { visibleSurfaces.remove("full") },
-    showMini: { visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return miniPageHostable },
+    showMini: { _ in
+        guard miniPageHostable else { return .failed("page_not_ready") }
+        visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return .shown(miniFacts) },
     hideMini: { visibleSurfaces.remove("mini") },
     liveIsRunning: { liveActive })
 expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
@@ -323,7 +327,8 @@ expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the close comman
 miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a mini orb with no page falls back to the FULL window")
+// Q4-R1: a page that cannot be hosted fails loud; it never answers with the FULL window.
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a mini orb with no page never falls back to the FULL window")
 miniPageHostable = true
 
 // UI3A: the orb never becomes key or main, floats above normal windows over every
@@ -727,7 +732,7 @@ let q4Failing = PresentationCoordinator(
     showFull: { _ in q4FullShows += 1 }, hideFull: {},
     showMini: { _ in q4MiniShows += 1; return .failed("page_not_ready") },
     hideMini: {}, liveIsRunning: { false }, log: { q4Log.append($0) })
-expect(q4Failing.presentMini(trigger: .menu) == false && q4MiniShows == 1 && q4FullShows == 0,
+expect(q4Failing.presentMini(trigger: .menu) == .failed("page_not_ready") && q4MiniShows == 1 && q4FullShows == 0,
        "a mini show with no page never falls back to the FULL window")
 expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_failed"
        && q4Log.last?["reason"] as? String == "page_not_ready",
@@ -738,7 +743,7 @@ let q4Landing = PresentationCoordinator(
     showFull: { _ in }, hideFull: {},
     showMini: { _ in .shown(q4Facts) },
     hideMini: {}, liveIsRunning: { false }, log: { q4Log.append($0) })
-expect(q4Landing.presentMini(trigger: .button) && q4Landing.mode == .mini,
+expect(q4Landing.presentMini(trigger: .button) == .shown(q4Facts) && q4Landing.mode == .mini,
        "a hosted mini show lands as the MINI surface")
 expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigger"] as? String == "button"
        && q4Log.last?["frame"] as? String == q4Facts.frame && q4Log.last?["screen"] as? String == "main"

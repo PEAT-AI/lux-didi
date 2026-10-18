@@ -87,8 +87,21 @@ for connected chat, [Live configuration](provider-configuration.md#live-profile-
 for Live, and [MCP configuration](mcp-configuration.md) for connector endpoints,
 classification and explicit network approval.
 
-Use the connector server's own documented account sign-in procedure. Lux Didi
-ships no universal Calendar sign-in command. Endpoint commands, account identities
+Mongoose is the one connector Lux Didi can sign in to for you. Run the host once,
+then restart Lux Didi:
+
+```sh
+node /path/to/your/install/server/dist/host/index.js --mongoose-login
+```
+
+Your default browser opens the Mongoose consent page, where you sign in with
+Google. The window closes when the session is saved; no token is ever copied,
+pasted or printed. The session refreshes itself while you use it. If it ever
+goes stale, the connector next step says **Mongoose session expired, reconnect
+Mongoose** with the same command.
+
+Use the connector server's own documented account sign-in procedure for every
+other connector. Lux Didi ships no universal Calendar sign-in command. Endpoint commands, account identities
 and credential references must match the connector you installed. Credential files
 belong in the selected directory with owner-only permissions. Do not paste secrets
 into Didi, chat or diagnostics. Restart Lux Didi after changing configuration.

@@ -66,7 +66,7 @@ export function mongooseToolStatus(evidence: ConnectorEvidence): ConnectorStatus
   const content = decodeMcpContentText(evidence.decodedResult);
   if (!content.ok) return { state: 'error', reason: 'tool call failed; no content' };
   return credentialFailure(content.text)
-    ? { state: 'configured', reason: 'bearer missing or rejected: provision the mongoose-mcp credential' }
+    ? { state: 'configured', reason: 'Mongoose session expired or missing: reconnect Mongoose' }
     : { state: 'error', reason: 'tool call failed' };
 }
 

@@ -3,9 +3,7 @@ import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, Resu
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
 /**
- * The only remote tools this connector may ever call, in fixed order. A name outside this
- * envelope is refused even when the remote lists it: the local read classification is the
- * authority, never the remote's readOnlyHint. Ticket writes and authoring tools are absent.
+ * The remote tools this connector carries a typed projection for, in fixed order.
  */
 export const MONGOOSE_TOOLS = [
   'ask_mongoose',
@@ -17,6 +15,100 @@ export const MONGOOSE_TOOLS = [
   'get_ticket',
 ] as const;
 export type MongooseTool = (typeof MONGOOSE_TOOLS)[number];
+
+/** The read prefixes the classifier accepts when a server ships no MCP annotations. */
+export const MONGOOSE_READ_PREFIXES = ['get_', 'list_', 'search_', 'ask_', 'read_', 'lookup_', 'check_'] as const;
+
+/**
+ * The widest read envelope this connector will ever call: every read-only tool of the published
+ * 64-tool surface, plus the Lightdash reads, whose mutability the server takes from Lightdash.
+ * A write is absent, and the discovery-time classifier below narrows this list to what the server
+ * itself annotates as read-only before anything is granted.
+ */
+export const MONGOOSE_READ_TOOLS = [
+  ...MONGOOSE_TOOLS,
+  'check_data_capability',
+  'get_commercial_paths',
+  'get_company_crm',
+  'get_knowledge_graph',
+  'get_knowledge_versions',
+  'get_market_profile',
+  'get_reach',
+  'get_schema',
+  'get_started',
+  'inbound_lead_events',
+  'lint_knowledge',
+  'list_companies',
+  'list_company_products',
+  'list_data_capabilities',
+  'list_inbound_leads',
+  'list_knowledge_domains',
+  'list_knowledge_edges',
+  'list_knowledge_items',
+  'list_markets',
+  'list_offerings',
+  'list_seed_conflicts',
+  'list_user_handles',
+  'list_users',
+  'lookup_efficacy_evidence',
+  'summarize_email_engagements',
+  'lightdash_find_content',
+  'lightdash_generate_hashes',
+  'lightdash_get_context',
+  'lightdash_get_current_project',
+  'lightdash_get_lightdash_version',
+  'lightdash_get_metadata',
+  'lightdash_get_query_result',
+  'lightdash_grep_fields',
+  'lightdash_list_content',
+  'lightdash_list_explores',
+  'lightdash_list_projects',
+  'lightdash_list_verified_content',
+  'lightdash_read_content',
+  'lightdash_resolve_url',
+  'lightdash_run_metric_query',
+  'lightdash_run_sql',
+  'lightdash_search_field_values',
+] as const;
+
+/**
+ * The known write surface of the published catalog. A write is never auto-approved, whatever the
+ * remote's advisory annotation says; it stays behind the existing explicit grant.
+ */
+export const MONGOOSE_KNOWN_WRITES = [
+  'claim_ticket',
+  'create_knowledge_item',
+  'create_ticket',
+  'patch_knowledge_body',
+  'provision_user',
+  'resolve_seed_conflict',
+  'set_knowledge_edge',
+  'set_knowledge_item_status',
+  'set_user_access',
+  'update_knowledge_item',
+  'update_ticket',
+  'lightdash_create_content',
+  'lightdash_create_scheduled_delivery',
+  'lightdash_edit_content',
+  'lightdash_set_project',
+] as const;
+
+/**
+ * One tool's read classification. A known write is never a read. Otherwise the remote's own MCP
+ * annotations decide when it sends any: only `readOnlyHint: true` is a read, and annotations
+ * without a read hint never authorize a name on its spelling alone. A server that sends no
+ * annotations at all falls back to the read prefixes above.
+ */
+export function mongooseReadOnly(tool: { name: string; annotations?: unknown }): boolean {
+  if ((MONGOOSE_KNOWN_WRITES as readonly string[]).includes(tool.name)) return false;
+  const annotations = tool.annotations;
+  if (annotations !== undefined && annotations !== null) {
+    if (typeof annotations !== 'object' || Array.isArray(annotations)) return false;
+    const hint = (annotations as Record<string, unknown>)['readOnlyHint'];
+    return typeof hint === 'boolean' ? hint : false;
+  }
+  return MONGOOSE_READ_PREFIXES.some(prefix => tool.name.startsWith(prefix));
+}
 
 /** Bounded argument defaults; a caller may only narrow these, never widen them. */
 export const MONGOOSE_DEFAULTS = { searchLimit: 5, maxSearchLimit: 50, listLimit: 10, maxListLimit: 100, queryChars: 500 } as const;
@@ -61,7 +153,8 @@ export interface MongooseConfig {
 export interface MongooseEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
-  tool: MongooseTool;
+  /** The remote tool the server answered; every granted read tool, not only the typed seven. */
+  tool: string;
   source: ResultScope;
   observedAt: number;
   coverage: CompletedResult['coverage'];
@@ -85,11 +178,13 @@ export interface MongooseReader {
   companyProfile(signal?: AbortSignal): Promise<MongooseResult>;
   listTickets(input: ListInput, signal?: AbortSignal): Promise<MongooseResult>;
   getTicket(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
+  /** Any other granted read tool, with the model's own arguments; the server schema validates them. */
+  call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult>;
 }
 
 export interface MongooseOptions { port: McpPort; registry: McpRegistry; config: MongooseConfig }
 
-const ELIGIBLE: ReadonlySet<string> = new Set<string>(MONGOOSE_TOOLS);
+const ELIGIBLE: ReadonlySet<string> = new Set<string>(MONGOOSE_READ_TOOLS);
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';
@@ -110,7 +205,7 @@ interface Settings {
 }
 
 /** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
-function preflight(registry: McpRegistry, settings: Settings, tool: MongooseTool): string | undefined {
+function preflight(registry: McpRegistry, settings: Settings, tool: string): string | undefined {
   let grant: ReadGrant | undefined;
   try {
     registry.endpoint(settings.endpointId);
@@ -142,7 +237,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
 
   const schemaValidator = new AjvJsonSchemaValidator();
 
-  async function dispatch(tool: MongooseTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
+  async function dispatch(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -231,6 +326,13 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       const id = boundedQuestion(input.id);
       if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
       return dispatch('get_ticket', { id }, signal);
+    },
+    async call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
+      // Only a read name the local envelope carries is forwarded; the grant is checked in preflight.
+      if (!ELIGIBLE.has(tool)) return { state: 'refused', reason: 'tool-not-in-envelope' };
+      const denied = preflight(registry, settings, tool);
+      if (denied) return { state: 'refused', reason: denied };
+      return dispatch(tool, args, signal);
     },
   };
 }

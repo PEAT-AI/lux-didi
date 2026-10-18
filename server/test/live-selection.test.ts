@@ -178,8 +178,10 @@ test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anyt
   const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', '1.08']);
   assert.equal(saved.status, 0, saved.err);
   assert.equal(f.saved()['playbackRate'], 1.08);
-  assert.equal(currentLivePlaybackRate(), 1.08);
   const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  // The process-current value is assigned by a load, never by a child process: assert it after the load that a
+  // next start performs (d9cc8192, TRAIN3Q-R3), not after the CLI run that only wrote the file.
+  assert.equal(currentLivePlaybackRate(), 1.08);
   assert.equal(loaded.status, 'configured');
   assert.equal(loaded.status === 'configured' ? loaded.config.playbackRate : undefined, 1.08);
   // Both ends of the band are legal; 0.99, 1.21 and a non-number are not.

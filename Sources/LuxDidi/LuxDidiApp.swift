@@ -1008,11 +1008,12 @@ struct RootView: View {
         case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }
-    /// The FULL window's mode button (#311), and the same path the web button takes through the
-    /// bridge. Presentation only: Live keeps running, and only the chord, an orb press and Start
-    /// open a session (Q4-R2: a menu item that started a live microphone was a privacy surprise).
+    /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and
+    /// this only moves the surface. Live keeps running and is never opened here; only the chord,
+    /// an orb press and Start open a session (Q4-R2: a presentation command that started a live
+    /// microphone was a privacy surprise).
     @objc func showMiniOrb() {
-        miniOrb.showSurface(trigger: .menu)
+        miniOrb.showSurface(trigger: .button)
     }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.

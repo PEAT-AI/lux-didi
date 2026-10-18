@@ -395,7 +395,7 @@ trustedKey.receive(.rightCommandUp, at: 320.1)
 expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "ignored"
     && singleKeyReceipts[2]["reason"] as? String == "hotMuted", "a tap the machine does not move is logged as ignored with the state it stayed in")
 trustedKey.receive(.rightCommandDown, at: 330)
-trustedKey.receive(.rightCommandUp, at: 330.4)
+trustedKey.receive(.rightCommandUp, at: 331)
 expect(singleKeyReceipts.count == 5 && singleKeyReceipts[3]["action"] as? String == "hold_start"
     && singleKeyReceipts[4]["action"] as? String == "hold_end",
     "a press held past the threshold logs single_key_tap hold_start, then hold_end on the release")

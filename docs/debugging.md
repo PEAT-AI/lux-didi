@@ -194,6 +194,14 @@ terminal event and the failed backend response. A trace is a list of `{at_ms, di
 `server/test/voice-replay/sanitize.ts` from a recorded provider log of test data only, with every free text field
 replaced by a placeholder.
 
+Fidelity limit: the replay injects `LiveVoiceClock` into the adapter and `now`/`schedule` into the host, so every
+turn-taking window and every host timer runs on virtual time. The adapter's transport timers (handshake, idle,
+deadline, close) are real `setTimeout`s compared against real `Date.now()` (server/adapters/live-voice/openai.ts,
+the `Date.now() >= this.deadlineMs` guard), so they cannot fire in a replay where virtual time outruns the wall
+clock. The driver anchors the virtual origin at `Date.now()` and sets those budgets far beyond any scenario, so
+they never fire and no scenario depends on them; a scenario that must prove the transport deadline needs a
+production seam, not a longer trace.
+
 ## Privacy rule
 
 The debug journal holds owner content: transcripts, the composed instructions, tool arguments and

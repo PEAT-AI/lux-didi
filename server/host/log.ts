@@ -640,6 +640,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeToken(value.code) || !isSafeToken(value.param) || !isSafeMember(value.kind, COMMAND_KINDS)) return;
     return { event: 'command_rejected', code: value.code, param: value.param, kind: value.kind };
   }
+  if (value.event === 'provider_error_unclassified') {
+    // S4a-R2 (c): a provider error no disposition map entry claimed. Its own type, code and param, nothing else.
+    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
+    return { event: 'provider_error_unclassified', type: value.type, code: value.code, param: value.param };
+  }
   if (value.event === 'responses_validation_failed') {
     // S4a-R4: the backend refused its own delegation config. The refused field, once per session.
     if (!closedKeys(value, ['event', 'param'])) return;

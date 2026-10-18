@@ -129,6 +129,11 @@ function stepSourceOf(name: string): string {
   return STEP_SOURCES[prefix] ?? prefix;
 }
 
+/** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary a progress line names. */
+type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout';
+/** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
+function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
+
 /** S4a: a spoken list of at most a handful of sources, in the order the ledger ran them. */
 function joinWords(words: readonly string[]): string {
   if (words.length <= 1) return words[0] ?? '';
@@ -166,7 +171,11 @@ interface ActiveSession {
   awaitingAnswer: boolean; answerAt: number | undefined;
   /** S4a progress speech and the delegation deadline that outlives the S2 watchdog window. */
   progressTimer?: ReturnType<JobTimer> | undefined; progressSentAt?: number | undefined;
-  delegationTimer?: ReturnType<JobTimer> | undefined; stalledNoRebuild?: boolean;
+  delegationTimer?: ReturnType<JobTimer> | undefined;
+  /** S4a-R2 (e): one execution receipt per call of this turn, the only source a progress line may name. */
+  exec: Map<string, { source: string; status: ExecStatus }>;
+  /** S4a-R2 (a): calls the provider had already cancelled when the ceiling settled them. */
+  cancelledBeforeExec: Set<string>;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
@@ -1030,7 +1039,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), cancelledBeforeExec: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1125,14 +1134,22 @@ export class LiveSessionOwner {
 
   /** S4a: a factual line from this turn's step ledger, naming only sources actually running or done. */
   #progressLine(handle: ActiveSession): string | undefined {
-    const running: string[] = [];
-    const done: string[] = [];
-    for (const step of handle.liveSteps) (step.phase === 'end' ? done : running).push(step.source);
-    // Never invent progress: a turn with no ledger has nothing truthful to say, so it says nothing.
-    if (!running.length && !done.length) return undefined;
+    // S4a-R2 (e): what the host can prove, from the execution receipts of this turn's calls: a source that was
+    // only requested is never described as being read.
+    const byStatus = (status: ExecStatus): string[] => [...handle.exec.values()].filter(entry => entry.status === status).map(entry => entry.source);
     const parts: string[] = [];
+    const running = byStatus('running');
+    const queued = byStatus('queued');
+    const done = byStatus('done');
+    const failed = byStatus('failed');
+    const timedOut = byStatus('timeout');
     if (running.length) parts.push(`Still reading the ${joinWords([...new Set(running)])}`);
+    if (queued.length) parts.push(`waiting on the ${joinWords([...new Set(queued)])}`);
     if (done.length) parts.push(`the ${joinWords([...new Set(done)])} lookup is done`);
+    if (failed.length) parts.push(`the ${joinWords([...new Set(failed)])} lookup failed`);
+    if (timedOut.length) parts.push(`the ${joinWords([...new Set(timedOut)])} lookup timed out`);
+    // Never invent progress: a turn with no receipt has nothing truthful to say, so it says nothing.
+    if (!parts.length) return undefined;
     return `${parts.join('; ')}.`;
   }
 
@@ -1177,7 +1194,6 @@ export class LiveSessionOwner {
   #cancelProgress(handle: ActiveSession): void {
     handle.progressTimer?.cancel(); handle.progressTimer = undefined;
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
-    handle.stalledNoRebuild = false;
   }
 
   #armDelegationDeadline(handle: ActiveSession): void {
@@ -1194,8 +1210,8 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || handle.rebuilding || !handle.awaitingAnswer) return;
     // A nested response that finished the answer is a terminal event, so only silence past the answer is a stall.
     if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt > (handle.answerAt ?? 0)) return;
+    // S4a-R2 (b): diagnostic only. The receipt and one line are all this deadline does; escalation stays S2's.
     hostLogEvent({ event: 'gptlive_delegation_stalled', ms: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())) });
-    handle.stalledNoRebuild = true;
     this.#sendProgress(handle, 'stalled');
   }
 
@@ -1314,11 +1330,7 @@ export class LiveSessionOwner {
     }
     handle.watchdogRecoveredAt = this.#now();
     hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
-    // S4a: a delegation still open when the watchdog fires is a stall, not a mute model, so the session is resumed
-    // rather than rebuilt; the stall receipt at DELEGATION_DEADLINE_MS names it.
-    const stalledDelegation = handle.awaitingAnswer || handle.pendingCallIds.size > 0;
-    await this.#recoverFromDrop(handle, undefined, handle.stalledNoRebuild !== true && !stalledDelegation, 'model_mute');
-    handle.stalledNoRebuild = false;
+    await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
@@ -2003,9 +2015,14 @@ export class LiveSessionOwner {
   #sendThinking(handle: ActiveSession, calls: readonly { name: string }[]): void {
     const typed = handle.session.sendThinking;
     if (typed === undefined) return;
-    const sources = [...new Set(calls.filter(call => call.name !== RESEARCH_TOOL_NAME).map(call => stepSourceOf(call.name)))];
+    const named = calls.filter(call => call.name !== RESEARCH_TOOL_NAME);
+    const sources = [...new Set(named.map(call => stepSourceOf(call.name)))];
     if (!sources.length) return;
-    const text = `Reading ${joinWords(sources)}. Nothing has been sent or booked while that runs.`;
+    // S4a-R2 (e): a write in the batch means the host cannot claim nothing changed, so it claims nothing.
+    const readOnly = named.every(call => isReadOnlyTool(call.name));
+    const text = readOnly
+      ? `Reading ${joinWords(sources)}. Nothing has been sent or booked while that runs.`
+      : `Reading ${joinWords(sources)}.`;
     try { typed.call(handle.session, { text }); } catch { return; }
     hostLogEvent({ event: 'thinking_sent', chars: text.length });
   }
@@ -2015,8 +2032,11 @@ export class LiveSessionOwner {
   #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
     handle.liveSteps = [];
     handle.liveStepItems = new Map();
+    handle.exec = new Map();
     for (const call of calls) {
+      // S4a-R2 (e): queued is the only status a call has until the tool owner is handed it.
       if (call.name === RESEARCH_TOOL_NAME) continue;
+      handle.exec.set(call.id, { source: stepSourceOf(call.name), status: 'queued' });
       const subject = stepSubject(call.args);
       const step = { callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name), ...(subject !== undefined ? { subject } : {}), phase: 'start' as const };
       liveToolStep(step);
@@ -2094,6 +2114,7 @@ export class LiveSessionOwner {
       for (const unit of pending) {
         handle.callAborts.set(unit.call.id, new AbortController());
         handle.callStartedAt.set(unit.call.id, this.#now());
+        handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'running' });
         registerSignals(unit, unit.subs);
       }
       const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
@@ -2125,8 +2146,13 @@ export class LiveSessionOwner {
       if (raced === 'timeout') {
         for (const unit of pending) {
           hostLogEvent({ event: 'tool_ceiling_hit', tool: unit.call.name, ms: TOOL_CEILING_MS });
-          handle.callAborts.get(unit.call.id)?.abort();
+          handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
+          // S4a-R2 (a): the signal's own state at settlement, read before the abort below writes it.
+          if (handle.callAborts.get(unit.call.id)?.signal.aborted === true) handle.cancelledBeforeExec.add(unit.call.id);
         }
+        // The ceiling settles the call locally: this abort asks the tool owner to stop, and proves nothing about
+        // the remote side, so a write settles as uncertain unless its cancellation came from somewhere else.
+        for (const unit of pending) handle.callAborts.get(unit.call.id)?.abort();
       }
       const batch: Batch | undefined = raced === 'timeout'
         ? { tools: [], bindings: [], responses: [], accepted: [], error: { status: 'deadline', reason: 'timeout' } }
@@ -2194,6 +2220,8 @@ export class LiveSessionOwner {
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
+      // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it.
+      if (handle.exec.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
@@ -2210,6 +2238,13 @@ export class LiveSessionOwner {
       });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
+    // S4a-R2 (a): a read that ran past the ceiling settles as a timeout; a write settles as uncertain, or as
+    // cancelled when the provider's own cancellation came first. A late callback never rewrites either.
+    responses = responses.map(response => {
+      const call = event.calls.find(candidate => candidate.id === response.id);
+      if (call === undefined || handle.exec.get(call.id)?.status !== 'timeout' || isReadOnlyTool(call.name)) return response;
+      return { ...response, response: { error: handle.cancelledBeforeExec.has(call.id) ? 'cancelled_before_execution' : 'outcome_uncertain' } };
+    });
     // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
     // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }

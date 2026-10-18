@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
+import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
@@ -16,6 +16,11 @@ function hostReceipts(t: TestContext): () => Record<string, unknown>[] {
   t.after(() => detach());
   return () => captured;
 }
+/** Wait for the outbound socket to hold this many frames. */
+async function tally(frames: { length: number }, count: number): Promise<void> {
+  await until(() => frames.length >= count);
+}
+
 async function until(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 50 && !predicate(); attempt += 1) await tick();
   assert.ok(predicate(), 'expected event did not arrive');
@@ -113,6 +118,105 @@ describe('openai gpt-live adapter', () => {
     const { audio: presetAudio, ...presetRest } = withPreset.session as Record<string, unknown>;
     assert.deepEqual(customRest, presetRest, 'every non-voice field is byte-identical between the two frames');
     assert.equal(JSON.stringify(withCustom).replace(JSON.stringify({ voice: { id: 'voice_0123456789abcdef' } }), JSON.stringify({ voice: OPENAI_DEFAULT_VOICE })), JSON.stringify(withPreset), 'the frames differ only in the voice leaf');
+  });
+
+  /** S4A-R1: the backend block the delegation carries, with no owner content. */
+  const backend = (start: Start): Record<string, unknown> => {
+    const delegation = start.session['delegation'] as Record<string, unknown>;
+    return (delegation['responses'] as Record<string, unknown>);
+  };
+
+  test('S4A-R1: the delegation carries the voice-backend template and verbosity low', async t => {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const responses = backend(f.frames[0] as unknown as Start);
+    // Without a backendProcedure the backend sees the template and the brevity rule, and nothing else.
+    assert.equal(responses['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`);
+    assert.deepEqual(responses['text'], { verbosity: 'low' });
+    assert.equal(responses['reasoning'], { effort: 'low' });
+    assert.equal(responses['parallel_tool_calls'], true);
+    assert.equal('max_output_tokens' in responses, false, 'the output ceiling stays unset');
+    // No owner content: the template names the task shape and never the persona or a source.
+    assert.equal(String(responses['instructions']).includes('Synthetic persona'), false);
+  });
+
+  test('S4A-R1: a backendProcedure is appended under a blank line, and the voice parts stay byte-identical', async t => {
+    const plain = await fixture(t);
+    const withProcedure = await fixture(t);
+    const plainSession = new OpenAiLiveVoiceAdapter(options({ voice: 'voice_0123456789abcdef', socketFactory: plain.socketFactory })).open(request({ tools: tools() }), control());
+    t.after(() => plainSession.close());
+    const procedure = 'Procedure: read the calendar first, then the mail.';
+    const procedureSession = new OpenAiLiveVoiceAdapter(options({ voice: 'voice_0123456789abcdef', backendProcedure: procedure, socketFactory: withProcedure.socketFactory })).open(request({ tools: tools() }), control());
+    t.after(() => procedureSession.close());
+    await plain.frame(1);
+    await withProcedure.frame(1);
+    const before = plain.frames[0] as unknown as Start;
+    const after = withProcedure.frames[0] as unknown as Start;
+    assert.equal(backend(after)['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${procedure}`);
+    assert.deepEqual(after.session['audio'], before.session['audio'], 'the preset and custom voice parts are untouched');
+    assert.equal(after.session['instructions'], before.session['instructions'], 'the live instructions are untouched');
+    assert.equal(JSON.stringify(after).replace(JSON.stringify(backend(after)['instructions']), JSON.stringify(backend(before)['instructions'])), JSON.stringify(before), 'only the backend instructions differ');
+  });
+
+  test('S4a-R2 (d): every client command carries its own event id and is recorded in the ledger', async t => {
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
+      item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{"q":"x"}' } } });
+    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
+    session.sendCommentary!({ text: 'Still reading the mail.' });
+    session.sendThinking!({ text: 'Reading mail.' });
+    await tally(f.frames, 4);
+    // The call answer names its own call id; the continuation, the commentary and the thinking each count up.
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2', 'thk_3']);
+    assert.ok(f.frames.slice(1).every(frame => typeof frame['event_id'] === 'string'));
+    assert.equal(f.frames[2]!['type'], 'session.commentary.append');
+    assert.equal(f.frames[2]!['delegation_id'], null, 'Responses delegation carries a null delegation_id');
+    assert.equal(f.frames[2]!['content'], 'Still reading the mail.');
+    assert.equal(f.frames[3]!['type'], 'session.thinking.append');
+    assert.equal(f.frames[3]!['content'], 'Reading mail.');
+  });
+
+  test('S4A-R2 (c): a rejected command is a receipt with its kind, never an interruption', async t => {
+    const logged = hostReceipts(t);
+    const { f, session, captured } = await ready(t);
+    session.sendCommentary!({ text: 'Still reading the mail.' });
+    await tally(f.frames, 2);
+    f.send({ type: 'error', event_id: 'event_1', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'content', message: 'bad content', client_event_id: 'cmt_1' } });
+    await tick();
+    assert.equal(captured.events.some(event => event.type === 'interrupted'), false, 'a rejected command cuts nothing');
+    const rejected = logged().filter(entry => entry['event'] === 'command_rejected');
+    assert.deepEqual(rejected, [{ event: 'command_rejected', code: 'invalid_value', param: 'content', kind: 'cmt' }]);
+    for (const entry of rejected) assert.ok(safeEvent(entry), 'the host log whitelist accepts the rejection receipt');
+    session.close();
+  });
+
+  test('S4A-R2 (c): responses_validation_failed is recorded loudly once, naming the field', async t => {
+    const logged = hostReceipts(t);
+    const { f } = await ready(t);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      f.send({ type: 'error', event_id: `event_${attempt}`, error: { type: 'invalid_request_error', code: 'responses_validation_failed', param: 'delegation.responses.instructions', message: 'refused', client_event_id: null } });
+      await tick();
+    }
+    const refused = logged().filter(entry => entry['event'] === 'responses_validation_failed');
+    assert.deepEqual(refused, [{ event: 'responses_validation_failed', param: 'delegation.responses.instructions' }]);
+  });
+
+  test('S4A-R2 (c): an unknown provider code is a diagnostic trap, never an interruption and never a retry', async t => {
+    const logged = hostReceipts(t);
+    const { f, captured } = await ready(t);
+    const before = f.frames.length;
+    f.send({ type: 'error', event_id: 'event_1', error: { type: 'mystery_error', code: 'something_new', param: 'field', message: 'unknown', client_event_id: 'cmt_1' } });
+    await tick(); await tick();
+    assert.equal(captured.events.some(event => event.type === 'interrupted'), false, 'an unknown code cuts nothing');
+    assert.equal(f.frames.length, before, 'and is never retried');
+    const trapped = logged().filter(entry => entry['event'] === 'provider_error_unclassified');
+    assert.deepEqual(trapped, [{ event: 'provider_error_unclassified', type: 'mystery_error', code: 'something_new', param: 'field' }]);
+    assert.equal(logged().filter(entry => entry['event'] === 'command_rejected').length, 0, 'and is not read as a rejection');
   });
 
   test('a refused setup records the provider error, redacted and bounded, and never the instructions', async t => {

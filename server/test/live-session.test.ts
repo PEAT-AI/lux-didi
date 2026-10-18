@@ -139,7 +139,6 @@ async function harness(t: TestContext, overrides: {
   let clock = NOW;
   let memorySelections = 0;
   const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model, overrides.provider);
-  console.error('DEBUG_PROFILE', JSON.stringify({ model: overrides.model, provider: overrides.provider, liveModelId: initialProfile.liveModelId, p: initialProfile.provider }));
   const profile = validateLiveProfile({ ...initialProfile,
     ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
@@ -167,6 +166,8 @@ async function harness(t: TestContext, overrides: {
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
+      // S4a-R2: a write tool, so the ceiling's write settlement and the thinking gate have something to refuse.
+      { name: 'remember_note', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } },
     ];
     const registry = new McpRegistry();
     const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
@@ -277,6 +278,15 @@ async function harness(t: TestContext, overrides: {
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+}
+
+/** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
+async function openPort(h: Harness, key: string) {
+  const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  await settlePort();
+  return { session, attachment };
 }
 
 async function attached(h: Harness, key = 'k1', opening = 'Open the conversation now with one fresh, specific line.') {
@@ -3398,7 +3408,7 @@ test('progress speech fires once about 6 s into an open delegation, and not befo
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
-  const { session } = await attached(h);
+  const { session } = await openPort(h, 'progress-first');
   // The lookup is still running: this is the delegation the owner is waiting on.
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
@@ -3420,7 +3430,7 @@ test('progress speech is suppressed while the owner speaks, and Gemini keeps its
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
-  const { session } = await attached(h);
+  const { session } = await openPort(h, 'progress-suppressed');
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The owner is talking over the lookup: the line would step on her.
@@ -3441,7 +3451,7 @@ test('a tool past the host ceiling is answered once with a timeout and one conti
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
-  const { session } = await attached(h);
+  const { session } = await openPort(h, 'ceiling');
   fake.emit({ type: 'toolCall', calls: [{ id: 'ceil1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   assert.equal(fake.toolResponses.length, 0, 'the tool has not answered on its own');
@@ -3463,7 +3473,7 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
-  const { session } = await attached(h);
+  const { session } = await openPort(h, 'stall');
   fake.emit({ type: 'resumptionHandle', handle: 'synthetic-stall-handle' });
   await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'stall1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
@@ -3474,9 +3484,74 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   const stalls = receipts.filter(entry => entry['event'] === 'gptlive_delegation_stalled');
   assert.equal(stalls.length, 1, 'one stall receipt, not a stream of them');
   assert.deepEqual(stalls[0], { event: 'gptlive_delegation_stalled', ms: 25_000 });
-  assert.deepEqual(fake.commentary.at(-1), 'the knowledge lookup is done.', 'the ledger says the lookup finished');
+  assert.deepEqual(fake.commentary.at(-1), 'the knowledge lookup is done.', 'the line names the execution receipt');
+  // S4a-R2 (b): the stall deadline is diagnostic. Escalation is S2's, so the receipts show its recovery and the
+  // session count shows the stall started nothing of its own.
   const recoveries = receipts.filter(entry => entry['event'] === 'live_recovery');
-  assert.ok(recoveries.length >= 1, 'the S2 recovery still acts on the stall');
-  assert.ok(!recoveries.some(entry => entry['path'] === 'fresh_seeded'), 'a stalled delegation is resumed, never rebuilt');
+  assert.equal(recoveries.length, 1, 'one recovery, S2\'s own');
+  assert.equal(fake.sessionsOpened, 1 + recoveries.length, 'the stall added no session of its own');
+  assert.equal(receipts.filter(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'recovered').length, 1, 'one escalation controller');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late callback never answers twice', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'ceiling-write');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w1', name: 'remember_note', args: { text: 'synthetic note' } }] });
+  await settlePort();
+  h.advance(12_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'one settlement reaches the backend');
+  // A write is not a read: the host settled a call whose remote effect it cannot prove, so it says so.
+  assert.deepEqual(fake.toolResponses[0], [{ id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } }]);
+  // The callback lands after the settlement: it may not rewrite it or write a second output.
+  release();
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'a late callback never produces a second output');
+  assert.deepEqual(fake.toolResponses[0], [{ id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } }]);
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (e): thinking never claims nothing changed around a write, and the line names execution state', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'thinking-write');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w2', name: 'remember_note', args: { text: 'synthetic note' } }] });
+  await settlePort();
+  assert.deepEqual(fake.thinking, ['Reading memory.'], 'a write in the batch means no claim about what changed');
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, ['Still reading the memory.'], 'the line names a call that is actually running');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'ack-watchdog');
+  fake.emit({ type: 'resumptionHandle', handle: 'synthetic-ack-handle' });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'a1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  release();
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1, 'the progress line went out');
+  // The ack bought no delivery: the watchdog still had to recover the turn.
+  h.advance(9_000); scheduler.runDue(); await settlePort();
+  assert.ok(receipts.some(entry => entry['event'] === 'live_recovery'), 'delivery stayed owed, so the watchdog recovered');
   h.owner.revoke(session.liveSessionId);
 });

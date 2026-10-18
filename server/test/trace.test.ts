@@ -413,27 +413,18 @@ test('the timeline prints a drained playback inside its turn when attributable a
 test('O1b-A: a full synthetic call turn prints its turn, ordered utterances, call, continuation, first audible and drain', () => {
   withStore(store => {
     openTurn(store, 't1', 1, T0 + 1_000);
-    store.transaction(tx => {
-      record(tx as never, 'delegation.created', { liveSessionId: SESSION, responseKey: 'r1', connectionEpoch: 'e0' },
-        { createdAt: T0 + 1_050, providerResponseId: 'resp_1', callCount: 1 });
-      record(tx as never, 'response.created', { liveSessionId: SESSION, responseKey: 'r1', turnId: 't1', connectionEpoch: 'e0' },
-        { createdAt: T0 + 1_050, providerResponseId: 'resp_1' });
-      record(tx as never, 'call.intent', { liveSessionId: SESSION, callKey: 'c1', responseKey: 'r1', turnId: 't1', connectionEpoch: 'e0' },
-        { name: 'research', argsChars: 12, intentAt: T0 + 1_100, providerCallId: 'call_1' });
-      record(tx as never, 'call.executed', { liveSessionId: SESSION, callKey: 'c1', connectionEpoch: 'e0' }, { executedAt: T0 + 1_300 });
-      record(tx as never, 'call.output_prepared', { liveSessionId: SESSION, callKey: 'c1', connectionEpoch: 'e0' }, { outputPreparedAt: T0 + 1_300 });
-      record(tx as never, 'call.output_written', { liveSessionId: SESSION, callKey: 'c1', connectionEpoch: 'e0' },
-        { outputWrittenAt: T0 + 1_320, outcome: 'completed', ms: 220, resultChars: 40 });
-      record(tx as never, 'continuation.decided', { liveSessionId: SESSION, responseKey: 'r1', connectionEpoch: 'e0' },
-        { decidedAt: T0 + 1_320, outcome: 'sent' });
-      record(tx as never, 'response.terminal', { liveSessionId: SESSION, responseKey: 'r1', connectionEpoch: 'e0' },
-        { terminalAt: T0 + 1_400, status: 'completed', terminalReason: 'completed' });
-    });
-    store.transaction(tx => {
-      recordUtterance(tx as never, { turnId: 't1', role: 'owner', at: T0 + 1_000, final: true, text: 'Synthetic question' });
-      recordUtterance(tx as never, { turnId: 't1', role: 'model', at: T0 + 1_500, final: true, text: 'Synthetic answer' });
-      recordCallResult(tx as never, { callKey: 'c1', text: '{"ok":true}' });
-    });
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    record(store, 'delegation.created', { ...id, responseKey: 'r1' }, { createdAt: T0 + 1_050, providerResponseId: 'resp_1', callCount: 1 });
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050, providerResponseId: 'resp_1' });
+    record(store, 'call.intent', { ...id, callKey: 'c1', responseKey: 'r1', turnId: 't1' }, { name: 'research', argsChars: 12, intentAt: T0 + 1_100, providerCallId: 'call_1' });
+    record(store, 'call.executed', { ...id, callKey: 'c1' }, { executedAt: T0 + 1_300 });
+    record(store, 'call.output_prepared', { ...id, callKey: 'c1' }, { outputPreparedAt: T0 + 1_300 });
+    record(store, 'call.output_written', { ...id, callKey: 'c1' }, { outputWrittenAt: T0 + 1_320, outcome: 'completed', ms: 220, resultChars: 40 });
+    record(store, 'continuation.decided', { ...id, responseKey: 'r1' }, { decidedAt: T0 + 1_320, outcome: 'sent' });
+    record(store, 'response.terminal', { ...id, responseKey: 'r1' }, { terminalAt: T0 + 1_400, status: 'completed', terminalReason: 'completed' });
+    recordUtterance(store, { turnId: 't1', role: 'owner', at: T0 + 1_000, final: true, text: 'Synthetic question' });
+    recordUtterance(store, { turnId: 't1', role: 'model', at: T0 + 1_500, final: true, text: 'Synthetic answer' });
+    recordCallResult(store, { callKey: 'c1', text: '{"ok":true}' });
     reply(store, 'p1', 't1', 'r1', T0 + 1_500, T0 + 1_900);
 
     const report = buildTimeline(readOf(store), SESSION, { content: true });
@@ -454,11 +445,10 @@ test('O1b-A: a full synthetic call turn prints its turn, ordered utterances, cal
 
 test('O1b-A: a turn that stalls before any delegation prints its typed GAP and the receipt that would close it', () => {
   withStore(store => {
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
     openTurn(store, 't1', 1, T0 + 1_000);
-    store.transaction(tx => record(tx as never, 'live.dead_air_stalled', { liveSessionId: SESSION, turnId: 't1', connectionEpoch: 'e0' },
-      { stalledAt: T0 + 9_000, turnAgeMs: 8_000, anyAudio: false, inaudibleMs: 0 }));
-    store.transaction(tx => record(tx as never, 'turn.closed', { liveSessionId: SESSION, turnId: 't1', connectionEpoch: 'e0' },
-      { closedAt: T0 + 16_000, closeReason: 'completed', outcome: 'no_response' }));
+    record(store, 'live.dead_air_stalled', { ...id, turnId: 't1' }, { stalledAt: T0 + 9_000, turnAgeMs: 8_000, anyAudio: false, inaudibleMs: 0 });
+    record(store, 'turn.closed', { ...id, turnId: 't1' }, { closedAt: T0 + 16_000, closeReason: 'completed', outcome: 'no_response' });
 
     const report = buildTimeline(readOf(store), SESSION);
     assert.equal(report.turns[0]!.turn.stallReason, 'no_audible_output', 'the stall receipt lands on the turn');
@@ -477,7 +467,6 @@ test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write
     const rebuilt = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e2', onReject: code => rejected.push(code) });
     rebuilt.receipt('call.intent', { callKey: 'c1', responseKey: 'r1' }, { name: 'research', argsChars: 2, intentAt: T0 + 10 });
     assert.deepEqual(rejected, ['STALE_EPOCH'], 'a receipt from the socket the rebuild replaced is refused');
-    const rows = store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='call.intent'"));
-    assert.equal(rows.length, 0, 'and it writes no row');
+    assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='call.intent'")).length, 0, 'and it writes no row');
   });
 });

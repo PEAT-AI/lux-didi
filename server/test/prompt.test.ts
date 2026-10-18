@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, NAYA_VOICE_TOOLS, NAYA_BACKEND_PROCEDURE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -306,23 +306,30 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 // N3: the persona sentence must keep "nothing matched" and "cut short" apart, or a timed-out read is
 // voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
 test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
-  const { NAYA_TOOLS } = await import('../prompt/live-persona.js');
-  assert.ok(NAYA_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
+  const { NAYA_TOOLS, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
+  assert.ok(NAYA_VOICE_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
   // Q5-R2: the cut-short rule now carries the no-hand-back clause and the one-clause mention, so the
   // distinction N3 needed survives in the sentence that replaced it.
-  assert.ok(NAYA_TOOLS.includes('When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.'), 'a cut read is voiced as cut short');
-  assert.ok(NAYA_TOOLS.indexOf('When a lookup is cut short') > NAYA_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
+  assert.ok(NAYA_VOICE_TOOLS.includes('When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.'), 'a cut read is voiced as cut short');
+  assert.ok(NAYA_VOICE_TOOLS.indexOf('When a lookup is cut short') > NAYA_VOICE_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
+  assert.ok(NAYA_TOOLS.includes('When a lookup is cut short'), 'the direct-tool conduct keeps the same distinction');
 });
 
-test('PV1: the persona base names the spoken cue and the single research call', () => {
+test('PV1: the persona base scopes the spoken cue to an actual lookup and the procedure carries batching', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  assert.ok(instruction.includes('Before a lookup, say at most five words about what you are checking, then call the tool.'), 'the spoken cue is named');
-  assert.ok(instruction.includes('Put every lookup one question needs into one research call with several lookups.'), 'and one research call carries the lookups');
-  // Q5-R3: the second-call rule is stated as its own sentence, so a re-fire waits for the first answer.
-  assert.ok(instruction.includes('Never make a second research call for the same question until the first has answered.'), 'and a second call for one question waits for the first answer');
+  assert.ok(instruction.includes('Before an actual lookup, say at most five words about what you are checking, then call the tool.'), 'the spoken cue is scoped to a real lookup');
+  // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
+  assert.ok(instruction.includes('When the answer is already in these instructions, answer from it without a lookup.'), 'the no-lookup answer rule sits beside the cue');
+  assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
+  // S4b: batching and the second-call rule are the executing model's, never the voice prompt's.
+  for (const moved of ['Put every lookup one question needs into one research call with several lookups.', 'Never make a second research call for the same question until the first has answered.']) {
+    assert.equal(instruction.includes(moved), false, `the voice prompt carries no moved procedure sentence: ${moved}`);
+    assert.ok(NAYA_BACKEND_PROCEDURE.includes(moved), `the backend procedure carries it: ${moved}`);
+  }
   // PV1-R3 and 3p: the retired cue rules are absent from the whole composed instruction, not just from the base.
   for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
     assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
   }
   assert.equal(instruction.split('what you are checking').length - 1, 1, 'the cue surface is stated once');
+  assert.ok(NAYA_VOICE_TOOLS.includes('When you open something, say what you are opening, then open it.'), 'the voice prompt keeps the spoken open rule');
 });

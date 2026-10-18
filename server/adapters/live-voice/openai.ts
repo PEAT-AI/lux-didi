@@ -1407,6 +1407,9 @@ class Session implements LiveVoiceSession {
     this.batchAnswers += written.length;
     if (this.pendingCalls.length > 0) {
       this.deferralReceipt();
+      // O1b-A: a response.create skipped because another call of this batch still owes its output is a decision
+      // with a reason, recorded once per answer batch rather than left as an absence (D12-2).
+      this.continuationReceipt('deferred', 'awaiting_calls');
       return this.continuationOutcome = 'deferred';
     }
     return this.continueTurn(this.batchAnswers, 0);

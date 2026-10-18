@@ -100,17 +100,17 @@ const providerVoices: Readonly<Record<LiveVoiceProvider, readonly string[]>> = O
   openai: Object.freeze(['marin', 'vesper', 'ripple', 'willow', 'gleam', 'meridian', 'stone', 'quartz', 'beacon', 'delta', 'cinder', 'nira']),
   gemini: Object.freeze(['Aoede']),
 });
-/**
- * One voice a provider can serve: a listed preset, or (PV2) an OpenAI custom voice id stored as is. The
- * custom form is the documented `voice_` plus 16 to 64 lowercase hex characters, so it is 22 to 70
- * characters; every other provider and every unknown name stay refused.
- */
 /** A stored voice: any preset name the file holds, and a custom id only for the OpenAI provider. */
 function storedVoice(provider: LiveVoiceProvider, value: unknown): string {
   const chosen = voice(value);
   if (isCustomVoiceId(chosen) && provider !== 'openai') throw new LiveConfigError('invalid_voice');
   return chosen;
 }
+/**
+ * One voice a provider can serve: a listed preset, or (PV2) an OpenAI custom voice id stored as is. The
+ * custom form is the documented `voice_` plus 16 to 64 lowercase hex characters, so it is 22 to 70
+ * characters; every other provider and every unknown name stay refused.
+ */
 function providerVoice(provider: LiveVoiceProvider, value: unknown): string {
   if (typeof value === 'string' && isCustomVoiceId(value)) {
     if (provider !== 'openai') throw new LiveConfigError('invalid_voice');

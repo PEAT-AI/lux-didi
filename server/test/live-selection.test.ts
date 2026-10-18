@@ -1,5 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +39,33 @@ test('a voice outside the provider own list is refused with the typed invalid_vo
   // A refused save never rewrites what the next start will use.
   assert.equal(f.saved()['provider'], 'gemini');
   assert.equal(f.saved()['voice'], 'Aoede');
+});
+
+/** The built config CLI, the surface an operator actually runs. */
+const cliPath = new URL('../config/cli.js', import.meta.url).pathname;
+function runCli(args: readonly string[]): { status: number | null; out: string; err: string } {
+  const result = spawnSync(process.execPath, [cliPath, ...args], { encoding: 'utf8' });
+  return { status: result.status, out: result.stdout, err: result.stderr };
+}
+
+test('P9-R2 F3: select takes --accent, names a refused accent, and names a missing description file', t => {
+  const f = fixture(t);
+  const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--accent', 'indian-light']);
+  assert.equal(saved.status, 0, saved.err);
+  assert.equal(f.saved()['accent'], 'indian-light');
+  // A refused value names its own reason instead of the blanket initialization code.
+  const refused = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--accent', 'bogus']);
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /invalid_accent/);
+  const missing = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--voice-description-file', join(f.configDir, 'absent.txt')]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.err, /file_missing/);
+  const badVoice = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--voice', 'voice_0123']);
+  assert.equal(badVoice.status, 1);
+  assert.match(badVoice.err, /invalid_voice/);
+  // A refused flag never rewrites what the next start will use.
+  const afterSave = { accent: f.saved()['accent'], voice: f.saved()['voice'] };
+  assert.deepEqual(afterSave, { accent: 'indian-light', voice: 'marin' });
 });
 
 test('PV2: nira is selectable for OpenAI and still refused for Gemini', t => {

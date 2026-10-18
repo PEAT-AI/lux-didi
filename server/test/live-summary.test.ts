@@ -106,7 +106,7 @@ test('a disabled or missing Live profile answers 200 with profileEnabled false a
 test('the distiller is given the persona name this route reports, from one owner snapshot', () => {
   // The summary prompt takes the assistant name as a parameter (conversation-summary-v2), so both surfaces
   // must read it from the owner profile rather than from a literal.
-  const runtime = readFileSync(new URL('../host/runtime.ts', import.meta.url), 'utf8');
+  const runtime = readFileSync(new URL('../../host/runtime.ts', import.meta.url), 'utf8');
   assert.match(runtime, /assistantName: owner\.snapshot\.displayName/);
   assert.match(runtime, /ownerProfileStatus: \{ status: owner\.status, displayName: owner\.snapshot\.displayName \}/);
 });

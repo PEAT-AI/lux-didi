@@ -408,6 +408,7 @@ test('another persona name never leaks the default name into a summary', async (
   const h = open();
   try {
     withTurns(h.store, 's-mira');
+    seedTurn(h.store, 's-mira', 'outputTranscription', 'Mira found the slot.');
     const model = new RecordingModel('{"skip": false, "summary": "The owner asked about Friday; Mira found the slot.", "openLoop": null}');
     await summarizer(h.store, model, 'Mira').distill('s-mira');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-mira'))!;
@@ -507,6 +508,6 @@ test('migration v6 upgrades a populated v5 database and v1 rows read as openLoop
 });
 
 test('the distiller carries no persona name literal', () => {
-  const source = readFileSync(new URL('../services/summarize.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../../services/summarize.ts', import.meta.url), 'utf8');
   assert.equal(/Naya/.test(source), false, 'the persona name is a parameter, never a literal');
 });

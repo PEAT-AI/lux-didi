@@ -611,7 +611,8 @@ describe('openai gpt-live adapter', () => {
     await f.frame(3);
     assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }]);
     const receipts = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
-    assert.deepEqual(receipts, [{ event: 'gptlive_tool_output', calls: 0, responseCreate: 'sent' }]);
+    // S1-R1: the resumed create still carries the size of the batch it answers.
+    assert.deepEqual(receipts, [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
   });
 
   test('3r A: answers that arrive in reverse order still send both outputs and one continuation', async t => {
@@ -709,7 +710,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 2, 'one retry, never a third');
     assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'), [
       { event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' },
-      { event: 'gptlive_tool_output', calls: 0, responseCreate: 'retried' },
+      { event: 'gptlive_tool_output', calls: 1, responseCreate: 'retried' },
     ]);
   });
 
@@ -833,6 +834,7 @@ describe('openai gpt-live adapter', () => {
 
   test('3r E (S1-R1): a terminal error ends the response and resumes the owed continuation', async t => {
     const clock = new FakeClock();
+    const logged = hostReceipts(t);
     const { f, session, captured } = await ready(t, { clock });
     f.send(delegated('response.created', { response: { id: 'resp_1' } }));
     f.send(delegated('response.output_item.done', functionCall('call_1')));
@@ -843,6 +845,8 @@ describe('openai gpt-live adapter', () => {
     await f.frame(3);
     assert.equal(interruptions(captured), 0, '3r F: this error names no cut');
     assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'),
+      [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
   });
 
   test('a provider error cuts the response without ending the session, and session.closed maps the outcome', async t => {

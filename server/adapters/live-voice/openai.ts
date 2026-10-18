@@ -363,6 +363,10 @@ class Session implements LiveVoiceSession {
   /** A continuation the gate owes but has not sent, and the single retry an active-response rejection allows
    *  (3r A). A deferred continuation is sent by the next terminal event, never by a timer of its own. */
   private continuationOwed = false;
+  /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
+  private continuationCalls = 0;
+  /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
+  private lastContinuationCalls = 0;
   /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
   private continuationRejected = false;
   private continuationRetries = 0;
@@ -1054,6 +1058,8 @@ class Session implements LiveVoiceSession {
     if (ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`)) {
       this.continuationOwed = true;
       this.continuationRejected = true;
+      // The retry answers the same batch the rejected create answered (S1-R1).
+      this.continuationCalls = Math.max(this.continuationCalls, this.lastContinuationCalls);
       this.touch();
       return;
     }
@@ -1179,6 +1185,9 @@ class Session implements LiveVoiceSession {
 
   /** The one gate a continuation passes (3r A): it is owed, and only a terminal event or a rejection resumes it. */
   private continueTurn(calls: number, attempt: 0 | 1): LiveToolSendOutcome {
+    // S1-R1: the answered batch a continuation carries survives the wait, so the receipt of a resumed or retried
+    // create still says how large the batch it answers was, instead of a bare zero.
+    this.continuationCalls = Math.max(this.continuationCalls, calls);
     if (this.delegatedOutstanding) {
       // The originating response is still emitting calls, so a create now would be refused: defer to its done.
       this.continuationOwed = true;
@@ -1191,7 +1200,10 @@ class Session implements LiveVoiceSession {
     this.continuationOwed = false;
     this.continuationRejected = false;
     if (attempt) this.continuationRetries += 1;
-    hostLogEvent({ event: 'gptlive_tool_output', calls, responseCreate: attempt ? 'retried' : 'sent' });
+    const answered = this.continuationCalls;
+    this.continuationCalls = 0;
+    this.lastContinuationCalls = answered;
+    hostLogEvent({ event: 'gptlive_tool_output', calls: answered, responseCreate: attempt ? 'retried' : 'sent' });
     return this.continuationOutcome = 'sent';
   }
 
@@ -1220,6 +1232,8 @@ class Session implements LiveVoiceSession {
     this.answeredCalls.clear();
     this.outputSent.clear();
     this.continuationOwed = false;
+    this.continuationCalls = 0;
+    this.lastContinuationCalls = 0;
     this.delegatedOutstanding = false;
   }
 

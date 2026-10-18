@@ -268,6 +268,12 @@ test('scripts/didi-timeline reads SQL only and prints the timeline and the metad
     const withContent = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--content'], { encoding: 'utf8' });
     assert.ok(withContent.includes('SECRET-OWNER-WORDS'), '--content is the one way to see text');
 
+    const turnOne = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--turn', '1'], { encoding: 'utf8' });
+    assert.match(turnOne, /^turn 1 \(t1\)/m);
+    const noTurn = JSON.parse(execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--turn', '9', '--json'], { encoding: 'utf8' }));
+    assert.deepEqual(noTurn.turns, [], '--turn selects one index and prints nothing else');
+    assert.match(execFileSync(process.execPath, [script, '--help'], { encoding: 'utf8' }), /--export-metadata/);
+
     const exported = JSON.parse(execFileSync(process.execPath, [script, '--export-metadata', '--data-dir', dir], { encoding: 'utf8' }));
     assert.deepEqual(Object.keys(exported).sort(), ['trace_call', 'trace_event', 'trace_playback', 'trace_response', 'trace_turn']);
     assert.ok(!JSON.stringify(exported).includes('SECRET-OWNER-WORDS'));

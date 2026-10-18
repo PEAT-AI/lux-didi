@@ -502,14 +502,16 @@ export function offerableCandidates(configured: readonly SourceKind[], completed
  * Q5-R1: the three asks that want one entry's whole body rather than another search: a named entry,
  * a request for the full text, and going deeper on something a previous lookup already returned.
  */
-const NAMED_ID = /(?:\bids?\s*=\s*\[?|\bids?\s+|\binsight\s+)(\d{1,12})\b/giu;
+const NAMED_ID_LIST = /\bids?\s*=\s*\[([\d,\s]+)\]/giu;
+const NAMED_ID = /(?:\bids?\s+|\binsight\s+)(\d{1,12})\b/giu;
 const HASH_ID = /#(\d{1,12})\b/gu;
 const FULL_READ_ASK = /\b(?:full|whole|entire|complete|in full)\b|\bdeeper?\b/iu;
 
 /** Q5-R1: the insight ids a question names outright, to be read through `get_insight`, not searched. */
 export function namedInsightIds(question: string, query?: string): number[] {
   const text = `${question}\n${query ?? ''}`;
-  const ids = [...text.matchAll(NAMED_ID)].map(match => Number(match[1]));
+  const ids = [...text.matchAll(NAMED_ID_LIST)].flatMap(match => (match[1] ?? '').split(',').map(Number));
+  ids.push(...[...text.matchAll(NAMED_ID)].map(match => Number(match[1])));
   // A bare `#123` is only an id here when the question also asks for the whole entry: an issue number
   // in passing still deserves a search, never a read of whatever insight happens to carry that number.
   if (FULL_READ_ASK.test(text)) ids.push(...[...text.matchAll(HASH_ID)].map(match => Number(match[1])));

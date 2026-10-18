@@ -684,8 +684,9 @@ test('the host owner prewarm returns a receipt and logs one closed warm_prewarm 
     const lines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
     const logged = lines.filter(line => line['event'] === 'warm_prewarm');
     assert.equal(logged.length, 1, 'one receipt per instruction');
-    const { timestamp, ...fields } = logged[0]!;
+    const { timestamp, pid, ...fields } = logged[0]!;
     assert.deepEqual(fields, { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false });
     assert.equal(typeof timestamp, 'string');
+    assert.equal(pid, process.pid);
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
 });

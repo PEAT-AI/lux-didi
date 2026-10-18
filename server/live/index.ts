@@ -774,7 +774,8 @@ export class LiveSessionOwner {
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
       // owner, so consecutive calls walk the stored open loops even when no summary was written between
       // them; the warm calendar digest supplies the first option when the host built one.
-      const openerPlan = buildOpeningOptions({ candidates: summaries.injectionCandidates(tx), now, timeZone: this.#timeZone,
+      const storedSummaries = summaries.injectionCandidates(tx);
+      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
@@ -798,7 +799,7 @@ export class LiveSessionOwner {
         const start = chooseStartContext(this.#warm.take(), () => {
           // The summaries fill what the other sections leave under the target, so measure it once.
           basis = composeSession(undefined);
-          earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx),
+          earlier = buildEarlierConversationsSection(storedSummaries,
             { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
           return { persona: configuredPrompt.system, memory: [] as readonly string[],
             summary: earlier.section.length ? earlier.section : undefined,

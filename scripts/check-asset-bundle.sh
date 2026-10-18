@@ -71,8 +71,20 @@ if ! grep -q 'bundled node is a symlink' "$work/red.err"; then
 fi
 printf 'RED_FIXTURE refused: %s\n' "$(cat "$work/red.err")"
 
-# --- Green path: build the real bundle, then verify every stage. ---
+# --- Green path: build the real bundle twice into ONE output path, then verify
+# every stage. The second run must replace the shell atomically: a plain
+# `cp -R src dst` into an existing dst nests the tree, so the previous
+# index.html stays served while the fresh bundles land in Resources/web/dist/dist.
 bash scripts/build-asset-bundle.sh "$bundle"
+bash scripts/build-asset-bundle.sh "$bundle"
+if [ -e "$bundle/Resources/web/dist/dist" ]; then
+  echo 'verify: the second build into the same output path nested the shell under Resources/web/dist/dist' >&2
+  exit 1
+fi
+bash scripts/build-macos-app.sh --check-web-shell "$bundle/Resources/web/dist" || {
+  echo 'verify: the rebuilt shell does not match the assets beside it' >&2
+  exit 1
+}
 verify_bundle "$bundle" || exit 1
 node_bin="$bundle/Resources/node/bin/node"
 recorded=$(sed -n 's/^node=v//p' "$bundle/ASSET-BUNDLE.txt")

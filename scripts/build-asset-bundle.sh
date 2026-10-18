@@ -59,8 +59,14 @@ test -f "$installed/dist/host/index.js" || { echo 'Offline install is missing th
 git archive HEAD web | tar -xf - -C "$work/source"
 web="$work/source/web"
 (cd "$web" && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
-cp -R "$web/dist" "$out/Resources/web/dist"
+# Replace the shell rather than copying into it: `cp -R src dst` nests the source
+# inside an existing dst, which leaves the previous index.html served while the
+# fresh bundles sit one level deeper in Resources/web/dist/dist.
+rm -rf "$out/Resources/web/dist"
+mkdir -p "$out/Resources/web/dist"
+cp -R "$web/dist/." "$out/Resources/web/dist/"
 test -f "$out/Resources/web/dist/index.html" || { echo 'Built web shell is missing its index' >&2; exit 1; }
+test ! -e "$out/Resources/web/dist/dist" || { echo 'Built web shell nested itself under Resources/web/dist/dist' >&2; exit 1; }
 
 # 4. Asset-only: never sign and never claim the app.
 if /usr/bin/find "$out" \( -name Info.plist -o -name _CodeSignature -o -name '*.app' -o -name '*.framework' \) -print -quit | grep -q .; then

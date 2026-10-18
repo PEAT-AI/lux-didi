@@ -320,11 +320,13 @@ test('1015: the background owner reads at host start and on every interval until
   await settle();
   t.mock.timers.tick(calendarDigestRefreshMs);
   assert.equal(read.calls.length, 2, 'and one every fifteen minutes, off the request path');
+  t.mock.timers.tick(calendarDigestRefreshMs);
+  assert.equal(read.calls.length, 2, 'a tick while that read is still in flight shares it, never a second read');
   await settle();
-  t.mock.timers.tick(calendarDigestRefreshMs * 3);
-  assert.equal(read.calls.length, 5, 'the owner keeps the digest current while the host runs');
+  t.mock.timers.tick(calendarDigestRefreshMs);
+  assert.equal(read.calls.length, 3, 'the owner keeps the digest current while the host runs');
   await settle();
   cache.stop();
   t.mock.timers.tick(calendarDigestRefreshMs * 4);
-  assert.equal(read.calls.length, 5, 'a stopped host reads nothing');
+  assert.equal(read.calls.length, 3, 'a stopped host reads nothing');
 });

@@ -42,11 +42,13 @@ expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "ac
 // expands to the full window and keeps Live running, and the frame is remembered.
 var liveStarted = 0, liveStopped = 0, presented = 0, dismissed = 0, expanded = 0
 var liveRunning = false
+let miniFacts = MiniSurfaceFacts(frame: "{{700, 860}, {64, 26}}", screen: "main", alpha: 1,
+                                 occluded: false, pageState: "ready")
 let miniOrb = MiniOrbToggle(
     startLive: { liveStarted += 1; liveRunning = true },
     stopLive: { liveStopped += 1; liveRunning = false },
     liveIsRunning: { liveRunning },
-    presentPanel: { presented += 1 },
+    presentPanel: { _ in presented += 1; return .shown(miniFacts) },
     dismissPanel: { dismissed += 1 },
     expandToWindow: { expanded += 1 })
 expect(!miniOrb.isVisible, "mini orb starts hidden")
@@ -62,7 +64,7 @@ miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
 // M3-R12: this build has one mini surface, and nothing hides it on microphone state.
-// Presence owns its visibility and its opacity (cold 0.35, hot-muted 0.55, live 1.0), so the
+// Presence owns its visibility and its opacity (cold 0.6, hot-muted 0.55, live 1.0), so the
 // surface stays on screen in cold and in hot-muted, and only an explicit hide or expand
 // takes it away.
 var miniPresence = "cold"
@@ -70,10 +72,10 @@ var gateDismissals = 0
 var gatePresents = 0
 let surface = MiniOrbToggle(startLive: { miniPresence = "live" }, stopLive: { miniPresence = "cold" },
                             liveIsRunning: { miniPresence == "live" },
-                            presentPanel: { gatePresents += 1 },
+                            presentPanel: { _ in gatePresents += 1; return .shown(miniFacts) },
                             dismissPanel: { gateDismissals += 1 },
                             expandToWindow: {})
-surface.showSurface()
+surface.showSurface(trigger: .other)
 expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
 miniPresence = "hot-muted"
 expect(surface.isVisible && gateDismissals == 0, "hot-muted leaves the surface on screen")
@@ -532,8 +534,10 @@ let liveSession = "live-session-42"
 let coordinator = PresentationCoordinator(
     showFull: { _ in visibleSurfaces.remove("mini"); visibleSurfaces.insert("full") },
     hideFull: { visibleSurfaces.remove("full") },
-    showMini: { visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return miniPageHostable },
-    hideMini: { visibleSurfaces.remove("mini") },
+    showMini: { _ in
+        guard miniPageHostable else { return .failed("page_not_ready") }
+        visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return .shown(miniFacts) },
+    hideMini: { _ in visibleSurfaces.remove("mini") },
     liveIsRunning: { liveActive })
 expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
 coordinator.presentFull(activating: true)
@@ -581,7 +585,8 @@ expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the close comman
 miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a mini orb with no page falls back to the FULL window")
+// Q4-R1: a page that cannot be hosted fails loud; it never answers with the FULL window.
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a mini orb with no page never falls back to the FULL window")
 miniPageHostable = true
 
 // UI3A: the orb never becomes key or main, floats above normal windows over every
@@ -939,3 +944,103 @@ expect(!personalRoute.contains("Alice") && !personalRoute.contains("AirPods"), "
 for capability in [NotificationCapability.notDetermined, .denied, .authorized, .provisional, .unknown] {
     expect(!capability.presentation.contains(capability.rawValue), "no raw notification case reaches a label")
 }
+
+// W-Q4: the mini surface is there from launch, it says so when it cannot be, and every
+// transition leaves a receipt. The launch-time surface request runs before the host
+// connection exists, so it finds no descriptor; the page-ready edge asks again, a show with
+// still no page fails loud instead of opening the FULL window nobody asked for, and the
+// menu item only moves the surface (the hotkey, an orb press and Start keep starting Live).
+expect(MiniOrbSurface.failure(host: nil, environment: nil) == "page_not_ready",
+       "a surface request before the host connection has no page to host")
+expect(MiniOrbSurface.failure(host: "http://127.0.0.1:6180", environment: nil) == nil,
+       "the page-ready surface request yields the mini descriptor")
+expect(MiniOrbSurface.failure(host: nil, environment: "http://127.0.0.1:6180") == nil,
+       "a proof launch still hosts the mini page from its environment descriptor")
+
+// The menu item and the full window's mode button are presentation only (Q4-R2).
+var q4Starts = 0, q4Stops = 0, q4Shows = 0
+var q4Receipts: [[String: Any]] = []
+var q4Triggers: [SurfaceTrigger] = []
+let q4Facts = MiniSurfaceFacts(frame: "{{100, 800}, {64, 26}}", screen: "main", alpha: 0.6,
+                               occluded: false, pageState: "ready")
+let q4Orb = MiniOrbToggle(
+    startLive: { q4Starts += 1 }, stopLive: { q4Stops += 1 }, liveIsRunning: { false },
+    presentPanel: { trigger in q4Triggers.append(trigger); q4Shows += 1; return .shown(q4Facts) },
+    dismissPanel: {}, expandToWindow: {}, receipt: { q4Receipts.append($0) })
+// The status menu's own item, pressed through the selector and target it carries (Q4-R1).
+var menuShows: [SurfaceTrigger] = [], menuStarts = 0, menuStops = 0
+var menuReceipts: [[String: Any]] = []
+let menuOrb = MiniOrbToggle(
+    startLive: { menuStarts += 1 }, stopLive: { menuStops += 1 }, liveIsRunning: { false },
+    presentPanel: { trigger in menuShows.append(trigger); return .shown(q4Facts) },
+    dismissPanel: {}, expandToWindow: {}, receipt: { menuReceipts.append($0) })
+let statusMenuCommand = MiniOrbMenuCommand { trigger in menuOrb.showSurface(trigger: trigger) }
+let showMiniOrbItem = statusMenuCommand.item()
+expect(showMiniOrbItem.title == "Show mini orb", "the status menu carries a Show mini orb item")
+expect(showMiniOrbItem.action == #selector(MiniOrbMenuCommand.press) && showMiniOrbItem.target === statusMenuCommand,
+       "the Show mini orb item carries the presentation-only action, not the chord's toggle")
+_ = (showMiniOrbItem.target as? NSObject)?.perform(showMiniOrbItem.action, with: showMiniOrbItem)
+expect(menuOrb.isVisible && menuShows == [.menu] && menuStarts == 0 && menuStops == 0,
+       "pressing the status menu item shows the mini surface and never starts Live")
+
+q4Orb.showSurface(trigger: .menu)
+expect(q4Orb.isVisible && q4Shows == 1 && q4Starts == 0 && q4Triggers == [.menu],
+       "a menu-triggered show moves the surface and never starts Live")
+q4Orb.hideSurface(caller: "presence")
+expect(!q4Orb.isVisible && q4Receipts.last?["event"] as? String == "mini_hidden"
+       && q4Receipts.last?["caller"] as? String == "presence",
+       "a hide names its caller on the mini_hidden receipt")
+q4Orb.show(trigger: .hotkey)
+expect(q4Starts == 1, "the hotkey still starts Live")
+expect(q4Receipts.contains { $0["event"] as? String == "mini_start" && $0["trigger"] as? String == "hotkey" },
+       "a start receipt carries the trigger that started it")
+q4Orb.hide(caller: "chord", trigger: .hotkey)
+expect(q4Stops == 1, "the chord still stops Live")
+expect(q4Receipts.contains { $0["event"] as? String == "mini_stop" && $0["trigger"] as? String == "hotkey" },
+       "a stop receipt carries the trigger that stopped it")
+
+// A show that cannot be hosted fails loud and never falls back (Q4-R1).
+var q4FullShows = 0, q4MiniShows = 0
+var q4Log: [[String: Any]] = []
+let q4Failing = PresentationCoordinator(
+    showFull: { _ in q4FullShows += 1 }, hideFull: {},
+    showMini: { _ in q4MiniShows += 1; return .failed("page_not_ready") },
+    hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
+expect(q4Failing.presentMini(trigger: .menu) == .failed("page_not_ready") && q4MiniShows == 1 && q4FullShows == 0,
+       "a mini show with no page never falls back to the FULL window")
+expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_failed"
+       && q4Log.last?["reason"] as? String == "page_not_ready",
+       "a failed mini show logs mini_present_failed with its reason")
+
+q4Log = []
+let q4Landing = PresentationCoordinator(
+    showFull: { _ in }, hideFull: {},
+    showMini: { _ in .shown(q4Facts) },
+    hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
+expect(q4Landing.presentMini(trigger: .button) == .shown(q4Facts) && q4Landing.mode == .mini,
+       "a hosted mini show lands as the MINI surface")
+expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigger"] as? String == "button"
+       && q4Log.last?["frame"] as? String == q4Facts.frame && q4Log.last?["screen"] as? String == "main"
+       && q4Log.last?["alpha"] as? Double == 0.6 && q4Log.last?["occluded"] as? Bool == false
+       && q4Log.last?["pageState"] as? String == "ready",
+       "a show logs mini_presented with its frame, screen, alpha, occlusion, page state and trigger")
+
+// Q4-R3: the idle pill is never more transparent than the named floor, and a first show
+// after an install puts a saved frame that sits far below the top band back in the slot.
+expect(PresenceSurfaceState.minimumIdleOpacity == 0.6, "the idle opacity floor is the named 0.6 constant")
+expect(PresenceSurfaceState.shown(PresencePosture(state: .cold, alwaysShow: true, failed: false)).opacity == 0.6,
+       "the cold pill draws at the floor and never reads as nothing")
+expect(PresenceSurfaceState.shown(PresencePosture(state: .connecting, alwaysShow: true, failed: false)).opacity == 0.6,
+       "the connecting pill draws at the floor too")
+let q4LowPill = CGRect(x: 688, y: 600, width: 64, height: 26)
+expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen], firstShowAfterInstall: true)
+       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
+       "a first show after an install resets a saved pill frame that sits below the top band")
+expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen]) == q4LowPill,
+       "a later show honours the saved pill frame the owner chose")
+expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 26), screens: [miniScreen], firstShowAfterInstall: true)
+       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
+       "a first show after an install resets a saved pill frame that is off every screen")
+let q4HighPill = CGRect(x: 688, y: 820, width: 64, height: 26)
+expect(MiniOrbFrameRestore.resolve(q4HighPill, screens: [miniScreen], firstShowAfterInstall: true) == q4HighPill,
+       "a first show after an install keeps a saved pill frame inside the top band")

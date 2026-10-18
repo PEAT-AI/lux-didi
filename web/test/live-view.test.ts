@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
+import { connectingBeforeFirstSpeech, liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
 import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
@@ -68,9 +68,30 @@ test('the thinking label never names a tool; the activity line carries the phras
 
 test('liveLabel is the one label main.ts and the panel share', () => {
   assert.equal(liveLabel(undefined), 'Ready when you are');
-  assert.equal(liveLabel({ state: 'listening', cursor: 0, entries: [] }), 'Listening');
+  assert.equal(liveLabel({ state: 'listening', cursor: 0, entries: [] }), 'Connecting');
   assert.equal(liveLabel({ state: 'speaking', cursor: 0, entries: [] }), 'Speaking');
   assert.equal(liveLabel({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] }), 'Thinking');
+});
+
+test('Q4: the orb and pill say Connecting until the first audible model frame', () => {
+  // The projection says `listening` when the microphone opens, up to 4.6 s before Naya's
+  // first audio; before that frame the owner is listening to silence.
+  const opened = { state: 'listening' as const, cursor: 0, entries: [] };
+  assert.equal(connectingBeforeFirstSpeech(opened), true);
+  assert.equal(liveLabel(opened), 'Connecting');
+  assert.equal(liveVoiceState('listening'), 'LISTENING');
+  const ownerSpoke = { state: 'listening' as const, cursor: 1, entries: [{ seq: 1, kind: 'inputTranscription' as const, text: 'Hi Naya' }] };
+  assert.equal(liveLabel(ownerSpoke), 'Connecting');
+  const heard = { state: 'listening' as const, cursor: 2, entries: [
+    { seq: 1, kind: 'inputTranscription' as const, text: 'Hi Naya' },
+    { seq: 2, kind: 'outputTranscription' as const, text: 'Of course.' }] };
+  assert.equal(connectingBeforeFirstSpeech(heard), false);
+  assert.equal(liveLabel(heard), 'Listening');
+  // Every other word is unchanged.
+  assert.equal(liveLabel({ state: 'speaking', cursor: 2, entries: [] }), 'Speaking');
+  assert.equal(liveLabel({ state: 'thinking', cursor: 2, entries: [] }), 'Thinking');
+  assert.equal(connectingBeforeFirstSpeech(undefined), false);
+  assert.equal(connectingBeforeFirstSpeech({ state: 'speaking', cursor: 3, entries: [] }), false);
 });
 
 test('a muted indicator appears only when the projection reports it', () => {
@@ -1080,6 +1101,7 @@ function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | u
     live: projection ? { state: projection, cursor: 0, entries: [] } : undefined,
     liveMachine: { view: { ...initialLiveView(), state: machine, error: extra.stateError } },
     liveVoiceState, liveLabel: (current: LiveCurrent) => liveLabel(current), busy: false, error: undefined,
+    connectingBeforeFirstSpeech,
     connectedView: { active: false }, e: (text: string) => text, lookupLineMarkup: () => '',
     machineOwnsOrb: ownsOrb, liveControl: controlOf, startAvailable, liveErrorText,
   };

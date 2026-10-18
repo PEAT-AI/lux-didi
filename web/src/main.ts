@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySum
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, connectingBeforeFirstSpeech, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -84,7 +84,9 @@ function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
   // The machine owns the look while it is stopping, idle or error, so a Stop press changes it at once (3p).
-  if(!machineOwnsOrb(liveMachine.view) && live && live.state!=='idle')return liveVoiceState(live.state);
+  // Q4: listening before Naya's first audible frame is the connect window, so the orb says
+  // Connecting there instead of Listening.
+  if(!machineOwnsOrb(liveMachine.view) && live && live.state!=='idle')return connectingBeforeFirstSpeech(live)?'CONNECTING':liveVoiceState(live.state);
   if(liveMachine.view.state==='error')return 'ERROR';
   if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';

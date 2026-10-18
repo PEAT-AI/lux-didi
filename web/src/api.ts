@@ -95,6 +95,11 @@ export interface LiveSummary {
    * call, not a call in flight: each session start reads it from live.json, which is why a save applies at once.
    */
   accent: string | null;
+  /**
+   * P3: the pitch-preserving speaking pace the next session start plays at. Read-only here: it is set
+   * with the config CLI, because a rate that moved mid-utterance would change her voice.
+   */
+  playbackRate: number | null;
   personaName: string | null;
   limits: { sessionMs: number; idleMs: number } | null;
   /** Present only while the running provider is OpenAI: the delegation backend its calls use. */

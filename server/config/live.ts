@@ -15,10 +15,26 @@ const liveLimit = 16 * 1024;
 const MAX_VOICE_CHARS = 70;
 /** The documented ceiling for the optional voice description; it mirrors one voice prompt. */
 const MAX_VOICE_DESCRIPTION_CHARS = 1_500;
-const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'voiceDescription', 'keyReference', 'dataClasses', 'preferences', 'limits'];
+const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'voiceDescription', 'playbackRate', 'keyReference', 'dataClasses', 'preferences', 'limits'];
 // PV1: the owner's accent selection is its own live.json field, beside provider and voice. It applies from the
 // next session start, so it is kept as a process-current value rather than only inside the frozen profile.
 let currentAccent: LiveAccent = LIVE_DEFAULT_ACCENT;
+// P3: her speaking pace is a pitch-preserving playback rate, so the voice never changes. It applies
+// from the next session start like the accent, and only the band below is legal: faster than 1.2 is
+// no longer her voice, and slower than 1 is not the request.
+const PLAYBACK_RATE_MIN = 1;
+const PLAYBACK_RATE_MAX = 1.2;
+let currentRate: number = PLAYBACK_RATE_MIN;
+
+/** The owner's playback rate for the next session start; the default until a live.json or a save says otherwise. */
+export function currentLivePlaybackRate(): number { return currentRate; }
+
+/** Validate one playback rate: a finite number in [1, 1.2], or the default when the field is absent. */
+export function livePlaybackRate(value: unknown): number {
+  if (value === undefined) return PLAYBACK_RATE_MIN;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < PLAYBACK_RATE_MIN || value > PLAYBACK_RATE_MAX) throw new LiveConfigError('invalid_playback_rate');
+  return value;
+}
 
 /** The owner's accent selection for the next session start; the default until a live.json or a save says otherwise. */
 export function currentLiveAccent(): LiveAccent { return currentAccent; }
@@ -71,6 +87,8 @@ export interface LiveConfiguredProfile {
   readonly voice: string;
   readonly dataClasses: readonly DataClass[];
   readonly profileIdentity: string;
+  /** The pitch-preserving speaking pace the native player applies from the next session start. */
+  readonly playbackRate: number;
   /** The private debug journal preference; absent files default to on. */
   readonly debugJournal: boolean;
 }
@@ -143,6 +161,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     // A load is the one authority on the accent this process composes with, so a file that is gone or
     // unreadable falls back to the default rather than keeping a value a previous fixture left behind.
     currentAccent = LIVE_DEFAULT_ACCENT;
+    currentRate = PLAYBACK_RATE_MIN;
     if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
     let text: string;
     try { text = readPrivate(join(options.configDir, 'live.json'), liveLimit); }
@@ -170,6 +189,9 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     // composes its anchors from it, so a later save needs no restart.
     const chosenAccent = liveAccent(input['accent']);
     currentAccent = chosenAccent;
+    // P3: the pace is read here, so the rate a session starts with is the rate in this file.
+    const chosenRate = livePlaybackRate(input['playbackRate']);
+    currentRate = chosenRate;
     const dataClasses = classList(input['dataClasses']);
     // One host setting rides beside the prompt preferences, which keep their own exact key set.
     const declared = input['preferences'];
@@ -181,7 +203,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     delete declaredKeys[journalKey];
     const preferences = validatePreferences({ ...declaredKeys, schemaVersion: 1, ownerId: options.ownerId }, options.ownerId);
     const config: LiveConfiguredProfile = Object.freeze({
-      provider, preferences, model, voice: chosenVoice, dataClasses, debugJournal,
+      provider, preferences, model, voice: chosenVoice, dataClasses, debugJournal, playbackRate: chosenRate,
       profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),
     });
     // The debug journal is rooted at the host data directory, the same place the persona overlay
@@ -250,8 +272,8 @@ function slotChoice(provider: LiveVoiceProvider): { modelId: string; voice: stri
  * reaches a call in flight. Only the three selection fields are rewritten; limits, classes and persona
  * preferences survive byte for byte.
  */
-export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown; accent?: unknown; voiceDescription?: unknown }): {
-  provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent;
+export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown; accent?: unknown; voiceDescription?: unknown; playbackRate?: unknown }): {
+  provider: LiveVoiceProvider; modelId: string; voice: string; accent: LiveAccent; playbackRate: number;
 } {
   try {
     requireAbsolutePath(options.configDir);
@@ -271,9 +293,14 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     const description = options.voiceDescription === undefined
       ? liveVoiceDescription(input['voiceDescription'])
       : liveVoiceDescription(options.voiceDescription);
+    // P3: a save that names no rate keeps the file's own pace instead of resetting it to 1.
+    const chosenRate = options.playbackRate === undefined
+      ? livePlaybackRate(input['playbackRate'])
+      : livePlaybackRate(options.playbackRate);
     const model = modelId(provider, slot.defaultLiveModelId);
     const next: Record<string, unknown> = {
       ...input, provider, modelId: model, voice: chosenVoice, accent: chosenAccent, keyReference: slot.keyReference,
+      playbackRate: chosenRate,
       ...(description !== undefined ? { voiceDescription: description } : {}),
     };
     // Validate the document we are about to publish through the same loader rules, minus prompt composition.
@@ -286,7 +313,8 @@ export function saveLiveSelection(options: { configDir: string; ownerId?: string
     writePrivateFile(pending, JSON.stringify(next), liveLimit);
     renameSync(pending, join(options.configDir, 'live.json'));
     currentAccent = chosenAccent;
-    return { provider, modelId: model, voice: chosenVoice, accent: chosenAccent };
+    currentRate = chosenRate;
+    return { provider, modelId: model, voice: chosenVoice, accent: chosenAccent, playbackRate: chosenRate };
   } catch (error) {
     if (error instanceof LiveConfigError) throw error;
     throw safeError(error);

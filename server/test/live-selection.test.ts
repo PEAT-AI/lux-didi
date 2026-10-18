@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { currentLiveAccent, loadLiveConfig, saveLiveSelection } from '../config/live.js';
+import { currentLiveAccent, currentLivePlaybackRate, loadLiveConfig, saveLiveSelection } from '../config/live.js';
 import { resolveRoute } from '../http/routes.js';
 import { ServiceError } from '../contracts/errors.js';
 import { LiveConfigError } from '../live/types.js';
@@ -167,4 +167,33 @@ test('PV1-R3: the settings route accepts the accent field and the config layer a
     (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_accent');
   // And the same save with a listed value lands, which is the path the page takes.
   assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'indian-light' }).accent, 'indian-light');
+});
+
+test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anything outside 1.0 to 1.2 is refused', t => {
+  const f = fixture(t);
+  // A file that names no pace plays at today's speed, and a save records the band's floor explicitly.
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' }).playbackRate, 1);
+  assert.equal(f.saved()['playbackRate'], 1);
+  // The operator surface: the flag lands in the file and moves the process-current value the next start reads.
+  const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', '1.08']);
+  assert.equal(saved.status, 0, saved.err);
+  assert.equal(f.saved()['playbackRate'], 1.08);
+  assert.equal(currentLivePlaybackRate(), 1.08);
+  const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  assert.equal(loaded.status, 'configured');
+  assert.equal(loaded.status === 'configured' ? loaded.config.playbackRate : undefined, 1.08);
+  // Both ends of the band are legal; 0.99, 1.21 and a non-number are not.
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: 1.2 }).playbackRate, 1.2);
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: 1 }).playbackRate, 1);
+  for (const bad of ['0.99', '1.21', '0', 'faster']) {
+    const refused = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', bad]);
+    assert.equal(refused.status, 1, bad);
+    assert.match(refused.err, /invalid_playback_rate/, bad);
+  }
+  for (const bad of [0.99, 1.21, 0, -1, Number.NaN, '1.08', null]) {
+    assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', playbackRate: bad }),
+      (thrown: unknown) => thrown instanceof LiveConfigError && thrown.code === 'invalid_playback_rate', String(bad));
+  }
+  // A refused value never rewrites the pace the next start would use.
+  assert.equal(f.saved()['playbackRate'], 1);
 });

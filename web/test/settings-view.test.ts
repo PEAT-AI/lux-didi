@@ -246,3 +246,19 @@ test('#352: only the native mic mode messages carry a mode, and Voice Isolation 
   assert.deepEqual(micModeState({ type: 'micMode', preferred: 'voiceIsolation', active: 'voiceIsolation', prompt: true }),
     { preferred: 'voiceIsolation', active: 'voiceIsolation', prompt: false }, 'Voice Isolation is never prompted');
 });
+
+test('P3: the speaking pace is shown read-only from the summary, with no control that could change it', () => {
+  const html = settingsMarkup({ status, summary: { ...summary, playbackRate: 1.08 } });
+  assert.match(html, /<strong>Speaking pace<\/strong> 1\.08x, pitch unchanged/);
+  assert.match(html, /select --playback-rate/, 'the row names the CLI that sets it');
+  // Read-only means no field, select or button for the rate anywhere in the page.
+  assert.doesNotMatch(html, /id="live-(rate|playback-rate)"/);
+  assert.doesNotMatch(html, /name="playbackRate"/);
+  // A host that does not report a pace says so instead of inventing today's 1.00.
+  const absent = settingsMarkup({ status, summary: { ...summary, playbackRate: null } });
+  assert.match(absent, /<strong>Speaking pace<\/strong> unknown/);
+  // A hostile value is never interpolated: a non-number is the unknown row.
+  const hostile = settingsMarkup({ status, summary: { ...summary, playbackRate: '<img src=x>' as unknown as number } });
+  assert.doesNotMatch(hostile, /<img src=x>/);
+  assert.match(hostile, /<strong>Speaking pace<\/strong> unknown/);
+});

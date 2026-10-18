@@ -4,8 +4,8 @@ import { LiveConfigError } from '../live/types.js';
 import { saveLiveSelection } from './live.js';
 import { readFileSync, statSync } from 'node:fs';
 
-const help = 'Usage: node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-id <current-store-owner> --profile-input <private-profile-json> --source-env <authorized-private-env-file> [--binding-input <private-binding-json>]\n       node <compiled-root>/config/cli.js migrate-binding --config-dir <existing-private-dir> --owner-id <current-store-owner> --binding-input <private-binding-json>\n       node <compiled-root>/config/cli.js select --config-dir <existing-private-dir> --provider <openai|gemini> [--voice <name|voice_id>] [--voice-description-file <absolute-path>] [--accent <selection>]\nAll paths must be explicit absolute paths. Fixed source variable: GEMINI_API_KEY. Binding is an operator assertion, not provider identity verification.\n';
-type SelectOptions = { configDir: string; provider: LiveVoiceProvider; voice?: string; accent?: string; voiceDescription?: string };
+const help = 'Usage: node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-id <current-store-owner> --profile-input <private-profile-json> --source-env <authorized-private-env-file> [--binding-input <private-binding-json>]\n       node <compiled-root>/config/cli.js migrate-binding --config-dir <existing-private-dir> --owner-id <current-store-owner> --binding-input <private-binding-json>\n       node <compiled-root>/config/cli.js select --config-dir <existing-private-dir> --provider <openai|gemini> [--voice <name|voice_id>] [--voice-description-file <absolute-path>] [--accent <selection>] [--playback-rate <1.0-1.2>]\nAll paths must be explicit absolute paths. Fixed source variable: GEMINI_API_KEY. Binding is an operator assertion, not provider identity verification.\n';
+type SelectOptions = { configDir: string; provider: LiveVoiceProvider; voice?: string; accent?: string; voiceDescription?: string; playbackRate?: number };
 /** A voice description is at most 1,500 characters, so any file past this is not one. */
 const maxDescriptionBytes = 8 * 1024;
 function descriptionFrom(path: string): string {
@@ -21,10 +21,10 @@ function argumentsFrom(args: string[]): Command {
   const command = args[0];
   if ((command !== 'init' && command !== 'migrate-binding' && command !== 'select') ||
       (command === 'init' ? ![9, 11, 13].includes(args.length)
-        : command === 'select' ? ![5, 7, 9, 11].includes(args.length) : args.length !== 7)) throw new ConfigError('invalid_arguments');
+        : command === 'select' ? ![5, 7, 9, 11, 13].includes(args.length) : args.length !== 7)) throw new ConfigError('invalid_arguments');
   const names: Record<string, string> = { '--config-dir': 'configDir', '--owner-id': 'ownerId', '--binding-input': 'bindingInputPath',
     ...(command === 'init' ? { '--profile-input': 'profileInputPath', '--source-env': 'sourceEnvPath', '--provider': 'provider' }
-      : command === 'select' ? { '--provider': 'provider', '--voice': 'voice', '--accent': 'accent', '--voice-description-file': 'voiceDescriptionPath' } : {}) };
+      : command === 'select' ? { '--provider': 'provider', '--voice': 'voice', '--accent': 'accent', '--playback-rate': 'playbackRate', '--voice-description-file': 'voiceDescriptionPath' } : {}) };
   const values: Record<string, string> = {};
   for (let i = 1; i < args.length; i += 2) {
     const flag = args[i]!;
@@ -39,6 +39,7 @@ function argumentsFrom(args: string[]): Command {
     return { command, options: { configDir: values['configDir'], provider: values['provider'],
       ...(values['voice'] !== undefined ? { voice: values['voice'] } : {}),
       ...(values['accent'] !== undefined ? { accent: values['accent'] } : {}),
+      ...(values['playbackRate'] !== undefined ? { playbackRate: Number(values['playbackRate']) } : {}),
       ...(descriptionPath !== undefined ? { voiceDescription: descriptionFrom(descriptionPath) } : {}) } };
   }
   if (!values['configDir'] || !values['ownerId']) throw new ConfigError('invalid_arguments');

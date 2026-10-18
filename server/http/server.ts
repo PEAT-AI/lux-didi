@@ -10,7 +10,7 @@ import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { ConfigError } from '../config/index.js';
-import { currentLiveAccent } from '../config/live.js';
+import { currentLiveAccent, currentLivePlaybackRate } from '../config/live.js';
 import { LiveConfigError } from '../live/types.js';
 import { OPENAI_DELEGATION_MODEL } from '../adapters/live-voice/openai.js';
 import { clientDiagnostic, object, resolveRoute } from './routes.js';
@@ -155,6 +155,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           voice: active?.voice ?? null,
           // The accent selection the next session start composes with, so the page can show what runs.
           accent: active ? currentLiveAccent() : null,
+          // P3: the pitch-preserving pace the next session start plays at, shown read-only on the page.
+          playbackRate: active ? currentLivePlaybackRate() : null,
           // Names only: the delegation backend the OpenAI Live adapter pins, and nothing else about it.
           ...(active?.provider === 'openai' ? { delegationModel: OPENAI_DELEGATION_MODEL } : {}),
           personaName: active ? personaName : null,

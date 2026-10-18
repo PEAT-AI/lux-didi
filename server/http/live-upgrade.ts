@@ -22,6 +22,8 @@ export interface LiveStatusPayload {
   voice?: string;
   dataClasses?: string[];
   profileIdentity?: string;
+  /** P3: the pitch-preserving playback rate the native player applies from this session's start. */
+  playbackRate?: number;
   limits?: { sessionMs: number; idleMs: number };
 }
 

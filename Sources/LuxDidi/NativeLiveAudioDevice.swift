@@ -95,6 +95,27 @@ struct NativeCaptureStatistics: Sendable {
 }
 struct NativePlaybackStatistics: Sendable {
     var underruns = 0, lateAfterFlush = 0
+    /// P3: the pitch-preserving rate this session played at, and how long it ran, so a session with
+    /// more chunks per second can be read per minute rather than per session.
+    var rate: Double = 1, sessionMs: Int = 0
+    /// Underruns per minute of session. A session shorter than a second reports the raw count.
+    var underrunsPerMinute: Int {
+        guard sessionMs > 0 else { return underruns }
+        return Int((Double(underruns) * 60_000 / Double(sessionMs)).rounded())
+    }
+}
+/// P3: the pitch-preserving speech rate band. The live config refuses anything outside it; the device
+/// clamps rather than throws, because a bad number must never keep her silent.
+enum NativePlaybackRate {
+    static let minimum = 1.0
+    static let maximum = 1.2
+
+    static func valid(_ value: Double) -> Double {
+        guard value.isFinite, value > minimum, value <= maximum else { return minimum }
+        return value
+    }
+    /// The string the journal and the receipt carry: `1.00`, `1.08`.
+    static func label(_ value: Double) -> String { String(format: "%.2f", value) }
 }
 /// The scheduling decision for one arriving model chunk.
 struct NativePlaybackArrival: Sendable, Equatable {
@@ -123,6 +144,9 @@ struct NativePlaybackQueue {
     /// because host frames arrive far faster than realtime.
     static let overflowFrames = frameRate * 120
 
+    /// P3: the rate the whole session plays at. Audible time is source time divided by it, so a
+    /// drain at 1.08x is shorter than the frames it holds. Set once at session start.
+    var rate: Double = 1
     private(set) var queuedBuffers = 0
     private(set) var scheduledFrames = 0
     /// P2-R1: the queue holds so much audio that the device flushes instead of growing.
@@ -142,7 +166,7 @@ struct NativePlaybackQueue {
         var start = false
         if !playing, scheduledFrames >= Self.prebufferFrames { playing = true; start = true }
         return NativePlaybackArrival(start: start, underrun: starved,
-                                     queuedMs: starved ? Self.ms(drainedFrames) : 0,
+                                     queuedMs: starved ? Self.ms(drainedFrames, rate: rate) : 0,
                                      sinceLastChunkMs: sinceLastChunkMs)
     }
 
@@ -163,7 +187,11 @@ struct NativePlaybackQueue {
         drainedFrames = 0; drainedAtMs = nil; lastArrivalMs = nil
     }
 
-    static func ms(_ frames: Int) -> Int { frames * 1000 / frameRate }
+    /// Audible milliseconds for a frame count. At rate 1.0 this is the integer arithmetic it always
+    /// was, so today's numbers stay byte-identical.
+    static func ms(_ frames: Int, rate: Double = 1) -> Int {
+        rate == 1 ? frames * 1000 / frameRate : Int((Double(frames) * 1000 / frameRate / rate).rounded())
+    }
 }
 /// Contract C1: deterministic wait-cue scheduler. A tool marker and the playback queue's drain
 /// (plus model audio and barge-ins) go in as timestamped events; the absolute times at which the
@@ -588,6 +616,9 @@ struct NativeLiveInterruptionSample: Sendable {
         self.isBuiltInOutput = isBuiltInOutput ?? { Self.isBuiltInSpeakers(outputID: Self.defaultDevice(input: false).id) }
     }
     var hasJournal: Bool { journal != nil }
+    /// Test seam: adopt the stretcher the running graph would own, then flush it, without opening hardware.
+    func adoptTimePitchForTesting(_ unit: AVAudioUnitTimePitch?) { timePitch = unit }
+
     /// Test seam: adopt an engine/player without starting hardware, then release it.
     func adoptEngineForTesting(_ engine: AVAudioEngine, player: AVAudioPlayerNode) {
         self.engine = engine; self.player = player
@@ -785,6 +816,16 @@ struct NativeLiveInterruptionSample: Sendable {
     private var drain: Task<Void, Never>?
     private var configurationObserver: NSObjectProtocol?
     private var playbackQueue = NativePlaybackQueue()
+    /// P3: the pitch-preserving rate for the next session start, set from the live config before
+    /// startFenced. Read once, so nothing that arrives mid-utterance ever retunes her.
+    var playbackRate: Double = NativePlaybackRate.minimum
+    /// The rate the running session committed to: the graph, the drain math and the receipt all use it.
+    private(set) var sessionRate: Double = NativePlaybackRate.minimum
+    private var timePitch: AVAudioUnitTimePitch?
+    /// P3: how many barge-in flushes actually cleared a stretcher's tail. Observability for the test that
+    /// proves a flush drops the unit's held audio and not only the player's queue.
+    private(set) var timePitchTailFlushes = 0
+    private var sessionStartedAt: Date?
     private var outputGeneration: UInt64 = 0
     /// Bumped only by a barge-in flush, so a chunk whose turn was flushed in flight is dropped.
     private var turnGeneration: UInt64 = 0
@@ -820,15 +861,25 @@ struct NativeLiveInterruptionSample: Sendable {
         try Task.checkCancellation()
         }
         captureStatistics = NativeCaptureStatistics(); drainFrames = 0
+        // P3: one rate per session, decided here and never changed while she speaks.
+        sessionRate = NativePlaybackRate.valid(playbackRate)
+        playbackQueue.rate = sessionRate
+        playback.rate = sessionRate
         sendFrame = send
         // A new session may try once: clear the per-session VPIO and circuit-breaker state.
         voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
     }
-    /// Test with an attached mixer standing in for the output node, without opening hardware.
+    /// P3: the single playback graph builder. `rate` is the pitch-preserving speed for the whole
+    /// utterance. At 1.0 the graph is exactly the two connections it always was: no unit is inserted,
+    /// so no unit's latency or tail can touch the answer. Above 1.0 the stretch sits between the player
+    /// and the mixer, so everything downstream (the mixer, the voice-processing output node and any
+    /// echo reference the output node derives from its own input bus) sees post-stretch audio.
+    @discardableResult
     static func connectPlayback(engine: AVAudioEngine, player: AVAudioPlayerNode,
-                                outputNode: AVAudioNode, outputFormat: AVAudioFormat? = nil) throws {
+                                outputNode: AVAudioNode, outputFormat: AVAudioFormat? = nil,
+                                rate: Double = 1) throws -> AVAudioUnitTimePitch? {
         let hardwareOutput = outputFormat ?? outputNode.inputFormat(forBus: 0)
         guard hardwareOutput.sampleRate > 0, hardwareOutput.channelCount > 0 else {
             throw NativeLiveAudioError.formatUnavailable
@@ -837,9 +888,22 @@ struct NativeLiveInterruptionSample: Sendable {
             throw NativeLiveAudioError.unsupportedFormat
         }
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: output)
+        var stretch: AVAudioUnitTimePitch?
+        if rate == 1 {
+            engine.connect(player, to: engine.mainMixerNode, format: output)
+        } else {
+            let unit = AVAudioUnitTimePitch()
+            unit.rate = Float(rate)
+            // Her voice is the voice: only the pace moves, never the pitch.
+            unit.pitch = 0
+            engine.attach(unit)
+            engine.connect(player, to: unit, format: output)
+            engine.connect(unit, to: engine.mainMixerNode, format: output)
+            stretch = unit
+        }
         // VP output requires its input-bus format, not the player's 24 kHz mono client format.
         engine.connect(engine.mainMixerNode, to: outputNode, format: hardwareOutput)
+        return stretch
     }
     private func build(send: @escaping @Sendable (Data, UInt64) async throws -> Void) throws {
         let input = inputDevice()
@@ -877,6 +941,7 @@ struct NativeLiveInterruptionSample: Sendable {
                                                                      voiceProcessingFailed: voiceProcessingFailed)])
         }
         var engine = AVAudioEngine(), player = AVAudioPlayerNode()
+        var stretch: AVAudioUnitTimePitch?
         var hardware = engine.inputNode.outputFormat(forBus: 0)
         if let factory = engineFactoryForTesting {
             (engine, player, hardware) = factory()
@@ -891,7 +956,8 @@ struct NativeLiveInterruptionSample: Sendable {
                 guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
                     throw NativeLiveAudioError.formatUnavailable
                 }
-                try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
+                stretch = try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode,
+                                                   rate: sessionRate)
             } catch {
                 // One VPIO attempt per session, then plain capture: never a second VPIO attempt.
                 voiceProcessingFailed = true
@@ -902,15 +968,17 @@ struct NativeLiveInterruptionSample: Sendable {
                 guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
                     throw NativeLiveAudioError.formatUnavailable
                 }
-                try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
+                stretch = try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode,
+                                                   rate: sessionRate)
             }
         } else {
             guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
                 throw NativeLiveAudioError.formatUnavailable
             }
-            try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
+            stretch = try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode,
+                                               rate: sessionRate)
         }
-        self.engine = engine; self.player = player
+        self.engine = engine; self.player = player; self.timePitch = stretch
         let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
         capture.setMuted(muted); self.capture = capture
         // Tap format is the input node's current output format at install time, never one
@@ -929,6 +997,9 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         owner.didStartEngine(holder: ObjectIdentifier(self))
         log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false"])
+        // P3: one line per session so a faster answer can be read against the underruns it costs.
+        log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
+        sessionStartedAt = now()
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
         route = "Microphone: " + input.name + " · Output: " + Self.defaultDevice(input: false).name
         activateCapture(capture, send: send)
@@ -987,7 +1058,8 @@ struct NativeLiveInterruptionSample: Sendable {
         // Contract C1: a barge-in cancels the waiting cue before the flush does.
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         let at = now()
-        let bufferedPlaybackMs = playbackQueue.scheduledFrames <= 0 ? 0 : playbackQueue.scheduledFrames * 1000 / 24000
+        let bufferedPlaybackMs = playbackQueue.scheduledFrames <= 0 ? 0
+            : NativePlaybackQueue.ms(playbackQueue.scheduledFrames, rate: playbackQueue.rate)
         let sinceAudio = lastModelAudioAt.map { max(0, Int(at.timeIntervalSince($0) * 1000)) } ?? -1
         let pre = rmsWindow(from: at.addingTimeInterval(-1), to: at)
         await onLiveInterrupted?(NativeLiveInterruptionSample(isPostRms: false, bufferedPlaybackMs: bufferedPlaybackMs,
@@ -1125,11 +1197,15 @@ struct NativeLiveInterruptionSample: Sendable {
         // Contract C1: a barge-in, a rebuild or a session end tears down the wait cue with the turn.
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         outputGeneration &+= 1; player?.stop(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
+        // P3: stopping the player empties only the player. The stretcher holds its own tail, so reset
+        // the unit: no syllable of a flushed turn may play after the flush.
+        if let timePitch { timePitch.auAudioUnit.reset(); timePitchTailFlushes += 1 }
         outputOrb.reset()
     }
     func stop() {
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted
+        playback.sessionMs = sessionStartedAt.map { max(0, Int(now().timeIntervalSince($0) * 1000)) } ?? 0
         captureEpoch &+= 1; recovery.stop(); sendFrame = nil; muted = false
         if captureLifetimeActive {
             terminalCaptureSummary = NativeAudioCaptureSummary(capture: captureStatistics,

@@ -15,13 +15,15 @@ export const request = (overrides: Partial<LiveVoiceRequest> = {}): LiveVoiceReq
   system: { text: 'Synthetic persona', dataClass: 'ordinary' }, dataClasses: ['ordinary'], history: [], ...overrides,
 });
 export const control = (signal = new AbortController().signal) => ({ signal, deadlineMs: Date.now() + 5000 });
-/** Silent PCM16: 480 samples at 16 kHz, the host's 30 ms capture frame. */
-export const pcm16 = (samples = 480): Uint8Array => {
+/** A PCM16 tone at 16 kHz: 480 samples is the host's 30 ms capture frame, and `amplitude` sets its level. */
+export const pcm16 = (samples = 480, amplitude = 8000): Uint8Array => {
   const bytes = new Uint8Array(samples * 2);
   const view = new DataView(bytes.buffer);
-  for (let index = 0; index < samples; index += 1) view.setInt16(index * 2, Math.round(Math.sin((index / 16) * 2 * Math.PI) * 8000), true);
+  for (let index = 0; index < samples; index += 1) view.setInt16(index * 2, Math.round(Math.sin((index / 16) * 2 * Math.PI) * amplitude), true);
   return bytes;
 };
+/** Digital silence of the shape gpt-live-1 streams between words: 2400 samples is 100 ms of 24 kHz output. */
+export const silence = (samples: number): Uint8Array => new Uint8Array(samples * 2);
 export function options(overrides: Partial<LiveVoiceAdapterOptions> = {}): LiveVoiceAdapterOptions {
   return {
     modelId: 'gpt-live-1', voice: 'marin', keyReference: 'openai-primary',

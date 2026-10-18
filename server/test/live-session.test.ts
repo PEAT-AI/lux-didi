@@ -3213,9 +3213,9 @@ test('D3: fill frames never disarm the watchdog, so a tool result with no audibl
   // The provider streams a fill frame every 100 ms and never a frame above the audible threshold.
   for (let elapsed = 0; elapsed < 16_000; elapsed += 100) {
     fake.emit(fillFrame);
+    await settlePort();
     h.advance(100);
     scheduler.runDue();
-    await settlePort();
   }
   assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'one clock: the nudge at 8 s and the recovery at 15 s');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
@@ -3240,10 +3240,10 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
   await settlePort();
   for (let elapsed = 0; elapsed < 16_000; elapsed += 100) {
-    if (elapsed === 3_000) fake.emit(audibleFrame); else fake.emit(fillFrame);
+    fake.emit(elapsed === 3_000 ? audibleFrame : fillFrame);
+    await settlePort();
     h.advance(100);
     scheduler.runDue();
-    await settlePort();
   }
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air');
   assert.equal(nudges.length, 1, 'one stall receipt for the one nudge');

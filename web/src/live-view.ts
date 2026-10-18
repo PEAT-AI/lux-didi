@@ -557,6 +557,26 @@ export function startAvailable(view: LiveView): boolean {
   return view.state === 'idle' || view.state === 'error';
 }
 
+/**
+ * The orb and its label answer to the machine while it is stopping, idle or error (release 3p).
+ * The audio is already released in those states, so the screen must not keep following a server
+ * projection that still says speaking; while live or muted the projection is the truth.
+ */
+export function machineOwnsOrb(view: LiveView): boolean {
+  return view.state === 'stopping' || view.state === 'idle' || view.state === 'error';
+}
+
+export type LiveControl = 'stop' | 'stopping' | 'start';
+
+/**
+ * The Start/Stop control reads the machine alone, so the press shows at once instead of waiting for
+ * the server reply: Stop while a session is on, Stopping from the press, Start once it is off.
+ */
+export function liveControl(view: LiveView): LiveControl {
+  if (view.state === 'stopping') return 'stopping';
+  return stopAvailable(view) ? 'stop' : 'start';
+}
+
 export const START_PATHS = ['button', 'shortcut', 'native'] as const;
 export type StartPath = (typeof START_PATHS)[number];
 

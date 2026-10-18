@@ -166,8 +166,6 @@ async function harness(t: TestContext, overrides: {
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
-      // S4a-R2: a write tool, so the ceiling's write settlement and the thinking gate have something to refuse.
-      { name: 'remember_note', inputSchema: { type: 'object', properties: { text: { type: 'string' }, kind: { type: 'string' } }, required: ['text', 'kind'], additionalProperties: false } },
     ];
     const registry = new McpRegistry();
     const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
@@ -3500,17 +3498,26 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'ceiling-write');
-  fake.emit({ type: 'toolCall', calls: [{ id: 'w1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
+  // The note waits for the owner's transcript, so the batch is dispatched once that lands.
+  fake.emit({ type: 'inputTranscription', text: 'remember this', finished: true });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [
+    { id: 'w1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } },
+    { id: 'r1', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
+  ] });
   await settlePort();
   h.advance(12_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'one settlement reaches the backend');
-  // A write is not a read: the host settled a call whose remote effect it cannot prove, so it says so.
-  assert.deepEqual(fake.toolResponses[0], [{ id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } }]);
+  // A read that ran past the ceiling timed out; a write the host cannot prove is uncertain, never a plain timeout.
+  assert.deepEqual(fake.toolResponses[0], [
+    { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } },
+    { id: 'r1', name: 'search_knowledge', response: { error: 'timeout' } },
+  ]);
   // The callback lands after the settlement: it may not rewrite it or write a second output.
   release();
   await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'a late callback never produces a second output');
-  assert.deepEqual(fake.toolResponses[0], [{ id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } }]);
+  assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } });
   h.owner.revoke(session.liveSessionId);
 });
 

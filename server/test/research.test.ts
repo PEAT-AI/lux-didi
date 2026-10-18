@@ -611,7 +611,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   let mailAborted = false;
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
     if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => { mailAborted = true; reject(new Error('aborted')); }; if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
-    return subs.map(call => sub(call.name, 'evidence', true, call.key));
+    return subs.map(call => sub(call.name, '### Insight (PATTERN) [id 7]\nthe release is green', true, call.key));
   } });
   const controller = new AbortController();
   let reading: Promise<void> | undefined;

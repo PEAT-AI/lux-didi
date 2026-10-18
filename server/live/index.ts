@@ -93,6 +93,11 @@ const CONSUMER_GONE_MS = 5_000;
 // 3p: a socket that closed and sent no Stop is a call that ended, not a pause. One second is the longest a Stop may
 // take to be felt by the owner; the 5 s rule above stays behind it as the last net.
 const CONSUMER_CLOSED_MS = 1_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+/** S5: the one honest line after a backend turn failed. It owns the failure and offers the retry, and it never
+ *  invents a reason the provider did not give. */
+export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
+/** S5: how long her own line has to become audible before the turn is settled failed instead of left owing. */
+export const TURN_FAILED_GRACE_MS = 1_000;
 // 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
 // that ended, or a model turn left open, owes a reply, and only a deadline on that debt recovers it. One nudge
 // at RESPONSE_WATCHDOG_NUDGE_MS, then the fresh-seeded recovery at RESPONSE_WATCHDOG_RECOVERY_MS after it.
@@ -1196,6 +1201,45 @@ export class LiveSessionOwner {
   /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
   #delegationKey(handle: ActiveSession): string { return `${handle.liveSessionId}-${handle.generation}`; }
 
+  /**
+   * S5: the honest end of a backend turn. One typed disposition, `turn_failed` with the provider's own code, and
+   * the open calls of the turn closed, so no ledger entry and no orb state keeps owing a reply the backend will
+   * not send. She then says one honest line through the progress-speech path. A backend turn failure is not a
+   * transport failure, so nothing is rebuilt; if her line never becomes audible, the turn is settled failed
+   * rather than left owing, and the owner's S2 recovery starts the retry.
+   */
+  #turnFailed(handle: ActiveSession, generation: number, code: string): void {
+    if (this.#settled(handle) || generation !== handle.generation) return;
+    const failedAt = this.#now();
+    hostLogEvent({ event: 'turn_failed', code });
+    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_failed', code });
+    // The turn is over: every call it left open is closed here, never still in flight in the projection.
+    for (const id of [...handle.pendingCallIds]) {
+      handle.callAborts.get(id)?.abort();
+      handle.callAborts.delete(id);
+      handle.pendingCallIds.delete(id);
+      handle.pendingCalls.delete(id);
+      handle.callStartedAt.delete(id);
+      handle.exec.delete(id);
+    }
+    handle.thinking = false;
+    handle.awaitingAnswer = false;
+    handle.answerAt = undefined;
+    this.#cancelProgress(handle);
+    this.#cancelWatchdog(handle);
+    this.#noteState(handle, 'tool');
+    if (this.#progressPath(handle)) {
+      try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
+    }
+    this.#armIdle(handle, this.#profile.limits.idleMs);
+    this.#schedule(() => {
+      if (this.#settled(handle) || generation !== handle.generation) return;
+      // She spoke the line: the turn is answered, and the session carries on from it.
+      if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= failedAt) return;
+      this.#settle(handle, { state: 'failed', code: 'backend_failed' }, false, 'ended', null);
+    }, TURN_FAILED_GRACE_MS);
+  }
+
   #armProgress(handle: ActiveSession): void {
     handle.progressTimer?.cancel();
     handle.progressTimer = undefined;
@@ -1709,6 +1753,12 @@ export class LiveSessionOwner {
             name: 'provider_go_away', configuredMs: event.timeLeftMs });
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
+        }
+        if (event.type === 'turnFailed') {
+          // S5: a backend response that ended failed, incomplete or errored is a typed turn failure, never a
+          // silent stall and never a rebuild: the session is healthy, the turn is not.
+          this.#turnFailed(handle, generation, event.code);
+          continue;
         }
         if (event.type === 'contextUsage') {
           // The provider's own usage report, kept with the other numbers and never a payload.

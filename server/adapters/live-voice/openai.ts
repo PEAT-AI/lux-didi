@@ -208,6 +208,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/**
+ * The provider's own word for why a backend response ended (S5): its error code when it sent one, else its
+ * status. Bounded to the shape a metadata-only receipt may carry, so a provider string is never a free field.
+ */
+function failureCode(status: string, error: unknown): string {
+  const code = object(error) && typeof error.code === 'string' && error.code.length ? error.code : undefined;
+  const word = code ?? status;
+  return /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(word) ? word : 'failed';
+}
+
 interface Settings {
   modelId: string; voice: string; enabled: boolean; allowed: readonly DataClass[];
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
@@ -408,13 +418,22 @@ class Session implements LiveVoiceSession {
   private idleQuiet: unknown;
   /** True between a delegated `response.created` and its `response.done`. */
   private delegatedOutstanding = false;
+  /** Response ids already opened and already ended: a repeated lifecycle event is the same response, not a new one. */
+  private readonly openedResponses = new Set<string>();
+  private readonly endedResponses = new Set<string>();
+  /** The response this turn is answering, for the receipts that name it (S5). */
+  private currentResponse: string | undefined;
   /** Calls whose `function_call_output` is already on the wire: no call is ever answered twice (3r B). */
   private readonly outputSent = new Set<string>();
   /** A continuation the gate owes but has not sent, and the single retry an active-response rejection allows
    *  (3r A). A deferred continuation is sent by the next terminal event, never by a timer of its own. */
   private continuationOwed = false;
+  /** Every `response.create` this session has written: one per backend response, and the S5 failure rule counts them. */
+  private continuationsSent = 0;
   /** The answered batch the owed continuation belongs to, kept with it until it is sent (S1-R1). */
   private continuationCalls = 0;
+  /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
+  private batchAnswers = 0;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
   /** A provider rejection that a response is still active: the one retry, through the same gate (3r A). */
@@ -957,6 +976,11 @@ class Session implements LiveVoiceSession {
     if (!object(event) || typeof event.type !== 'string') fail('protocol_error');
     switch (event.type) {
       case 'response.created': {
+        const responseId = object(event.response) && typeof event.response.id === 'string' && event.response.id.length ? event.response.id : undefined;
+        if (responseId !== undefined) this.currentResponse = responseId;
+        // A repeated `response.created` is the same response: it changes no generation and no completion account.
+        if (responseId !== undefined && this.openedResponses.has(responseId)) { this.touch(); return; }
+        if (responseId !== undefined) this.openedResponses.add(responseId);
         this.endTurnTranscripts();
         this.delegatedOutstanding = true;
         this.generation += 1;
@@ -976,11 +1000,32 @@ class Session implements LiveVoiceSession {
       case 'response.failed':
       case 'response.incomplete':
       case 'response.cancelled': {
-        const usage = object(event.response) ? event.response.usage : undefined;
+        const response = object(event.response) ? event.response : undefined;
+        const responseId = typeof response?.id === 'string' && response.id.length ? response.id : undefined;
+        // A duplicated or out-of-order terminal event is the same end: it neither closes an obligation twice nor
+        // moves the presentation (S5).
+        if (responseId !== undefined) {
+          // A repeat of the same end closes nothing twice and moves no presentation, but an owed continuation
+          // still gets its one chance through the gate (3r A retry, 3r E resume): the gate refuses a partial batch.
+          if (this.endedResponses.has(responseId)) { this.resumeContinuation(); this.touch(); return; }
+          this.endedResponses.add(responseId);
+        }
+        const usage = response?.usage;
         if (object(usage) && typeof usage.total_tokens === 'number' && Number.isFinite(usage.total_tokens) && usage.total_tokens >= 0) {
           this.emit({ type: 'contextUsage', totalTokens: usage.total_tokens,
             ...(typeof usage.input_tokens === 'number' ? { promptTokens: usage.input_tokens } : {}),
             ...(typeof usage.output_tokens === 'number' ? { responseTokens: usage.output_tokens } : {}) });
+        }
+        // S5: a backend response that ends failed, incomplete or errored still ends the response, so a batch it
+        // answered is flushed and an owed continuation is resumed (3r E). A failure that leaves nothing to say is
+        // the turn's failure: one typed disposition with the provider's own code, never a silent stall.
+        const status = typeof response?.status === 'string' ? response.status : event.type.replace('response.', '');
+        if (status !== 'completed' && status !== 'done') {
+          const createsBefore = this.continuationsSent;
+          this.endResponse(message);
+          if (this.continuationsSent === createsBefore) this.emit({ type: 'turnFailed', code: failureCode(status, response?.error) });
+          this.touch();
+          return;
         }
         this.endResponse(message);
         this.touch();
@@ -1001,6 +1046,7 @@ class Session implements LiveVoiceSession {
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
     this.settleTurn();
+    this.writeAnswered();
     this.resumeContinuation();
   }
 
@@ -1040,7 +1086,9 @@ class Session implements LiveVoiceSession {
     const inner = object(message.delegation) ? message.delegation : message;
     const id = typeof inner.id === 'string' && inner.id.length ? inner.id : undefined;
     if (id === undefined) { this.touch(); return; }
-    if (this.delegations.has(id)) fail('protocol_error');
+    // A repeated `session.delegation.created` is the same delegation, not a protocol fault (S5): rebuilding a
+    // healthy session over a duplicated frame is what turned one duplicate into a lost call.
+    if (this.delegations.has(id)) { this.touch(); return; }
     const offsetMs = typeof inner.offset_ms === 'number' && Number.isFinite(inner.offset_ms) && inner.offset_ms >= 0 ? Math.round(inner.offset_ms) : 0;
     // S1-R1: the frame names the response this delegation opens with, so the chain starts here and not at the first
     // nested `response.created`.
@@ -1253,9 +1301,19 @@ class Session implements LiveVoiceSession {
       this.answeredCalls.set(id, response);
     }
     if (!fresh.length) return this.continuationOutcome;
-    if (this.pendingCalls.some(call => !this.answeredCalls.has(call.id))) return this.continuationOutcome = 'deferred';
+    return this.writeAnswered();
+  }
+
+  /**
+   * The delegation guide's order (S5): each answered call's output is written the moment it is ready, and exactly
+   * one `response.create` follows once every call of the backend response has its output. A create never answers a
+   * partial batch, because a call emitted after it would have no continuation left to carry it.
+   */
+  private writeAnswered(): LiveToolSendOutcome {
+    if (!this.pendingCalls.length) return this.continuationOutcome;
     const written: string[] = [];
     for (const call of this.pendingCalls) {
+      if (!this.answeredCalls.has(call.id)) continue;
       const response = this.answeredCalls.get(call.id)!;
       // `function_call_output` carries the call_id back to the backend (guides/live-migration, delegation table).
       // Exactly one terminal output per call: success, error, timeout and cancellation are all that one object.
@@ -1263,15 +1321,23 @@ class Session implements LiveVoiceSession {
       this.recordCommand(outputId, 'tool_out');
       if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
-        this.answeredCalls.clear();
         return this.continuationOutcome = 'failed';
       }
       written.push(call.id);
       this.outputSent.add(call.id);
     }
-    this.pendingCalls = []; this.answeredCalls.clear();
-    this.noteDelegationOutputs(written);
-    return this.continueTurn(written.length, 0);
+    this.pendingCalls = this.pendingCalls.filter(call => !written.includes(call.id));
+    for (const id of written) this.answeredCalls.delete(id);
+    if (written.length) this.noteDelegationOutputs(written);
+    // A call of this backend response still has no answer: its output is owed, so no continuation yet.
+    // The one continuation answers every output of this backend response, however many rounds delivered them,
+    // so the receipt's count is the batch, not the last chunk (S1-R1).
+    this.batchAnswers += written.length;
+    if (this.pendingCalls.length > 0) {
+      this.deferralReceipt();
+      return this.continuationOutcome = 'deferred';
+    }
+    return this.continueTurn(this.batchAnswers, 0);
   }
 
   /** The one gate a continuation passes (3r A): it is owed, and only a terminal event or a rejection resumes it. */
@@ -1279,9 +1345,11 @@ class Session implements LiveVoiceSession {
     // S1-R1: the answered batch a continuation carries survives the wait, so the receipt of a resumed or retried
     // create still says how large the batch it answers was, instead of a bare zero.
     this.continuationCalls = Math.max(this.continuationCalls, calls);
-    if (this.delegatedOutstanding) {
-      // The originating response is still emitting calls, so a create now would be refused: defer to its done.
+    if (this.delegatedOutstanding || this.pendingCalls.length > 0) {
+      // The originating response is still emitting calls, or a call of this batch has no output yet, so a create
+      // now would answer a partial batch: defer to the emitted output of the last open call (S5).
       this.continuationOwed = true;
+      this.deferralReceipt();
       return this.continuationOutcome = 'deferred';
     }
     if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) {
@@ -1290,6 +1358,8 @@ class Session implements LiveVoiceSession {
     }
     this.continuationOwed = false;
     this.continuationRejected = false;
+    this.batchAnswers = 0;
+    this.continuationsSent += 1;
     if (attempt) this.continuationRetries += 1;
     const answered = this.continuationCalls;
     this.continuationCalls = 0;
@@ -1300,8 +1370,7 @@ class Session implements LiveVoiceSession {
 
   /** Resume a deferred continuation after the terminal event the gate was waiting for. Idempotent by `owed`. */
   private resumeContinuation(): void {
-    if (!this.continuationOwed) return;
-    if (!this.continuationRejected) { this.continueTurn(0, 0); return; }
+    if (!this.continuationOwed) return;    if (!this.continuationRejected) { this.continueTurn(0, 0); return; }
     this.continuationRejected = false;
     // Exactly one retry: a second rejection leaves the continuation owed and nothing more is sent.
     if (this.continuationRetries >= 1) { this.continuationOwed = false; this.continuationOutcome = 'failed'; return; }
@@ -1316,6 +1385,15 @@ class Session implements LiveVoiceSession {
     const id = `${kind}_${this.commandSequence}`;
     this.recordCommand(id, kind);
     return id;
+  }
+
+  /**
+   * S5 receipt, metadata only: a continuation is owed but cannot go yet, so name the response it answers and how
+   * many call outputs it still waits for. Never a call id, never an argument.
+   */
+  private deferralReceipt(): void {
+    const awaiting = this.pendingCalls.filter(call => !this.answeredCalls.has(call.id)).length;
+    hostLogEvent({ event: 'continuation_deferred', responseKey: this.currentResponse ?? 'none', awaiting });
   }
 
   /** S4a-R2 (d): a small ledger of what was sent and when, so a correlation is read from the wire and never
@@ -1336,7 +1414,10 @@ class Session implements LiveVoiceSession {
     this.pendingCalls = [];
     this.answeredCalls.clear();
     this.outputSent.clear();
+    this.openedResponses.clear();
+    this.endedResponses.clear();
     this.continuationOwed = false;
+    this.batchAnswers = 0;
     this.continuationCalls = 0;
     this.lastContinuationCalls = 0;
     this.delegatedOutstanding = false;

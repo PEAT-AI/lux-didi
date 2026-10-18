@@ -10,10 +10,9 @@ import { sanitize } from './voice-replay/sanitize.js';
  * adapter and the real host live session together over a virtual clock and asserts the six invariants the
  * council named, plus the scenario's own fault.
  *
- * A scenario the current code fails is marked `todo` with the falsified assertion and the wagon that owes the
- * fix quoted in its own message, and the same four are named in docs/debugging.md under "Release gates". The
- * suite runs inside the voice release gate, `scripts/check-live-session.sh`. An invariant is never softened to
- * make a scenario pass.
+ * Every scenario is live: S5 un-parked the four the S4a wagon left behind (3, 4, 6, 9), so a failure here is a
+ * defect and never a parked expectation. The suite runs inside the voice release gate,
+ * `scripts/check-live-session.sh`. An invariant is never softened to make a scenario pass.
  */
 
 const invariants = (played: Played): void => {
@@ -54,7 +53,7 @@ test('scenario 2: a barge-in before tool completion still answers and continues'
   await replay.release();
 });
 
-test('scenario 3: a late output after a timeout is not repeated and does not revive a settled turn', { todo: 'current code submits the late callback a second time: call_1 gets the ceiling error at once and the tool\'s real result as a second function_call_output at +32,100 ms in the same generation; wagon S4a owes the ceiling and uncertain-action rule' }, async t => {
+test('scenario 3: a late output after a timeout is not repeated and does not revive a settled turn', async t => {
   const played = await play(t, 'scenario-03-late-output-after-timeout', { tools: true, scripts: [{ latencyMs: 18_000 }] });
   const { replay } = played;
   const call = replay.calls[0];
@@ -63,7 +62,10 @@ test('scenario 3: a late output after a timeout is not repeated and does not rev
   assert.equal(call.outputs.length, 1, `exactly one output submission for the call: ${describe(replay)}`);
   // Scoped to the generation that owed it: a re-submission after a reconnect resumes a lost call, which is a
   // different obligation, never a repeat of this one.
-  const late = replay.commands.filter(command => command.epoch === call.epoch && command.at >= call.at + 12_000
+  // "Late" is measured from the ceiling's own submission, not from the call: the ceiling output lands a few
+  // milliseconds past the constant, and it is the one submission the scenario expects (S5 boundary, F1 G3).
+  const ceilingAt = call.outputs[0]!.at;
+  const late = replay.commands.filter(command => command.epoch === call.epoch && command.at > ceilingAt
     && (command.frame['item'] as Record<string, unknown> | undefined)?.['call_id'] === call.callId);
   assert.deepEqual(late.map(entry => ({ seq: entry.seq, at: entry.at - call.at, output: (entry.frame['item'] as Record<string, unknown>)['output'] })),
     [], `the late callback wrote a second submission for ${call.callId} ${describe(replay)}`);
@@ -73,7 +75,7 @@ test('scenario 3: a late output after a timeout is not repeated and does not rev
   await replay.release();
 });
 
-test('scenario 4: parallel calls finishing in mixed order with failures get one output and one continuation each', { todo: 'current code continues a partial batch: it sends response.create after call_a while call_b of the same delegation still has no result (invariant 2), which the delegation guide forbids by "do not resend it"; wagon S4a owes the single continuation owner' }, async t => {
+test('scenario 4: parallel calls finishing in mixed order with failures get one output and one continuation each', async t => {
   const played = await play(t, 'scenario-04-parallel-mixed', {
     tools: true, scripts: [{ fail: true }, { latencyMs: 2_000 }],
   });
@@ -105,7 +107,7 @@ test('scenario 5: a new call after the continuation is answered and continued on
   await replay.release();
 });
 
-test('scenario 6: duplicate lifecycle and call events produce one tool turn', { todo: 'current code reads listening with the call still unanswered after a duplicated terminal event: invariant 5; wagon S4a owes the command ledger and duplicate accounting' }, async t => {
+test('scenario 6: duplicate lifecycle and call events produce one tool turn', async t => {
   const played = await play(t, 'scenario-06-duplicate-events', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(countOf(played, 'response.item.create'), 1, `duplicate calls produced one output: ${describe(replay)}`);
@@ -130,7 +132,7 @@ test('scenario 8: a rejected command retries at most once and an async settings 
   await replay.release();
 });
 
-test('scenario 9: a failed, incomplete or errored backend ends in a typed disposition', { todo: 'current code answers a failed backend response with a nudge and then a rebuild at 19.2 s, and never reaches audible output nor a typed failure inside the deadline: a failed backend turn ended with neither audible output nor a typed failure; wagon S4a owes the error map' }, async t => {
+test('scenario 9: a failed, incomplete or errored backend ends in a typed disposition', async t => {
   const played = await play(t, 'scenario-09-backend-failed', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(replay.receipts.length > 0 || replay.owner.get(replay.liveSessionId).lifecycle === 'terminal', true,

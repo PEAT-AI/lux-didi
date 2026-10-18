@@ -242,15 +242,14 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
           if (currentBatch && currentBatch.epoch === command.epoch && currentBatch.creates.length === 0) currentBatch.callIds.push(callId);
           else { currentBatch = { epoch: command.epoch, at: command.at, callIds: [callId], creates: [] }; batches.push(currentBatch); }
         } else {
-          // A non-result item (the host's own text nudge) breaks the adjacency: a later create is not this batch's.
-          currentBatch = undefined;
+          // A non-result item (the host's own text nudge, or a progress append) is not a continuation: the batch
+          // it interrupted is still the one the next results belong to (S5-R2, resolved in the harness only).
+          continue;
         }
       }
       if (command.type === 'response.create') {
         // Every create that follows a batch's results belongs to it, so a duplicate is visible to invariant 2.
         if (currentBatch && currentBatch.epoch === command.epoch) currentBatch.creates.push(command);
-      } else if (command.type !== 'response.item.create') {
-        currentBatch = undefined;
       }
     }
   };
@@ -352,7 +351,11 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     async deliver(frame, cause = 'provider') {
       record();
       const call = isFunctionCall(frame);
-      if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
+      // One obligation per call id per epoch: a duplicated `function_call` frame is the same call, and the
+      // adapter already answered it once, so it earns a second obligation no more than it earns a second output.
+      if (call && !calls.some(entry => entry.callId === call.callId && entry.epoch === epoch)) {
+        calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
+      }
       f.send(frame);
       await drained();
       record();

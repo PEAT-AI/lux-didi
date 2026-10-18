@@ -47,7 +47,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -3799,4 +3799,52 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is journaled by typed code');
   attachment.close();
   await attachment.done;
+});
+test('S5: the orb never reads listening while a call obligation is open, whatever the adapter reports', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { attachment } = await openPort(h, 'orb-honest');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'a call in flight is open work, never listening');
+  // The adapter's own silence model, and a duplicated end of turn, cannot clear an open obligation.
+  fake.emit({ type: 'waitingForInput', value: true });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'silence does not close an open call');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'a duplicated end of turn does not close an open call');
+  release();
+  await settlePort();
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', 'the answered turn speaks before it idles');
+  attachment.close();
+  await settlePort();
+});
+
+test('S5: a failed backend turn settles typed, says one honest line, and is never rebuilt', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { session } = await openPort(h, 'failed-turn');
+  fake.emit({ type: 'turnFailed', code: 'backend_unavailable' });
+  await settlePort();
+  // The typed disposition is immediate and metadata only.
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', code: 'backend_unavailable' }]);
+  assert.deepEqual(fake.commentary, [TURN_FAILED_LINE], 'one honest line: lost the thread, asked to repeat, offered the retry');
+  assert.equal(fake.sessionsOpened, 1, 'a backend turn failure is never a rebuild');
+  // The line never becomes audible here, so the turn is settled failed instead of left owing, and no rebuild follows.
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(h.owner.get(session.liveSessionId).lifecycle, 'terminal', 'an unanswered turn failure settles instead of owing forever');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'backend_failed' },
+    'the terminal disposition is typed, and it names the failure class the receipt details');
+  assert.equal(fake.sessionsOpened, 1, 'still no rebuild');
+  assert.deepEqual(fake.texts, [], 'no Continue. user turn on the failure path either');
 });

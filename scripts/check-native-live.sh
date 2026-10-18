@@ -101,6 +101,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift \
   Tests/DidiLiveTests/NativeLiveEngineProbe.swift -o "$work/native-engine-probe"
 "$work/native-engine-probe"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \

@@ -3521,7 +3521,7 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   const scheduler = new DeadlineClock();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { tools: true, mattermost: true, scheduler, mattermostWork: () => held });
+  const h = await harness(t, { tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);

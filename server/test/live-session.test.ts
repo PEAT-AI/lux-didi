@@ -3139,6 +3139,6 @@ test('Q5-R4: a fresh call carries the previous opener as do-not-repeat context, 
   const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
   const text = accepted(h, second.liveSessionId).system;
   assert.equal(text.includes('Morning.'), true, 'the earlier opener is named in the start instruction');
-  assert.match(text, /never reuse/);
+  assert.equal(text.includes('merged cleanly'), false, 'only its first sentence is carried');
   assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
 });

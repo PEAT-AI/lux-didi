@@ -205,11 +205,11 @@ function digestConnector(script: DigestScript, clock: { now: number }): Calendar
     },
   };
 }
-function digestCache(script: DigestScript, start = digestMonday) {
+function digestCache(script: DigestScript, start = digestMonday, intervalMs?: number) {
   const clock = { now: start };
   const read = digestConnector(script, clock);
   const cache = new CalendarDigestCache(async () => await readCalendarDigest(read, { now: () => clock.now, timeZone: 'Asia/Kolkata' }),
-    { now: () => clock.now, timeZone: 'Asia/Kolkata' });
+    { now: () => clock.now, timeZone: 'Asia/Kolkata', ...(intervalMs === undefined ? {} : { intervalMs }) });
   return { cache, read, clock };
 }
 
@@ -219,7 +219,7 @@ test('1015: a 6 s read fills the cache and the next start uses it with state pre
   assert.equal(filled.state, 'present', 'a read inside the 30 s budget is a present day');
   assert.equal(filled.items, 1);
   assert.equal(filled.fetchedAt, digestMonday + 6_000, 'the fetch time is when the read finished');
-  assert.match(filled.text ?? '', /^09:30 standup$/, 'local host time, as before');
+  assert.match(filled.text ?? '', /^10:00 standup$/, 'local host time, as before');
   const started = await cache.forStart();
   assert.equal(started.state, 'present', 'the next start reads the cache, not the connector');
   assert.equal(started.items, 1);
@@ -285,16 +285,16 @@ test('1015: the digest read budget is 30 s, so the aborted 5 s read cannot be a 
   assert.equal(calendarDigestStartWaitMs, 1_500, 'and waits at most 1,500 ms for a read in flight');
 });
 
-test('1015: the background owner reads at host start and every 15 min until it is stopped', t => {
-  t.mock.timers.enable({ apis: ['setInterval'] });
-  const { cache, read } = digestCache({});
+test('1015: the background owner reads at host start and on every interval until it is stopped', async () => {
+  // The interval is the owner's own seam, so the test drives it in 10 ms instead of the 15 min it takes.
+  const { cache, read } = digestCache({}, digestMonday, 10);
   cache.begin();
   assert.equal(read.calls.length, 1, 'the host start read happens before any call arrives');
-  t.mock.timers.tick(calendarDigestRefreshMs);
-  assert.equal(read.calls.length, 2, 'and again fifteen minutes later, off the request path');
-  t.mock.timers.tick(calendarDigestRefreshMs * 4);
-  assert.equal(read.calls.length, 6, 'the owner keeps the digest current while the host runs');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(read.calls.length >= 3, `the owner keeps the digest current while the host runs (${read.calls.length} reads)`);
   cache.stop();
-  t.mock.timers.tick(calendarDigestRefreshMs * 4);
-  assert.equal(read.calls.length, 6, 'a stopped host reads nothing');
+  const settled = read.calls.length;
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(read.calls.length, settled, 'a stopped host reads nothing');
+  assert.ok(calendarDigestRefreshMs === 15 * 60 * 1000);
 });

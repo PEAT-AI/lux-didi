@@ -164,21 +164,23 @@ export class CalendarDigestCache {
   readonly #read: () => Promise<CalendarDigestReadResult>;
   readonly #now: () => number;
   readonly #timeZone: string;
+  readonly #intervalMs: number;
   #snapshot: CalendarDigestReadResult | undefined;
   #inflight: Promise<CalendarDigestReadResult> | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(read: () => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string }) {
+  constructor(read: () => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string; readonly intervalMs?: number }) {
     this.#read = read;
     this.#now = options.now;
     this.#timeZone = options.timeZone;
+    this.#intervalMs = options.intervalMs ?? calendarDigestRefreshMs;
   }
 
   /** The host's background owner: one read now, then every 15 minutes until `stop`. Off the request path. */
   begin(): void {
     if (this.#timer !== undefined) return;
     void this.refresh();
-    this.#timer = setInterval(() => { void this.refresh(); }, calendarDigestRefreshMs);
+    this.#timer = setInterval(() => { void this.refresh(); }, this.#intervalMs);
     this.#timer.unref();
   }
 

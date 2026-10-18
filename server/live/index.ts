@@ -40,34 +40,59 @@ import {
 } from './types.js';
 
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, in your own words, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
-/** Q5-R4: the most the earlier calls' first sentences may add to a start instruction. */
-export const OPENER_CONTEXT_CHARS = 300;
+/** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
+export const OPENER_CONTEXT_CHARS = 450;
 
-/** Q5-R4: one earlier call's first sentence, so the note stays a hint rather than a transcript. */
-function firstSentenceOf(text: string): string {
+/** Q5-R4: one or two sentences, so the note carries a subject and not only a short fragment. */
+function openingSentencesOf(text: string): string {
   const flat = text.replace(/\s+/gu, ' ').trim();
-  const end = flat.search(/[.?!](\s|$)/u);
-  return end === -1 ? flat : flat.slice(0, end + 1);
+  const sentences = flat.split(/(?<=[.?!])\s+/u).filter(Boolean);
+  const first = sentences[0] ?? flat;
+  const pair = sentences.slice(0, 2).join(' ');
+  return first.length < 80 && pair.length <= 200 ? pair : first;
 }
 
 /**
- * Q5-R4: the previous calls' openers as "do not repeat" context, under 300 chars and absent when no
- * earlier call exists. The journal text stays owner-local: this string is composed into the start
- * instruction and is never written to host.log.
+ * Q5-R4: the previous calls' openers as "do not repeat" context, under 450 chars and absent when no
+ * earlier call exists. Three calls are named so the note carries a subject as well as words. The journal
+ * text stays owner-local: this string is composed into the start instruction and is never written to
+ * host.log.
  */
 export function openersNote(openers: readonly string[]): string | undefined {
-  const note = (lines: readonly string[]): string => `Do not open with any of these earlier openers: ${lines.map(line => `"${line}"`).join(' ')}`;
+  const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.map(line => `"${line}"`).join(' ')}`;
   const taken: string[] = [];
-  for (const opener of openers.map(firstSentenceOf).filter(Boolean).slice(0, 2)) {
+  for (const opener of openers.map(openingSentencesOf).filter(Boolean).slice(0, 3)) {
     if (note([...taken, opener]).length <= OPENER_CONTEXT_CHARS) taken.push(opener);
   }
   return taken.length ? note(taken) : undefined;
 }
 
-/** Q5-R4: the two most recent earlier calls' first spoken lines, read from the owner-local journal. */
+/**
+ * Q5-R4: one earlier call's opening utterance: its ordered transcription fragments up to the first
+ * finished fragment or turn boundary. A streamed fragment of a few characters carries no subject,
+ * which is why the first row alone was almost nothing to avoid.
+ */
+export function openerFromJournal(rows: readonly { readonly kind: string; readonly text: string | null; readonly finished: number | null }[]): string {
+  let utterance = '';
+  for (const row of rows) {
+    if (row.kind !== 'outputTranscription') {
+      if (utterance !== '') break;
+      continue;
+    }
+    utterance += row.text ?? '';
+    if (row.finished === 1) break;
+  }
+  return utterance.trim();
+}
+
+/** Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal. */
 function previousOpeners(tx: Transaction, assistantId: string): string[] {
-  return tx.all("SELECT (SELECT j.text FROM live_journal j WHERE j.live_session_id=s.live_session_id AND j.kind='outputTranscription' AND trim(j.text)<>'' ORDER BY j.journal_id LIMIT 1) AS opener FROM live_sessions s WHERE s.owner_assistant_id=? ORDER BY s.created_at DESC, s.rowid DESC LIMIT 2", [assistantId])
-    .map(row => String(row['opener'] ?? '')).filter(text => text.trim() !== '');
+  const sessions = tx.all("SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC LIMIT 3", [assistantId]).map(row => String(row['live_session_id']));
+  return sessions.map(liveSessionId => openerFromJournal(tx.all("SELECT kind, text, finished FROM live_journal WHERE live_session_id=? AND (kind='outputTranscription' OR kind IN ('generationComplete','turnComplete','interrupted')) ORDER BY journal_id", [liveSessionId]).map(row => ({
+    kind: String(row['kind']),
+    text: row['text'] === null || row['text'] === undefined ? null : String(row['text']),
+    finished: row['finished'] === null || row['finished'] === undefined ? null : Number(row['finished']),
+  })))).filter(text => text !== '');
 }
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
@@ -707,6 +732,8 @@ export class LiveSessionOwner {
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
       const openers = openersNote(previousOpeners(tx, assistantId));
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+        // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
+        delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,

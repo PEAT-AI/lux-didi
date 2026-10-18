@@ -6,6 +6,7 @@ import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILE
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
+import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -140,6 +141,18 @@ describe('openai gpt-live adapter', () => {
     assert.equal('max_output_tokens' in responses, false, 'the output ceiling stays unset');
     // No owner content: the template names the task shape and never the persona or a source.
     assert.equal(String(responses['instructions']).includes('Synthetic persona'), false);
+  });
+
+  test('S4b: the lookup procedure follows the template and the brevity rule in the backend instructions', async t => {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ backendProcedure: NAYA_BACKEND_PROCEDURE, socketFactory: f.socketFactory })).open(request({ tools: tools() }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const instructions = String(backend(f.frames[0] as unknown as Start)['instructions']);
+    assert.equal(instructions, `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${NAYA_BACKEND_PROCEDURE}`);
+    assert.ok(instructions.indexOf(OPENAI_BACKEND_TEMPLATE) < instructions.indexOf(NAYA_BACKEND_PROCEDURE), 'the template comes first and the procedure follows it');
+    assert.equal(instructions.includes('Delegation policy'), false, 'the voice-side delegation policy never reaches the backend');
+    assert.ok(instructions.includes('widen once to the next most likely layer'), 'the lookup procedure reaches the executing model');
   });
 
   test('S4A-R1: a backendProcedure is appended under a blank line, and the voice parts stay byte-identical', async t => {

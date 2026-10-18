@@ -36,7 +36,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse } from '../adapters/live-voice/index.js';
 import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
@@ -47,8 +47,10 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
+import { fixture as openAiFixture } from './openai-live-voice-fixture.js';
+import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { buildRuntimeContext } from '../prompt/index.js';
@@ -3171,31 +3173,92 @@ function journalRecords(dir: string): Record<string, unknown>[] {
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
-test('Q5-R4: the opener context names at most two earlier first sentences and stays under 300 chars', () => {
+test('Q5-R4: the opener context names at most three earlier openers, one or two sentences each, and stays under 450 chars', () => {
   assert.equal(openersNote([]), undefined, 'no earlier call means no context at all');
-  const one = openersNote(['Morning. The release branch merged cleanly. A second line follows.']);
-  assert.equal(one!.includes('Morning.'), true, 'the first sentence of the earlier opener is named');
-  assert.equal(one!.includes('A second line'), false, 'the rest of that opener is not carried');
-  const two = openersNote(['Morning. Then more.', 'Evening. Then more.', 'Night. A third call.']);
-  assert.equal(two!.split('"').length - 1, 4, 'only the two most recent openers are quoted');
-  assert.equal(two!.includes('Night.'), false, 'the third call is beyond the two the host passes');
-  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`]);
+  const one = openersNote(['Morning. The release branch merged cleanly. A third line follows.']);
+  assert.equal(one!.includes('Morning. The release branch merged cleanly.'), true, 'two short sentences are carried so the subject shows');
+  assert.equal(one!.includes('A third line'), false, 'a third sentence is not carried');
+  const three = openersNote(['Morning. Then more.', 'Evening. Then more.', 'Night. A third call.', 'Dawn. A fourth call.']);
+  assert.equal(three!.split('"').length - 1, 6, 'only the three most recent openers are quoted');
+  assert.equal(three!.includes('Dawn.'), false, 'the fourth call is beyond the three the host passes');
+  assert.ok(three!.startsWith('Open on a different subject and different words than these earlier openers:'), 'the note asks for a different subject, not only different words');
+  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`, `${'C'.repeat(200)} third.`]);
   assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `the note is bounded at ${OPENER_CONTEXT_CHARS} chars (${long!.length})`);
   assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
 });
 
-test('Q5-R4: a fresh call carries the previous opener as do-not-repeat context, and the first call carries none', async t => {
+test('S4b: an opener is assembled from its ordered fragments up to the first finished fragment or turn boundary', () => {
+  const rows = (entries: [string, string | null, number | null][]) => entries.map(([kind, text, finished]) => ({ kind, text, finished }));
+  assert.equal(openerFromJournal(rows([['outputTranscription', 'Morning.', 0], ['outputTranscription', ' The release', 0], ['outputTranscription', ' merged cleanly.', 1], ['outputTranscription', ' Later.', 0]])),
+    'Morning. The release merged cleanly.', 'stops at the first finished fragment');
+  assert.equal(openerFromJournal(rows([['outputTranscription', 'Morning.', 0], ['turnComplete', null, null], ['outputTranscription', ' Later.', 0]])),
+    'Morning.', 'stops at a turn boundary');
+  assert.equal(openerFromJournal(rows([['interrupted', null, null], ['outputTranscription', 'Morning.', 0]])),
+    'Morning.', 'a boundary before the first speech does not hide the opener');
+});
+
+test('Q5-R4: a fresh call carries the previous opener assembled from its fragments, and the first call carries none', async t => {
   const h = await harness(t);
   const first = h.owner.create({ idempotencyKey: 'opener-first', inputClass: 'ordinary' }, h.ctx);
   assert.equal(accepted(h, first.liveSessionId).system.includes('earlier openers'), false, 'the first call has no earlier opener to avoid');
-  // The spoken line lives in the owner-local journal, the same row the page reads back.
-  const opener = 'Morning. The release branch merged cleanly last night.';
-  h.store.transaction(tx => tx.run("INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES (?, 'outputTranscription', ?, ?, 0)", [first.liveSessionId, opener, opener.length]));
+  // S4b: the first journal row is one streamed fragment, so the opener is assembled until the finished fragment.
+  h.store.transaction(tx => {
+    for (const [text, finished] of [['Morning.', 0], [' The release branch', 0], [' merged cleanly last night.', 1], [' A trailing line.', 0]] as const) {
+      tx.run("INSERT INTO live_journal(live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES (?, 'outputTranscription', ?, ?, ?, 0)", [first.liveSessionId, text, finished, text.length]);
+    }
+  });
   const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
   const text = accepted(h, second.liveSessionId).system;
-  assert.equal(text.includes('Morning.'), true, 'the earlier opener is named in the start instruction');
-  assert.equal(text.includes('merged cleanly'), false, 'only its first sentence is carried');
+  assert.equal(text.includes('"Morning. The release branch merged cleanly last night."'), true, 'the assembled opener is named');
+  assert.equal(text.includes('A trailing line'), false, 'a fragment after the finished fragment is not carried');
   assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
+});
+
+test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps the shared voice conduct', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-backend-procedure-'));
+  const domain = createDomainPort({ outbox: Outbox });
+  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-backend-log-'));
+  const stopDiagnostics = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stopDiagnostics(); rmSync(captureDir, { recursive: true, force: true }); });
+
+  // A native prompt places the public base and the tool conduct; a bare frozen prompt would replace them.
+  const profile = (provider: 'gemini' | 'openai') => validateLiveProfile({
+    ...profileInput(undefined, provider === 'openai' ? 'gpt-live-1' : MODEL, provider),
+    prompt: { text: NAYA_LIVE_BASE, dataClass: 'ordinary' },
+  });
+  const openAi = await openAiFixture(t);
+  const openAiLive = composeLive(store, dir, {
+    profile: profile('openai'),
+    credentials: { resolve: async () => CANARY }, socketFactory: openAi.socketFactory,
+  }).service;
+  t.after(() => openAiLive.shutdown());
+  const openAiSession = openAiLive.create('ordinary', 'backend-procedure-openai', context(store));
+  const openAiAttachment = openAiLive.attach(openAiSession.liveSessionId, context(store));
+  await openAi.frame(1);
+  openAi.send({ type: 'session.started', session: { id: 'sess_fake' } });
+  await openAiAttachment.ready;
+  const start = openAi.frames[0] as unknown as { session: Record<string, unknown> };
+  const responses = (start.session['delegation'] as { responses: Record<string, unknown> }).responses;
+  assert.equal(responses['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${NAYA_BACKEND_PROCEDURE}`, 'the OpenAI backend instructions are the template, the brevity rule and the lookup procedure');
+  assert.equal(String(start.session['instructions']).includes(NAYA_BACKEND_PROCEDURE), false, 'the OpenAI voice instructions never carry the procedure');
+
+  const gemini = await fixture(t);
+  const geminiLive = composeLive(store, dir, {
+    profile: profile('gemini'),
+    credentials: { resolve: async () => CANARY }, socketFactory: gemini.socketFactory,
+  }).service;
+  t.after(() => geminiLive.shutdown());
+  const geminiSession = geminiLive.create('ordinary', 'backend-procedure-gemini', context(store));
+  const geminiAttachment = geminiLive.attach(geminiSession.liveSessionId, context(store));
+  await gemini.frame(1);
+  gemini.send({ setupComplete: {} });
+  await geminiAttachment.ready;
+  const setup = (gemini.frames[0] as { setup: { systemInstruction: { parts: { text: string }[] }; delegation?: unknown } }).setup;
+  assert.ok(setup.systemInstruction.parts[0]!.text.includes(NAYA_LIVE_BASE), 'the Gemini setup carries the shared voice instruction');
+  assert.equal(setup.systemInstruction.parts[0]!.text.includes(NAYA_BACKEND_PROCEDURE), false, 'the Gemini setup never carries the delegated procedure');
+  assert.equal('delegation' in setup, false, 'the Gemini setup carries no delegated backend');
 });
 
 /** D3/D5 receipts are read from the host log itself, so the test proves the operator-visible record. */

@@ -35,6 +35,14 @@ export type PlaybackTerminationReason = (typeof PLAYBACK_TERMINATION_REASONS)[nu
 export const UTTERANCE_ROLES = ['owner', 'model'] as const;
 export type UtteranceRole = (typeof UTTERANCE_ROLES)[number];
 
+/** S4a: why a progress commentary line was sent, as a closed set (never free text). */
+export const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'] as const;
+export type ProgressReason = (typeof PROGRESS_REASONS)[number];
+
+/** S4a-R4: the command families a rejected provider command can name. */
+export const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'] as const;
+export type CommandKind = (typeof COMMAND_KINDS)[number];
+
 // The immutable causal spine. A kind names one state transition; its fields are fixed below.
 export const EVENT_KINDS = [
   'turn.opened', 'turn.closed', 'turn.summary',
@@ -42,6 +50,7 @@ export const EVENT_KINDS = [
   'call.intent', 'call.executed', 'call.output_prepared', 'call.output_written',
   'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
   'playback.drained', 'playback.interrupted', 'playback.terminated',
+  'progress.commentary', 'progress.thinking', 'call.ceiling', 'command.rejected',
 ] as const;
 export type TraceEventKind = (typeof EVENT_KINDS)[number];
 

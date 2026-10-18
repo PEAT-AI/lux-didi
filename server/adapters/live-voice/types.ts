@@ -56,6 +56,9 @@ export interface LiveVoiceAdapterOptions {
   modelId: string; voice: string; keyReference: string; credentials: Credentials;
   route: LiveVoiceRoute; limits?: Partial<LiveVoiceLimits>; socketFactory?: LiveSocketFactory;
   clock?: LiveVoiceClock;
+  /** The task procedure a delegated backend is given after the adapter's own voice-backend template under a
+   *  blank line (wagon S4b fills it). Absent, the backend sees the template alone. */
+  backendProcedure?: string;
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
@@ -137,6 +140,11 @@ export interface LiveVoiceSession {
   sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
   sendText(input: { text: string }): void;
+  /** Speakable progress under Responses delegation, paraphrased by the voice model (GPT-Live only). An adapter
+   *  that cannot carry progress speech leaves it out and the host keeps its own continuation nudge. */
+  sendCommentary?(input: { text: string }): void;
+  /** Silent context for the model's own reasoning, never spoken on append. Same optional contract. */
+  sendThinking?(input: { text: string }): void;
   endAudioStream(): void;
   close(): void;
 }

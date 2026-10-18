@@ -28,6 +28,10 @@ const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
+/** S4a: why a progress line was sent, as a closed set (never free text). */
+const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
+/** S4a-R4: the command families a rejected client event id can name. */
+const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -611,6 +615,36 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if ('errorCode' in value && !isSafeToken(value.errorCode)) return;
     if ('reason' in value && !isSafeMember(value.reason, SUMMARY_REASONS)) return;
     return value;
+  }
+  if (value.event === 'commentary_sent') {
+    // S4a: progress speech went out. Which delegation asked for it and why, never the line that was spoken.
+    if (!closedKeys(value, ['event', 'delegationKey', 'reason'])) return;
+    if (!isSafeId(value.delegationKey) || !isSafeMember(value.reason, PROGRESS_REASONS)) return;
+    return { event: 'commentary_sent', delegationKey: value.delegationKey, reason: value.reason };
+  }
+  if (value.event === 'thinking_sent') {
+    // S4a: silent context went out; the count alone, since the text is what the owner must never see in a log.
+    if (!closedKeys(value, ['event', 'chars'])) return;
+    if (!isSafeCount(value.chars)) return;
+    return { event: 'thinking_sent', chars: value.chars };
+  }
+  if (value.event === 'tool_ceiling_hit') {
+    // S4a: the host ceiling answered a call instead of the tool. The tool name and the wait, never its args.
+    if (!closedKeys(value, ['event', 'tool', 'ms'])) return;
+    if (!isSafeToken(value.tool) || !isSafeCount(value.ms)) return;
+    return { event: 'tool_ceiling_hit', tool: value.tool, ms: value.ms };
+  }
+  if (value.event === 'command_rejected') {
+    // S4a-R4: a provider error that names a client command. Code, param and the command family only.
+    if (!closedKeys(value, ['event', 'code', 'param', 'kind'])) return;
+    if (!isSafeToken(value.code) || !isSafeToken(value.param) || !isSafeMember(value.kind, COMMAND_KINDS)) return;
+    return { event: 'command_rejected', code: value.code, param: value.param, kind: value.kind };
+  }
+  if (value.event === 'responses_validation_failed') {
+    // S4a-R4: the backend refused its own delegation config. The refused field, once per session.
+    if (!closedKeys(value, ['event', 'param'])) return;
+    if (!isSafeToken(value.param)) return;
+    return { event: 'responses_validation_failed', param: value.param };
   }
   if (value.event === 'research_joined') {
     // Metadata only: the run id a second start joined. No question, no result text.

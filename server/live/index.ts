@@ -38,6 +38,35 @@ import {
 } from './types.js';
 
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, in your own words, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
+/** Q5-R4: the most the earlier calls' first sentences may add to a start instruction. */
+export const OPENER_CONTEXT_CHARS = 300;
+
+/** Q5-R4: one earlier call's first sentence, so the note stays a hint rather than a transcript. */
+function firstSentenceOf(text: string): string {
+  const flat = text.replace(/\s+/gu, ' ').trim();
+  const end = flat.search(/[.?!](\s|$)/u);
+  return end === -1 ? flat : flat.slice(0, end + 1);
+}
+
+/**
+ * Q5-R4: the previous calls' openers as "do not repeat" context, under 300 chars and absent when no
+ * earlier call exists. The journal text stays owner-local: this string is composed into the start
+ * instruction and is never written to host.log.
+ */
+export function openersNote(openers: readonly string[]): string | undefined {
+  const note = (lines: readonly string[]): string => `Do not open with any of these earlier openers: ${lines.map(line => `"${line}"`).join(' ')}`;
+  const taken: string[] = [];
+  for (const opener of openers.map(firstSentenceOf).filter(Boolean).slice(0, 2)) {
+    if (note([...taken, opener]).length <= OPENER_CONTEXT_CHARS) taken.push(opener);
+  }
+  return taken.length ? note(taken) : undefined;
+}
+
+/** Q5-R4: the two most recent earlier calls' first spoken lines, read from the owner-local journal. */
+function previousOpeners(tx: Transaction, assistantId: string): string[] {
+  return tx.all("SELECT (SELECT j.text FROM live_journal j WHERE j.live_session_id=s.live_session_id AND j.kind='outputTranscription' AND trim(j.text)<>'' ORDER BY j.journal_id LIMIT 1) AS opener FROM live_sessions s WHERE s.owner_assistant_id=? ORDER BY s.created_at DESC, s.rowid DESC LIMIT 2", [assistantId])
+    .map(row => String(row['opener'] ?? '')).filter(text => text.trim() !== '');
+}
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
@@ -579,13 +608,16 @@ export class LiveSessionOwner {
       let earlier: Earlier = { section: '', selectedIds: [], omitted: [] };
       // PV1: the accent selection is read at this session start, so a saved accent takes effect without a
       // restart; the session composer replaces whatever block the frozen prompt still carries.
+      // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
+      // journal, so this start can name what not to repeat; nothing here reaches host.log.
+      const openers = openersNote(previousOpeners(tx, assistantId));
       const composeSession = (earlierSection: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(earlierSection ? { earlierConversations: earlierSection } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
-        ...(pickup ? { pickupNote: pickupInstruction } : {}) });
+        ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}) });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }

@@ -308,14 +308,18 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
   const { NAYA_TOOLS } = await import('../prompt/live-persona.js');
   assert.ok(NAYA_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
-  assert.ok(NAYA_TOOLS.includes('A read cut short is said as cut short, so offer a narrower ask.'), 'a cut read is voiced as cut short');
-  assert.ok(NAYA_TOOLS.indexOf('A read cut short is said as cut short') > NAYA_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
+  // Q5-R2: the cut-short rule now carries the no-hand-back clause and the one-clause mention, so the
+  // distinction N3 needed survives in the sentence that replaced it.
+  assert.ok(NAYA_TOOLS.includes('When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.'), 'a cut read is voiced as cut short');
+  assert.ok(NAYA_TOOLS.indexOf('When a lookup is cut short') > NAYA_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
 });
 
 test('PV1: the persona base names the spoken cue and the single research call', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
   assert.ok(instruction.includes('Before a lookup, say at most five words about what you are checking, then call the tool.'), 'the spoken cue is named');
-  assert.ok(instruction.includes('Put every lookup one question needs into one research call with several lookups; never make several research calls in a row for one question.'), 'and one research call carries the lookups');
+  assert.ok(instruction.includes('Put every lookup one question needs into one research call with several lookups.'), 'and one research call carries the lookups');
+  // Q5-R3: the second-call rule is stated as its own sentence, so a re-fire waits for the first answer.
+  assert.ok(instruction.includes('Never make a second research call for the same question until the first has answered.'), 'and a second call for one question waits for the first answer');
   // PV1-R3 and 3p: the retired cue rules are absent from the whole composed instruction, not just from the base.
   for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
     assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);

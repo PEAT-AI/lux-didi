@@ -1571,7 +1571,7 @@ export class LiveSessionOwner {
         if (failedRecovery) handle.recoveries += 1;
         if (outcome?.recoverable || failedRecovery) {
           const rebuilt = await this.#recoverFromDrop(handle, outcome);
-          if (outcome?.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, ...(outcome.upstream.lastInboundAgeMs === undefined ? {} : { lastInboundAgeMs: outcome.upstream.lastInboundAgeMs }), rebuilt });
+          if (outcome?.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
           if (rebuilt) continue;
         } else if (this.#isSessionDeadline(outcome) && this.#attended(handle)) {
           // A provider session deadline continues in a new window; only the call ceiling or idle ends a call.

@@ -234,21 +234,28 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_resumption_fresh', toolCalls: value.toolCalls };
   }
   if (value.event === 'live_upstream_drop') {
-    // Closed shape: one metadata-only record per dead upstream (host to provider) audio write drop. A drop with
-    // an inbound clock also carries lastInboundAgeMs, the age of the last provider frame when it was judged.
-    const keys = Object.keys(value).sort().join(',');
-    const base = ['event', 'errorKind', 'closeCode', 'bufferedAmount', 'writesFailed', 'sessionMs', 'rebuilt'];
-    if (keys !== base.slice().sort().join(',') && keys !== [...base, 'lastInboundAgeMs'].sort().join(',')) return;
+    // Closed shape: one metadata-only record per dead upstream (host to provider) audio write drop.
+    if (Object.keys(value).sort().join(',') !== ['event', 'errorKind', 'closeCode', 'bufferedAmount', 'writesFailed', 'sessionMs', 'rebuilt'].sort().join(',')) return;
     if (typeof value.errorKind !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.errorKind)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
-    const numeric: [string, number][] = [['bufferedAmount', 64 * 1024 * 1024], ['writesFailed', Number.MAX_SAFE_INTEGER], ['sessionMs', 24 * 60 * 60 * 1000]];
-    if (value.lastInboundAgeMs !== undefined) numeric.push(['lastInboundAgeMs', 24 * 60 * 60 * 1000]);
+    const numeric: readonly [string, number][] = [['bufferedAmount', 64 * 1024 * 1024], ['writesFailed', Number.MAX_SAFE_INTEGER], ['sessionMs', 24 * 60 * 60 * 1000]];
     for (const [name, max] of numeric) {
       const field = value[name];
       if (!Number.isSafeInteger(field) || Number(field) < 0 || Number(field) > max) return;
     }
     if (value.rebuilt !== true && value.rebuilt !== false) return;
-    return { event: 'live_upstream_drop', errorKind: value.errorKind, closeCode: value.closeCode, bufferedAmount: value.bufferedAmount, writesFailed: value.writesFailed, sessionMs: value.sessionMs, ...(value.lastInboundAgeMs === undefined ? {} : { lastInboundAgeMs: value.lastInboundAgeMs }), rebuilt: value.rebuilt };
+    return { event: 'live_upstream_drop', errorKind: value.errorKind, closeCode: value.closeCode, bufferedAmount: value.bufferedAmount, writesFailed: value.writesFailed, sessionMs: value.sessionMs, rebuilt: value.rebuilt };
+  }
+  if (value.event === 'live_no_pong') {
+    // Closed shape: the pong gap an adapter judged fatal, with the inbound traffic it measured against it, so
+    // a `no_pong` in the log is readable as a real silence rather than a dropped socket frame (3o).
+    if (Object.keys(value).sort().join(',') !== ['event', 'lastInboundAgeMs', 'missedPongs', 'bufferedAmount'].sort().join(',')) return;
+    const numeric: readonly [string, number][] = [['lastInboundAgeMs', 24 * 60 * 60 * 1000], ['missedPongs', 1_000], ['bufferedAmount', 64 * 1024 * 1024]];
+    for (const [name, max] of numeric) {
+      const field = value[name];
+      if (!Number.isSafeInteger(field) || Number(field) < 0 || Number(field) > max) return;
+    }
+    return { event: 'live_no_pong', lastInboundAgeMs: value.lastInboundAgeMs, missedPongs: value.missedPongs, bufferedAmount: value.bufferedAmount };
   }
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;

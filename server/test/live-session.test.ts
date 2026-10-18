@@ -2347,11 +2347,11 @@ test('a provider rebuild never lowers the marker sequence the Mac sees', async t
   attachment.close(); await attachment.done;
 });
 
-test('live_upstream_drop carries the inbound age when the judging adapter reports one', () => {
-  const accepted = safeEvent({ event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 49_450, writesFailed: 0, sessionMs: 12_000, lastInboundAgeMs: 9_000, rebuilt: true });
-  assert.deepEqual(accepted, { event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 49_450, writesFailed: 0, sessionMs: 12_000, lastInboundAgeMs: 9_000, rebuilt: true });
-  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 0, writesFailed: 0, sessionMs: 0, lastInboundAgeMs: -1, rebuilt: true }), undefined, 'a negative age is refused');
-  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'no_pong', closeCode: null, bufferedAmount: 0, writesFailed: 0, sessionMs: 0, lastInboundAgeMs: 9_000, rebuilt: true, text: 'leak' }), undefined, 'the shape stays closed');
+test('a judged no_pong receipt is a closed metadata-only host log shape', () => {
+  const accepted = safeEvent({ event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 49_450 });
+  assert.deepEqual(accepted, { event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 49_450 });
+  assert.equal(safeEvent({ event: 'live_no_pong', lastInboundAgeMs: -1, missedPongs: 2, bufferedAmount: 0 }), undefined, 'a negative age is refused');
+  assert.equal(safeEvent({ event: 'live_no_pong', lastInboundAgeMs: 9_000, missedPongs: 2, bufferedAmount: 0, text: 'leak' }), undefined, 'the shape stays closed');
 });
 
 test('an exhausted original budget never opens a replacement connection', async t => {

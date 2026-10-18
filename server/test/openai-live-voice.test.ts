@@ -932,7 +932,6 @@ describe('openai gpt-live turn states', () => {
     assert.equal(outcome.outcome.code, 'transport_error');
     assert.equal(outcome.outcome.recoverable, true, 'the R1F rebuild still owns the recovery');
     assert.equal(outcome.outcome.upstream?.errorKind, 'stalled');
-    assert.ok((outcome.outcome.upstream?.lastInboundAgeMs ?? 0) >= 8_000, 'the drop carries the inbound age it judged');
     const stall = receipts().filter(record => record.event === 'live_stall');
     assert.equal(stall.length, 1, 'one stall receipt');
     assert.ok(Number(stall[0]!.silentMs) >= 8_000, 'and it carries the inbound silence that ended the transport');

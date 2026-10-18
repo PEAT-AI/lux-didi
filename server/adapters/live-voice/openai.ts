@@ -449,7 +449,13 @@ class Session implements LiveVoiceSession {
       this.watchUpstreamStall(socket);
       if (this.awaitingPong && !this.inboundThisPing) {
         this.missedPongs += 1;
-        if (this.missedPongs >= PING_MISSED_LIMIT) { this.dropUpstream('no_pong', socket); return; }
+        if (this.missedPongs >= PING_MISSED_LIMIT) {
+          // The inbound age is the number that decides this: a pongless window that still carried provider
+          // frames is a live transport, and the 3o call was dropped for exactly that reason.
+          hostLogEvent({ event: 'live_no_pong', lastInboundAgeMs: Math.max(0, Date.now() - this.lastInboundAt), missedPongs: this.missedPongs, bufferedAmount: socket.bufferedAmount });
+          this.dropUpstream('no_pong', socket);
+          return;
+        }
       }
       this.awaitingPong = true;
       this.inboundThisPing = false;
@@ -478,8 +484,7 @@ class Session implements LiveVoiceSession {
   private dropUpstream(errorKind: string, socket: WebSocket): void {
     if (this.terminal) return;
     const errorKindValue = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(errorKind) ? errorKind : 'write_error';
-    const now = Date.now();
-    this.upstreamDrop = { errorKind: errorKindValue, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, now - this.startedAt), lastInboundAgeMs: Math.max(0, now - this.lastInboundAt) };
+    this.upstreamDrop = { errorKind: errorKindValue, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
     this.recoverable = true;
     this.finish('transport_error', this.upstreamDrop);
   }

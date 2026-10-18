@@ -174,27 +174,35 @@ export interface LiveLine { role: 'user' | 'naya'; text: string }
 /** One rendered transcript block with the key that keeps it stable across polls: a growing line keeps
  * its key and is updated in place, a new line only ever appends (V3 item 2). */
 export interface LiveSegment { key: string; html: string }
-// Provider chunks can split mid-word, so only a sentence boundary earns a separator; otherwise the
-// fragments are concatenated verbatim. See V2-R2 item 1.
+// Every chunk boundary is a word boundary: the fragments are words, and two consecutive owner turns
+// used to glue together with no space when the first lacked final punctuation (P7 item 3).
 export function joinChunk(previous: string, next: string): string {
-  return /[.!?]["')\]]?\s*$/.test(previous) && /^[A-Za-z0-9]/.test(next) ? previous + ' ' + next : previous + next;
+  const left = previous.replace(/\s+$/, ''), right = next.replace(/^\s+/, '');
+  return left && right ? `${left} ${right}` : left + right;
+}
+
+/** The speaking role of a transcription entry, if it is one. */
+function entryRole(entry: LiveEntry): 'user' | 'naya' | undefined {
+  return entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+}
+/** A provider turn marker, or the session's end, closes the run it follows. */
+function closesRun(entry: LiveEntry): boolean {
+  return entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal';
 }
 
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
-  // One provider turn can interleave a typed user turn with its streamed Naya fragments, so a
-  // segment accumulates one line per role and emits them in first-appearance (journal) order.
-  // A turnComplete/interrupted/terminal closes the segment.
-  let segment = new Map<'user' | 'naya', LiveLine>();
-  const flush = () => { for (const line of segment.values()) lines.push(line); segment = new Map(); };
+  // One bubble per turn, in the order spoken: a speaker change closes the other role's run exactly
+  // as a turnComplete does, so interleaved turns are never merged and never reordered (P7 item 1).
+  let run: LiveLine | undefined;
+  const flush = () => { if (run) { lines.push(run); run = undefined; } };
   for (const entry of live.entries) {
-    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    const role = entryRole(entry);
     if (role && entry.text) {
-      const existing = segment.get(role);
-      if (existing) existing.text = joinChunk(existing.text, entry.text);
-      else segment.set(role, { role, text: entry.text });
+      if (run && run.role !== role) flush();
+      run = run ? { role: run.role, text: joinChunk(run.text, entry.text) } : { role, text: entry.text };
     }
-    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
+    if (closesRun(entry)) flush();
   }
   flush();
   return lines;
@@ -274,13 +282,29 @@ function toolChipMarkup(entry: LiveEntry): string {
 
 /** One transcript line: the owner's words in the shared right-aligned chat bubble, Naya's words as
  * a keeper row whose first sentence is the visible headline and whose full answer is a closed detail
- * (spec 2.2 item 1). The assistant class and the leading markdown div are kept for the live-view contract. */
-export function liveLineMarkup(line: LiveLine, seg = ''): string {
+ * (spec 2.2 item 1). The assistant class and the leading markdown div are kept for the live-view contract.
+ * A bubble still growing (the run the journal has not closed yet) renders its whole text, because a
+ * listener reading along must not meet a closed disclosure mid-answer (P7 item 2). `data-growing` and
+ * `data-short` both lift the two-line clamp, so the text that is in the markup is the text on screen. */
+export const TURN_DETAIL_MIN = 280;
+export function liveLineMarkup(line: LiveLine, seg = '', growing = false): string {
   const key = seg ? ` data-seg="${seg}"` : '';
-  if (line.role === 'user') return `<article class="entry user" data-feed="turn"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`;
+  if (line.role === 'user') {
+    // The owner's transcription streams while they speak, so it takes the same in-place text node.
+    const node = growing ? ' data-live-text' : '';
+    return `<article class="entry user" data-feed="turn"${key}${growing ? ' data-growing' : ''}><p class="bubble"${node}>${escapeHtml(line.text)}</p></article>`;
+  }
+  const body = renderMarkdown(line.text, TRANSCRIPT_MARKDOWN);
+  if (growing) return `<article class="entry assistant" data-feed="turn"${key} data-growing><div class="markdown" data-live-text>${body}</div></article>`;
+  if (line.text.trim().length < TURN_DETAIL_MIN) return `<article class="entry assistant" data-feed="turn"${key} data-short><div class="markdown">${body}</div></article>`;
   const headline = turnHeadline(line.text);
-  const detail = line.text.trim() === headline ? '' : `<details class="feed-turn-detail"><summary>Full answer</summary><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></details>`;
+  const detail = line.text.trim() === headline ? '' : `<details class="feed-turn-detail"><summary>Full answer</summary><div class="markdown">${body}</div></details>`;
   return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${renderMarkdown(headline, TRANSCRIPT_MARKDOWN)}</div>${detail}</article>`;
+}
+/** The text a growing bubble carries, so a repaint rewrites that one node instead of the whole row. */
+const LIVE_TEXT = /<(div|p) class="(?:markdown|bubble)" data-live-text>([\s\S]*)<\/\1><\/article>$/;
+export function growingText(html: string): string | undefined {
+  return LIVE_TEXT.exec(html)?.[2];
 }
 
 /** The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
@@ -346,20 +370,21 @@ function sessionSummaryMarkup(live: LiveCurrent | undefined, at: string): string
 /** The turn, tool, remember and activity rows of one session, without any session divider. */
 export function sessionItems(live: LiveCurrent | undefined): LiveSegment[] {
   const items: LiveSegment[] = [];
-  let pending: (LiveLine & { seq: number })[] = [];
-  const flush = () => { for (const line of pending) { const key = `${line.role}:${line.seq}`; items.push({ key, html: liveLineMarkup(line, key) }); } pending = []; };
+  let run: (LiveLine & { seq: number }) | undefined;
+  const emit = (line: LiveLine & { seq: number }, growing = false) => { const key = `${line.role}:${line.seq}`; items.push({ key, html: liveLineMarkup(line, key, growing) }); };
+  const flush = () => { if (run) { emit(run); run = undefined; } };
   for (const entry of live?.entries ?? []) {
-    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    const role = entryRole(entry);
     if (role && entry.text) {
-      const existing = pending.find(line => line.role === role);
-      if (existing) existing.text = joinChunk(existing.text, entry.text);
-      else pending.push({ role, text: entry.text, seq: entry.seq });
+      if (run && run.role !== role) flush();
+      run = run ? { role: run.role, text: joinChunk(run.text, entry.text), seq: run.seq } : { role, text: entry.text, seq: entry.seq };
     }
-    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
-    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); items.push({ key: `remember:${entry.seq}`, html: rememberCardMarkup(entry) }); }
+    if (closesRun(entry)) flush();
+    else if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); items.push({ key: `remember:${entry.seq}`, html: rememberCardMarkup(entry) }); }
     else if (entry.kind === 'toolResult') { flush(); items.push({ key: `tool:${entry.seq}`, html: toolChipMarkup(entry) }); }
   }
-  flush();
+  if (run) emit(run, true); // the journal closed nothing after it, so this bubble is still growing
+
   const activity = activityRowMarkup(live);
   if (activity) items.push({ key: 'activity', html: activity });
   return items;

@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySum
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -643,7 +643,13 @@ function renderTranscript(list: HTMLElement) {
     segments.forEach((segment, index) => {
       const child = children[index]!;
       const html = restoreOpen(segment.html, openBySeg.get(segment.key) ?? []);
-      if (child.outerHTML !== html) child.outerHTML = html;
+      if (child.outerHTML === html) return;
+      // A bubble still growing keeps its node: only its text node is rewritten, so the 250 ms poll
+      // never replaces the row the listener is reading (P7 item 4).
+      const text = 'growing' in child.dataset ? growingText(html) : undefined;
+      const target = text === undefined ? null : child.querySelector('[data-live-text]');
+      if (target && text !== undefined) { if (target.innerHTML !== text) target.innerHTML = text; return; }
+      child.outerHTML = html;
     });
     return;
   }

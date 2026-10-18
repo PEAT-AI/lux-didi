@@ -204,7 +204,8 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   assert.match(NAYA_TOOLS, /- company: the company knowledge base: Plantix as an organisation/);
   assert.match(NAYA_TOOLS, /- calendar for time and meetings, mail for what someone sent, chat for what someone wrote, replies for what is waiting on him\./);
   assert.match(NAYA_TOOLS, /When a question spans layers, put all of them in one call: they run in parallel/);
-  assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
+  // Q5-R2: a cut lookup is voiced in one clause, never kept silent and never read aloud raw.
+  assert.match(NAYA_TOOLS, /When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him\./);
   // PV1-R3: the old cue rule is gone from the composed instructions, so only the OUTCOME 6 sentence steers it.
   assert.doesNotMatch(NAYA_TOOLS, /three to five word/i);
   assert.doesNotMatch(NAYA_TOOLS, /never announce progress/i);
@@ -844,4 +845,38 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
   assert.equal(same.text, frozen.text, 'the same selection composes byte-identically');
   const own = composeLiveSessionInstruction({ text: session.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'voice-default' });
   assert.ok(!own.text.includes(light), 'and the voice default removes a saved block at the next start');
+});
+
+// Q5: both openers of one day were the same eleven-second line, a "go deep" question was answered from
+// cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
+// unconditional rules, each stated once, replacing the sentences they supersede.
+const Q5_RULES = [
+  "Open a fresh call with at most two short sentences drawn from today's work, calendar or an open loop; never reuse the opener of an earlier call.",
+  'When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.',
+  'Never make a second research call for the same question until the first has answered.',
+];
+const Q5_SUPERSEDED = [
+  'Open a fresh call with one specific line drawn from what is current, never a generic "ready when you are".',
+  'Paging and omission notes in a result are for you; never read them aloud.',
+  'A read cut short is said as cut short, so offer a narrower ask.',
+  'never make several research calls in a row for one question.',
+];
+test('Q5: three wrapper rules are stated once each, their superseded sentences are gone, and the growth stays under 700 chars', () => {
+  const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
+  for (const rule of Q5_RULES) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
+  for (const retired of Q5_SUPERSEDED) assert.equal(wrapper.includes(retired), false, `superseded sentence is gone: ${retired}`);
+  const added = Q5_RULES.reduce((chars, rule) => chars + rule.length, 0);
+  const removed = Q5_SUPERSEDED.reduce((chars, rule) => chars + rule.length, 0) - 'never make several research calls in a row for one question.'.length;
+  assert.ok(added - removed > 0 && added - removed < 700, `the wrapper grows under 700 chars (${added - removed})`);
+});
+
+test('Q5-R4: the start instruction carries the previous-openers context once, and nothing when there is none', () => {
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: FIXTURE_OWNER, language: 'en' });
+  const note = 'Do not open with any of these earlier openers: "Morning."';
+  const withNote = composeLiveSessionInstruction({ text: instruction.text, tools: ['research'], ownerProfile: FIXTURE_OWNER, records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openersNote: note });
+  assert.equal(withNote.text.split(note).length - 1, 1, 'the opener context appears exactly once');
+  assert.ok(withNote.sections.some(section => section.id === 'previous-openers' && section.chars === note.length), 'it is its own measured section');
+  const without = composeLiveSessionInstruction({ text: instruction.text, tools: ['research'], ownerProfile: FIXTURE_OWNER, records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  assert.equal(without.text.includes('earlier openers'), false, 'a call with no earlier opener carries no context');
+  assert.equal(without.sections.some(section => section.id === 'previous-openers'), false, 'and no empty section is reported');
 });

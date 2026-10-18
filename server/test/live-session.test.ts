@@ -46,7 +46,7 @@ import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -3113,3 +3113,31 @@ function journalRecords(dir: string): Record<string, unknown>[] {
   return readdirSync(root).flatMap(day => readdirSync(join(root, day)).flatMap(file =>
     readFileSync(join(root, day, file), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)));
 }
+
+// --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
+
+test('Q5-R4: the opener context names at most two earlier first sentences and stays under 300 chars', () => {
+  assert.equal(openersNote([]), undefined, 'no earlier call means no context at all');
+  const one = openersNote(['Morning. The release branch merged cleanly.', 'Second line of the same opener.']);
+  assert.equal(one!.includes('Morning.'), true, 'the first sentence of the earlier opener is named');
+  assert.equal(one!.includes('Second line'), false, 'the rest of that opener is not carried');
+  const two = openersNote(['Morning. Then more.', 'Evening. Then more.', 'Night. A third call.']);
+  assert.equal(two!.split('"').length - 1, 4, 'only the two most recent openers are quoted');
+  assert.equal(two!.includes('Night.'), false, 'the third call is beyond the two the host passes');
+  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`]);
+  assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `the note is bounded at ${OPENER_CONTEXT_CHARS} chars (${long!.length})`);
+  assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
+});
+
+test('Q5-R4: a fresh call carries the previous opener as do-not-repeat context, and the first call carries none', async t => {
+  const h = await harness(t);
+  const first = h.owner.create({ idempotencyKey: 'opener-first', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(accepted(h, first.liveSessionId).system.includes('earlier openers'), false, 'the first call has no earlier opener to avoid');
+  // The spoken line lives in the owner-local journal, the same row the page reads back.
+  h.store.transaction(tx => tx.run("INSERT INTO live_journal(live_session_id,kind,text) VALUES (?, 'outputTranscription', ?)", [first.liveSessionId, 'Morning. The release branch merged cleanly last night.']));
+  const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
+  const text = accepted(h, second.liveSessionId).system;
+  assert.equal(text.includes('Morning.'), true, 'the earlier opener is named in the start instruction');
+  assert.match(text, /never reuse/);
+  assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
+});

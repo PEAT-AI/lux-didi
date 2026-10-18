@@ -1118,7 +1118,11 @@ class Session implements LiveVoiceSession {
     const disposition = dispositionOf(type, errorCode);
     const clientEventId = typeof error.client_event_id === 'string' && error.client_event_id.length ? error.client_event_id : undefined;
     const command = clientEventId === undefined ? undefined : this.commands.get(clientEventId);
-    if (disposition === 'command_rejected') {
+    // 3r F: a rejection that only says a response is already active is the one retry the continuation gate allows
+    // (3r A). It is read before the disposition, because its own type is `invalid_request_error`, which the map
+    // would otherwise take for a rejected command.
+    const retry = ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`);
+    if (disposition === 'command_rejected' && !retry) {
       // The command never became a response, so there is nothing to cut, and a rejection is not a reason to resend.
       hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: command?.kind ?? 'other' });
       this.touch();

@@ -134,7 +134,7 @@ describe('openai gpt-live adapter', () => {
     const responses = backend(f.frames[0] as unknown as Start);
     // Without a backendProcedure the backend sees the template and the brevity rule, and nothing else.
     assert.equal(responses['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`);
-    assert.deepEqual(responses['text'], { verbosity: 'low' });
+    assert.equal(JSON.stringify(responses['text']), '{"verbosity":"low"}');
     assert.equal(responses['reasoning'], { effort: 'low' });
     assert.equal(responses['parallel_tool_calls'], true);
     assert.equal('max_output_tokens' in responses, false, 'the output ceiling stays unset');
@@ -170,15 +170,15 @@ describe('openai gpt-live adapter', () => {
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     session.sendCommentary!({ text: 'Still reading the mail.' });
     session.sendThinking!({ text: 'Reading mail.' });
-    await tally(f.frames, 4);
+    await tally(f.frames, 5);
     // The call answer names its own call id; the continuation, the commentary and the thinking each count up.
     assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2', 'thk_3']);
     assert.ok(f.frames.slice(1).every(frame => typeof frame['event_id'] === 'string'));
-    assert.equal(f.frames[2]!['type'], 'session.commentary.append');
-    assert.equal(f.frames[2]!['delegation_id'], null, 'Responses delegation carries a null delegation_id');
-    assert.equal(f.frames[2]!['content'], 'Still reading the mail.');
-    assert.equal(f.frames[3]!['type'], 'session.thinking.append');
-    assert.equal(f.frames[3]!['content'], 'Reading mail.');
+    assert.equal(f.frames[3]!['type'], 'session.commentary.append');
+    assert.equal(f.frames[3]!['delegation_id'], null, 'Responses delegation carries a null delegation_id');
+    assert.equal(f.frames[3]!['content'], 'Still reading the mail.');
+    assert.equal(f.frames[4]!['type'], 'session.thinking.append');
+    assert.equal(f.frames[4]!['content'], 'Reading mail.');
   });
 
   test('S4A-R2 (c): a rejected command is a receipt with its kind, never an interruption', async t => {
@@ -272,7 +272,8 @@ describe('openai gpt-live adapter', () => {
     // arrives 1.6 to 2.3 s sooner per tool turn; no other delegation field is pinned.
     assert.equal(delegation.responses['parallel_tool_calls'], true);
     assert.deepEqual(delegation.responses['reasoning'], { effort: 'low' });
-    assert.deepEqual(Object.keys(delegation.responses).sort(), ['model', 'parallel_tool_calls', 'reasoning', 'tool_choice', 'tools'], 'no other delegation field');
+    // S4a adds exactly two fields to the pinned shape: the backend instructions and its verbosity.
+    assert.deepEqual(Object.keys(delegation.responses).sort(), ['instructions', 'model', 'parallel_tool_calls', 'reasoning', 'text', 'tool_choice', 'tools'], 'no other delegation field');
     assert.equal('max_output_tokens' in delegation.responses, false, 'no output cap below the provider default');
     assert.equal(start.session['input'], undefined);
     // The key is a header on the documented endpoint, never a query parameter.

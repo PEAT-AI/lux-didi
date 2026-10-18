@@ -497,6 +497,17 @@ test('P9-R2 F1: the session composition carries one accent tail, gives the descr
   assert.equal(stays(again.text), 2);
   assert.equal(again.text.split('Voice description:').length - 1, 1);
   assert.equal(again.sections.filter(section => section.id === 'voice-description').length, 1);
+  // A description that holds a blank line is legal (two paragraphs, or a file with a trailing empty line),
+  // so the split must never depend on the description being one paragraph.
+  for (const varied of ['Warm Indian English.\n\nDeep and calm.', 'Warm Indian English.\n']) {
+    const describedMore = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en', voiceDescription: varied });
+    const shaped = session(describedMore.text);
+    assert.equal(stays(shaped.text), 2, 'still one accent tail');
+    assert.equal(shaped.text.split('Voice description:').length - 1, 1, 'still one description');
+    assert.ok(shaped.text.endsWith(varied), 'still the last thing the model reads');
+    const sized = Object.fromEntries(shaped.sections.map(section => [section.id, section.chars]));
+    assert.equal(sized['voice-description'], `Voice description: ${varied}`.length, 'and still its own section');
+  }
 });
 
 test('PV2: the voice description is appended once inside the accent tail and logs as its own section', () => {

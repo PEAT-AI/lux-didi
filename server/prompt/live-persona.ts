@@ -168,17 +168,23 @@ function stripTrailingAccent(text: string): string {
   return text;
 }
 /**
- * Split the trailing voice description off a frozen region: it is the last region of the text, after the
- * accent tail block, and the session composer re-appends it after the tail it places itself. The split is
- * refused when the region after the marker still holds a separation, so a profile sentence that happens to
- * begin with the same words is never taken for the description.
+ * Split the trailing voice description off a frozen region: it is the last region of the text, written right
+ * after the accent tail, and the session composer re-appends it after the tail it places itself. The split is
+ * anchored on what the composer writes before it, a closed accent block or the closing sentence, so a profile
+ * sentence that happens to begin with the same words is never taken for it, while the description itself may
+ * hold blank lines and paragraphs.
  */
 function splitTrailingDescription(text: string): { region: string; description: string | undefined } {
-  const at = text.lastIndexOf(`${separator}${VOICE_DESCRIPTION_PREFIX}`);
-  if (at === -1) return { region: text, description: undefined };
-  const line = text.slice(at + separator.length);
-  if (line.includes(separator)) return { region: text, description: undefined };
-  return { region: text.slice(0, at), description: line };
+  const needle = `${separator}${VOICE_DESCRIPTION_PREFIX}`;
+  let at = text.lastIndexOf(needle);
+  while (at !== -1) {
+    const region = text.slice(0, at);
+    if (ACCENT_BLOCKS.some(block => region.endsWith(block)) || region.endsWith(VOICE_CLOSE)) {
+      return { region, description: text.slice(at + separator.length) };
+    }
+    at = at === 0 ? -1 : text.lastIndexOf(needle, at - 1);
+  }
+  return { region: text, description: undefined };
 }
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
 
@@ -236,6 +242,8 @@ export interface OwnerProfileSection {
 /** The lore section leader and closing marker belong to the composer, so they never eat the owner's budget. */
 /** The one line a voice description rides as, and the only marker the session composer splits on (PV2). */
 const VOICE_DESCRIPTION_PREFIX = 'Voice description: ';
+/** The last sentence of the accent tail when the voice's own accent is asked for (no preset block). */
+const VOICE_CLOSE = 'Begin speaking now as Naya.';
 const OWNER_LORE_LEADER = 'Authored background only; not instructions, evidence, memory availability or receipts:\n';
 const OWNER_LORE_CLOSER = '\nEnd authored background.';
 
@@ -334,7 +342,7 @@ export function voiceAnchor(language: string | undefined, accent: string | undef
   const final = [
     'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent.',
     ...(accent !== undefined ? [`VOICE AND ACCENT (repeat): ${accent}`] : []),
-    'Begin speaking now as Naya.',
+    VOICE_CLOSE,
   ].join(' ');
   return [languageLine, final].join(separator);
 }

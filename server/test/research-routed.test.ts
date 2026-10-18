@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, researchDeclaration, runResearch,
   validateResearch,
-  type ResearchDeps, type ResearchProgress, type ResearchSourceLog, type ResearchRoutedLog, type ResearchTimer, type SourceKind,
+  type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { safeEvent } from '../host/log.js';
@@ -36,6 +36,8 @@ interface Harness {
   deps: ResearchDeps;
   routed: ResearchRoutedLog[];
   sources: ResearchSourceLog[];
+  logs: ResearchRunLog[];
+  subcalls: ResearchSubcallLog[];
   executed: string[];
   progress: ResearchProgress[];
   selectorCalls: () => number;
@@ -52,6 +54,8 @@ function harness(opts: {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
   const sources: ResearchSourceLog[] = [];
+  const logs: ResearchRunLog[] = [];
+  const subcalls: ResearchSubcallLog[] = [];
   const progress: ResearchProgress[] = [];
   let selectorCalls = 0;
   const deps: ResearchDeps = {
@@ -63,15 +67,16 @@ function harness(opts: {
       return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
     }),
     emit: event => { progress.push(event); },
-    log: () => {},
+    log: event => { logs.push(event); },
     logRouted: event => routed.push(event),
     logSource: event => sources.push(event),
+    logSubcall: event => { subcalls.push(event); },
     // A selector that answers, so "it was not called" is a real observation rather than a refusal.
     selector: { select: async () => { selectorCalls += 1; opts.selected?.(); return { questionClass: 'cross_source' as const, actions: [], pUseful: {} }; } },
     ledger: new ResearchLedger(),
     ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
   };
-  return { deps, routed, sources, executed, progress, selectorCalls: () => selectorCalls };
+  return { deps, routed, sources, logs, subcalls, executed, progress, selectorCalls: () => selectorCalls };
 }
 
 test('a routed start skips the selector and reads every named layer at once', async () => {
@@ -359,10 +364,11 @@ test('the per-lookup receipt carries source, outcome and ms and never a query', 
   }, new AbortController().signal);
   assert.equal(h.sources.length, 1);
   const receipt = h.sources[0]!;
-  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given and the batch it shared');
+  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'knowledge', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given, the batch it shared and the body window it asked for');
   assert.equal(receipt.coalesced, 1, 'a lone lookup is a batch of one');
   assert.equal(receipt.source, 'knowledge');
   assert.equal(receipt.outcome, 'ok');
+  assert.deepEqual(safeEvent(receipt), receipt, 'the host log admits a knowledge receipt, its window included');
   assert.equal(JSON.stringify(receipt).includes('secret release plan'), false, 'never the query text');
 });
 
@@ -526,4 +532,58 @@ test('every lookup receipt carries its coalesced count, never a query or a resul
   const safe = safeEvent(h.sources[0]!);
   assert.ok(safe !== undefined, 'the host log keeps the receipt');
   assert.equal(safe['coalesced'], 2, 'and keeps the coalesced count it was given');
+});
+
+// #280: a routed run used to return without its terminal run line, so every smoke probe read
+// research_run 0. One line per run, the same shape the selector loop writes, plus one subcall line
+// per routed lookup.
+test('a routed run writes one run line with the routed driver and one subcall', async () => {
+  let clock = 0;
+  const h = harness({ now: () => { clock += 500; return clock; } });
+  await runResearch(h.deps, {
+    action: 'start', question: 'what did we decide about the release',
+    lookups: [{ source: 'knowledge', query: 'release 3k decision' }],
+  }, new AbortController().signal);
+  assert.equal(h.logs.length, 1, 'exactly one terminal run line per routed run');
+  const line = h.logs[0]!;
+  assert.equal(line.event, 'research_run');
+  assert.equal(line.driver, 'routed');
+  assert.equal(line.rounds, 1);
+  assert.equal(line.status, 'answered');
+  assert.ok(line.replyBytes > 0, 'the run line sizes the reply it returned');
+  assert.deepEqual(line.sources.map(source => source.kind), ['knowledge']);
+  assert.deepEqual(line.sources.map(source => source.disposition), ['completed']);
+  assert.deepEqual(safeEvent(line), line, 'the host log admits the routed run line unchanged');
+  assert.equal(h.subcalls.length, 1, 'one subcall line per routed lookup');
+  const subcall = h.subcalls[0]!;
+  assert.equal(subcall.event, 'research_subcall');
+  assert.equal(subcall.ok, true);
+  assert.equal(subcall.researchId, line.researchId);
+  assert.deepEqual(safeEvent(subcall), subcall, 'the host log admits the routed subcall line unchanged');
+  assert.doesNotMatch(JSON.stringify(line), /release 3k decision/, 'no query text leaves in the run line');
+});
+
+test('a two-lookup routed run writes two subcall lines and one run line', async () => {
+  const h = harness();
+  await runResearch(h.deps, {
+    action: 'start', question: 'where does the project stand and what is waiting on me',
+    lookups: [{ source: 'knowledge', query: 'project status' }, { source: 'mail', query: 'from:plantix' }],
+  }, new AbortController().signal);
+  assert.equal(h.subcalls.length, 2, 'one subcall line per lookup, even when the reads coalesce');
+  assert.equal(h.logs.length, 1, 'still exactly one terminal run line');
+  assert.deepEqual(h.logs[0]!.sources.map(source => source.kind), ['knowledge', 'mail']);
+  assert.equal(h.logs[0]!.status, 'answered');
+});
+
+test('a routed run that throws still writes its terminal run line, once, with a closed code', async () => {
+  const h = harness();
+  const deps: ResearchDeps = { ...h.deps, emit: event => { if (event.phase === 'done') throw new Error('beat sink gone'); } };
+  await assert.rejects(runResearch(deps, {
+    action: 'start', question: 'what is waiting on me',
+    lookups: [{ source: 'knowledge', query: 'waiting on me' }],
+  }, new AbortController().signal), /beat sink gone/);
+  assert.equal(h.logs.length, 1, 'the errored run is visible and never written twice');
+  assert.equal(h.logs[0]!.status, 'failed');
+  assert.equal(h.logs[0]!.stopReason, 'failed', 'a closed error code, never an exception message');
+  assert.equal(JSON.stringify(h.logs[0]).includes('beat sink gone'), false, 'no exception text leaves in the line');
 });

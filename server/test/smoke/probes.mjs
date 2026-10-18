@@ -88,10 +88,11 @@ function reported(id) {
 
 const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research', 'probe6-meetings', 'probe7-mail', 'probe8-chat', 'probe9-knowledge', 'probe10-calendar'];
 
-/** #260: the three drivers a research_run may name. probe5 reads the run's own field, never derives it. */
-export const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
+/** #260: the drivers a research_run may name. probe5 reads the run's own field, never derives it.
+ * #280: a routed start names `routed`, because it skips the selector and reads the named layers at once. */
+export const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 
-/** The run line's own driver, or null when it is absent or not one of the three. */
+/** The run line's own driver, or null when it is absent or not one of the four. */
 export function researchDriver(run) {
   return run && typeof run.driver === 'string' && RESEARCH_DRIVERS.includes(run.driver) ? run.driver : null;
 }
@@ -427,7 +428,7 @@ export function researchTurnResult({ calls, runs = [], subcalls = [], findings =
   if (requireRead && read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
   if (requireRead && !(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
   if (requireRead && (outputAtResult === null || outputChars <= outputAtResult)) return { ok: false, stage: 'no_output', ...notCalled };
-  // #260: the run names its own driver; a run line without one of the three fails and is never guessed.
+  // #260: the run names its own driver; a run line without one of the four fails and is never guessed.
   const driver = researchDriver(run);
   if (requireDriver && driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
   return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver: driver ?? 'any', selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };

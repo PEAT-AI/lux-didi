@@ -342,7 +342,7 @@ test('a chat tool loop journals the call at the tools layer', async t => {
   const accepted = chat.accept({ sessionId, text: 'Synthetic owner question', idempotencyKey: randomUUID() }, f.context);
   for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
 
-  const path = join(dir, 'debug', dayName(Date.now()), `chat-${accepted.runId}.jsonl`);
+  const path = join(dir, 'debug', dayName(NOW), `chat-${accepted.runId}.jsonl`);
   assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
   const calls = records(path).filter(line => line['event'] === 'tool');
   assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer (model saw ${JSON.stringify(seen)})`);

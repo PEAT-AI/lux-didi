@@ -288,7 +288,11 @@ function toolChipMarkup(entry: LiveEntry): string {
 export const TURN_DETAIL_MIN = 280;
 export function liveLineMarkup(line: LiveLine, seg = '', growing = false): string {
   const key = seg ? ` data-seg="${seg}"` : '';
-  if (line.role === 'user') return `<article class="entry user" data-feed="turn"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`;
+  if (line.role === 'user') {
+    // The owner's transcription streams while they speak, so it takes the same in-place text node.
+    const node = growing ? ' data-live-text' : '';
+    return `<article class="entry user" data-feed="turn"${key}${growing ? ' data-growing' : ''}><p class="bubble"${node}>${escapeHtml(line.text)}</p></article>`;
+  }
   const body = renderMarkdown(line.text, TRANSCRIPT_MARKDOWN);
   if (growing) return `<article class="entry assistant" data-feed="turn"${key} data-growing><div class="markdown" data-live-text>${body}</div></article>`;
   if (line.text.trim().length < TURN_DETAIL_MIN) return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${body}</div></article>`;
@@ -297,8 +301,9 @@ export function liveLineMarkup(line: LiveLine, seg = '', growing = false): strin
   return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${renderMarkdown(headline, TRANSCRIPT_MARKDOWN)}</div>${detail}</article>`;
 }
 /** The text a growing bubble carries, so a repaint rewrites that one node instead of the whole row. */
+const LIVE_TEXT = /<(div|p) class="(?:markdown|bubble)" data-live-text>([\s\S]*)<\/\1><\/article>$/;
 export function growingText(html: string): string | undefined {
-  return /<div class="markdown" data-live-text>([\s\S]*)<\/div><\/article>$/.exec(html)?.[1];
+  return LIVE_TEXT.exec(html)?.[2];
 }
 
 /** The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a

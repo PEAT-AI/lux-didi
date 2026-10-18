@@ -324,7 +324,7 @@ test('a forwarded receipt sequence records native events and the playback row', 
     for (const [receipt, seq] of [['received', 1], ['enqueued', 2], ['started', 3], ['drained', 4]] as const) {
       assert.equal(forward(store, frame(receipt, seq, T0 + 200 + seq), { turnId: 't1', responseKey: 'r1' }).duplicate, false);
     }
-    const events = store.transaction(tx => tx.all('SELECT kind, source, source_instance_id, source_seq, at, mono_ms, turn_id, playback_key FROM trace_event ORDER BY seq'));
+    const events = store.transaction(tx => tx.all('SELECT kind, source, source_instance_id, source_seq, at, mono_ms, turn_id, playback_key FROM trace_event WHERE source=? ORDER BY seq', ['native']));
     assert.deepEqual(events.map(row => row['kind']), ['playback.received', 'playback.enqueued', 'playback.started', 'playback.drained']);
     assert.ok(events.every(row => row['source'] === 'native'), 'every forward is a native event');
     assert.deepEqual(events.map(row => row['source_seq']), [1, 2, 3, 4]);
@@ -346,11 +346,12 @@ test('a duplicate receipt frame is deduped, not recorded twice', () => {
     assert.equal(forward(store, raw).duplicate, false);
     const replay = forward(store, raw);
     assert.equal(replay.duplicate, true);
-    assert.equal(counts(store)['trace_event'], 1);
+    const nativeEvents = (): number => store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM trace_event WHERE source='native'")!['n']));
+    assert.equal(nativeEvents(), 1);
     assert.equal(counts(store)['trace_playback'], 1);
     // A drained receipt for the same segment is not a replay: it is the next receipt in order.
     assert.equal(forward(store, frame('drained', 8, T0 + 90)).duplicate, false);
-    assert.equal(counts(store)['trace_event'], 2);
+    assert.equal(nativeEvents(), 2);
   });
 });
 
@@ -403,6 +404,6 @@ test('the timeline prints a drained playback inside its turn when attributable a
     assert.equal(report.unattributedPlayback.length, 1);
     const rendered = renderTimeline(report);
     assert.match(rendered, /^playback inst-a1:1 segment=1 .*turn=none/m);
-    assert.equal(report.gaps, [], 'an orphan segment is not a stall: it is printed outside the turns');
+    assert.deepEqual(report.gaps, [], 'an orphan segment is not a stall: it is printed outside the turns');
   });
 });

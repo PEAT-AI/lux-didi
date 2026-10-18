@@ -264,13 +264,10 @@ export async function startHost(config: HostConfig) {
       startupStage = 'ready';
       let closed = false;
       return { store, chat, service, descriptor, descriptorPath, tools: liveTools,
-        // 338: the owner's wake instruction. It refreshes the warm context from the prepared sources
-        // and returns the receipt, which the host log keeps as one closed metadata line.
-        prewarm: async () => {
-          const receipt = await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false };
-          log.event({ event: 'warm_prewarm', ...receipt });
-          return receipt;
-        },
+        // 338: the owner's wake instruction, the same one POST api/v1/live/prewarm serves. The live
+        // owner writes the one closed `warm_prewarm` line, so either route logs it exactly once.
+        prewarm: async (): Promise<WarmPrewarmReceipt> =>
+          await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false },
         start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
         logExit('ready', 'close');

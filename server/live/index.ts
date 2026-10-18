@@ -582,7 +582,10 @@ export class LiveSessionOwner {
     }
     const refreshed = this.#sections === undefined ? undefined : this.#warm.refresh(true);
     if (refreshed !== undefined) this.#sections = refreshed.sections;
-    return { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined };
+    const receipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined };
+    // One closed metadata line per instruction, whichever route asked for it.
+    this.#summaryLog?.({ event: 'warm_prewarm', ...receipt });
+    return receipt;
   }
   profileProjection(): LiveProfileProjection {
     return {

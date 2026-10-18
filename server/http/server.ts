@@ -115,6 +115,17 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         const jobs = live as typeof live & Partial<LivePendingService>;
         if (route.action === 'pendingJobs') { send(res, 200, success(jobs.pendingJobs?.() ?? [])); return; }
         if (route.action === 'status') { send(res, 200, success(live.status())); return; }
+        if (route.action === 'prewarm') {
+          // 338: the owner's wake instruction. A wake belongs to no session, so it is answered before the
+          // enabled gate exactly as `status` is; the caller never gets an error for a cold calendar. The
+          // body names no field, which the route's second pass is what refuses.
+          const resolved = resolveRoute(method, url, await readBody(req));
+          if (resolved.kind !== 'live' || resolved.action !== 'prewarm') throw new ServiceError('BAD_REQUEST', 'Invalid Live request');
+          const warm = live as typeof live & { prewarm?: () => Promise<unknown> };
+          const receipt = await warm.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false };
+          send(res, 200, success(receipt));
+          return;
+        }
         if (!live.enabled) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live is not locally configured', 503);
         if (route.action === 'create') {
           const body = await readBody(req);

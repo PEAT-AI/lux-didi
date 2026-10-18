@@ -674,27 +674,40 @@ test('host close kills a stdio MCP child that ignores close within the bound', a
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-// 338: the host owner route carries one prewarm instruction. It returns the receipt the app logs
-// and writes it as one closed host-log line; an unconfigured Live has nothing to assemble.
-test('the host owner prewarm returns a receipt and logs one closed warm_prewarm line', async () => {
+// 338: the owner prewarm instruction. The handle answers the receipt the app records, and the closed
+// host-log line is the live owner's, so an unconfigured Live writes none.
+test('the host owner prewarm answers the quiet receipt when Live is unconfigured', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-prewarm-'));
   const host = await startHost({ dataDir: dir, webRoot, port: 0 });
   try {
     const receipt = await host.prewarm();
     assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no session has prepared sections yet');
     const lines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
-    const logged = lines.filter(line => line['event'] === 'warm_prewarm');
-    assert.equal(logged.length, 1, 'one receipt per instruction');
-    const { timestamp, pid, ...fields } = logged[0]!;
-    assert.deepEqual(fields, { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false });
-    assert.equal(typeof timestamp, 'string');
-    assert.equal(pid, process.pid);
+    assert.equal(lines.filter(line => line['event'] === 'warm_prewarm').length, 0, 'no warm owner, so no receipt line');
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-// 338: the forced prewarm and what the next session start takes from it. The refresh assembles
-// from the prepared sources, keeps the digest the owner just read, and a start inside the window
-// uses those sections instead of asking the store a second time.
+// 338: the owner's HTTP route for the same instruction (R3-R1). A wake belongs to no session, so it is
+// answered before the enabled gate; only the operator bearer may ask, and the body names no field.
+test('POST api/v1/live/prewarm answers the receipt and refuses a body field', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-prewarm-route-'));
+  const host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  const credential = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
+  const headers = { Authorization: `Bearer ${credential}`, 'content-type': 'application/json' };
+  try {
+    const url = `${host.service.origin}/api/v1/live/prewarm`;
+    const asked = await fetch(url, { method: 'POST', headers, body: '{}' });
+    assert.equal(asked.status, 200);
+    assert.deepEqual(await asked.json(), { data: { ageBeforeMs: null, ageAfterMs: null, assembled: false } });
+    const unknown = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ digest: 'x' }) });
+    assert.equal(unknown.status, 400, 'the body is closed: it names no field');
+    const read = await fetch(url, { method: 'GET', headers });
+    assert.equal(read.status, 405, 'it is a mutation, never a read');
+    const anonymous = await fetch(url, { method: 'POST' });
+    assert.equal(anonymous.status, 401, 'only the operator may ask');
+  } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('a forced warm refresh carries the calendar digest and the next start reads no source again', () => {
   const sections = { persona: 'Naya is the owner\'s assistant.', memory: ['Prefers morning calls'],
     summary: 'Yesterday: release planning.', calendar: '10:00 standup, 15:00 review.' };

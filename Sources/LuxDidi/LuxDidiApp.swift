@@ -520,8 +520,8 @@ struct RootView: View {
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) }))
     private var presenceGraceTimer: Timer?
     private var presenceMenuItem: NSMenuItem?
-    /// MINI2: the Right Command tap toggles exactly like the chord. It stays off
-    /// until the grant is present, and the settings view reads the state that
+    /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
+    /// off until the grant is present, and the settings view reads the state that
     /// `pushSingleKeyState` writes as `window.didiSingleKey`.
     private lazy var singleKey = SingleKeyTrigger()
     private var singleKeyMenuItem: NSMenuItem?
@@ -645,11 +645,11 @@ struct RootView: View {
         presenceMenuItem?.state = presence.alwaysShow ? .on : .off
         // The orb is there from app start, grey and silent, and it never takes focus.
         presence.setSurfaces()
-        // MINI2: the single key is the same toggle as the chord. The grant is
-        // asked for once per app version (#3p: an ad-hoc install can lose it), on an
+        // MINI2, Q2: the single key taps to start and stop and holds to talk. The grant
+        // is asked for once per app version (#3p: an ad-hoc install can lose it), on an
         // interactive launch only, and the chord works whether or not the key does.
         // Every launch then leaves a receipt, so a key that never fires is visible.
-        bindRightCommandTap(singleKey, to: presence)
+        bindRightCommandKey(singleKey, to: presence)
         singleKey.presenceState = { [weak presence] in presence?.state ?? .cold }
         singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
         SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.appVersion)
@@ -985,7 +985,12 @@ struct RootView: View {
     /// session is the fail-loud teardown. `.pausedForInput` keeps its existing meaning.
     private func presenceTransitioned(_ state: NativeLiveConversation.State) {
         switch state {
-        case .listening, .speaking: presence.ready()
+        case .listening:
+            presence.ready()
+            // Q2: back to listening after speaking is the answer a hold release waits for.
+            presence.answerCompleted()
+        case .speaking:
+            presence.ready()
         case .failed: presence.fail()
         case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }

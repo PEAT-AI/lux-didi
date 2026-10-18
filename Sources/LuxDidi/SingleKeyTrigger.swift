@@ -22,14 +22,15 @@ enum SingleKeyEvent: Equatable {
 /// Option belongs to SuperWhisper, so this detector never looks at it and the
 /// event tap never swallows an event (a listen-only tap consumes nothing).
 ///
-/// A tap is a press and a release with nothing else in between and no hold
-/// longer than 300 ms: a chord use, a long hold and a repeated press all leave
-/// the detector quiet.
+/// Q2, owner order 2026-10-18: the key works like Superwhisper's Right Option, so a
+/// press released under the hold threshold is a tap and a press still down at the
+/// threshold is push-to-talk. Both are gestures, and a press with another key or
+/// modifier in it is neither: a chord use leaves the detector quiet.
 struct RightCommandTapDetector {
     /// kVK_RightCommand.
     static let keyCode: UInt16 = 54
-    /// A longer press is a hold, not a tap.
-    static let holdLimit: TimeInterval = 0.3
+    /// A press still down this long is a hold, and a press released before it is a tap.
+    static let holdThreshold: TimeInterval = 0.4
     /// `NX_DEVICERCMDKEYMASK`: the device bit that belongs to the RIGHT Command
     /// key alone, which tells its press from its release while the other Command
     /// key is down. `.maskCommand` alone cannot (review B3).
@@ -66,37 +67,107 @@ struct RightCommandTapDetector {
     private var downAt: TimeInterval?
     private var chordUsed = false
     private var otherModifierHeld = false
+    private var holdStarted = false
+    /// The press was given up on, so its release is not a gesture. A chord sets it after
+    /// ending a hold, and a tap disabled mid-press sets it through `abandonPress`.
+    private var cancelled = false
 
-    /// Returns true on the release that completes a tap.
-    mutating func handle(_ event: SingleKeyEvent, at time: TimeInterval) -> Bool {
+    /// Whether a press is open right now, so the app can arm the hold timer once.
+    var isPressing: Bool { downAt != nil }
+
+    /// The gestures one event completes. A release completes a tap or ends a started hold,
+    /// a chord reports itself once and cancels whatever press it lands in, and a press
+    /// alone completes nothing.
+    mutating func handle(_ event: SingleKeyEvent, at time: TimeInterval) -> [SingleKeyGesture] {
         switch event {
         case .rightCommandDown:
             // A second press before the release is one press, so a stuck or
             // repeated flag cannot fire twice.
-            guard downAt == nil else { return false }
+            guard downAt == nil else { return [] }
             downAt = time
+            holdStarted = false
+            cancelled = false
             // A modifier already held turns the press into a chord: Shift plus
             // Right Command is not a tap (review B2).
             chordUsed = otherModifierHeld
-            return false
+            return []
         case .otherKeyDown:
             chordUsed = true
-            return false
+            return cancelHold()
         case .otherModifiers(let held):
             otherModifierHeld = held
-            if held { chordUsed = true }
-            return false
+            guard held else { return [] }
+            chordUsed = true
+            return cancelHold()
         case .rightCommandUp:
-            guard let start = downAt else { return false }
+            guard let start = downAt else { return [] }
+            let wasHold = holdStarted
+            let wasChord = chordUsed
+            let wasCancelled = cancelled
             downAt = nil
-            defer { chordUsed = false }
-            return !chordUsed && time - start <= Self.holdLimit
+            holdStarted = false
+            chordUsed = false
+            cancelled = false
+            // A cancelled press has already reported itself, so its release is silent.
+            if wasCancelled { return [] }
+            // A hold that still runs at the release ends here, whatever else arrived; the
+            // chord that cancels one already ended it where the chord landed.
+            if wasHold { return [.holdEnd] }
+            if wasChord { return [.ignored("chord")] }
+            // A late timer is not a lost gesture: the press was a hold all along.
+            if time - start >= Self.holdThreshold { return [.holdStart, .holdEnd] }
+            return [.tap]
         }
+    }
+
+    /// The hold timer, armed by the app at the press and fired at the threshold: a press
+    /// still open and still uncancelled becomes a hold, exactly once.
+    mutating func poll(at time: TimeInterval) -> [SingleKeyGesture] {
+        guard let start = downAt, !holdStarted, !cancelled, !chordUsed,
+              time - start >= Self.holdThreshold else { return [] }
+        holdStarted = true
+        return [.holdStart]
+    }
+
+    /// The rest of this press was lost to the system: an open hold ends now, so a fence
+    /// no timer will close is never left closed. Nothing else about the press survives.
+    mutating func abandonPress() -> [SingleKeyGesture] {
+        let wasHold = holdStarted
+        holdStarted = false
+        cancelled = true
+        return wasHold ? [.holdEnd] : []
+    }
+
+    /// A chord during a started hold cancels it where the chord lands: the fence closes at
+    /// that moment and the rest of the press is inert, so the release is not a second
+    /// gesture. A chord before the threshold ends nothing, because nothing opened.
+    private mutating func cancelHold() -> [SingleKeyGesture] {
+        guard holdStarted else { return [] }
+        holdStarted = false
+        cancelled = true
+        return [.holdEnd]
     }
 }
 
-/// What one accepted tap did, in the `single_key_tap` receipt's own words.
-enum SingleKeyTapAction: String, Equatable { case start, stop, ignored }
+/// What an accepted press did, in the `single_key_tap` receipt's own words.
+enum SingleKeyGesture: Equatable {
+    /// A press released under the threshold: start when idle, stop when live.
+    case tap
+    /// A press still down at the threshold: the mic opens while it is held.
+    case holdStart
+    /// The release of that press: the fence closes and the answer may finish.
+    case holdEnd
+    /// A press a chord took over, with the reason in the receipt's words.
+    case ignored(String)
+}
+
+/// What one accepted press did, in the `single_key_tap` receipt's own words.
+enum SingleKeyTapAction: String, Equatable {
+    case start, stop, ignored
+    /// Q2: the held press opened the mic, and its release closed the fence.
+    case holdStart = "hold_start"
+    case holdEnd = "hold_end"
+}
 
 /// One tap's receipt, built from the presence machine's state on both sides of the
 /// toggle, so the `single_key_tap` line can never disagree with the `presence_state`
@@ -111,6 +182,12 @@ struct SingleKeyTapOutcome: Equatable {
         reason = after.rawValue
         guard before != after else { action = .ignored; return }
         action = after == .cold || after == .hotMuted ? .stop : .start
+    }
+
+    /// A hold's receipt names the gesture itself, and the state it left the machine in.
+    init(action: SingleKeyTapAction, state: PresenceState) {
+        self.action = action
+        reason = state.rawValue
     }
 }
 
@@ -146,7 +223,8 @@ struct SingleKeyGrantPrompt {
 final class SingleKeyTrigger {
     /// On by default; only an explicit `false` turns the single key off.
     static let enabledKey = "DidiSingleKeyTriggerEnabled"
-    static let explanation = "Naya can start and stop with a tap of the Right Command key. "
+    static let explanation = "Naya starts and stops with a tap of the Right Command key, "
+        + "and talks while you hold it. "
         + "macOS needs Accessibility (or Input Monitoring) permission for that key; "
         + "Control-Option-Space keeps working without it."
 
@@ -160,10 +238,21 @@ final class SingleKeyTrigger {
 
     var system = System()
     var onTap: (() -> Void)?
+    /// Q2: the held press opened the mic, and its release closed the fence.
+    var onHoldStart: (() -> Void)?
+    var onHoldEnd: (() -> Void)?
+    /// The clock the hold threshold is measured on, the same monotonic clock the event
+    /// tap stamps events with. Injected, so a seam test never waits for a real 400 ms.
+    var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    /// The hold clock as a seam: the app arms one timer per press and a seam test fires
+    /// it by hand, so no test sleeps through the threshold.
+    var scheduleHold: (@escaping @MainActor () -> Void, TimeInterval) -> Void = { work, delay in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { work() } }
+    }
     /// The presence machine's state as a name, so a tap receipt can say which move the
     /// tap caused. Injected, so the receipts are proven without a presence machine.
     var presenceState: () -> PresenceState = { .cold }
-    /// The receipts, one at launch and one per accepted tap, into the native log.
+    /// The receipts, one at launch and one per accepted press, into the native log.
     var onReceipt: (([String: Any]) -> Void)?
     /// Whether the listen-only tap is live. The launch receipt reports it, so a silent
     /// key can no longer be mistaken for a working one.
@@ -172,6 +261,8 @@ final class SingleKeyTrigger {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var detector = RightCommandTapDetector()
+    /// Bumped on every press, so a hold timer left over from an earlier press is inert.
+    private var holdToken = 0
 
     nonisolated static var isEnabled: Bool {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
@@ -274,10 +365,15 @@ final class SingleKeyTrigger {
     }
 
     /// Re-arms the tap and drops any half-seen press, so a disabled tap resumes
-    /// without carrying a stale down time into the next tap (review B6).
+    /// without carrying a stale down time into the next tap (review B6). The key-up can
+    /// be one of the events the disable swallowed, so an open hold ends here rather than
+    /// leaving the mic open with no timer left to close it (review B2).
     func reEnable() {
         guard let tap else { return }
+        let lost = detector.abandonPress()
         detector = RightCommandTapDetector()
+        holdToken &+= 1
+        for gesture in lost { perform(gesture) }
         CGEvent.tapEnable(tap: tap, enable: true)
     }
 
@@ -290,15 +386,43 @@ final class SingleKeyTrigger {
         detector = RightCommandTapDetector()
     }
 
-    /// Feeds one event to the detector on the main actor, fires the toggle when the
-    /// release completes a tap, and logs what that tap did. The move is read from the
-    /// presence machine on both sides of the toggle, so the two log lines agree.
+    /// Feeds one event to the detector on the main actor and performs the gestures it
+    /// completes. A press arms the one hold timer, a release before the threshold taps,
+    /// a timer at the threshold starts a hold, and the release of that hold ends it. Each
+    /// gesture logs `single_key_tap`, with the move read from the presence machine on
+    /// both sides, so the two log lines always agree.
     func receive(_ event: SingleKeyEvent, at time: TimeInterval) {
-        guard detector.handle(event, at: time) else { return }
-        guard let onTap else { return }
+        let gestures = detector.handle(event, at: time)
+        if event == .rightCommandDown, detector.isPressing { armHoldTimer() }
+        for gesture in gestures { perform(gesture) }
+    }
+
+    /// One timer per press, at the hold threshold: the press becomes a hold while it is
+    /// still down, which is what makes the mic open while the key is held.
+    private func armHoldTimer() {
+        holdToken &+= 1
+        let token = holdToken
+        scheduleHold({ [weak self] in
+            guard let self, self.holdToken == token else { return }
+            for gesture in self.detector.poll(at: self.now()) { self.perform(gesture) }
+        }, RightCommandTapDetector.holdThreshold)
+    }
+
+    private func perform(_ gesture: SingleKeyGesture) {
         let before = presenceState()
-        onTap()
-        let outcome = SingleKeyTapOutcome(from: before, to: presenceState())
+        switch gesture {
+        case .tap: onTap?()
+        case .holdStart: onHoldStart?()
+        case .holdEnd: onHoldEnd?()
+        case .ignored(let reason):
+            onReceipt?(["event": "single_key_tap", "action": SingleKeyTapAction.ignored.rawValue,
+                        "reason": reason])
+            return
+        }
+        let after = presenceState()
+        let outcome = gesture == .tap
+            ? SingleKeyTapOutcome(from: before, to: after)
+            : SingleKeyTapOutcome(action: gesture == .holdStart ? .holdStart : .holdEnd, state: after)
         onReceipt?(["event": "single_key_tap", "action": outcome.action.rawValue, "reason": outcome.reason])
     }
 }

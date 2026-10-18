@@ -622,7 +622,7 @@ test('a distilled session A is injected into session B chat context and Live ins
         const bytes = new TextEncoder().encode(`data: ${JSON.stringify(body)}\r\n\r\n`);
         return new Response(new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }), { headers: { 'content-type': 'text/event-stream' } });
       } });
-    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => 0, log: () => {} });
+    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => 0, log: () => {} });
     await summarizer.distill('live-A');
     const row = f.store.transaction(tx => summaries.getBySession(tx, 'live-A'))!;
     assert.equal(row.status, 'complete');

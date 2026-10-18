@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
@@ -13,8 +13,8 @@ import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePrefer
 import type { ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import {
-  DISTILLATION_PROMPT, SUMMARY_MAX_RETRIES, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
-  createSummarizer, parseDistillationResult,
+  OPEN_LOOP_MAX_CHARS, SUMMARY_MAX_RETRIES, SUMMARY_PROMPT_VERSION, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
+  createSummarizer, distillationPrompt, parseDistillationResult,
 } from '../services/summarize.js';
 
 const NOW = 1_700_000_000_000;
@@ -64,8 +64,8 @@ class FakeModel implements ModelPort {
   }
 }
 
-function summarizer(store: Store, model: ModelPort) {
-  return createSummarizer({ store, model, modelId: 'synthetic-text-model', timeZone: 'UTC', now: () => NOW, log: () => {} });
+function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya') {
+  return createSummarizer({ store, model, modelId: 'synthetic-text-model', assistantName, timeZone: 'UTC', now: () => NOW, log: () => {} });
 }
 
 function withTurns(store: Store, id: string, outcome?: string): void {
@@ -90,18 +90,19 @@ function distillAdapter(summary: string, transport?: Transport): GeminiAdapter {
 }
 
 test('the distillation prompt is the authored verbatim constant and output parses tolerantly', () => {
-  assert.ok(DISTILLATION_PROMPT.startsWith('You write a short private summary of one finished voice conversation'));
-  assert.ok(DISTILLATION_PROMPT.includes('{"skip": boolean, "summary": string}'));
-  assert.ok(DISTILLATION_PROMPT.includes('the owner said'));
-  assert.ok(DISTILLATION_PROMPT.endsWith('Set skip to true when nothing worth remembering happened.'));
+  const prompt = distillationPrompt('Mira');
+  assert.ok(prompt.startsWith('You write a short private summary of one finished voice conversation between the owner and the assistant, whose name is Mira'));
+  assert.ok(prompt.includes('{"skip": boolean, "summary": string, "openLoop": string | null}'));
+  assert.ok(prompt.includes('the owner said'));
+  assert.ok(prompt.endsWith('Set skip to true when nothing worth remembering happened.'));
   assert.deepEqual(parseDistillationResult('```json\n{"skip": false, "summary": "the owner said hello"}\n```'),
-    { skip: false, summary: 'the owner said hello' });
+    { skip: false, summary: 'the owner said hello', openLoop: null });
   assert.equal(parseDistillationResult('no json here'), null);
   assert.equal(parseDistillationResult('{"skip": "yes"}'), null);
 });
 
 test('the input cap keeps the first 4000 and last 20000 characters and marks the cut', () => {
-  const input = buildDistillationInput({ turns: [{ speaker: 'owner', text: 'O'.repeat(30_000) }], toolNames: [], dateMs: NOW, timeZone: 'UTC', injected: [] });
+  const input = buildDistillationInput({ assistantName: 'Naya', turns: [{ speaker: 'owner', text: 'O'.repeat(30_000) }], toolNames: [], dateMs: NOW, timeZone: 'UTC', injected: [] });
   assert.equal(input.truncated, true);
   assert.ok(input.text.startsWith('Session date:'));
   assert.ok(input.text.includes('[... transcript shortened ...]'));
@@ -128,7 +129,7 @@ test('a complete distillation stores one row with the session provenance', async
 });
 
 test('the distiller input carries the injected earlier summaries for the echo guard', () => {
-  const input = buildDistillationInput({ turns: [{ speaker: 'owner', text: 'hello' }], toolNames: ['remember_note'],
+  const input = buildDistillationInput({ assistantName: 'Naya', turns: [{ speaker: 'owner', text: 'hello' }], toolNames: ['remember_note'],
     dateMs: NOW, timeZone: 'UTC', injected: [{ id: 's1', summary: 'the owner shipped a thing' }] });
   assert.ok(input.text.includes('Summaries already shown to Naya in this conversation:'));
   assert.ok(input.text.includes('- s1: the owner shipped a thing'));
@@ -280,7 +281,7 @@ test('migration v5 upgrades a populated v4 database preserving sessions and turn
     before.close();
     const after = new Store(dir, [...domainMigrations, ...liveMigrations]);
     try {
-      assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5]);
+    assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5, 6]);
       assert.ok(after.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'")));
       assert.equal(after.transaction(tx => tx.get("SELECT text FROM entries WHERE id='e1'"))!['text'], 'synthetic note');
       assert.deepEqual(after.transaction(tx => summaries.listSummaries(tx)), []);
@@ -323,7 +324,7 @@ test('a summary completes through the real controlled() path within its computed
   try {
     withTurns(h.store, 's-real');
     const model = distillAdapter('The owner asked about the calendar.');
-    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => Date.now(), log: () => {} });
+    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => Date.now(), log: () => {} });
     await s.distill('s-real');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-real'))!;
     assert.equal(row.status, 'complete');
@@ -337,7 +338,7 @@ test('an already-expired absolute deadline fails loud through the real controlle
     withTurns(h.store, 's-expired');
     let transports = 0;
     const model = distillAdapter('never sent', async () => { transports++; throw Error('transport must not run'); });
-    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => Date.now(), deadlineBudgetMs: -1, log: () => {} });
+    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => Date.now(), deadlineBudgetMs: -1, log: () => {} });
     await s.distill('s-expired');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-expired'))!;
     assert.equal(row.status, 'failed');
@@ -391,4 +392,121 @@ test('twenty complete summaries fill the space left under the target instead of 
     assert.equal(composed.earlierConversationsIncluded, true);
     assert.ok(composed.text.length > basis.text.length);
   } finally { h.cleanup(); }
+});
+
+/** Records the request each call made, so a test can read the prompt the distiller really sent. */
+class RecordingModel implements ModelPort {
+  readonly requests: ModelRequest[] = [];
+  constructor(private readonly text: string) {}
+  generate(request: ModelRequest, _control: ModelControl): Promise<ModelResult> {
+    this.requests.push(request);
+    return Promise.resolve(reply(this.text));
+  }
+}
+
+test('another persona name never leaks the default name into a summary', async () => {
+  const h = open();
+  try {
+    withTurns(h.store, 's-mira');
+    const model = new RecordingModel('{"skip": false, "summary": "The owner asked about Friday; Mira found the slot.", "openLoop": null}');
+    await summarizer(h.store, model, 'Mira').distill('s-mira');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-mira'))!;
+    assert.equal(row.status, 'complete');
+    assert.equal(/Naya/.test(row.summary ?? ''), false, 'the stored summary carries no default name');
+    const request = model.requests[0]!;
+    assert.equal(/Naya/.test(request.system), false, 'the system prompt carries no default name');
+    assert.ok(request.system.includes('whose name is Mira'));
+    const transcript = request.contents[0]!.parts[0]!.text ?? '';
+    assert.ok(transcript.includes('Mira: '), 'the speaker tags use the parameter');
+    assert.equal(/Naya/.test(transcript), false);
+  } finally { h.cleanup(); }
+});
+
+test('an unchanged transcript keeps the same sentence count and attribution whatever the name', async () => {
+  const h = open();
+  try {
+    const summary = 'The owner said they moved to Lisbon; Mira found the time change in the calendar. The owner said the movers come on Friday.';
+    const turns = [{ speaker: 'owner' as const, text: 'I moved to Lisbon' }, { speaker: 'assistant' as const, text: 'Mira found the time change' }];
+    const build = (assistantName: string) => buildDistillationInput({ assistantName, turns, toolNames: [], dateMs: NOW, timeZone: 'UTC', injected: [] });
+    const first = build('Mira');
+    assert.deepEqual(build('Mira'), first, 'the same transcript and name build the same input');
+    const renamed = build('Sol');
+    assert.equal(renamed.text.replaceAll('Sol', 'Mira'), first.text, 'only the name differs');
+    withTurns(h.store, 's-same');
+    const model = new RecordingModel(JSON.stringify({ skip: false, summary, openLoop: null }));
+    await summarizer(h.store, model, 'Mira').distill('s-same');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-same'))!;
+    assert.equal(row.summary, summary, 'the model sentences are stored as written, never rewritten');
+    assert.equal(summary.split('. ').length, 2);
+    assert.ok(summary.startsWith('The owner said'), 'every sentence stays attributed');
+  } finally { h.cleanup(); }
+});
+
+test('the open loop is null unless the owner explicitly left something open', async () => {
+  const h = open();
+  try {
+    const run = async (id: string, answer: Record<string, unknown>) => {
+      withTurns(h.store, id);
+      await summarizer(h.store, new FakeModel([reply(JSON.stringify(answer))])).distill(id);
+      return h.store.transaction(tx => summaries.getBySession(tx, id))!;
+    };
+    const absent = await run('s-loop-absent', { skip: false, summary: 'The owner said they had two meetings.' });
+    assert.equal(absent.openLoop, null, 'a v1-shaped answer has no open loop');
+    assert.equal(absent.promptVersion, SUMMARY_PROMPT_VERSION, 'the version is recorded on a new row');
+    assert.equal((await run('s-loop-null', { skip: false, summary: 'The owner said they had two meetings.', openLoop: null })).openLoop, null);
+    assert.equal((await run('s-loop-object', { skip: false, summary: 'The owner said hi.', openLoop: { toDo: 'x' } })).openLoop, null);
+    const explicit = await run('s-loop-set', { skip: false, summary: 'The owner said they had two meetings.', openLoop: '  The owner will send the invoice on Friday.  ' });
+    assert.equal(explicit.openLoop, 'The owner will send the invoice on Friday.');
+    const long = await run('s-loop-long', { skip: false, summary: 'The owner said hi.', openLoop: 'x'.repeat(400) });
+    assert.equal(long.openLoop?.length, OPEN_LOOP_MAX_CHARS);
+    assert.equal(parseDistillationResult(JSON.stringify({ skip: false, summary: 'the owner said hi', openLoop: 'the owner will call back' }))?.openLoop, 'the owner will call back');
+  } finally { h.cleanup(); }
+});
+
+test('no text model writes a skipped row naming no_text_model', async () => {
+  const h = open();
+  try {
+    withTurns(h.store, 's-nomodel');
+    await summarizer(h.store, null).distill('s-nomodel');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-nomodel'))!;
+    assert.equal(row.status, 'skipped');
+    assert.equal(row.skipReason, 'no_text_model');
+    assert.equal(row.summary, null);
+    assert.equal(row.openLoop, null);
+    assert.equal(row.promptVersion, null, 'no prompt ran, so no version is claimed');
+  } finally { h.cleanup(); }
+});
+
+test('migration v6 upgrades a populated v5 database and v1 rows read as openLoop null', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-summaries-v6-'));
+  const v5 = domainMigrations.filter(m => m.version <= 5);
+  try {
+    const before = new Store(dir, [...v5, ...liveMigrations]);
+    before.transaction(tx => tx.run(
+      `INSERT INTO conversation_summaries
+         (id, live_session_id, status, summary, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at)
+       VALUES ('c-old','s-old','complete','The owner said they moved to Lisbon.',?, 'gemini-2.5-flash', 42, 0, '[]', 0, NULL, ?)`, [NOW, NOW]));
+    assert.deepEqual(before.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5]);
+    before.close();
+    const after = new Store(dir, [...domainMigrations, ...liveMigrations]);
+    try {
+      assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5, 6]);
+      const old = after.transaction(tx => summaries.getBySession(tx, 's-old'))!;
+      assert.equal(old.status, 'complete');
+      assert.equal(old.summary, 'The owner said they moved to Lisbon.');
+      assert.equal(old.openLoop, null, 'a v1 row reads as no open loop');
+      assert.equal(old.promptVersion, null);
+      assert.equal(old.skipReason, null);
+      after.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-new', status: 'complete', summary: 'The owner said they moved to Lisbon; Mira found the time change.', openLoop: 'The owner will send the invoice on Friday.', promptVersion: SUMMARY_PROMPT_VERSION, endedAt: NOW, now: NOW }));
+      const fresh = after.transaction(tx => summaries.getBySession(tx, 's-new'))!;
+      assert.equal(fresh.openLoop, 'The owner will send the invoice on Friday.');
+      assert.equal(fresh.promptVersion, SUMMARY_PROMPT_VERSION);
+      assert.deepEqual(after.transaction(tx => summaries.listSummaries(tx)).map(r => r.liveSessionId).sort(), ['s-new', 's-old']);
+    } finally { after.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the distiller carries no persona name literal', () => {
+  const source = readFileSync(new URL('../services/summarize.ts', import.meta.url), 'utf8');
+  assert.equal(/Naya/.test(source), false, 'the persona name is a parameter, never a literal');
 });

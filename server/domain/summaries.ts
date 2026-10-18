@@ -15,6 +15,12 @@ export interface SummaryRecord {
   liveSessionId: string;
   status: SummaryStatus;
   summary: string | null;
+  /** Something the owner explicitly said was still to do, at most 120 characters, or null. */
+  openLoop: string | null;
+  /** The distillation prompt version the row was written under; null on rows from before v2. */
+  promptVersion: string | null;
+  /** Why the row was skipped; null when it was not skipped or the reason was never recorded. */
+  skipReason: string | null;
   endedAt: number | null;
   model: string | null;
   inputChars: number | null;
@@ -47,6 +53,9 @@ function toRecord(row: SQLRow): SummaryRecord {
     liveSessionId: String(row['live_session_id']),
     status: String(row['status']) as SummaryStatus,
     summary: row['summary'] === null || row['summary'] === undefined ? null : String(row['summary']),
+    openLoop: row['open_loop'] === null || row['open_loop'] === undefined ? null : String(row['open_loop']),
+    promptVersion: row['prompt_version'] === null || row['prompt_version'] === undefined ? null : String(row['prompt_version']),
+    skipReason: row['skip_reason'] === null || row['skip_reason'] === undefined ? null : String(row['skip_reason']),
     endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']),
     model: row['model'] === null || row['model'] === undefined ? null : String(row['model']),
     inputChars: row['input_chars'] === null || row['input_chars'] === undefined ? null : Number(row['input_chars']),
@@ -62,6 +71,9 @@ export interface InsertSummaryInput {
   liveSessionId: string;
   status: SummaryStatus;
   summary?: string | null;
+  openLoop?: string | null;
+  promptVersion?: string | null;
+  skipReason?: string | null;
   endedAt?: number | null;
   model?: string | null;
   inputChars?: number | null;
@@ -84,9 +96,10 @@ export function insertSummary(tx: Transaction, input: InsertSummaryInput): Summa
   const id = newId();
   tx.run(
     `INSERT INTO conversation_summaries
-       (id, live_session_id, status, summary, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, input.liveSessionId, input.status, input.summary ?? null, input.endedAt ?? null, input.model ?? null,
+       (id, live_session_id, status, summary, open_loop, prompt_version, skip_reason, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, input.liveSessionId, input.status, input.summary ?? null, input.openLoop ?? null, input.promptVersion ?? null,
+      input.skipReason ?? null, input.endedAt ?? null, input.model ?? null,
       input.inputChars ?? null, input.inputTruncated ? 1 : 0, JSON.stringify([...(input.injectedSummaryIds ?? [])]),
       input.retryCount ?? 0, input.errorCode ?? null, input.now],
   );

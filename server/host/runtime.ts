@@ -247,6 +247,7 @@ export async function startHost(config: HostConfig) {
       catch { summaryModel = null; }
     }
     const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
+      assistantName: owner.snapshot.displayName,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: config.now ?? Date.now, log: event => log.event(event) });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,

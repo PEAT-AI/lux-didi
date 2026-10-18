@@ -27,7 +27,7 @@ const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'c
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
-const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
+const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;

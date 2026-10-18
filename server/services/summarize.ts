@@ -9,7 +9,7 @@ import * as summaries from '../domain/summaries.js';
  * domain owns the durable row.
  */
 
-export const SUMMARY_PROMPT_VERSION = 'conversation-summary-v1';
+export const SUMMARY_PROMPT_VERSION = 'conversation-summary-v2';
 /** The distiller uses the text model the host already configures for chat and tools, never the Live voice model. */
 export const SUMMARY_TEMPERATURE = 0.2;
 export const DISTILLATION_INPUT_MAX_CHARS = 24_000;
@@ -23,22 +23,34 @@ export const SUMMARY_DEADLINE_BUDGET_MS = 30_000;
 export const SUMMARY_RECOVERY_LIMIT = 30;
 export const SUMMARY_MIN_OWNER_TURNS = 2;
 
-/** Architect-authored distillation prompt, copied verbatim. */
-export const DISTILLATION_PROMPT = `You write a short private summary of one finished voice conversation between the owner and Naya, so Naya can
-recall it in a later conversation. Output JSON: {"skip": boolean, "summary": string}.
+/** How long the separate open-loop line may be; the prompt asks for the same bound. */
+export const OPEN_LOOP_MAX_CHARS = 120;
+
+/**
+ * Architect-authored distillation prompt, v2. The assistant's display name is a parameter, so no persona name
+ * is baked into the text; the rules of v1 (two to four attributed sentences, the bare-yes rule, the
+ * injected-summary rule, the skip rule) are unchanged.
+ */
+export function distillationPrompt(assistantName: string): string {
+  return `You write a short private summary of one finished voice conversation between the owner and the assistant, whose name is ${assistantName}, so the assistant can
+recall it in a later conversation. Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
 
 Write 2 to 4 plain sentences in the past tense: what the owner wanted, what was found or decided, and anything
-the owner explicitly said was still to do. Attribute every claim: "the owner said", "Naya found in the
-calendar", "Naya could not find". Never present something Naya said as a fact the owner confirmed; a short
+the owner explicitly said was still to do. Attribute every claim: "the owner said", "${assistantName} found in the
+calendar", "${assistantName} could not find". Never present something ${assistantName} said as a fact the owner confirmed; a short
 "yes" or "okay" from the owner confirms nothing.
+
+Set openLoop to at most ${OPEN_LOOP_MAX_CHARS} characters naming only something the owner explicitly said was still to do,
+or null when the owner named nothing. Never infer a to-do the owner did not say, and never restate the summary.
 
 The transcript is automatic speech recognition of an owner who speaks English as a second language: names and
 numbers may be misheard. If a name looks garbled, describe the person or thing by role instead of guessing a
 spelling. Do not repeat content that only came from the earlier summaries listed below unless the owner
 discussed it again in this conversation. Leave out small talk, greetings, tests of the app and anything about
-how the app or Naya works. Set skip to true when nothing worth remembering happened.`;
+how the app or the assistant works. Set skip to true when nothing worth remembering happened.`;
+}
 
-export interface DistillationTurn { readonly speaker: 'owner' | 'naya'; readonly text: string }
+export interface DistillationTurn { readonly speaker: 'owner' | 'assistant'; readonly text: string }
 
 /** Keep the first 4 000 and the last 20 000 characters, marking the cut. */
 export function capDistillationInput(text: string): { text: string; truncated: boolean } {
@@ -53,6 +65,7 @@ function localDate(ms: number, timeZone: string): string {
 }
 
 export function buildDistillationInput(input: {
+  readonly assistantName: string;
   readonly turns: readonly DistillationTurn[];
   readonly toolNames: readonly string[];
   readonly dateMs: number;
@@ -61,12 +74,12 @@ export function buildDistillationInput(input: {
 }): { readonly text: string; readonly truncated: boolean } {
   const parts: string[] = [`Session date: ${localDate(input.dateMs, input.timeZone)} (${input.timeZone})`];
   if (input.injected.length) {
-    parts.push('Summaries already shown to Naya in this conversation:');
+    parts.push(`Summaries already shown to ${input.assistantName} in this conversation:`);
     for (const item of input.injected) parts.push(`- ${item.id}: ${item.summary}`);
   }
-  if (input.toolNames.length) parts.push(`Tools Naya used: ${[...new Set(input.toolNames)].join(', ')}`);
+  if (input.toolNames.length) parts.push(`Tools ${input.assistantName} used: ${[...new Set(input.toolNames)].join(', ')}`);
   parts.push('Transcript:');
-  for (const turn of input.turns) parts.push(`${turn.speaker === 'owner' ? 'Owner' : 'Naya'}: ${turn.text}`);
+  for (const turn of input.turns) parts.push(`${turn.speaker === 'owner' ? 'Owner' : input.assistantName}: ${turn.text}`);
   return capDistillationInput(parts.join('\n'));
 }
 
@@ -78,7 +91,7 @@ export interface SessionTranscript {
   readonly createdAt: number;
 }
 
-/** Read finished owner and Naya turns in order, plus the tool names used (never tool results). */
+/** Read finished owner and assistant turns in order, plus the tool names used (never tool results). */
 export function readSessionTranscript(tx: Transaction, liveSessionId: string): SessionTranscript {
   const session = tx.get('SELECT created_at, terminal_at FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   const rows = tx.all('SELECT kind, text, tool_json, finished FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [liveSessionId]);
@@ -91,7 +104,7 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
     pending[kind] = '';
     if (!text) return;
     if (kind === 'inputTranscription') { ownerTurns += 1; turns.push({ speaker: 'owner', text }); }
-    else turns.push({ speaker: 'naya', text });
+    else turns.push({ speaker: 'assistant', text });
   };
   for (const row of rows) {
     const kind = String(row['kind']);
@@ -112,7 +125,7 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
 }
 
 /** Parse the model's JSON, tolerating a fenced block. Returns null on a validation failure. */
-export function parseDistillationResult(text: string): { skip: boolean; summary: string } | null {
+export function parseDistillationResult(text: string): { skip: boolean; summary: string; openLoop: string | null } | null {
   const match = /\{[\s\S]*\}/.exec(text);
   if (!match) return null;
   let value: unknown;
@@ -120,16 +133,20 @@ export function parseDistillationResult(text: string): { skip: boolean; summary:
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record['skip'] !== 'boolean' || typeof record['summary'] !== 'string') return null;
-  return { skip: record['skip'], summary: record['summary'].trim() };
+  // The open loop is optional and separate: absent, null, empty or non-string reads as no open loop.
+  const openLoop = typeof record['openLoop'] === 'string' ? record['openLoop'].trim().slice(0, OPEN_LOOP_MAX_CHARS).trim() : '';
+  return { skip: record['skip'], summary: record['summary'].trim(), openLoop: openLoop === '' ? null : openLoop };
 }
 
 export interface SummarizerLogEvent { readonly event: string; readonly [key: string]: unknown }
 
 export interface SummarizerOptions {
   readonly store: StorePort;
-  /** Null when no text model is configured: no row is written, so a later start retries. */
+  /** Null when no text model is configured: the distiller writes a skipped row naming no_text_model, so the store shows why. */
   readonly model: ModelPort | null;
   readonly modelId: string;
+  /** The persona name the host already knows, used in the prompt and in the speaker tags; never a literal. */
+  readonly assistantName: string;
   readonly timeZone: string;
   readonly now: () => number;
   readonly log: (event: SummarizerLogEvent) => void;
@@ -151,6 +168,7 @@ const RETRYABLE: ReadonlySet<string> = new Set(['error', 'deadline', 'cancelled'
 
 export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
+  const system = distillationPrompt(options.assistantName);
   const serialize = (work: () => Promise<void>): Promise<void> => {
     chain = chain.then(work, work);
     return chain;
@@ -158,7 +176,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   async function callModel(input: string, signal: AbortSignal): Promise<ModelResult> {
     const request: ModelRequest = {
-      system: DISTILLATION_PROMPT,
+      system,
       promptVersion: SUMMARY_PROMPT_VERSION,
       contents: [{ role: 'user', parts: [{ text: input }] }],
       dataClasses: ['ordinary'],
@@ -170,7 +188,6 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
   }
 
   async function distill(liveSessionId: string, runOptions: { deadHost?: boolean } = {}): Promise<void> {
-    if (!options.model) return;
     const prepared = options.store.transaction(tx => {
       const existing = summaries.getBySession(tx, liveSessionId);
       if (existing) return null;
@@ -190,16 +207,22 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     // Privacy: only ordinary-class Live sessions are distilled; anything else is sealed skipped,
     // mirroring the voice memory source which never lets a non-ordinary label leave the port.
     if (prepared.dataClass !== 'ordinary') {
-      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'non_ordinary', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'non_ordinary' });
       return;
     }
     if (transcript.ownerTurns < SUMMARY_MIN_OWNER_TURNS) {
-      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'too_few_turns', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });
       return;
     }
-    const input = buildDistillationInput({ turns: transcript.turns, toolNames: transcript.toolNames, dateMs: endedAt, timeZone: options.timeZone, injected });
+    // No text model configured: record the row and its reason, so the store shows why nothing was distilled.
+    if (!options.model) {
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'no_text_model', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
+      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'no_text_model' });
+      return;
+    }
+    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, dateMs: endedAt, timeZone: options.timeZone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
     options.log({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();
@@ -216,16 +239,16 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       if (result && !RETRYABLE.has(result.status)) {
         const parsed = parseDistillationResult(result.text);
         if (!parsed) {
-          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: 'invalid_output', now: options.now() }));
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: 'invalid_output', now: options.now() }));
           options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: 'invalid_output', retryCount });
           return;
         }
         if (parsed.skip || !parsed.summary) {
-          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'model_skip', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
           options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'model_skip' });
           return;
         }
-        options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary: parsed.summary, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
+        options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary: parsed.summary, openLoop: parsed.openLoop, promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
         options.log({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
         return;
       }
@@ -233,7 +256,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       if (retryCount >= SUMMARY_MAX_RETRIES) break;
       retryCount += 1;
     }
-    options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
+    options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
     options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: lastError, retryCount });
   }
 

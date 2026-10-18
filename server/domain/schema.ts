@@ -142,4 +142,15 @@ export const domainMigrations: SchemaMigration[] = [
       `CREATE INDEX ix_conversation_summaries_ended ON conversation_summaries(status, ended_at DESC)`,
     ],
   },
+  {
+    owner: 'domain',
+    version: 6,
+    statements: [
+      // Summary v2 (3u): a separate open-loop line, the prompt version the row was written under, and the
+      // skip reason, so a skipped row says why. All three are nullable: v1 rows read as null, no backfill.
+      `ALTER TABLE conversation_summaries ADD COLUMN open_loop TEXT`,
+      `ALTER TABLE conversation_summaries ADD COLUMN prompt_version TEXT`,
+      `ALTER TABLE conversation_summaries ADD COLUMN skip_reason TEXT`,
+    ],
+  },
 ];

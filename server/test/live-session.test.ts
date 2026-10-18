@@ -3229,6 +3229,7 @@ test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps t
   const openAiSession = openAiLive.create('ordinary', 'backend-procedure-openai', context(store));
   const openAiAttachment = openAiLive.attach(openAiSession.liveSessionId, context(store));
   await openAi.frame(1);
+  openAi.send({ type: 'session.started', session: { id: 'sess_fake' } });
   await openAiAttachment.ready;
   const start = openAi.frames[0] as unknown as { session: Record<string, unknown> };
   const responses = (start.session['delegation'] as { responses: Record<string, unknown> }).responses;

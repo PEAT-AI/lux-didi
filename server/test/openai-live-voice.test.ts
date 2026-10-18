@@ -1527,13 +1527,11 @@ describe('openai gpt-live receipts', () => {
 
   test('O1b-A: a delegated response writes its four receipts, and two answers in reverse order share one continuation', async t => {
     const { port, rows } = receipts(t);
-    const { f, session } = await openWithTrace(t, port);
+    const { f, session, captured } = await openWithTrace(t, port);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    await tick();
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_a') });
-    await tick();
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_b') });
-    await tick();
+    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
     // The second call answers first: the batch is not settled, so the owner defers, then one create carries both.
     session.sendToolResponse({ responses: [{ id: 'call_b', name: 'research', response: { ok: true } }] });
     session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
@@ -1555,9 +1553,8 @@ describe('openai gpt-live receipts', () => {
     const { port, rows } = receipts(t);
     const { f, session } = await openWithTrace(t, port);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    await tick();
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
-    await tick();
+    await until(() => rows('response.terminal').length === 1);
     const terminal = rows('response.terminal');
     assert.equal(terminal.length, 1);
     const detail = JSON.parse(String(terminal[0]!['detail']));

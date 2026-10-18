@@ -988,7 +988,7 @@ export class LiveSessionOwner {
         name: 'call_ceiling', configuredMs: this.#profile.limits.callMaxMs });
       this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
-    void this.#consume(handle);
+    void this.#consume(handle).catch(error => this.#consumeFailed(handle, error));
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
     void ready.catch(() => {});
     return {
@@ -1412,6 +1412,22 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
     hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
+  }
+
+  /**
+   * #331: the consumer loop's handle is already in the caller's hands, so a rejection from the part of the loop
+   * that runs after its own try/catch (a durable write against a store that closed underneath it, for example)
+   * must not reject into the void. It is the same failed durable write the terminal path already answers: bounded
+   * fields in the log, the reader closed, and done resolved with the in-memory outcome, never a fabricated one.
+   */
+  #consumeFailed(handle: ActiveSession, error: unknown): void {
+    handle.persistFailure ??= error;
+    console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
+      code: handle.diagnosticTerminalCode,
+      class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
+    handle.consumer?.close();
+    handle.abort.abort();
+    handle.resolveDone();
   }
 
   async #consume(handle: ActiveSession): Promise<void> {

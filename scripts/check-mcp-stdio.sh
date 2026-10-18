@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 deps="${DIDI_TYPESCRIPT_ROOT:-$root/server/node_modules}"
@@ -37,4 +38,4 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${inputs[@]}"
 mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/stdio-mcp-child.mjs" "$out/dist/test/fixtures/"
-node --test --test-timeout=15000 "$out/dist/test/mcp-stdio.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/mcp-stdio.test.js"

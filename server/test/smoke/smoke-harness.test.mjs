@@ -64,7 +64,10 @@ async function smokeFixture({ distTime, sourceTime, buildOk = true, nodeExit = 0
   const npm = join(bin, 'npm');
   await writeFile(npm, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${npmLog}'\n: > '${distEntry}'\nexit ${buildOk ? 0 : 1}\n`);
   const node = join(bin, 'node');
-  await writeFile(node, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${nodeLog}'\nexit ${nodeExit}\n`);
+  // smoke.sh reads the probes' declared deadlines through one module import before it runs anything (#364);
+  // the stub answers that call with a budget and the ids a run owes, and answers it successfully even when the
+  // probe run itself is meant to fail, then stays silent for every probe run.
+  await writeFile(node, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${nodeLog}'\ncase "$*" in *--input-type=module*) printf '600000\\nprobe1-strict-supervisor\\n'; exit 0 ;; esac\nexit ${nodeExit}\n`);
   await chmod(npm, 0o755);
   await chmod(node, 0o755);
   return { dir, bin, npmLog, nodeLog, distEntry };

@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import { homedir, loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -54,6 +54,37 @@ const SOURCE_TOOLS = {
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
+
+// Each probe's own wall-clock ceiling, declared here and used by that probe's body below. scripts/smoke.sh
+// derives its cap from the sum of these plus its margin (#364), so a slow host extends the cap instead of
+// truncating a run that is still inside its own deadlines.
+const CHAT_TURN_MS = 70000;
+const LIVE_TURN_MS = 60000;
+const CONNECTORS_MS = 60000;
+const RESEARCH_READY_MS = 30000;
+const RESEARCH_QUESTION_MS = 90000;
+/** The probes in the order the run reaches them, each with the deadline its own body enforces. */
+export const PROBE_DEADLINES_MS = [
+  { id: 'probe1-strict-supervisor', ms: READY_TIMEOUT_MS },
+  { id: 'probe2-connectors', ms: CONNECTORS_MS },
+  { id: 'probe3-text-turn', ms: CHAT_TURN_MS },
+  { id: 'probe4-voice-turn', ms: LIVE_TURN_MS },
+  { id: 'probe5-research', ms: RESEARCH_READY_MS + RESEARCH_QUESTION_MS },
+  { id: 'probe6-meetings', ms: RESEARCH_READY_MS + RESEARCH_QUESTION_MS },
+  ...RESEARCH_PROBES.map(spec => ({ id: spec.id, ms: RESEARCH_READY_MS + RESEARCH_QUESTION_MS })),
+];
+/** The whole run's declared budget: every probe's own deadline, summed. Never a guess about the host. */
+export const PROBE_BUDGET_MS = PROBE_DEADLINES_MS.reduce((total, probe) => total + probe.ms, 0);
+/** Every probe id this run must report, in order. A run that ends early names the ones that never did. */
+export const PROBE_IDS = PROBE_DEADLINES_MS.map(probe => probe.id);
+
+// Set by scripts/smoke.sh: each finished probe appends its id here, so a capped run can name the ones
+// that never reported instead of losing every result.
+const PROGRESS_FILE = process.env['LUX_SMOKE_PROGRESS'];
+function reported(id) {
+  if (!PROGRESS_FILE) return;
+  try { appendFileSync(PROGRESS_FILE, id + '\n'); } catch { /* a progress note never fails a probe */ }
+}
 
 const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research', 'probe6-meetings', 'probe7-mail', 'probe8-chat', 'probe9-knowledge', 'probe10-calendar'];
 
@@ -100,6 +131,27 @@ export function launchTimeoutMs(env = process.env) {
 }
 
 export function loadAverageText() { return loadavg().map(value => value.toFixed(2)).join('/'); }
+
+/**
+ * R4-R2: a dist built before the newest commit that touched server/ judges old code, and its refusals look
+ * like product failures (a stale build without custom voices answered `invalid_request_error` /
+ * 'Voice session access denied'). This returns the loud line that names the two times, or null when the
+ * build is fresh. It never guesses: with no git metadata (an installed app) it cannot judge and stays quiet.
+ */
+export function staleServerDist(entry = join(root, 'server/dist/host/index.js')) {
+  if (!existsSync(entry)) return `stale server/dist: missing ${entry}`;
+  const built = statSync(entry).mtimeMs / 1000;
+  let newest; let sha;
+  try {
+    const line = execFileSync('git', ['-C', root, 'log', '-1', '--format=%ct %h', '--', 'server'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const [seconds, short] = line.split(' ');
+    newest = Number(seconds); sha = short;
+  } catch { return null; }
+  if (!Number.isFinite(newest) || !sha) return null;
+  if (built >= newest) return null;
+  const at = seconds => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return `stale server/dist: built ${at(Math.floor(built))}, HEAD ${sha} at ${at(newest)}`;
+}
 
 /** The probe1 note. A launch timeout names the elapsed budget and the host load, so a slow host says so. */
 export function supervisorNote(launch, host) {
@@ -233,7 +285,7 @@ async function chatTurn({ base, token, epoch, dataDir, host, readyPid }) {
   if (accepted.status !== 200) return { ok: false, stage: 'accept' };
   const runId = (await accepted.json()).data.runId;
   let snap = null;
-  const deadline = now() + 70000;
+  const deadline = now() + CHAT_TURN_MS;
   while (now() < deadline) {
     const response = await fetch(base + `/api/v1/chat/${runId}`, { headers: headers() });
     const data = (await response.json()).data;
@@ -314,7 +366,7 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   try { ws.send(JSON.stringify({ type: 'endAudioStream' })); } catch { /* noop */ }
   let toolResultAt = null;
   let audioAtResult = 0;
-  const deadline = now() + 60000;
+  const deadline = now() + LIVE_TURN_MS;
   while (now() < deadline) {
     const data = await journal().catch(() => null);
     const kinds = data && Array.isArray(data.fragments) ? data.fragments.map(fragment => fragment.kind) : [];
@@ -379,7 +431,7 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
   };
   try {
     // The host commits a 'ready' journal fragment once the provider socket is live.
-    const readyDeadline = now() + 30000;
+    const readyDeadline = now() + RESEARCH_READY_MS;
     let ready = false;
     while (now() < readyDeadline) {
       const data = await journal().catch(() => null);
@@ -422,7 +474,7 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
     await new Promise(resolve => setTimeout(resolve, 300));
     try { ws.send(JSON.stringify({ type: 'endAudioStream' })); } catch { /* noop */ }
     const questionAt = now();
-    const deadline = questionAt + 90000;
+    const deadline = questionAt + RESEARCH_QUESTION_MS;
     let calls = 0; let result = null; let outputChars = 0; let outputAtResult = null; let lastFragments = [];
     while (now() < deadline) {
       const data = await journal().catch(() => null);
@@ -497,6 +549,14 @@ export function sourceSummary(turn, source) {
 async function main() {
   const dev = process.argv.includes('--dev');
   const results = [];
+  // A probe reports the moment it finishes (#364): its line reaches the caller's log before the next
+  // probe starts, so a capped or killed run still shows everything it proved. The summary and the exit
+  // code are computed from the same list afterwards.
+  const report = result => {
+    results.push(result);
+    reported(result.id);
+    log(`${result.skip ? 'SKIP' : result.ok ? 'PASS' : 'FAIL'} ${result.id} ${result.note}`);
+  };
   const dataDirArg = process.argv.indexOf('--data-dir');
   const externalDataDir = dataDirArg >= 0 ? process.argv[dataDirArg + 1] || undefined : undefined;
   const dataDir = externalDataDir ?? (dev
@@ -510,8 +570,18 @@ async function main() {
     log('SUMMARY 1 probes: 0 pass 1 fail');
     process.exit(1);
   }
+  // R4-R2: never judge a stale build. Refuse before the host starts, so no probe and no model turn spends
+  // time on code the checkout has already moved past.
+  const stale = staleServerDist(serverEntry);
+  if (stale !== null) {
+    log(`FAIL probe0-build ${stale}; rebuild with npm --prefix server run build`);
+    log('SUMMARY 1 probes: 0 pass 1 fail');
+    process.exit(1);
+  }
   const host = spawnSupervised({ serverEntry, dataDir, webRoot, configDir: config.configDir, ownerProfilePath: config.ownerProfilePath });
   const launch = await waitForReady(host, launchTimeoutMs());
+  // probe1 is settled by the launch itself, so it reports first, before the first slow probe starts.
+  report({ id: 'probe1-strict-supervisor', ok: launch.status === 'ready' && host.invalid === null && host.error === null, note: supervisorNote(launch, host) });
   let token = null;
   if (launch.status === 'ready') token = await bearerFor(dataDir);
   const base = launch.status === 'ready' ? launch.frame.origin : null;
@@ -520,39 +590,39 @@ async function main() {
   if (launch.status === 'ready') {
     try {
       const connectors = await probeConnectors({ configDir: config.configDir ?? join(dataDir, 'provider-config') });
-      results.push({ id: 'probe2-connectors', ok: connectors.ok, note: `${connectors.checked} configured ${connectors.skipped ? `(${connectors.skipped} unconfigured) ` : ''}${connectors.parts.join(' ')}` });
-    } catch (error) { results.push({ id: 'probe2-connectors', ok: false, note: String(error && error.message).slice(0, 120) }); }
+      report({ id: 'probe2-connectors', ok: connectors.ok, note: `${connectors.checked} configured ${connectors.skipped ? `(${connectors.skipped} unconfigured) ` : ''}${connectors.parts.join(' ')}` });
+    } catch (error) { report({ id: 'probe2-connectors', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {
       const text = await chatTurn({ base, token, epoch, dataDir, host, readyPid: launch.frame.pid });
-        results.push({ id: 'probe3-text-turn', ok: text.ok, note: text.ok ? `tools=${text.names.join(',')} answer=${text.answerBytes}B outcome=${text.outcome}` : `stage=${text.stage} tools=[${(text.names||[]).join(',')}] answer=${text.answerBytes||0}B pidStable=${text.pidStable}${(text.rejections||[]).length ? ' rejected=' + (text.rejections).map(r => r.tool + ':' + r.fields.join('+')).join(',') : ''}` });
-    } catch (error) { results.push({ id: 'probe3-text-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
+        report({ id: 'probe3-text-turn', ok: text.ok, note: text.ok ? `tools=${text.names.join(',')} answer=${text.answerBytes}B outcome=${text.outcome}` : `stage=${text.stage} tools=[${(text.names||[]).join(',')}] answer=${text.answerBytes||0}B pidStable=${text.pidStable}${(text.rejections||[]).length ? ' rejected=' + (text.rejections).map(r => r.tool + ':' + r.fields.join('+')).join(',') : ''}` });
+    } catch (error) { report({ id: 'probe3-text-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {
       const clipPath = synthClip();
       try {
         const voice = await liveTurn({ base, token, epoch, clipPath });
-        results.push({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage}` });
+        report({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage}` });
       } finally { await rm(clipPath, { force: true }); }
-    } catch (error) { results.push({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    } catch (error) { report({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {
       const clipPath = synthClip(RESEARCH_QUESTION);
       try {
         const research = await researchTurn({ base, token, epoch, dataDir, clipPath });
-        results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
+        report({ id: 'probe5-research', ok: research.ok, note: research.ok
           ? `calls=${research.calls} rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
           : researchFailureNote({ stage: research.stage, calls: research.calls, runs: research.runs, detail: research.detail, status: research.status, rounds: research.rounds, read: research.read, replyBytes: research.replyBytes, outputFragments: research.outputFragments, outputChars: research.outputChars, otherToolNames: research.otherToolNames, otherToolCalls: research.otherToolCalls, turnCompleteMs: research.turnCompleteMs }) + ` load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
-    } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    } catch (error) { report({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
     // #263: a plain calendar question must reach research, never a "no calendar access" refusal. Called and
     // answered is the pass; the driver and the read shape are probe5's stricter job.
     try {
       const clipPath = synthClip(MEETINGS_QUESTION);
       try {
         const research = await researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall: false, requireDriver: false, requireRead: false });
-        results.push({ id: 'probe6-meetings', ok: research.ok, note: research.ok
+        report({ id: 'probe6-meetings', ok: research.ok, note: research.ok
           ? `calls=${research.calls} rounds=${research.rounds} driver=${research.driver} progress=${research.progress}`
           : `stage=${research.stage} calls=${research.calls ?? 0} runs=${research.runs ?? 0}` });
       } finally { await rm(clipPath, { force: true }); }
-    } catch (error) { results.push({ id: 'probe6-meetings', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    } catch (error) { report({ id: 'probe6-meetings', ok: false, note: String(error && error.message).slice(0, 120) }); }
     for (const spec of RESEARCH_PROBES) {
       try {
         const clipPath = synthClip(spec.question);
@@ -560,21 +630,17 @@ async function main() {
           const turn = await researchTurn({ base, token, epoch, dataDir, clipPath, enforce: false });
           const summary = sourceSummary(turn, spec.source);
           const ok = spec.check(summary);
-          results.push({ id: spec.id, ok, note: `items=${summary.items} calls=${summary.calls} kept=${summary.keptBytes}B reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor} hydrated=${summary.hydrated}` + (ok ? '' : ' stage=criteria') });
+          report({ id: spec.id, ok, note: `items=${summary.items} calls=${summary.calls} kept=${summary.keptBytes}B reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor} hydrated=${summary.hydrated}` + (ok ? '' : ' stage=criteria') });
         } finally { await rm(clipPath, { force: true }); }
-      } catch (error) { results.push({ id: spec.id, ok: false, note: String(error && error.message).slice(0, 120) }); }
+      } catch (error) { report({ id: spec.id, ok: false, note: String(error && error.message).slice(0, 120) }); }
     }
   } else {
-    results.push(...noHostResults());
+    for (const result of noHostResults()) report(result);
   }
-
-  const supervisorOk = launch.status === 'ready' && host.invalid === null && host.error === null;
-  results.unshift({ id: 'probe1-strict-supervisor', ok: supervisorOk, note: supervisorNote(launch, host) });
 
   await stopSupervised(host);
   const failed = results.some(result => !result.ok && !result.skip);
 
-  for (const result of results) log(`${result.skip ? 'SKIP' : result.ok ? 'PASS' : 'FAIL'} ${result.id} ${result.note}`);
   const passed = results.filter(result => result.ok).length;
   const skipped = results.filter(result => result.skip).length;
   log(`SUMMARY ${results.length} probes: ${passed} pass ${results.length - passed - skipped} fail${skipped ? ` ${skipped} skip` : ''}`);

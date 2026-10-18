@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 helper="$(pwd)/scripts/npm-ci-offline.sh"
@@ -11,9 +12,9 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
-# The new owner suite, the warm-context pre-assembly suite, the debug journal suites and the accepted
-# Live adapter regression suite run together.
-node --test --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/live-memory-note.test.js dist/test/research-steps.test.js dist/test/journal.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js | tee "$work/test.log"
+# The new owner suite, the live summary suite (#363), the warm-context pre-assembly suite, the debug journal
+# suites and the accepted Live adapter regression suite run together.
+node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js dist/test/research-steps.test.js dist/test/journal.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js | tee "$work/test.log"
 
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live session tests failed' >&2; exit 1; }

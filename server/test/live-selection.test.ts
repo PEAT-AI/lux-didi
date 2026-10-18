@@ -178,7 +178,9 @@ test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anyt
   const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', '1.08']);
   assert.equal(saved.status, 0, saved.err);
   assert.equal(f.saved()['playbackRate'], 1.08);
-  // The next start is what reads it: the loader is the authority on the process-current pace.
+  // The next start is what reads it: the loader is the authority on the process-current pace, and the
+  // process-current value is assigned by a load, never by a child process: assert it after the load that a
+  // next start performs (d9cc8192, TRAIN3Q-R3), not after the CLI run that only wrote the file.
   const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
   assert.equal(currentLivePlaybackRate(), 1.08);
   assert.equal(loaded.status, 'configured');

@@ -7,6 +7,7 @@
 # through the project tsconfig so the check fails on a stale or absent dist, and
 # never runs a broad unrelated ring.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -49,7 +50,7 @@ status=0
 
 # New selection tests + impacted CHAT/HTTP/HOST accept/dispatch/fingerprint/recovery
 # and CONNECTED authorization/context regressions, against the real compiled build.
-timeout 1200 node --test --test-reporter=tap --test-timeout=30000 \
+timeout 1200 node_test_files --test-reporter=tap --test-timeout=30000 \
   server/dist/test/memory-import.test.js server/dist/test/memory-context.test.js server/dist/test/summaries.test.js \
   server/dist/test/chat.test.js server/dist/test/http.test.js \
   server/dist/test/host.test.js server/dist/test/connected.test.js \
@@ -58,7 +59,7 @@ grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-memory-context: zero se
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 
 # Impacted DOMAIN resolution and routing-label regressions (real Store + Outbox).
-timeout 900 node --test --test-reporter=tap --test-timeout=30000 \
+timeout 900 node_test_files --test-reporter=tap --test-timeout=30000 \
   server/test/domain.test.ts server/test/provenance.test.ts \
   | tee "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-memory-context: zero selected domain tests' >&2; exit 1; }

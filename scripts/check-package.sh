@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
 if test -n "$(git status --porcelain -- server scripts/check-package.sh docs/service-packaging.md)"; then
@@ -47,5 +48,5 @@ cd "$work/runtime"
 for file in dist/test/http.test.js dist/test/package.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
-node --test --test-reporter=tap --test-timeout=30000 --test-name-pattern='package|artifact' dist/test/http.test.js dist/test/package.test.js | tee "$work/test.log"
+node_test_files --test-reporter=tap --test-timeout=30000 --test-name-pattern='package|artifact' dist/test/http.test.js dist/test/package.test.js | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected package tests' >&2; exit 1; }

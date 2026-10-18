@@ -7,6 +7,7 @@
 # on stale dist artefacts. Mirrors scripts/check-service.sh; it runs only the
 # focused domain/provenance tests and affected HTTP fixture consumers, never a broad suite.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/../server"
 
@@ -26,11 +27,11 @@ done
 log=$(mktemp)
 http_log=$(mktemp)
 trap 'rm -f "$log" "$http_log"' EXIT
-node --test --test-reporter=tap --test-timeout=15000 test/domain.test.ts test/provenance.test.ts | tee "$log"
+node_test_files --test-reporter=tap --test-timeout=15000 test/domain.test.ts test/provenance.test.ts | tee "$log"
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-domain: zero selected tests' >&2; exit 1; }
 
 # Only the four cases that use the synthetic DomainPort fixture changed for
 # required-method compatibility. The package-install test does not use it.
 http_pattern='^(one-time pairing, HttpOnly Strict cookies, CSRF denial, session reload and logout|canonical duplicate request replay, conflicting keys, rollback and stale epoch|body boundary refuses unknown fields, identities, wrong types, malformed JSON and oversized payloads|HTTP request keys and browser session survive service and database restart)$'
-node --test --test-reporter=tap --test-timeout=15000 --test-name-pattern "$http_pattern" dist/test/http.test.js | tee "$http_log"
+node_test_files --test-reporter=tap --test-timeout=15000 --test-name-pattern "$http_pattern" dist/test/http.test.js | tee "$http_log"
 grep -Eq '^# pass 4$' "$http_log" || { echo 'check-domain: expected four affected HTTP fixture tests' >&2; exit 1; }

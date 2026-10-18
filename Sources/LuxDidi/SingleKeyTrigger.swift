@@ -68,13 +68,16 @@ struct RightCommandTapDetector {
     private var chordUsed = false
     private var otherModifierHeld = false
     private var holdStarted = false
+    /// The press was given up on, so its release is not a gesture. A chord sets it after
+    /// ending a hold, and a tap disabled mid-press sets it through `abandonPress`.
+    private var cancelled = false
 
     /// Whether a press is open right now, so the app can arm the hold timer once.
     var isPressing: Bool { downAt != nil }
 
-    /// The gestures one event completes. A release completes a tap, ends a started hold,
-    /// or reports the chord that cancelled the press; a press or a chord alone
-    /// completes nothing.
+    /// The gestures one event completes. A release completes a tap or ends a started hold,
+    /// a chord reports itself once and cancels whatever press it lands in, and a press
+    /// alone completes nothing.
     mutating func handle(_ event: SingleKeyEvent, at time: TimeInterval) -> [SingleKeyGesture] {
         switch event {
         case .rightCommandDown:
@@ -83,26 +86,32 @@ struct RightCommandTapDetector {
             guard downAt == nil else { return [] }
             downAt = time
             holdStarted = false
+            cancelled = false
             // A modifier already held turns the press into a chord: Shift plus
             // Right Command is not a tap (review B2).
             chordUsed = otherModifierHeld
             return []
         case .otherKeyDown:
             chordUsed = true
-            return []
+            return cancelHold()
         case .otherModifiers(let held):
             otherModifierHeld = held
-            if held { chordUsed = true }
-            return []
+            guard held else { return [] }
+            chordUsed = true
+            return cancelHold()
         case .rightCommandUp:
             guard let start = downAt else { return [] }
             let wasHold = holdStarted
             let wasChord = chordUsed
+            let wasCancelled = cancelled
             downAt = nil
             holdStarted = false
             chordUsed = false
-            // Once a hold has opened the mic the release ends it whatever else is
-            // pressed meanwhile, so the fence can never be left closed by a chord.
+            cancelled = false
+            // A cancelled press has already reported itself, so its release is silent.
+            if wasCancelled { return [] }
+            // A hold that still runs at the release ends here, whatever else arrived; the
+            // chord that cancels one already ended it where the chord landed.
             if wasHold { return [.holdEnd] }
             if wasChord { return [.ignored("chord")] }
             // A late timer is not a lost gesture: the press was a hold all along.
@@ -114,9 +123,29 @@ struct RightCommandTapDetector {
     /// The hold timer, armed by the app at the press and fired at the threshold: a press
     /// still open and still uncancelled becomes a hold, exactly once.
     mutating func poll(at time: TimeInterval) -> [SingleKeyGesture] {
-        guard let start = downAt, !holdStarted, !chordUsed, time - start >= Self.holdThreshold else { return [] }
+        guard let start = downAt, !holdStarted, !cancelled, !chordUsed,
+              time - start >= Self.holdThreshold else { return [] }
         holdStarted = true
         return [.holdStart]
+    }
+
+    /// The rest of this press was lost to the system: an open hold ends now, so a fence
+    /// no timer will close is never left closed. Nothing else about the press survives.
+    mutating func abandonPress() -> [SingleKeyGesture] {
+        let wasHold = holdStarted
+        holdStarted = false
+        cancelled = true
+        return wasHold ? [.holdEnd] : []
+    }
+
+    /// A chord during a started hold cancels it where the chord lands: the fence closes at
+    /// that moment and the rest of the press is inert, so the release is not a second
+    /// gesture. A chord before the threshold ends nothing, because nothing opened.
+    private mutating func cancelHold() -> [SingleKeyGesture] {
+        guard holdStarted else { return [] }
+        holdStarted = false
+        cancelled = true
+        return [.holdEnd]
     }
 }
 
@@ -324,11 +353,15 @@ final class SingleKeyTrigger {
     }
 
     /// Re-arms the tap and drops any half-seen press, so a disabled tap resumes
-    /// without carrying a stale down time into the next tap (review B6).
+    /// without carrying a stale down time into the next tap (review B6). The key-up can
+    /// be one of the events the disable swallowed, so an open hold ends here rather than
+    /// leaving the mic open with no timer left to close it (review B2).
     func reEnable() {
         guard let tap else { return }
+        let lost = detector.abandonPress()
         detector = RightCommandTapDetector()
         holdToken &+= 1
+        for gesture in lost { perform(gesture) }
         CGEvent.tapEnable(tap: tap, enable: true)
     }
 

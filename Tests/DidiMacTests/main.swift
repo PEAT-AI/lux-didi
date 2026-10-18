@@ -177,6 +177,17 @@ _ = holdDetector.handle(.rightCommandDown, at: 94)
 expect(holdDetector.handle(.rightCommandUp, at: 94.05) == [.tap],
     "a tap is a tap again once the modifier is released")
 
+// Q2 review B2: the system can disable the tap mid-press, and the key-up can be one of
+// the events it swallows. A hold open at that moment ends, so no fence is left closed
+// with no timer to close it.
+_ = holdDetector.handle(.rightCommandDown, at: 95)
+_ = holdDetector.poll(at: 95.5)
+expect(holdDetector.abandonPress() == [.holdEnd], "a press lost to a disabled tap ends its open hold")
+expect(holdDetector.handle(.rightCommandUp, at: 96) == [], "the lost press leaves nothing behind")
+_ = holdDetector.handle(.rightCommandDown, at: 97)
+expect(holdDetector.abandonPress() == [], "a press that had not reached the threshold ends nothing")
+expect(holdDetector.handle(.rightCommandUp, at: 97.1) == [], "and its release adds nothing either")
+
 // P1-R1 / Q2 (owner order 2026-10-18): the Right Command key is bound to the presence
 // machine by the one function the app installs, not by a copy in the test. Right Option
 // is SuperWhisper's: the detector has no case for it and never consumes an event.

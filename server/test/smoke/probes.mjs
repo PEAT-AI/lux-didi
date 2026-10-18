@@ -434,6 +434,32 @@ export function researchTurnResult({ calls, runs = [], subcalls = [], findings =
   return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver: driver ?? 'any', selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
 }
 
+/**
+ * #420: the run writes its terminal research_run line from the tool's finally, after every source settles, so
+ * the first answer always lands before the receipt. Poll what this session appended on the question's own tick
+ * until the receipt shows up, bounded by the deadline the question runs on.
+ */
+export async function awaitRunReceipt({ readAppended, deadline, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), tickMs = 1000 }) {
+  for (;;) {
+    const receipt = parseResearchLog(await readAppended().catch(() => ''));
+    if (receipt.runs.length || now() >= deadline) return receipt;
+    await sleep(tickMs);
+  }
+}
+
+/** The per-run metadata reaches the host log only through the closed allowlist. */
+function parseResearchLog(appended) {
+  const runs = []; const subcalls = []; let progress = 0;
+  for (const line of appended.split('\n')) {
+    if (!line.includes('"research_run"') && !line.includes('"research_progress"') && !line.includes('"research_subcall"')) continue;
+    let record; try { record = JSON.parse(line); } catch { continue; }
+    if (record.event === 'research_run') runs.push(record);
+    else if (record.event === 'research_progress') progress += 1;
+    else if (record.event === 'research_subcall') subcalls.push(record);
+  }
+  return { runs, subcalls, progress };
+}
+
 async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall = true, requireDriver = true, requireRead = true, enforce = true }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
@@ -517,19 +543,12 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
       if (result && outputAtResult !== null && outputChars > outputAtResult) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    // The per-run metadata reaches the host log only through the closed allowlist; read what this session appended.
-    const runs = []; const subcalls = []; let progress = 0;
-    try {
+    // The receipt is written after every source settles, so read what this session appended on the same tick.
+    const readAppended = async () => {
       const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
-      const appended = Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
-      for (const line of appended.split('\n')) {
-        if (!line.includes('"research_run"') && !line.includes('"research_progress"') && !line.includes('"research_subcall"')) continue;
-        let record; try { record = JSON.parse(line); } catch { continue; }
-        if (record.event === 'research_run') runs.push(record);
-        else if (record.event === 'research_progress') progress += 1;
-        else if (record.event === 'research_subcall') subcalls.push(record);
-      }
-    } catch { /* no host log means no recorded run */ }
+      return Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
+    };
+    const { runs, subcalls, progress } = await awaitRunReceipt({ readAppended, deadline });
     // Not-called metadata (#260): what the turn did instead of research, so a skipped run is explainable.
     const outputFragments = lastFragments.filter(fragment => fragment.kind === 'outputTranscription');
     const notCalled = {

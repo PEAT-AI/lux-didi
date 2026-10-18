@@ -471,3 +471,18 @@ test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write
     assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='response.observed'")).length, 0, 'and it writes no row');
   });
 });
+
+test('O1b-A: two decisions at the same millisecond resolve to the one decided last, never to chance', () => {
+  withStore(store => {
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    openTurn(store, 't1', 1, T0 + 1_000);
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050 });
+    record(store, 'call.intent', { ...id, callKey: 'c1', responseKey: 'r1', turnId: 't1' }, { name: 'research', argsChars: 4, intentAt: T0 + 1_100 });
+    // A deferral and the send it became, stamped inside the same millisecond: the seq, not the clock, decides.
+    record(store, 'continuation.decided', { ...id, responseKey: 'r1' }, { decidedAt: T0 + 2_000, outcome: 'deferred', skipReason: 'awaiting_calls' });
+    record(store, 'continuation.decided', { ...id, responseKey: 'r1' }, { decidedAt: T0 + 2_000, outcome: 'sent' });
+    const call = buildTimeline(readOf(store), SESSION).turns[0]!.calls[0]!;
+    assert.equal(call.continuationOutcome, 'sent', 'the last decision by (at, seq) is the one reported');
+    assert.equal(call.continuationAt, T0 + 2_000);
+  });
+});

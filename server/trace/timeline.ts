@@ -114,13 +114,13 @@ export interface TimelineOptions { turn?: number; content?: boolean; capturedAt?
 export function buildTimeline(read: TraceRead, liveSessionId: string, options: TimelineOptions = {}): TimelineReport {
   const turnRows = read.all('SELECT * FROM trace_turn WHERE live_session_id=? ORDER BY turn_index, opened_at', [liveSessionId]);
   const responses = read.all('SELECT * FROM trace_response WHERE live_session_id=? ORDER BY created_at, response_key', [liveSessionId]).map(responseView);
+  const continuations = continuationDecisions(read, liveSessionId);
   const calls = read.all('SELECT * FROM trace_call WHERE live_session_id=? ORDER BY intent_at, call_key', [liveSessionId]).map(callView)
     .map(call => {
       const decided = call.responseKey === null ? undefined : continuations.get(call.responseKey);
       return { ...call, continuationAt: decided?.at ?? null, continuationOutcome: decided?.outcome ?? null };
     });
   const playback = read.all('SELECT * FROM trace_playback WHERE live_session_id=? ORDER BY segment_seq, received_at, playback_key', [liveSessionId]).map(playbackView);
-  const continuations = continuationDecisions(read, liveSessionId);
   const utterances = options.content === true
     ? read.all(`SELECT u.turn_id AS turn_id, u.role AS role, u.at AS at, u.final AS final, u.text AS text
                 FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id

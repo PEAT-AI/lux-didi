@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { expectCommands, play, trace as describe } from './voice-replay/driver.js';
+import { analyse, expectCommands, play, trace as describe } from './voice-replay/driver.js';
+import type { Command } from './voice-replay/driver.js';
 import type { Played } from './voice-replay/driver.js';
 import { sanitize } from './voice-replay/sanitize.js';
 
@@ -15,8 +16,8 @@ import { sanitize } from './voice-replay/sanitize.js';
  * make a scenario pass.
  */
 
-const invariants = (played: Played, options: { allowUnanswered?: boolean } = {}): void => {
-  const violations = played.violations(options).list;
+const invariants = (played: Played): void => {
+  const violations = played.violations().list;
   assert.deepEqual(violations, [], `invariants broken for "${played.trace.scenario}": ${violations.join('; ')}${describe(played.replay)}`);
 };
 const types = (played: Played): string[] => played.replay.commands.map(command => command.type);
@@ -81,9 +82,8 @@ test('scenario 4: parallel calls finishing in mixed order with failures get one 
   assert.equal(countOf(played, 'response.item.create'), 2, 'one output per call');
   // One continuation decision per ready batch. Invariant 2 is that assertion: it also refuses a continuation
   // sent while another call of the same delegation still has no result.
-  assert.equal(replay.batches.every(batch => batch.create !== undefined), true,
-    `every ready batch was continued: ${JSON.stringify(replay.batches.map(batch => ({ ids: batch.callIds, create: batch.create?.seq ?? null })))}`);
-  assert.notEqual(replay.batches[0]!.create, undefined, 'the batch was continued once');
+  assert.equal(replay.batches.every(batch => batch.creates.length === 1), true,
+    `every ready batch was continued once: ${JSON.stringify(replay.batches.map(batch => ({ ids: batch.callIds, creates: batch.creates.map(command => command.seq) })))}`);
   // The scripted tool really ran: the failing call carries its failure and the other carries its result.
   assert.equal(outputOf(played, 'call_a').includes('synthetic tool failure') || outputOf(played, 'call_a').includes('error'), true,
     `the failing call carries its failure: ${outputOf(played, 'call_a')}`);
@@ -118,7 +118,7 @@ test('scenario 7: a missing terminal event never withholds the continuation', as
   const played = await play(t, 'scenario-07-missing-terminal-event', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(countOf(played, 'response.create'), 1, `no response.done arrived, so the continuation was withheld: ${describe(replay)}`);
-  invariants(played, { allowUnanswered: true });
+  invariants(played);
   await replay.release();
 });
 
@@ -126,7 +126,7 @@ test('scenario 8: a rejected command retries at most once and an async settings 
   const played = await play(t, 'scenario-08-rejected-command', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(countOf(played, 'response.create') <= 2, true, `the rejected continuation was retried more than once: ${describe(replay)}`);
-  invariants(played, { allowUnanswered: true });
+  invariants(played);
   await replay.release();
 });
 
@@ -135,7 +135,7 @@ test('scenario 9: a failed, incomplete or errored backend ends in a typed dispos
   const { replay } = played;
   assert.equal(replay.receipts.length > 0 || replay.owner.get(replay.liveSessionId).lifecycle === 'terminal', true,
     `a failed backend turn ended with neither audible output nor a typed failure: ${describe(replay)}`);
-  invariants(played, { allowUnanswered: true });
+  invariants(played);
   await replay.release();
 });
 
@@ -145,7 +145,7 @@ test('scenario 10: a disconnect during output submission settles without a stale
   // The interrupted submission of the tool output leaves the host on its recovery path, and the recovered
   // generation submits the lost call again exactly once: invariants 1, 3 and 4 are that assertion.
   assert.equal(countOf(played, 'session.start') >= 2, true, `the host never reconnected after the disconnect: ${describe(replay)}`);
-  invariants(played, { allowUnanswered: true });
+  invariants(played);
   await replay.release();
 });
 
@@ -156,7 +156,7 @@ test('scenario 11: a reconnect never replays an old callback as a new action', a
   // Old callbacks arrive on the dead socket: the recovered generation answers, and nothing is written for it
   // twice in one generation (invariants 1, 3 and 4 are that assertion).
   assert.equal(replay.receipts.length > 0, true, `the recovered session never answered: ${describe(replay)}`);
-  invariants(played, { allowUnanswered: true });
+  invariants(played);
   await replay.release();
 });
 
@@ -167,7 +167,7 @@ test('scenario 12: a commentary acknowledgement with no audio is not delivery', 
   assert.equal(replay.receipts.length > 0, true, `the turn never became audible: ${describe(replay)}`);
   assert.equal(replay.receipts[0]!.at >= answerAt, true,
     `a commentary acknowledgement with no audio counted as delivery at ${replay.receipts[0]!.at - replay.clock.startedAt} ms: ${describe(replay)}`);
-  invariants(played, { allowUnanswered: true });
+  invariants(played);
   await replay.release();
 });
 
@@ -194,4 +194,46 @@ test('the sanitizer reads a recorded log as one JSON array and as one frame per 
   assert.equal(steps.length, 2, `both frames survived: ${JSON.stringify(steps)}`);
   assert.equal(JSON.stringify(steps).includes('private'), false, 'no owner word survives the line-separated form either');
   assert.deepEqual(steps.map(step => step.at_ms), [0, 900]);
+});
+
+/** The minimum an invariant needs: one call answered once, and the continuation decisions recorded after it. */
+const probe = (creates: number, terminal: { lifecycle: string; terminal: string | null } | undefined, audible: boolean) => {
+  const output: Command = { seq: 1, at: 1_000, type: 'response.item.create', epoch: 0,
+    frame: { item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } } };
+  const decisions: Command[] = Array.from({ length: creates }, (_unused, index) =>
+    ({ seq: 2 + index, at: 1_010 + index, type: 'response.create', epoch: 0, frame: {} }));
+  const call = { callId: 'call_1', name: 'search_knowledge', at: 900, epoch: 0, delegationId: 'd_1', outputs: [output], deliveryAt: undefined };
+  return analyse({
+    calls: [call],
+    batches: [{ epoch: 0, at: 1_000, callIds: ['call_1'], creates: decisions }],
+    commands: [output, ...decisions],
+    projections: terminal ? [{ at: 5_000, cause: 'probe', state: 'ended', lifecycle: terminal.lifecycle, terminal: terminal.terminal }] : [],
+    receipts: audible ? [{ at: 2_000, bytes: 4_800, durationMs: 100 }] : [],
+    dispositions: [],
+    deadlineMs: 10_000,
+  }).list;
+};
+
+test('invariant 2 refuses a batch continued twice, and accepts it continued once', () => {
+  const duplicated = probe(2, undefined, true);
+  assert.equal(duplicated.some(entry => entry.includes('invariant 2') && entry.includes('continued 2 times')), true,
+    `a double continuation must violate invariant 2: ${JSON.stringify(duplicated)}`);
+  assert.deepEqual(probe(1, undefined, true), [], 'one continuation for one batch is clean');
+  const withheld = analyse({
+    calls: [{ callId: 'call_1', name: 'search_knowledge', at: 900, epoch: 0, delegationId: 'd_1', outputs: [{ seq: 1, at: 1_000, type: 'response.item.create', epoch: 0, frame: { item: { type: 'function_call_output', call_id: 'call_1' } } }], deliveryAt: undefined }],
+    batches: [{ epoch: 0, at: 1_000, callIds: ['call_1'], creates: [] }],
+    commands: [], projections: [], receipts: [{ at: 2_000, bytes: 4_800, durationMs: 100 }], dispositions: [], deadlineMs: 10_000,
+  }).list;
+  assert.equal(withheld.some(entry => entry.includes('no continuation followed')), true,
+    `a withheld continuation must violate invariant 2: ${JSON.stringify(withheld)}`);
+});
+
+test('invariant 6 refuses a silent terminal end and accepts a typed one', () => {
+  const silent = probe(1, { lifecycle: 'terminal', terminal: 'ended' }, false);
+  assert.equal(silent.some(entry => entry.includes('invariant 6')), true,
+    `a silent terminal end must not count as a typed failure: ${JSON.stringify(silent)}`);
+  const unknown = probe(1, { lifecycle: 'terminal', terminal: null }, false);
+  assert.equal(unknown.some(entry => entry.includes('invariant 6')), true, `an unknown terminal state must not count either: ${JSON.stringify(unknown)}`);
+  assert.deepEqual(probe(1, { lifecycle: 'terminal', terminal: 'provider_error' }, false), [], 'a typed provider error ends the turn correctly');
+  assert.deepEqual(probe(1, undefined, true), [], 'audible output ends the turn correctly');
 });

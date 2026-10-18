@@ -39,14 +39,17 @@ export interface Trace {
 }
 
 export interface Command { readonly seq: number; readonly at: number; readonly type: string; readonly frame: Record<string, unknown>; readonly epoch: number }
-export interface Projection { readonly at: number; readonly cause: string; readonly state: string; readonly lifecycle: string }
+export interface Projection {
+  readonly at: number; readonly cause: string; readonly state: string; readonly lifecycle: string;
+  /** The host's terminal state word, when the session settled: an answer cannot be excused by a silent end. */
+  readonly terminal: string | null;
+}
 export interface Receipt { readonly at: number; readonly bytes: number; readonly durationMs: number }
 export interface CallObligation {
   readonly callId: string; readonly name: string; readonly at: number; readonly epoch: number;
   /** The delegation whose response emitted the call: a continuation waits for every call of that delegation. */
   readonly delegationId: string;
-  outputs: Command[]; terminal: 'answer' | 'error' | 'timeout' | 'cancelled' | undefined;
-  continuation: Command | undefined; deliveryAt: number | undefined;
+  outputs: Command[]; deliveryAt: number | undefined;
 }
 
 /** A virtual monotonic clock without wall sleeps: the one timer queue both the adapter and the host use. */
@@ -115,8 +118,8 @@ export interface Replay {
    *  when the voice connection resumed. A typed loss is a disposition; silence is not. */
   readonly dispositions: readonly { readonly at: number; readonly callId: string; readonly code: string }[];
   readonly calls: readonly CallObligation[];
-  /** Each run of output submissions and the continuation decision that must follow it. */
-  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly create: Command | undefined }[];
+  /** Each run of output submissions and every continuation decision recorded after it. */
+  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly creates: readonly Command[] }[];
   readonly toolCalls: readonly { name: string; args: unknown; at: number }[];
   /** The tool journal's refusals: a scenario expecting a real tool result asserts this is empty. */
   readonly journalErrors: readonly string[];
@@ -187,7 +190,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   const projections: Projection[] = [];
   const receipts: Receipt[] = [];
   const calls: CallObligation[] = [];
-  const batches: { epoch: number; at: number; callIds: string[]; create: Command | undefined }[] = [];
+  const batches: { epoch: number; at: number; callIds: string[]; creates: Command[] }[] = [];
   let seq = 0;
   let epoch = 0;
   const record = (): void => {
@@ -212,22 +215,23 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
           // A batch is the run of output submissions the continuation must follow: the docs say submit results
           // for every pending call, then send `response.create`.
           const last = batches.at(-1);
-          if (last && !last.create && last.epoch === command.epoch) last.callIds.push(callId);
-          else batches.push({ epoch: command.epoch, at: command.at, callIds: [callId], create: undefined });
+          if (last && last.creates.length === 0 && last.epoch === command.epoch) last.callIds.push(callId);
+          else batches.push({ epoch: command.epoch, at: command.at, callIds: [callId], creates: [] });
         }
       }
       if (command.type === 'response.create') {
         const batch = batches.at(-1);
-        if (batch && !batch.create) batch.create = command;
+        if (batch && batch.epoch === command.epoch) batch.creates.push(command);
       }
     }
   };
   const sample = (cause: string): void => {
     const snapshot = owner.get(liveSessionId);
     const state = owner.current().state;
+    const terminal = snapshot.terminal?.state ?? null;
     const last = projections.at(-1);
-    if (last && last.state === state && last.lifecycle === snapshot.lifecycle) return;
-    projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle });
+    if (last && last.state === state && last.lifecycle === snapshot.lifecycle && last.terminal === terminal) return;
+    projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle, terminal });
   };
 
   const owner = createLiveSessionOwner({
@@ -304,7 +308,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     async deliver(frame, cause = 'provider') {
       record();
       const call = isFunctionCall(frame);
-      if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], terminal: undefined, continuation: undefined, deliveryAt: undefined });
+      if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
       f.send(frame);
       await flush();
       record();
@@ -336,7 +340,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
         if (!due) break;
         recoveryQueue.splice(recoveryQueue.indexOf(due), 1);
         const call = isFunctionCall(due.event);
-        if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], terminal: undefined, continuation: undefined, deliveryAt: undefined });
+        if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
         f.send(due.event);
         await flush();
         record();
@@ -407,7 +411,7 @@ export function loadTrace(name: string): Trace {
 export interface Played {
   readonly replay: Replay;
   readonly trace: Trace;
-  violations(options?: { allowUnanswered?: boolean }): Violations;
+  violations(): Violations;
 }
 
 /**
@@ -429,7 +433,7 @@ export async function play(t: TestContext, name: string, options: ReplayOptions 
   const target = lastAt + trace.deadline_ms;
   await r.advance(Math.max(0, target - (r.clock.now() - r.clock.startedAt)));
   await r.until(() => r.owner.get(r.liveSessionId).lifecycle === 'terminal', trace.deadline_ms);
-  return { replay: r, trace, violations: overrides => analyse({ calls: r.calls, batches: r.batches, commands: r.commands, projections: r.projections, receipts: r.receipts, dispositions: r.dispositions, deadlineMs: trace.deadline_ms, ...overrides }) };
+  return { replay: r, trace, violations: () => analyse({ calls: r.calls, batches: r.batches, commands: r.commands, projections: r.projections, receipts: r.receipts, dispositions: r.dispositions, deadlineMs: trace.deadline_ms }) };
 }
 
 async function applyClient(r: Replay, event: Record<string, unknown>): Promise<void> {
@@ -543,14 +547,12 @@ const ANSWER_COMMANDS = new Set(['response.item.create', 'response.create']);
 
 export function analyse(input: {
   readonly calls: readonly CallObligation[];
-  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly create: Command | undefined }[];
+  readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly creates: readonly Command[] }[];
   readonly commands: readonly Command[];
   readonly projections: readonly Projection[];
   readonly receipts: readonly Receipt[];
   readonly dispositions: readonly { readonly at: number; readonly callId: string; readonly code: string }[];
   readonly deadlineMs: number;
-  /** A scenario that ends a call before its answer is expected says so here, and only here. */
-  readonly allowUnanswered?: boolean;
 }): Violations {
   const list: string[] = [];
   const { calls, commands, projections, receipts, deadlineMs } = input;
@@ -564,7 +566,7 @@ export function analyse(input: {
     const lost = input.dispositions.find(entry => entry.callId === call.callId);
     if (outputs.length === 0 && lost) continue;
     if (outputs.length === 0) {
-      if (!input.allowUnanswered) list.push(`invariant 1: call ${call.callId} (${call.name}) got no output submission and no typed disposition`);
+      list.push(`invariant 1: call ${call.callId} (${call.name}) got no output submission and no typed disposition`);
     } else if (outputs.length > 1) {
       list.push(`invariant 1: call ${call.callId} (${call.name}) got ${outputs.length} output submissions, not one`);
     }
@@ -573,14 +575,17 @@ export function analyse(input: {
   // 2. every ready batch gets exactly one continuation decision: one `response.create` immediately after the
   //    batch's results, never a second one for the same results, and never a withheld one.
   for (const batch of input.batches) {
-    if (batch.create === undefined) {
+    if (batch.creates.length === 0) {
       list.push(`invariant 2: the batch ${batch.callIds.join(',')} submitted its results and no continuation followed`);
       continue;
     }
+    if (batch.creates.length > 1) {
+      list.push(`invariant 2: the batch ${batch.callIds.join(',')} was continued ${batch.creates.length} times, not once`);
+    }
     // A continuation waits for every pending call of the delegation it answers: a create after a partial batch
     // is the "do not resend it" the delegation guide forbids.
-    const decidedAt = batch.create.at;
-    const answered = new Set(input.batches.flatMap(entry => entry.create !== undefined && entry.create.at <= decidedAt ? entry.callIds : []));
+    const decidedAt = batch.creates[0]!.at;
+    const answered = new Set(input.batches.flatMap(entry => entry.creates.length > 0 && entry.creates[0]!.at <= decidedAt ? entry.callIds : []));
     const answeredNow = new Set([...answered, ...batch.callIds]);
     for (const callId of batch.callIds) {
       const call = calls.find(entry => entry.callId === callId);
@@ -591,10 +596,6 @@ export function analyse(input: {
         list.push(`invariant 2: a continuation was sent for ${callId} while ${missing.join(',')} of delegation ${call.delegationId} had no result`);
       }
     }
-  }
-  const decided = new Set(input.batches.map(batch => batch.create?.seq).filter((seq): seq is number => seq !== undefined));
-  if (decided.size !== input.batches.filter(batch => batch.create !== undefined).length) {
-    list.push('invariant 2: one continuation decision covers more than one ready batch');
   }
 
   // 3. no stale-epoch write: once the session settled, nothing may be written for it but a close.
@@ -632,9 +633,13 @@ export function analyse(input: {
     if (call.outputs.length !== 1) continue;
     const owedAt = call.outputs[0]!.at;
     const delivered = receipts.find(receipt => receipt.at >= owedAt);
-    const settled = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal');
+    // A typed end means the host published an error or timeout code: a silent settle is not an answer.
+    const settled = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal'
+      && entry.terminal !== null && entry.terminal !== 'ended');
     if (delivered === undefined && settled === undefined) {
-      list.push(`invariant 6: ${call.callId} was answered but the turn never became audible and never failed within the ${deadlineMs} ms deadline`);
+      const ended = projections.find(entry => entry.at >= owedAt && entry.lifecycle === 'terminal');
+      list.push(`invariant 6: ${call.callId} was answered but the turn never became audible and never failed with a typed disposition within the ${deadlineMs} ms deadline` +
+        (ended ? ` (the session settled as ${ended.terminal ?? 'unknown'})` : ''));
     } else if (delivered !== undefined && delivered.at - owedAt > deadlineMs) {
       list.push(`invariant 6: ${call.callId} became audible ${delivered.at - owedAt} ms after submission, past the ${deadlineMs} ms deadline`);
     }
@@ -650,8 +655,10 @@ export function trace(input: Replay): string {
     return `g${command.epoch}:${command.type}${callId}`;
   }).join(' -> ');
   const orb = input.projections.map(entry => `${entry.state}@${entry.at - input.clock.startedAt}`).join(' ');
-  const calls = input.calls.map(call => `${call.callId}:${call.outputs.length}/${call.continuation ? 'continued' : 'open'}`).join(' ');
-  const outcome = input.owner.get(input.liveSessionId).terminal?.state ?? 'open';
+  const continued = new Set(input.batches.flatMap(batch => batch.creates.length > 0 ? batch.callIds : []));
+  const calls = input.calls.map(call => `${call.callId}:${call.outputs.length}/${continued.has(call.callId) ? 'continued' : 'open'}`).join(' ');
+  const terminal = input.projections.find(entry => entry.lifecycle === 'terminal');
+  const outcome = terminal ? `${terminal.terminal ?? 'unknown'}` : 'open';
   const fill = `${input.inaudibleFrames} fill frames`;
   return `\ncommands: ${commands}\norb: ${orb}\ncalls: ${calls}\nreceipts: ${input.receipts.length} (${fill})\ndisposition: ${outcome}`;
 }

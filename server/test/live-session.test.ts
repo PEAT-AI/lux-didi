@@ -549,7 +549,7 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   attachment.close();
   const terminal = await attachment.done;
   // 3p: the client closing the session is the Stop, and the Stop has its own reason.
-  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'user_stop' });
+  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'user_stop' });
   assert.equal(terminal.journal.complete, true);
 });
 
@@ -593,7 +593,7 @@ test('a user Stop ends the live session at once as user_stop and keeps its journ
   // No clock advance: a Stop is felt now, not after a countdown.
   attachment.close();
   const terminal = await attachment.done;
-  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'user_stop' });
+  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'user_stop' });
   assert.equal(terminal.journal.complete, true, 'the journal is kept');
   assert.ok(terminal.journal.events > 0, 'and it still holds what was said');
   const end = receipts.filter(record => record.event === 'session_end');
@@ -604,7 +604,7 @@ test('a user Stop ends the live session at once as user_stop and keeps its journ
   attachment.detach();
   h.advance(10_000); scheduler.runDue();
   assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
-  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'cancelled', code: 'user_stop' }, 'the first reason stands');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'user_stop' }, 'the first reason stands');
 });
 
 test('excluded transport facts and raw secrets never persist; Domain and CHAT stay untouched', async t => {
@@ -732,7 +732,8 @@ test('single attach, idempotent create replay, conflict, and a terminal session 
   const after = h.owner.create({ idempotencyKey: 'dup', inputClass: 'ordinary' }, h.ctx);
   assert.equal(after.lifecycle, 'terminal');
   assert.equal(after.dispatchIntent, true);
-  assert.deepEqual(after.terminal, { state: 'closed', code: 'closed' });
+  // 3p: the client closing the session is the Stop, and the Stop has its own reason.
+  assert.deepEqual(after.terminal, { state: 'closed', code: 'user_stop' });
   assert.equal(h.f.attempts, 1, 'replaying a terminal create never dispatches');
   assert.throws(() => h.owner.attach({ liveSessionId: first.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'terminal');
 });

@@ -293,11 +293,16 @@ enum State: String, CaseIterable {
         stopAudioAndSummarize()
         state = .ended
     }
-    func stop(reason: NativeLiveEndReason = .userStop) async {
+    func stop(reason: NativeLiveEndReason = .userStop, trigger: LiveStopTrigger = .other) async {
         stopCapture()
         if !endRecorded { endRecorded = true; journal.append(reason) }
         let token = generation
-        await coordinator.close()
+        if let receipt = await coordinator.close(trigger: trigger) {
+            // 3p: the two native receipts that make a Stop readable: what pressed it, and when the wire closed behind it.
+            journal.append(["event": "live_stop", "trigger": receipt.trigger.rawValue,
+                            "stopRequestedAt": ISO8601DateFormatter().string(from: receipt.stopRequestedAt)])
+            journal.append(["event": "socket_close_sent", "msAfterStop": receipt.socketCloseSentMs])
+        }
         await captureSummaryTask?.value
         guard generation == token else { return }
         let outcome = await coordinator.state

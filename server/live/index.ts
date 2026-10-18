@@ -1364,9 +1364,12 @@ export class LiveSessionOwner {
     hostLogEvent({ event: 'session_end', reason, msAfterStop });
   }
 
-  /** The client's explicit Stop: the app released the microphone and wants the call over now, not in five seconds. */
+  /** The client's explicit Stop: the app released the microphone and wants the call over now, not in five seconds.
+   * The owner ended it, so the state is a plain close and the code names the reason. */
   #stop(handle: ActiveSession): void {
-    this.#endAway(handle, 'user_stop', 0);
+    if (this.#settled(handle)) return;
+    this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
+    hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
   }
 
   async #consume(handle: ActiveSession): Promise<void> {

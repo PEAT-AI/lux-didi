@@ -120,6 +120,12 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
     }
 }
 
+/// A one way flag a probe task sets when it has reached its point.
+actor Flag {
+    private(set) var set = false
+    func mark() { set = true }
+}
+
 actor Gate {
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private(set) var arrivals = 0
@@ -271,6 +277,37 @@ struct GatedSockets: LiveSocketConnecting {
     let underlying: any LiveSocketConnecting; let gate: Gate
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
+
+/// 3p: a socket that records the control frames put on the wire, with audio held by a gate so a stop can be sent
+/// in the middle of a send.
+actor RecordingSocket: LiveSocket {
+    private let underlying: any LiveSocket
+    private let gate: Gate
+    private(set) var controls: [LiveControl] = []
+    private var closed = false
+    init(_ underlying: any LiveSocket, _ gate: Gate) { self.underlying = underlying; self.gate = gate }
+    func receive() async throws -> LiveFrame { try await underlying.receive() }
+    func sendPCM(_ data: Data) async throws {
+        await gate.wait()
+        guard !closed else { throw LiveClientError.unavailable }
+        try await underlying.sendPCM(data)
+    }
+    func sendControl(_ command: LiveControl) async throws {
+        guard !closed else { throw LiveClientError.unavailable }
+        controls.append(command)
+    }
+    func cancel() async { closed = true; await underlying.cancel(); await gate.release() }
+}
+struct RecordingSockets: LiveSocketConnecting {
+    let underlying: any LiveSocketConnecting; let gate: Gate; let box: SocketBox
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket {
+        let socket = RecordingSocket(try await underlying.connect(binding), gate)
+        box.socket = socket
+        return socket
+    }
+}
+/// The last socket a recording connect made, for the assertions after the stop.
+final class SocketBox: @unchecked Sendable { var socket: RecordingSocket? }
 
 actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
     private var frames: [LiveFrame] = []
@@ -858,6 +895,36 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             }
             print("PASS exact marker/control grammar and bounded strict decode")
             record("grammar")
+
+            // 3p: the wire is one send at a time; audio sheds under backpressure and a control frame is never shed.
+            let wire = LiveSendQueue()
+            try require(await wire.acquireAudio(), "audio takes a free wire")
+            try require(!(await wire.acquireAudio()), "a second audio frame sheds instead of queueing")
+            let acquired = Flag()
+            let queuedControl = Task { await wire.acquireControl(); await acquired.mark() }
+            await wire.release()
+            await queuedControl.value
+            try require(await acquired.set, "the control frame that found the wire busy was queued, never refused")
+            try require(!(await wire.acquireAudio()), "the queued control holds the wire ahead of audio")
+            await wire.release()
+            try require(await wire.acquireAudio(), "the wire is free again once the control has gone")
+            await wire.release()
+
+            // 3p: a Stop during a send still reaches the host, and the receipt names what pressed it.
+            let stopHTTP = TestHTTP(fixture), stopGate = Gate(), stopBox = SocketBox()
+            let stopSockets = RecordingSockets(underlying: CountedSockets(fixture), gate: stopGate, box: stopBox)
+            let stop = LiveSessionCoordinator(http: stopHTTP, sockets: stopSockets, sink: SilentSink())
+            await stop.begin(frozen); try await until { await stop.state == .active }
+            let inFlight = Task { try? await stop.sendPCM(Data([1, 0])) }
+            try await until { await stopGate.arrivals == 1 }
+            let receipt = await stop.close(trigger: .button)
+            try require(receipt?.trigger == .button, "the stop receipt names the press")
+            try require((receipt?.socketCloseSentMs ?? -1) >= 0, "the receipt measures the wire")
+            try require(await stopBox.socket?.controls.contains(.close) == true, "the stop control reached the socket while audio was in flight")
+            await inFlight.value
+            await stopHTTP.finish()
+            print("PASS stop control survives a busy send queue and its receipt names the press")
+            record("stop-control")
             if CommandLine.arguments.contains("--durations=10") {
                 for (name, duration) in durations.sorted(by: { $0.1 > $1.1 }).prefix(10) {
                     let parts = duration.components

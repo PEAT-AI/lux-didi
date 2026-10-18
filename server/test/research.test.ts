@@ -794,18 +794,18 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
 });
 
 test('3r: a body the server cut at the asked-for window is marked in the reply', async () => {
-  const cut = '### Release 3p scope (decision) [id 412]\nThe part of the body that fits.\ntruncated: yes (5,432 chars stored)';
-  const whole = '### Release 3p ledger (pattern) [id 413]\nA short body.\ntruncated: no (14 chars stored)';
-  const h = harness({ selector: knowledge, executeText: `${cut}\n${whole}` });
+  const cutBody = '### Release 3p scope (decision) [id 412]\nThe part of the body that fits.\ntruncated: yes (5,432 chars stored)';
+  const wholeBody = '### Release 3p ledger (pattern) [id 413]\nA short body.\ntruncated: no (14 chars stored)';
+  const h = harness({ selector: knowledge, executeText: `${cutBody}\n${wholeBody}` });
   const reply = await runResearch(h.deps, { action: 'start', question: 'release 3p scope' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
   // Hit order is the ranker's, so each hit's own line is read by its heading, never by position.
   const hits = finding.text.split(/(?=#41[23] )/u);
-  const cut = hits.find(hit => hit.startsWith('#412 '))!;
-  const whole = hits.find(hit => hit.startsWith('#413 '))!;
-  assert.match(cut, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
+  const cutHit = hits.find(hit => hit.startsWith('#412 '))!;
+  const wholeHit = hits.find(hit => hit.startsWith('#413 '))!;
+  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
   assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
-  assert.equal(whole.includes('cut at'), false, 'an uncut body carries no cut mark');
+  assert.equal(wholeHit.includes('cut at'), false, 'an uncut body carries no cut mark');
 });
 
 test('3r: the research receipt records the bounded-body request, metadata only', async () => {

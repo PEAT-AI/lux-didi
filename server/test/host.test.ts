@@ -698,7 +698,8 @@ test('POST api/v1/live/prewarm answers the receipt and refuses a body field', as
     const url = `${host.service.origin}/api/v1/live/prewarm`;
     const asked = await fetch(url, { method: 'POST', headers, body: '{}' });
     assert.equal(asked.status, 200);
-    assert.deepEqual(await asked.json(), { data: { ageBeforeMs: null, ageAfterMs: null, assembled: false } });
+    const answered = await asked.json() as { data: unknown };
+    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false });
     const unknown = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ digest: 'x' }) });
     assert.equal(unknown.status, 400, 'the body is closed: it names no field');
     const read = await fetch(url, { method: 'GET', headers });

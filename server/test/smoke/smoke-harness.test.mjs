@@ -212,7 +212,8 @@ test('probe5 waits out the run receipt that lands after the first answer and cla
   const turn = researchTurnResult({ calls: 1, runs: receipt.runs, subcalls: receipt.subcalls, outputChars: 900, outputAtResult: 100 });
   assert.equal(turn.ok, true, JSON.stringify(turn));
   assert.equal(turn.stage, 'turn');
-  assert.equal(turn.run.researchId, 'r5');
+  assert.equal(turn.rounds, 1, 'the answered run of this session is what the turn reports');
+  assert.equal(turn.driver, 'selector');
 });
 
 test('probe5 still fails at stage=runs when no run line arrives before the question deadline', async () => {

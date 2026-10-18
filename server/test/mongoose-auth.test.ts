@@ -263,10 +263,12 @@ test('a lock held by a live writer refuses, a stale one is reclaimed, and no loc
     writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
     const ok = (async () => new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 })) as unknown as typeof fetch;
 
-    writeFileSync(join(dir, '.mongoose-mcp.json.lock'), '', { mode: 0o600 });
-    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: ok }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-busy');
+    const lock = join(dir, '.mongoose-mcp.json.lock');
+    writeFileSync(lock, '', { mode: 0o600 });
+    const written = statSync(lock).mtimeMs;
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => written, fetch: ok }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-busy');
     // The holder crashed a minute ago: the lock is stale and the next caller takes it.
-    await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW + MONGOOSE_LOCK_STALE_MS + 1, fetch: ok });
+    await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => written + MONGOOSE_LOCK_STALE_MS + 1, fetch: ok });
     assert.equal(readMongooseOAuth(dir, 'mongoose-mcp')?.accessToken, 'access-token-new');
     assert.equal(readdirSync(dir).includes('.mongoose-mcp.json.lock'), false);
   } finally { cleanup(); }

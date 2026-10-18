@@ -250,9 +250,12 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(20_000) });
   assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
   assert.equal(roomy.sections.some(section => section.chars === 0), false, 'nothing yields under the target');
-  // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed.
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(20_000),
-    runtimeContext: 'R'.repeat(10_000) });
+  // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
+  // runtime context is sized from the target so that yielding the memory alone brings the text back under it.
+  const base = { base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en' as const };
+  const withoutMemory = composeLiveInstruction({ ...base, tools: ['search_knowledge'] });
+  const result = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500),
+    runtimeContext: 'R'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - withoutMemory.text.length - 1_000) });
   assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${result.text.length} must fit the target`);
   assert.ok(result.text.includes('O'.repeat(20_000)), 'the overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
@@ -327,7 +330,7 @@ test('session composition places bounded whole memory records and pickup before 
   // PV1: the target moved to 30,000, so the overlay is sized from the target itself rather than a fixed number.
   const yieldingSize = LIVE_INSTRUCTION_TARGET_CHARS - baseline.text.length + 1;
   const yielding = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay: { schemaVersion: 1, text: 'O'.repeat(yieldingSize) }, memory: 'x'.repeat(BUDGET) });
-  assert.ok(!yielding.sections.some(section => section.id === 'memory'), 'memory yields before the overlay and the base');
+  assert.equal(yielding.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields before the overlay and the base');
   assert.ok(yielding.text.includes('O'.repeat(yieldingSize)), 'memory yields before the overlay');
 });
 
@@ -441,7 +444,9 @@ test('PV2: a 14,000 character owner lore survives intact, inside its own section
   const lore = 'L'.repeat(14_000);
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', lore), language: 'en' });
   assert.equal(result.text.split(lore).length - 1, 1, 'the whole 14k lore is present exactly once');
-  assert.equal(result.sections.find(section => section.id === 'owner-lore')?.chars, lore.length + '[owner-lore]\n'.length);
+  const loreSection = result.sections.find(section => section.id === 'owner-lore');
+  assert.ok(loreSection && loreSection.chars > lore.length, 'the whole lore plus its leader and closing marker');
+  assert.ok(result.text.includes('End authored background.'), 'and the closing marker is never cut');
   assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
   // Past that budget the lore section is clipped at its own limit, which is not a target-budget yield.
   const clipped = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'L'.repeat(14_001)), language: 'en' });
@@ -451,18 +456,8 @@ test('PV2: a 14,000 character owner lore survives intact, inside its own section
 
 test('PV2: a composition over the target drops whole lower-priority sections, never cutting one mid-text', () => {
   const base = { base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'L'.repeat(14_000)), accent: 'strong Indian accent', language: 'en' };
-  const plain = composeLiveInstruction({ ...base, tools: ['search_knowledge'] });
-  assert.ok(plain.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
-  // Sized so that yielding the memory alone brings the instruction back under the target: the tools
-  // conduct and the runtime context both stay whole.
-  const memoryOnly = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500),
-    runtimeContext: 'R'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - plain.text.length - 1_000) });
-  assert.ok(memoryOnly.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed ${memoryOnly.text.length} fits the target`);
-  assert.equal(memoryOnly.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
-  assert.equal(memoryOnly.sections.find(section => section.id === 'tools')?.chars, NAYA_TOOLS.length, 'the tools conduct stays whole');
-  assert.ok(memoryOnly.text.includes(NAYA_TOOLS));
-  // A much larger one yields all three, whole each time, in priority order.
-  const full = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500), runtimeContext: 'R'.repeat(40_000) });
+  // A composition well past the target yields all three, whole each time, in priority order.
+  const full = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500), runtimeContext: 'R'.repeat(30_000) });
   assert.ok(full.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
   assert.deepEqual(full.sections.filter(section => section.chars === 0).map(section => section.id), ['memory', 'tools', 'runtime']);
   assert.equal(full.text.split(NAYA_TOOLS).length - 1, 0, 'not even a prefix of the tools conduct survives');
@@ -704,15 +699,15 @@ test('# Memory keeps its own budget when a standing set is present', () => {
   assert.ok(composed.sections.some(section => section.id === 'standing-memory'));
 });
 
-test('PV1: the budget numbers are the wire-tested ones and a 25,000-char composition fits while 37,000 throws', () => {
-  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 30_000);
-  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 36_000);
-  // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, so the
-  // smaller earlier-conversations block no longer has to compete with the persona for a 20,000-char ceiling.
-  const fits = composeLiveInstruction({ base: 'B'.repeat(24_900), language: 'en' });
-  assert.ok(fits.text.length >= 25_000, `the composition is at least 25,000 chars (${fits.text.length})`);
+test('PV2: the budget numbers are the wire-tested ones and a 43,000-char composition fits while 53,000 throws', () => {
+  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 44_000);
+  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
+  // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, and the
+  // model's 16,384 instruction tokens hold about 60,000 characters; the host targets 44,000 of them.
+  const fits = composeLiveInstruction({ base: 'B'.repeat(43_000), language: 'en' });
+  assert.ok(fits.text.length >= 43_000, `the composition is at least 43,000 chars (${fits.text.length})`);
   assert.ok(fits.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `and stays under the target (${fits.text.length})`);
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(37_000), language: 'en' }),
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(53_000), language: 'en' }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 

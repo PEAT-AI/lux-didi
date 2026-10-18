@@ -824,9 +824,9 @@ test('P7 the growing bubble keeps its node and an opened detail stays open', () 
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const start = source.indexOf('function renderTranscript(');
   assert.ok(start > 0, 'main.ts still renders the transcript in one function');
-  // renderTranscript is plain page code, so only its two type annotations need stripping for the vm.
+  // renderTranscript is plain page code, so only its type annotations need stripping for the vm.
   const render = source.slice(start, source.indexOf('function bindTranscript('))
-    .replace('(list: HTMLElement)', '(list)').replace(/ as HTMLElement\[\]/g, '');
+    .replace('(list: HTMLElement)', '(list)').replace(/ as HTMLElement\[\]/g, '').replace(/children\[index\]!/g, 'children[index]');
   const replaced: string[] = [];
   const makeRow = (html: string) => {
     let current = html;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
 import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
@@ -820,6 +820,19 @@ test('P7 an open bubble is never split into headline plus detail', () => {
   assert.match(html, /which is long\./, 'the whole answer is visible');
 });
 
+test('P7 a growing owner bubble carries the same in-place text node', () => {
+  const live = { state: 'listening', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Sure thing.' },
+    { seq: 2, kind: 'turnComplete' },
+    { seq: 3, kind: 'inputTranscription', text: 'I want to ask' },
+  ] } as unknown as LiveCurrent;
+  const owner = sessionItems(live).find(item => item.key === 'user:3')!;
+  assert.match(owner.html, /data-growing/, 'the owner transcription is still streaming too');
+  assert.equal(growingText(owner.html), 'I want to ask');
+  // The owner's words are escaped into their own text node, which innerHTML decodes back once.
+  assert.equal(growingText(liveLineMarkup({ role: 'user', text: 'a & b' }, 'user:9', true)), 'a &amp; b');
+});
+
 test('P7 the growing bubble keeps its node and an opened detail stays open', () => {
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const start = source.indexOf('function renderTranscript(');
@@ -869,6 +882,21 @@ test('P7 the growing bubble keeps its node and an opened detail stays open', () 
   context.live = { ...context.live, cursor: 6, entries: [...seed, { seq: 5, kind: 'outputTranscription', text: 'Right away.' }, { seq: 6, kind: 'turnComplete' }] } as unknown as LiveCurrent;
   runInContext(script, context);
   assert.equal(growingText(row('naya:4')!.outerHTML), undefined, 'a closed bubble is no longer growing');
+  // The owner's own transcription streams as they speak, so that row takes the same in-place path.
+  const ownerSeed = [
+    { seq: 1, kind: 'outputTranscription', text: 'Sure thing.' },
+    { seq: 2, kind: 'turnComplete' },
+    { seq: 3, kind: 'inputTranscription', text: 'I want' },
+  ];
+  context.live = { state: 'listening', since: '2026-10-11T16:00:00Z', cursor: 3, entries: ownerSeed } as unknown as LiveCurrent;
+  list.children = liveSegments(context.live).map((segment: any) => makeRow(restoreOpen(segment.html, [])));
+  const ownerRow = row('user:3');
+  replaced.length = 0;
+  context.live = { ...context.live, cursor: 4, entries: [...ownerSeed, { seq: 4, kind: 'inputTranscription', text: 'to ask' }] } as unknown as LiveCurrent;
+  runInContext(script, context);
+  assert.equal(row('user:3'), ownerRow, 'the growing owner bubble is the same DOM node, never replaced');
+  assert.match(ownerRow.querySelector('[data-live-text]').innerHTML, /to ask/, 'its text node grew in place');
+  assert.equal(replaced.includes('user:3'), false, 'the owner row was never rewritten through outerHTML');
 });
 
 test('FE1-R1 a finished session shows its first turn headline and turn count, collapsed', () => {

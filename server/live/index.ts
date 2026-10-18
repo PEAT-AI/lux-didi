@@ -2220,8 +2220,11 @@ export class LiveSessionOwner {
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
-      // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it.
-      if (handle.exec.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
+      // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
+      // the ceiling settled keeps that status, because "timed out" is what happened and "failed" would hide it.
+      if (handle.exec.has(id) && handle.exec.get(id)?.status !== 'timeout') {
+        handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
+      }
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;

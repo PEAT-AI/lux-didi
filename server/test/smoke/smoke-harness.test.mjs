@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { READY_TIMEOUT_MS, spawnSupervised, stopSupervised, waitForReady } from './strict-supervisor.mjs';
-import { launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, stageProviderConfig, supervisorNote } from './probes.mjs';
+import { awaitRunReceipt, launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, stageProviderConfig, supervisorNote } from './probes.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '../../..');
 const smokeSource = join(repoRoot, 'scripts/smoke.sh');
@@ -187,6 +187,42 @@ test('probe8 still fails when research was never called', () => {
   assert.equal(turn.ok, false);
   assert.equal(summary.items, 0);
   assert.equal(chatProbe.check(summary), false);
+});
+
+// #420: the routed run writes its terminal research_run line from the tool's finally, after every source
+// settles, so the first answer always lands before the receipt. A probe that reads host.log once at the first
+// answer reports runs=0 on a good run, so it keeps polling the appended log on the same tick instead.
+const answeredReceipt = (researchId) => `${JSON.stringify({ event: 'research_run', researchId, questionClass: 'lookup', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered', replyBytes: 1800, sources: [{ source: 'mattermost', disposition: 'completed' }], driver: 'selector' })}\n`;
+
+function syntheticLog({ receiptAtMs, line }) {
+  const clock = { ms: 0 };
+  return {
+    clock,
+    readAppended: async () => (clock.ms >= receiptAtMs ? line : ''),
+    now: () => clock.ms,
+    sleep: async ms => { clock.ms += ms; },
+  };
+}
+
+test('probe5 waits out the run receipt that lands after the first answer and classifies it as a run', async () => {
+  const log = syntheticLog({ receiptAtMs: 6000, line: answeredReceipt('r5') });
+  const receipt = await awaitRunReceipt({ ...log, deadline: 90000, tickMs: 1000 });
+  assert.equal(receipt.runs.length, 1, 'the receipt written 6 s after the answer must still be read');
+  assert.equal(log.clock.ms, 6000, 'the poll stops on the tick the receipt appears, not at the deadline');
+  const turn = researchTurnResult({ calls: 1, runs: receipt.runs, subcalls: receipt.subcalls, outputChars: 900, outputAtResult: 100 });
+  assert.equal(turn.ok, true, JSON.stringify(turn));
+  assert.equal(turn.stage, 'turn');
+  assert.equal(turn.run.researchId, 'r5');
+});
+
+test('probe5 still fails at stage=runs when no run line arrives before the question deadline', async () => {
+  const log = syntheticLog({ receiptAtMs: Infinity, line: '' });
+  const receipt = await awaitRunReceipt({ ...log, deadline: 4000, tickMs: 1000 });
+  assert.equal(receipt.runs.length, 0);
+  assert.equal(log.clock.ms, 4000, 'the wait is bounded by the question deadline, never open ended');
+  const turn = researchTurnResult({ calls: 1, runs: receipt.runs });
+  assert.equal(turn.ok, false);
+  assert.equal(turn.stage, 'runs');
 });
 
 // #397: a probe host must never be handed the installed app's own provider config, so the probes stage a

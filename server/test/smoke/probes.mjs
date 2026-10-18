@@ -437,12 +437,16 @@ export function researchTurnResult({ calls, runs = [], subcalls = [], findings =
 /**
  * #420: the run writes its terminal research_run line from the tool's finally, after every source settles, so
  * the first answer always lands before the receipt. Poll what this session appended on the question's own tick
- * until the receipt shows up, bounded by the deadline the question runs on.
+ * until this session's own researchId shows up, bounded by the deadline the question runs on. The host log is
+ * shared, so a line belongs to the turn only by its id, and every line stays in the receipt the classifier reads.
  */
-export async function awaitRunReceipt({ readAppended, deadline, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), tickMs = 1000 }) {
+export async function awaitRunReceipt({ readAppended, deadline, researchIds = [], now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), tickMs = 1000 }) {
   for (;;) {
-    const receipt = parseResearchLog(await readAppended().catch(() => ''));
-    if (receipt.runs.length || now() >= deadline) return receipt;
+    const appended = await readAppended().catch(() => null);
+    if (appended === null) return { runs: [], subcalls: [], progress: 0 };
+    const receipt = parseResearchLog(appended);
+    const arrived = researchIds.length ? receipt.runs.some(run => researchIds.includes(run.researchId)) : receipt.runs.length > 0;
+    if (arrived || now() >= deadline) return receipt;
     await sleep(tickMs);
   }
 }
@@ -526,11 +530,14 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
     const questionAt = now();
     const deadline = questionAt + RESEARCH_QUESTION_MS;
     let calls = 0; let result = null; let outputChars = 0; let outputAtResult = null; let lastFragments = [];
+    // This session's own run ids, published on this session's journal when the run starts, before any answer.
+    const sessionIds = new Set();
     while (now() < deadline) {
       const data = await journal().catch(() => null);
       const all = data && Array.isArray(data.fragments) ? data.fragments : [];
       const fragments = all.filter(fragment => (Number(fragment.journalSequence) || 0) > journalBase);
       lastFragments = fragments;
+      for (const fragment of fragments) if (fragment.kind === 'researchProgress' && fragment.progress && typeof fragment.progress.researchId === 'string') sessionIds.add(fragment.progress.researchId);
       recordJournal(id, all);
       calls = fragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && fragment.tool.name === 'research').length;
       const results = fragments.filter(fragment => fragment.kind === 'toolResult' && fragment.tool && fragment.tool.name === 'research');
@@ -548,7 +555,7 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
       const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
       return Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
     };
-    const { runs, subcalls, progress } = await awaitRunReceipt({ readAppended, deadline });
+    const { runs, subcalls, progress } = await awaitRunReceipt({ readAppended, deadline, researchIds: [...sessionIds] });
     // Not-called metadata (#260): what the turn did instead of research, so a skipped run is explainable.
     const outputFragments = lastFragments.filter(fragment => fragment.kind === 'outputTranscription');
     const notCalled = {

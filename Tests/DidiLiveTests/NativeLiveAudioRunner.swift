@@ -107,18 +107,23 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             let file = directory.appendingPathComponent("native-live.log")
             let nativeLine = try Data(contentsOf: file)
             let nativeRecord = try JSONSerialization.jsonObject(with: Data(nativeLine.dropLast())) as! [String: Any]
-            let expectedKeys: Set<String> = error is NativeLiveAudioError && detail != nil
-                ? ["event", "failureClass", "code", "detail", "timestamp"]
-                : ["event", "failureClass", "code", "timestamp"]
+            // O1b-N: every native line also carries the launch identity, both clocks and a sequence.
+            let identity: Set<String> = ["timestamp", "wall_ms", "mono_ms", "source_instance_id", "source_seq"]
+            let expectedKeys: Set<String> = (error is NativeLiveAudioError && detail != nil
+                ? ["event", "failureClass", "code", "detail"] : ["event", "failureClass", "code"]).union(identity)
             try audioRequire(Set(nativeRecord.keys) == expectedKeys && nativeRecord["event"] as? String == "live_precreate_failed"
                 && nativeRecord["failureClass"] as? String == failureClass && nativeRecord["code"] as? String == code,
                 "native line has the exact typed JSONL schema plus timestamp")
             if error is NativeLiveAudioError, let detail {
                 try audioRequire(nativeRecord["detail"] as? Int == detail, "native audio detail remains exact")
             }
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let timestamp = nativeRecord["timestamp"] as? String
-            try audioRequire(timestamp != nil && ISO8601DateFormatter().date(from: timestamp!) != nil,
-                "native line timestamp is ISO 8601")
+            try audioRequire(timestamp != nil && fractional.date(from: timestamp!) != nil && timestamp!.contains("."),
+                "native line timestamp is ISO 8601 with fractional seconds")
+            try audioRequire(nativeRecord["mono_ms"] is Int && nativeRecord["source_seq"] is Int,
+                "native line carries its monotonic clock and sequence")
             try audioRequire(nativeLine.last == 10, "native line retains JSONL newline")
             await task?.value
             try audioRequire(try Data(contentsOf: file) == nativeLine, "429/transport does not alter or duplicate native log")

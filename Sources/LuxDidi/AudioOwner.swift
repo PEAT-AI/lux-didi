@@ -31,13 +31,15 @@ enum AudioOwnerError: Error, LocalizedError, Equatable {
 /// 2026-10-15 cannot recur.
 struct NativeAudioEvent: Equatable {
     let name: String
-    let timestamp: String
+    /// When the event happened. The journal stamps the wall text, the wall ms and the monotonic ms
+    /// from this one date, so a line never mixes two readings of the clock.
+    let at: Date
     let fields: [String: String]
 
     init(name: String, fields: [String: String] = [:], at date: Date = Date()) {
         self.name = name
         self.fields = fields
-        self.timestamp = ISO8601DateFormatter().string(from: date)
+        self.at = date
     }
 }
 

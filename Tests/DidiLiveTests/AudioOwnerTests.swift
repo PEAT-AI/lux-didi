@@ -91,8 +91,8 @@ import Foundation
             let recorded = journal.events
             check(recorded.contains { $0.name == "audio_owned" }, "acquire records audio_owned")
             check(recorded.contains { $0.name == "audio_released" }, "release records audio_released")
-            check(recorded.allSatisfy { !$0.timestamp.isEmpty },
-                  "every lifecycle record carries a UTC timestamp")
+            check(recorded.allSatisfy { $0.at.timeIntervalSince1970 > 0 },
+                  "every lifecycle record is stamped with the clock time it happened")
         } catch { check(false, "journal sequence threw \(error)") }
 
         exit(failures == 0 ? 0 : 1)

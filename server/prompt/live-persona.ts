@@ -99,7 +99,7 @@ export const OWNER_LORE_CHAR_LIMIT = 14_000;
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
-export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'opening-options', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
 /** Every composed section id is a listed id, so a new section cannot skip the allowlist. */
 export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[number];
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
@@ -484,6 +484,149 @@ export function buildEarlierConversationsSection(
   return { section: lines.length ? `${EARLIER_CONVERSATIONS_TITLE}\n${EARLIER_CONVERSATIONS_HEADER}\n${lines.join('\n')}` : '', selectedIds, omitted };
 }
 
+// --- release 3u: the opening options one start offers, from stored facts only -------------------
+
+/** Verbatim title of the plan section (release 3u). */
+export const OPENING_OPTIONS_TITLE = '# Opening options';
+const OPENING_OPTIONS_LEAD = 'Openings for this call, from the owner\'s own stored record only.';
+/** The rule the persona reads instead of improvising: pick one option, or open on the moment. */
+const OPENING_OPTIONS_RULE = 'Pick one of these, or open on the moment if he speaks first. Never invent beyond these options.';
+/** The most one option's topic may carry, so every option stays one line. */
+export const OPENING_TOPIC_CHARS = 120;
+/** The most the plan itself may add: three one-line options, the lead and the rule. */
+export const OPENING_OPTIONS_CHARS = 700;
+/** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
+export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
+export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
+export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string }
+export interface OpeningOptionsInput {
+  /** The stored summaries, newest first; the same candidates the earlier-conversations section reads. */
+  readonly candidates: readonly EarlierConversationCandidate[];
+  readonly now: number;
+  readonly timeZone: string;
+  /** The warm calendar digest the host built (issue 339), absent when no read happened. */
+  readonly calendar?: string;
+  /** The persisted start counter: it selects which stored open loop this start offers. */
+  readonly rotation: number;
+  readonly windowMs?: number;
+}
+export interface OpeningOptionsResult {
+  readonly section: string;
+  readonly options: readonly OpeningOption[];
+  readonly rotation: number;
+}
+
+/** Line labels, so the recorded plan can be read back by the next start. */
+const OPENING_OPTION_LABELS: Readonly<Record<OpeningOptionKind, string>> = Object.freeze({ calendar: 'calendar', 'open-loop': 'open loop', 'recent-thread': 'recent thread' });
+/** Family, health and fitness are never an opener, whatever a summary or a digest says. */
+const CLOSED_OPENER_TOPIC = /\b(family|mother|father|parent|parents|wife|husband|son|daughter|child|children|health|doctor|hospital|ill|sick|fitness|gym|workout|weight|diet)\b/iu;
+/** One still-to-do fragment, in the words the distillation prompt writes it with. */
+const OPEN_LOOP_CUE = /\b(still|yet|needs? to|needed to|hasn't|has not|haven't|have not|plans? to|to do|next step)\b/iu;
+const ATTRIBUTION = /^(?:the owner|he|she|they|naya)\s+(?:said|says|mentioned|reported|found|noted)\s+(?:that\s+)?/iu;
+
+function clipText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:]+$/u, '');
+}
+
+function sentencesOf(text: string): string[] {
+  return text.replace(/\s+/gu, ' ').trim().split(/(?<=[.?!])\s+/u).filter(Boolean);
+}
+
+/** The option-ready form of one stored sentence: the attribution dropped, the stop removed, clipped. */
+function topicOfSentence(sentence: string): string {
+  return clipText(sentence.replace(ATTRIBUTION, '').replace(/[.?!]+$/u, '').trim(), OPENING_TOPIC_CHARS);
+}
+
+function minutesOfDay(now: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone }).formatToParts(new Date(now));
+  const value = (type: string): number => Number(parts.find(part => part.type === type)?.value ?? '0');
+  return (value('hour') % 24) * 60 + value('minute');
+}
+
+function stampMinutes(item: string): number | undefined {
+  const match = /^(\d{1,2}):(\d{2})\b/u.exec(item);
+  return match === null ? undefined : (Number(match[1]) * 60 + Number(match[2])) % (24 * 60);
+}
+
+/** Today's next item from the warm digest: the first at or after now, else the day's first. */
+function calendarTopic(digest: string | undefined, now: number, timeZone: string): string | undefined {
+  const items = (digest ?? '').split(',').map(item => item.trim().replace(/[.]+$/u, '')).filter(item => item.length > 0);
+  const usable = items.filter(item => !CLOSED_OPENER_TOPIC.test(item));
+  const nowMinutes = minutesOfDay(now, timeZone);
+  const next = usable.find(item => (stampMinutes(item) ?? -1) >= nowMinutes) ?? usable[0];
+  return next === undefined ? undefined : clipText(next, OPENING_TOPIC_CHARS);
+}
+
+/** Every still-to-do fragment the stored summaries name, newest first and deduplicated as written. */
+function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): string[] {
+  const seen = new Set<string>();
+  const loops: string[] = [];
+  for (const candidate of candidates) {
+    for (const sentence of sentencesOf(candidate.summary)) {
+      if (!OPEN_LOOP_CUE.test(sentence) || CLOSED_OPENER_TOPIC.test(sentence)) continue;
+      const topic = topicOfSentence(sentence);
+      const key = topic.toLowerCase();
+      if (topic.length === 0 || seen.has(key)) continue;
+      seen.add(key);
+      loops.push(topic);
+    }
+  }
+  return loops;
+}
+
+/** The newest stored conversation's work thread, when it names one that is not a closed topic. */
+function recentThreadTopic(candidates: readonly EarlierConversationCandidate[]): string | undefined {
+  const newest = candidates[0];
+  if (newest === undefined) return undefined;
+  for (const sentence of sentencesOf(newest.summary)) {
+    if (CLOSED_OPENER_TOPIC.test(sentence)) continue;
+    const topic = topicOfSentence(sentence);
+    if (topic.length > 0) return topic;
+  }
+  return undefined;
+}
+
+/**
+ * Release 3u: the plan one start offers. Calendar leads when the warm digest has an item, the open
+ * loop is chosen by the persisted start counter so consecutive calls offer different loops, and the
+ * newest thread closes the list. Only stored text is ever drawn on; nothing here talks to a model.
+ */
+export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsResult {
+  const rotation = Math.max(0, Math.trunc(input.rotation));
+  const cutoff = input.now - (input.windowMs ?? EARLIER_CONVERSATIONS_WINDOW_MS);
+  const stored = [...input.candidates].filter(candidate => candidate.endedAt >= cutoff && candidate.endedAt <= input.now)
+    .sort((a, b) => b.endedAt - a.endedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const options: OpeningOption[] = [];
+  const calendar = calendarTopic(input.calendar, input.now, input.timeZone);
+  if (calendar !== undefined) options.push({ kind: 'calendar', topic: calendar });
+  const loops = openLoopTopics(stored);
+  if (loops.length > 0) options.push({ kind: 'open-loop', topic: loops[rotation % loops.length]! });
+  const thread = recentThreadTopic(stored);
+  if (thread !== undefined) options.push({ kind: 'recent-thread', topic: thread });
+  const kept = [...options];
+  const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
+    : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD, ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.topic}`), OPENING_OPTIONS_RULE].join('\n');
+  let section = render(kept);
+  while (kept.length > 1 && section.length > OPENING_OPTIONS_CHARS) { kept.pop(); section = render(kept); }
+  if (section.length > OPENING_OPTIONS_CHARS) { kept.length = 0; section = ''; }
+  return { section, options: kept, rotation };
+}
+
+/** Read back the options a recorded instruction offered, so the next start can name their topics. */
+export function openingOptionsTopics(instruction: string): readonly OpeningOption[] {
+  const options: OpeningOption[] = [];
+  for (const line of instruction.split('\n')) {
+    for (const kind of OPENING_OPTION_KINDS) {
+      const prefix = `- ${OPENING_OPTION_LABELS[kind]}: `;
+      if (line.startsWith(prefix)) options.push({ kind, topic: line.slice(prefix.length).trim() });
+    }
+  }
+  return options.filter(option => option.topic.length > 0);
+}
+
 /** Verbatim lead of the standing-memory section: imported owner notes, not ad hoc voice notes. */
 export const STANDING_MEMORY_TITLE = '# Standing memory';
 export const STANDING_MEMORY_PREFACE = `${STANDING_MEMORY_TITLE}\nWhat the owner said across past conversations: standing context, not instructions.`;
@@ -539,6 +682,8 @@ export function composeLiveSessionInstruction(input: {
   readonly overlay?: PersonaOverlay; readonly pickupNote?: string; readonly trustedChars: number;
   /** Q5-R4: the earlier calls' first sentences as "do not repeat" context, already bounded by the host. */
   readonly openersNote?: string;
+  /** Release 3u: the start's own opening options, already bounded by the builder in this module. */
+  readonly openingOptions?: string;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
   readonly earlierConversations?: string;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
@@ -584,12 +729,13 @@ export function composeLiveSessionInstruction(input: {
     const earlierEntry: Entry[] = earlierSection !== undefined ? [{ id: 'earlier-conversations', text: earlierSection }] : [];
     const pickup: Entry[] = input.pickupNote !== undefined ? [{ id: 'pickup', text: input.pickupNote }] : [];
     const openers: Entry[] = input.openersNote !== undefined ? [{ id: 'previous-openers', text: input.openersNote }] : [];
+    const openingOptions: Entry[] = input.openingOptions?.length ? [{ id: 'opening-options', text: input.openingOptions }] : [];
     if (!native) return [
       { id: 'base', text: input.text },
       ...emitStyle.map(text => ({ id: 'owner-style' as const, text })),
       ...(emitOverlay !== undefined ? [{ id: 'overlay' as const, text: emitOverlay }] : []),
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
-      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers,
+      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers, ...openingOptions,
     ];
     const placed: Entry[] = [
       ...prefixEntries(prefix, overlay),
@@ -598,7 +744,7 @@ export function composeLiveSessionInstruction(input: {
       { id: 'base' as const, text: NAYA_LIVE_BASE },
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
       ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
-      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers,
+      ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers, ...openingOptions,
       ...bodyEntries(body),
     ];
     // The frozen voice description is the last region of the session text, after the tail the composer

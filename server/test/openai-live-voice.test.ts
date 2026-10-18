@@ -135,7 +135,7 @@ describe('openai gpt-live adapter', () => {
     // Without a backendProcedure the backend sees the template and the brevity rule, and nothing else.
     assert.equal(responses['instructions'], `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`);
     assert.equal(JSON.stringify(responses['text']), '{"verbosity":"low"}');
-    assert.equal(responses['reasoning'], { effort: 'low' });
+    assert.equal(JSON.stringify(responses['reasoning']), '{"effort":"low"}');
     assert.equal(responses['parallel_tool_calls'], true);
     assert.equal('max_output_tokens' in responses, false, 'the output ceiling stays unset');
     // No owner content: the template names the task shape and never the persona or a source.

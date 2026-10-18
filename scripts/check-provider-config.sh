@@ -13,13 +13,15 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" ]]; then
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-provider-config.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/config" "$out/source/prompt" "$out/source/adapters/model" "$out/source/adapters/mcp" "$out/source/test" "$out/source/tools" "$out/source/runtime" "$out/source/connectors" "$out/source/domain" "$out/source/host"
+mkdir -p "$out/source/config" "$out/source/prompt" "$out/source/adapters/model" "$out/source/adapters/mcp" "$out/source/test" "$out/source/tools" "$out/source/runtime" "$out/source/trace" "$out/source/connectors" "$out/source/domain" "$out/source/host"
 cp "$root"/server/config/*.ts "$out/source/config/"
 cp "$root"/server/prompt/*.ts "$out/source/prompt/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root/server/runtime/store.ts" "$root/server/runtime/outbox.ts" "$out/source/runtime/"
+# runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
+cp "$root"/server/trace/*.ts "$out/source/trace/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 mkdir -p "$out/source/live" "$out/source/adapters/live-voice" "$out/source/contracts"
 cp "$root"/server/live/{config,types}.ts "$out/source/live/"

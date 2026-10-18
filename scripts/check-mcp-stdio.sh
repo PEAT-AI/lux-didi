@@ -10,13 +10,15 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-mcp-stdio.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice}
+mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root/server/host/journal.ts" "$out/source/host/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
+# runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
+cp "$root"/server/trace/*.ts "$out/source/trace/"
 cp "$root/server/runtime/outbox.ts" "$out/source/runtime/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"

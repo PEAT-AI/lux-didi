@@ -359,7 +359,7 @@ test('the per-lookup receipt carries source, outcome and ms and never a query', 
   }, new AbortController().signal);
   assert.equal(h.sources.length, 1);
   const receipt = h.sources[0]!;
-  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given and the batch it shared');
+  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'knowledge', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given, the knowledge window metadata (K1) and the batch it shared');
   assert.equal(receipt.coalesced, 1, 'a lone lookup is a batch of one');
   assert.equal(receipt.source, 'knowledge');
   assert.equal(receipt.outcome, 'ok');

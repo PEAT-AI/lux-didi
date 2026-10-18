@@ -309,16 +309,22 @@ test('1015: the digest read budget is 30 s, so the aborted 5 s read cannot be a 
   assert.equal(calendarDigestStartWaitMs, 1_500, 'and waits at most 1,500 ms for a read in flight');
 });
 
-test('1015: the background owner reads at host start and on every interval until it is stopped', async () => {
-  // The interval is the owner's own seam, so the test drives it in 10 ms instead of the 15 min it takes.
-  const { cache, read } = digestCache({}, digestMonday, 10);
+test('1015: the background owner reads at host start and on every interval until it is stopped', async t => {
+  // The interval is the owner's own seam, so mock timers drive it instead of a real 15 minute wait. Each
+  // tick is followed by a settle, because a read already in flight is shared rather than dispatched again.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { cache, read } = digestCache({});
+  const settle = async () => { await cache.refresh(); };
   cache.begin();
   assert.equal(read.calls.length, 1, 'the host start read happens before any call arrives');
-  await new Promise(resolve => setTimeout(resolve, 50));
-  assert.ok(read.calls.length >= 3, `the owner keeps the digest current while the host runs (${read.calls.length} reads)`);
+  await settle();
+  t.mock.timers.tick(calendarDigestRefreshMs);
+  assert.equal(read.calls.length, 2, 'and one every fifteen minutes, off the request path');
+  await settle();
+  t.mock.timers.tick(calendarDigestRefreshMs * 3);
+  assert.equal(read.calls.length, 5, 'the owner keeps the digest current while the host runs');
+  await settle();
   cache.stop();
-  const settled = read.calls.length;
-  await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(read.calls.length, settled, 'a stopped host reads nothing');
-  assert.ok(calendarDigestRefreshMs === 15 * 60 * 1000);
+  t.mock.timers.tick(calendarDigestRefreshMs * 4);
+  assert.equal(read.calls.length, 5, 'a stopped host reads nothing');
 });

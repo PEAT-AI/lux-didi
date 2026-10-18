@@ -32,13 +32,14 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -3044,3 +3045,38 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
+
+// P3: gpt-live-1 streams output frames for the whole call (48 kB/s in session 1018), so a frame is speech only
+// when its level says so; a silent frame must leave the orb alone, and its playback milliseconds belong in the
+// turn receipt.
+test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn receipt counts it', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  configureDebugJournal(h.dir, true);
+  t.after(() => resetDebugJournal());
+  const session = h.owner.create({ idempotencyKey: 'p3-inaudible', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  assert.equal(h.owner.current().state, 'listening');
+  // The fill that arrives before any word: 100 ms of digital silence.
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.equal(h.owner.current().state, 'listening', 'a silent fill frame never puts the orb in SPEAKING');
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.equal(h.owner.current().state, 'speaking', 'her first audible frame is the start');
+  fake.emit({ type: 'turnComplete' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  attachment.close();
+  for (let attempt = 0; attempt < 100 && !journalRecords(h.dir).some(line => line['event'] === 'turn_end'); attempt += 1) await tick();
+  const turnEnd = journalRecords(h.dir).find(line => line['event'] === 'turn_end' && line['speaker'] === 'model')!;
+  assert.equal(turnEnd['inaudibleMs'], 100, 'the fill frame is counted in playback milliseconds');
+});
+
+/** Every journal line this data dir holds, fixture data only: the day directory is not pinned to a test clock. */
+function journalRecords(dir: string): Record<string, unknown>[] {
+  const root = join(dir, 'debug');
+  if (!existsSync(root)) return [];
+  return readdirSync(root).flatMap(day => readdirSync(join(root, day)).flatMap(file =>
+    readFileSync(join(root, day, file), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)));
+}

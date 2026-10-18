@@ -56,7 +56,10 @@ const DEAD_AIR_NUDGE_MS = 8_000;
 // 3o: a client that detached is gone, not paused. This much detached and the session ends cleanly (the journal
 // stays); the countdown is cancelled by a re-attach. Measured: the app let go at 19:23:49Z and the model kept
 // speaking to nobody for 62 s.
-const CONSUMER_GONE_MS = 5_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+const CONSUMER_GONE_MS = 5_000;
+// 3p: a socket that closed and sent no Stop is a call that ended, not a pause. One second is the longest a Stop may
+// take to be felt by the owner; the 5 s rule above stays behind it as the last net.
+const CONSUMER_CLOSED_MS = 1_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
 // 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
 // that ended, or a model turn left open, owes a reply, and only a deadline on that debt recovers it. One nudge
 // at RESPONSE_WATCHDOG_NUDGE_MS, then the fresh-seeded recovery at RESPONSE_WATCHDOG_RECOVERY_MS after it.
@@ -960,7 +963,7 @@ export class LiveSessionOwner {
       done: handle.done.promise,
       sendAudio: ({ pcm }) => this.#sendAudio(handle, pcm),
       endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
-      close: () => { handle.session.close(); },
+      close: () => this.#stop(handle),
       detach: () => this.#detach(handle),
       overflow: () => {
         if (handle.terminal) return;
@@ -1347,11 +1350,33 @@ export class LiveSessionOwner {
     // A session whose consumer stayed away is ended cleanly: the journal is kept, only the spend of talking to
     // nobody stops. A re-attach inside the window flips consumerState back and cancels this by its guard.
     const detachedAt = this.#now();
+    // The socket that carried the conversation is gone and no Stop reached us: the session is over. One second is
+    // the grace a re-attach needs; before it the app could only have been paused. The five second rule stays as the
+    // last net, for a handle whose first timer could not settle it.
+    this.#schedule(() => {
+      if (handle.consumerState === 'attached') return;
+      this.#endAway(handle, 'consumer_closed', Math.max(0, this.#now() - detachedAt));
+    }, CONSUMER_CLOSED_MS);
     this.#schedule(() => {
       if (this.#settled(handle) || handle.consumerState === 'attached') return;
       hostLogEvent({ event: 'consumer_gone_end', detachedMs: Math.max(0, this.#now() - detachedAt) });
       this.#settle(handle, { state: 'cancelled', code: 'consumer_gone' }, true, 'ended', null);
     }, CONSUMER_GONE_MS);
+  }
+
+  /** One end, one receipt: the journal is kept and the host log names why the call stopped and how long it took. */
+  #endAway(handle: ActiveSession, reason: 'consumer_closed' | 'user_stop', msAfterStop: number): void {
+    if (this.#settled(handle)) return;
+    this.#settle(handle, { state: 'cancelled', code: reason }, true, 'ended', null);
+    hostLogEvent({ event: 'session_end', reason, msAfterStop });
+  }
+
+  /** The client's explicit Stop: the app released the microphone and wants the call over now, not in five seconds.
+   * The owner ended it, so the state is a plain close and the code names the reason. */
+  #stop(handle: ActiveSession): void {
+    if (this.#settled(handle)) return;
+    this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
+    hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
   }
 
   async #consume(handle: ActiveSession): Promise<void> {

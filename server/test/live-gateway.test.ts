@@ -364,6 +364,48 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
   assert.ok(journal.body.data.fragments.some((f: { kind: string }) => f.kind === 'interrupted'));
 });
 
+test('a Stop control ends the live session as user_stop at once and keeps its journal', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'stop-control');
+  const snapshot = created.body.data;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${snapshot.liveSessionId}/audio`, { headers: bearer(h) });
+  const frames: Array<{ text?: string; binary?: Buffer }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { frames.push(isBinary ? { binary: Buffer.from(data as Buffer) } : { text: data.toString() }); });
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const before = Date.now();
+  const closed = once(ws, 'close');
+  ws.send(JSON.stringify({ type: 'close' }));
+  const [code] = await closed;
+  const elapsed = Date.now() - before;
+  assert.equal(code, 1000);
+  assert.ok(elapsed < 1_000, `a Stop is felt at once, never after a countdown (${elapsed} ms)`);
+  const journal = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}/journal`, { headers: bearer(h) });
+  assert.deepEqual(journal.body.data.terminal.outcome, { state: 'closed', code: 'user_stop' });
+  assert.ok(journal.body.data.fragments.length > 0, 'the journal is kept');
+});
+
+test('a socket that closed with no Stop control ends the session within one second as consumer_closed', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'socket-gone');
+  const snapshot = created.body.data;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${snapshot.liveSessionId}/audio`, { headers: bearer(h) });
+  const frames: Array<{ text?: string; binary?: Buffer }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { frames.push(isBinary ? { binary: Buffer.from(data as Buffer) } : { text: data.toString() }); });
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const before = Date.now();
+  ws.close();
+  await once(ws, 'close');
+  const journal = async () => (await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}/journal`, { headers: bearer(h) })).body.data;
+  await waitFor(async () => (await journal()).terminal !== null, 1_500);
+  const elapsed = Date.now() - before;
+  assert.deepEqual((await journal()).terminal.outcome, { state: 'cancelled', code: 'consumer_closed' });
+  assert.ok(elapsed < 1_500, `a closed socket ends the call inside the rule (${elapsed} ms)`);
+});
+
 test('a settled session delivers the typed terminal and closes 1000 while a late mic frame arrives', async t => {
   // The call ceiling is not reset by client audio, so it settles while the microphone keeps sending frames.
   const h = await harness(t, { config: configJson(true, { limits: { sessionMs: 200, callMaxMs: 200, idleMs: 5000, handshakeMs: 1000, closeMs: 50 } }) });

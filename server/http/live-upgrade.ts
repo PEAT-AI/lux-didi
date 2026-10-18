@@ -198,6 +198,7 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       const type = control(raw);
       if (type === null) { ws.close(1002, 'invalid_control'); return; }
       if (type === 'endAudioStream') { try { attachment.endAudioStream(); } catch { ws.close(1002, 'invalid_command'); } return; }
+      // The explicit Stop: the app released the microphone and wants the call over, not the socket merely quieter.
       attachment.close();
       ws.close(1000, 'client_close');
     });

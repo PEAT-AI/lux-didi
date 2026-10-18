@@ -132,6 +132,19 @@ struct LiveCaptureDiagnosticSnapshot: Sendable {
     let pendingFrames: Int
 }
 
+/// Every way a call can be stopped by its owner. Closed set, so a receipt can never carry free text.
+public enum LiveStopTrigger: String, CaseIterable, Sendable { case button, hotkey, menu, other }
+
+/// What a Stop did, so the native log can prove it: what was pressed, when, and how long the wire took to close.
+public struct LiveStopReceipt: Sendable, Equatable {
+    public let trigger: LiveStopTrigger
+    public let stopRequestedAt: Date
+    public let socketCloseSentMs: Int
+    public init(trigger: LiveStopTrigger, stopRequestedAt: Date, socketCloseSentMs: Int) {
+        self.trigger = trigger; self.stopRequestedAt = stopRequestedAt; self.socketCloseSentMs = socketCloseSentMs
+    }
+}
+
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
 public actor LiveSessionCoordinator {
     public let events: AsyncStream<LiveClientState>
@@ -431,29 +444,36 @@ public actor LiveSessionCoordinator {
         }
     }
 
-    public func close() async {
+    @discardableResult
+    public func close(trigger: LiveStopTrigger = .other) async -> LiveStopReceipt? {
         freezeCaptureDiagnostics()
-        guard state != .idle, !settled else { return }
+        let stopRequestedAt = Date()
+        guard state != .idle, !settled else { return nil }
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
             state = .outcomeUnknown(.unavailable)
             try? await sink.flush()
-            return
+            return nil
         }
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
         try? await sink.flush()
-        guard current(token, op) else { await connection?.cancel(); return }
-        do { try await connection?.sendControl(.close) } catch { /* snapshot remains authoritative */ }
+        guard current(token, op) else { await connection?.cancel(); return nil }
+        // The Stop itself: a control frame the socket layer never sheds, so the host learns the call is over even
+        // when the queue is full. The teardown below is the second signal, for a host that only sees the socket go.
+        do { try await connection?.sendControl(.close) } catch { /* the socket teardown is the second signal */ }
         await connection?.cancel()
-        guard current(token, op) else { return }
+        let receipt = LiveStopReceipt(trigger: trigger, stopRequestedAt: stopRequestedAt,
+                                      socketCloseSentMs: Int(Date().timeIntervalSince(stopRequestedAt) * 1000))
+        guard current(token, op) else { return receipt }
         do {
             let snapshot = try await http.snapshot(sessionID: id, for: frozen)
-            guard current(token, op), let key = createKey else { return }
+            guard current(token, op), let key = createKey else { return receipt }
             try validate(snapshot, frozen, key)
             state = snapshot.terminal.map(LiveClientState.terminal) ?? .outcomeUnknown(.transport)
         } catch { if current(token, op) { state = .outcomeUnknown(.unavailable) } }
+        return receipt
     }
 
     public func revoke() async {

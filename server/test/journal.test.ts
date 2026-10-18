@@ -170,7 +170,8 @@ test('an out-of-vocabulary record is dropped without a receipt', t => {
 test('a chat session journals its instructions, both transcripts, its model round and its end', async t => {
   const dir = tempDir(t);
   resetDebugJournal();
-  // The day directory is read under dayName(NOW), so the journal must be on the same clock as the fixture.
+  // The clock seam reaches the journal itself: without it the file lands in today's directory and the assertion
+  // below reads the fixture's own day, so the test silently expires overnight.
   configureDebugJournal(dir, true, { now: () => NOW });
   t.after(resetDebugJournal);
   const work: (() => void)[] = [];
@@ -215,7 +216,8 @@ test('a chat session journals its instructions, both transcripts, its model roun
 test('a live session journals its instructions, provider ack, transcripts and its end', async t => {
   const dir = tempDir(t);
   resetDebugJournal();
-  // The day directory is read under dayName(NOW), so the journal must be on the same clock as the fixture.
+  // The clock seam reaches the journal itself: without it the file lands in today's directory and the assertion
+  // below reads the fixture's own day, so the test silently expires overnight.
   configureDebugJournal(dir, true, { now: () => NOW });
   t.after(resetDebugJournal);
   const work: (() => void)[] = [];
@@ -285,7 +287,9 @@ test('a live session journals its instructions, provider ack, transcripts and it
 test('a chat tool loop journals the call at the tools layer', async t => {
   const dir = tempDir(t);
   resetDebugJournal();
-  configureDebugJournal(dir, true);
+  // The clock seam reaches the journal itself: without it the file lands in today's directory and the assertion
+  // below reads the fixture's own day, so the test silently expires overnight.
+  configureDebugJournal(dir, true, { now: () => NOW });
   t.after(resetDebugJournal);
   // The shape is chat-tools': a real tools owner over an in-process MCP endpoint, driven by a chat turn.
   const seen: { declarations: string[]; responses: number }[] = [];
@@ -338,7 +342,7 @@ test('a chat tool loop journals the call at the tools layer', async t => {
   const accepted = chat.accept({ sessionId, text: 'Synthetic owner question', idempotencyKey: randomUUID() }, f.context);
   for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
 
-  const path = join(dir, 'debug', dayName(Date.now()), `chat-${accepted.runId}.jsonl`);
+  const path = join(dir, 'debug', dayName(NOW), `chat-${accepted.runId}.jsonl`);
   assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
   const calls = records(path).filter(line => line['event'] === 'tool');
   assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer (model saw ${JSON.stringify(seen)})`);

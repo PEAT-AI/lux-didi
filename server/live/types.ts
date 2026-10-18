@@ -180,6 +180,7 @@ export interface LiveAttachment {
   readonly done: Promise<LiveSessionSnapshot>;
   sendAudio(input: { readonly pcm: Uint8Array }): void;
   endAudioStream(): void;
+  /** The client closed the session: end it now, keeping its journal. */
   close(): void;
   detach(): void;
   /** Durable consumer_backpressure settlement when the socket's bufferedAmount bound is exceeded. */

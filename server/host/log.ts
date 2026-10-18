@@ -430,9 +430,34 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, ms: value.ms };
   }
   if (value.event === 'live_provider_error') {
-    if (!closedKeys(value, ['event', 'type', 'code'])) return;
-    if (!isSafeToken(value.type) || !isSafeToken(value.code)) return;
-    return { event: 'live_provider_error', type: value.type, code: value.code };
+    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
+    return { event: 'live_provider_error', type: value.type, code: value.code, param: value.param };
+  }
+  if (value.event === 'gptlive_tool_output') {
+    // 3r: one tool answer per delegated response, its call count and whether a continuation reached the wire.
+    if (!closedKeys(value, ['event', 'calls', 'responseCreate'])) return;
+    if (!isSafeCount(value.calls)) return;
+    if (value.responseCreate !== 'sent' && value.responseCreate !== 'retried' && value.responseCreate !== 'failed') return;
+    return { event: 'gptlive_tool_output', calls: value.calls, responseCreate: value.responseCreate };
+  }
+  if (value.event === 'gptlive_delegation_stalled') {
+    // 3r D4: detection only, so this is a receipt and never a command. Milliseconds since the outputs went out.
+    if (!closedKeys(value, ['event', 'ms'])) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: 'gptlive_delegation_stalled', ms: value.ms };
+  }
+  if (value.event === 'delegation_open' || value.event === 'delegation_closed') {
+    // 3r D4: the provider's own delegation window, in milliseconds from its stream offset or from its open, and on
+    // the close, how many responses its chain named (S1-R1).
+    if (value.event === 'delegation_closed') {
+      if (!closedKeys(value, ['event', 'ms', 'responses'])) return;
+      if (!isSafeCount(value.ms) || !isSafeCount(value.responses)) return;
+      return { event: value.event, ms: value.ms, responses: value.responses };
+    }
+    if (!closedKeys(value, ['event', 'ms'])) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: value.event, ms: value.ms };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

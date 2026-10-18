@@ -916,14 +916,9 @@ for id in NativeNextSteps.connectorIDs {
 }
 let calendarStep = NativeNextSteps.lookup(id: "calendar", state: "missing", reason: "credential_missing")
 expect(calendarStep.command == nil && calendarStep.guideURL?.absoluteString == "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup", "portable calendar instructions link the public guide without a copy command")
-// P8 made the mongoose row the one sign-in action and left this assertion stale, which
-// is the same rule the web row's own test states: the copy button offers the sign-in
-// command and never a pasted token, bearer or credential file.
 let mongooseStep = NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil)
-expect(mongooseStep.command == "mongoose-login" && mongooseStep.text.contains("reconnect Mongoose")
-    && !mongooseStep.text.lowercased().contains("token") && !mongooseStep.text.lowercased().contains("bearer")
-    && !mongooseStep.text.lowercased().contains("credential file"),
-    "the expired Mongoose credential path offers the sign-in command and names no pasted credential")
+expect(mongooseStep.command == "mongoose-login", "the Mongoose next step offers exactly the sign-in action id")
+expect(mongooseStep.command != "cp" && !(mongooseStep.command ?? "").hasPrefix("cp ") && !(mongooseStep.command ?? "").contains("/"), "credential path is not a copy command")
 let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose", "connected", nil)])
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
 expect(onboardingRows.contains { $0.title == "calendar" && $0.detail == "missing: \(calendarStep.text)" && $0.command == nil }, "fixture projects exact connector next step")

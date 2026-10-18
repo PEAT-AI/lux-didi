@@ -1529,7 +1529,9 @@ describe('openai gpt-live receipts', () => {
     const { port, rows } = receipts(t);
     const { f, session } = await openWithTrace(t, port);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    await tick();
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_a') });
+    await tick();
     f.send({ type: 'response.event', delegation_id: 'item_1', event: functionCall('call_b') });
     await tick();
     // The second call answers first: the batch is not settled, so the owner defers, then one create carries both.
@@ -1553,6 +1555,7 @@ describe('openai gpt-live receipts', () => {
     const { port, rows } = receipts(t);
     const { f, session } = await openWithTrace(t, port);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+    await tick();
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1', status: 'completed' } } });
     await tick();
     const terminal = rows('response.terminal');

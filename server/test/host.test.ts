@@ -683,7 +683,7 @@ test('host close kills a stdio MCP child that ignores close within the bound', a
 
 // #397: a host started with another --config-dir must journal into its own --data-dir, and a host outside
 // the installed app must never adopt the installed app's folder as its config source.
-test('a host journals under its own --data-dir, never beside the --config-dir it was given', async () => {
+test('a host writes no debug journal under any data dir or config dir', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-journal-root-'));
   const dataDir = join(dir, 'state');
   const configDir = join(dir, 'other-install', 'provider-config');
@@ -691,7 +691,9 @@ test('a host journals under its own --data-dir, never beside the --config-dir it
   await chmod(configDir, 0o700);
   const host = await startHost({ dataDir, configDir, webRoot, port: 0 });
   try {
-    assert.equal((await stat(join(dataDir, 'debug'))).isDirectory(), true, 'the journal root is this host own data dir');
+    // O1b-A: the JSONL debug journal is gone, so a host start creates no debug/ directory anywhere; the
+    // per-turn record lives in state.sqlite's trace tables.
+    await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'no journal root under the data dir');
     await assert.rejects(stat(join(dir, 'other-install', 'debug')), /ENOENT/, 'nothing is written beside the borrowed config dir');
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
 });

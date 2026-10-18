@@ -3556,7 +3556,7 @@ test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is
   // answer at all, so it never settles at the ceiling (3r keeps that behaviour).
   assert.equal(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').length, 0, 'no ceiling settlement for a cancelled call');
   assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_cancelled').map(entry => entry['tool']), ['remember_note']);
-  assert.equal(fake.toolResponses.length, 0, 'a provider-cancelled call is never answered (3r)');
+  assert.deepEqual(fake.toolResponses, [], 'a provider-cancelled call is never answered (3r)');
   h.owner.revoke(session.liveSessionId);
 });
 

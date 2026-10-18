@@ -43,7 +43,9 @@ Right Option:
   answer, or after 30 seconds of silence.
 
 The key ignores itself while you are using it in a chord such as Cmd+C, so ordinary
-Command shortcuts keep working. **Mute** stays on the app's mic button and on
+Command shortcuts keep working, and a chord pressed during a hold ends that hold there
+and then: the microphone closes as you press it, so no shortcut leaves it listening.
+**Mute** stays on the app's mic button and on
 Control Option Shift M, not on the key. The first time you launch Naya by hand, macOS
 asks for Accessibility (or Input Monitoring) permission with a one-line
 explanation, and asks again once after each update, because macOS can drop the grant

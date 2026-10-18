@@ -29,6 +29,25 @@ case "$(cd "$target_dir" 2>/dev/null && pwd || echo "$target_dir")/" in
   *) echo "install-macos-app.sh: target must be inside the user home" >&2; exit 2;;
 esac
 
+# The installed shell must be the one the build produced. Read the hashed script
+# asset out of an app's index.html and assert it is present beside it.
+web_shell_asset() {  # web_shell_asset <app-dir>
+  local index="$1/Contents/Resources/web/dist/index.html"
+  [ -f "$index" ] || return 1
+  grep -o '/assets/[A-Za-z0-9._-]*\.js' "$index" | head -1
+}
+
+web_shell_installed() {
+  local source_asset installed_asset
+  source_asset="$(web_shell_asset "$built" 2>/dev/null)" || source_asset=""
+  installed_asset="$(web_shell_asset "$target" 2>/dev/null)" || installed_asset=""
+  printf 'INSTALL-MACOS-APP WEB_SHELL source=%s installed=%s\n' "${source_asset:-none}" "${installed_asset:-none}"
+  if [ -z "$source_asset" ]; then return 0; fi
+  [ "$installed_asset" = "$source_asset" ] || return 1
+  [ -f "$target/Contents/Resources/web/dist$installed_asset" ] || return 1
+  [ ! -e "$target/Contents/Resources/web/dist/dist" ] || return 1
+}
+
 name="$(basename "$built")"
 [ "$name" = "Lux Didi.app" ] || { echo "install-macos-app.sh: expected 'Lux Didi.app', got '$name'" >&2; exit 2; }
 target="$target_dir/$name"
@@ -51,7 +70,7 @@ if [ -e "$target" ]; then
 fi
 
 mv "$stage" "$target"
-if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/MacOS/LuxDidi" ]; then
+if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/MacOS/LuxDidi" ] || ! web_shell_installed; then
   rm -rf "$target"
   if [ -n "$rollback" ]; then mv "$rollback" "$target"; fi
   echo "install-macos-app.sh: post-swap validation failed; prior app restored" >&2

@@ -127,6 +127,14 @@ test('shapeBlock collapses knowledge headings to id and title and caps the block
   assert.match(block.lines[0]!, /^#1 Insight 0 .*\| some body text/);
 });
 
+test('P5-R1: a knowledge hit keeps its whole body, never a 1,200 character snippet', () => {
+  const long = 'x'.repeat(4_000);
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${long}`)]);
+  assert.equal(block.lines.length, 1);
+  assert.ok(block.lines[0]!.endsWith(long), 'the body the connector sent is kept whole');
+  assert.equal(RESEARCH.knowledgeLines, 8, 'up to eight hits, each with the body the connector returns');
+});
+
 // --- Evidence ids reach the second hops ------------------------------------------------------
 
 test('evidence ids reach mail_open and chat_thread', () => {

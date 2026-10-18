@@ -4,7 +4,7 @@ import {
   RESEARCH, ResearchLedger, ResearchScheduler, createGeminiSelector, fallbackSelection, offerableCandidates,
   parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
-  type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
+  researchCallBudgetMs, type ConnectorWarmLog, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
@@ -593,11 +593,11 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
   await settle();
-  clock.advance(RESEARCH.sourceDeadlineMs); await settle();
+  clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   const reply = await running;
   assert.ok((reply['unchecked'] as string[]).includes('mail'), 'the source the cut abandoned is named as unchecked');
   const log = h.logs[0]!;
-  assert.ok(log.elapsedMs <= RESEARCH.sourceDeadlineMs + 1_000, `one slow source never owns the turn: ${log.elapsedMs}`);
+  assert.ok(log.elapsedMs <= RESEARCH.sourceDeadline.mail + 1_000, `one slow source never owns the turn: ${log.elapsedMs}`);
   assert.equal(log.sources.find(entry => entry.kind === 'mail')?.disposition, 'skipped');
   assert.notEqual(log.status, 'answered', 'a cut read is a partial answer, never an answered one');
 });
@@ -641,16 +641,19 @@ test('the first sufficient source keeps its own second hop when the round is cut
 });
 
 // Reviewer B5 replacement: the owner hears a reply inside six seconds because the call itself returns.
-test('a start call returns inside six seconds even when its first read never answers', async () => {
+test('a start call returns inside its budget, the slowest source plus two seconds, when a read never answers', async () => {
   const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } });
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); }) });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   await settle();
-  clock.advance(RESEARCH.answerWithinMs); await settle();
+  clock.advance(researchCallBudgetMs(['knowledge'])); await settle();
   const reply = await Promise.race([running, settle().then(() => null)]);
   assert.notEqual(reply, null, 'the call came back instead of waiting for the read');
-  assert.ok(h.logs[0]!.elapsedMs <= RESEARCH.answerWithinMs + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
+  assert.ok(h.logs[0]!.elapsedMs <= researchCallBudgetMs(['knowledge']) + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
+  assert.equal(researchCallBudgetMs(['knowledge']), 14_000, 'a knowledge read is 12 s, plus the 2 s slack');
+  assert.equal(researchCallBudgetMs(['chat', 'calendar', 'mail']), 14_000, 'the slowest source once, never a sum');
+  assert.ok(researchCallBudgetMs(['chat']) <= RESEARCH.answerCapMs, 'and never past the 20 s cap');
 });
 
 // B7: a run whose source was cut must still reach the host log; `cut` is not a disposition the log admits.
@@ -663,7 +666,7 @@ test('a cut source logs a disposition the host log admits and the whole run line
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
   await settle();
-  clock.advance(RESEARCH.sourceDeadlineMs); await settle();
+  clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   await running;
   const line = h.logs[0]!;
   assert.equal(line.sources.find(entry => entry.kind === 'mail')?.disposition, 'skipped');
@@ -687,4 +690,73 @@ test('K6: a start with no lookups keeps the selector path and its reply shape', 
   assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
   assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
   assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
+});
+
+// --- P5: one deadline per source, the call budget follows the slowest source it reads ---------------
+
+test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget follows that source', async () => {
+  const clock = fakeClock();
+  const receipts: ResearchSourceLog[] = [];
+  let release!: (results: IntentSubResult[]) => void;
+  const h = harness({
+    selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'release freeze' }], pUseful: { chat_search: 0.9 } }),
+    now: clock.now, schedule: clock.schedule,
+    execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((resolve, reject) => {
+      release = resolve;
+      const cut = (): void => reject(new Error('cut'));
+      if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true });
+    }),
+  });
+  const deps: ResearchDeps = { ...h.deps, configured: ['chat'], logSource: event => receipts.push(event) };
+  const running = runResearch(deps, { action: 'start', question: 'what did the team agree in chat' }, new AbortController().signal);
+  await settle();
+  clock.advance(6_000); await settle();
+  release([sub('mattermost_search', '- release freeze agreed on Friday', true, 'c0')]);
+  const reply = await running;
+  assert.equal(reply['status'], 'answered', 'a 6 s chat read inside its 12 s deadline answers');
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', 12_000]], 'the receipt names the deadline the chat read really had');
+});
+
+test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never empty', async () => {
+  const clock = fakeClock();
+  const receipts: ResearchSourceLog[] = [];
+  const h = harness({
+    selector: knowledge, now: clock.now, schedule: clock.schedule,
+    execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_resolve, reject) => {
+      const cut = (): void => reject(new Error('cut'));
+      if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true });
+    }),
+  });
+  const deps: ResearchDeps = { ...h.deps, configured: ['knowledge'], logSource: event => receipts.push(event) };
+  const running = runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  await settle();
+  clock.advance(12_000); await settle();
+  clock.advance(13_000); await settle();
+  const reply = await running;
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['knowledge', 'timeout', 12_000]], 'a cut knowledge read is a timeout at 12 s, never an empty search');
+  assert.ok((reply['unchecked'] as string[]).includes('knowledge'), 'and it is named unchecked rather than reported as read');
+});
+
+test('P5: the warm-up probes each healthy connector once per session and never blocks the start', async () => {
+  const probes: string[] = [];
+  const warm: ConnectorWarmLog[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const scheduler = new ResearchScheduler({
+    now: () => 0,
+    configured: ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'],
+    unavailableNow: () => [{ source: 'mongoose', reason: 'connector_failure mongoose stage=credential' }],
+    execute: async subs => { probes.push(subs[0]!.name); await gate; return subs.map(call => sub(call.name, 'ok', true, call.key)); },
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(), logWarm: event => warm.push(event),
+  });
+  scheduler.warm();
+  assert.deepEqual(probes.sort(), ['gcal_calendars', 'gmail_list', 'mattermost_search', 'search_knowledge'], 'one cheap probe per configured, healthy connector, fired before anything is awaited');
+  assert.equal(warm.length, 0, 'the session start returns without waiting on a connector');
+  scheduler.warm();
+  await settle();
+  assert.equal(probes.length, 4, 'a second start in the same session proves nothing twice');
+  release();
+  await settle();
+  assert.deepEqual(warm.map(event => [event.source, event.ok]), [['chat', true], ['calendar', true], ['knowledge', true], ['mail', true]], 'each probe leaves one connector_warm receipt');
+  assert.ok(warm.every(event => typeof event.ms === 'number'));
 });

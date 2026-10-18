@@ -67,16 +67,24 @@ export const RESEARCH = Object.freeze({
    * how the calendar answer arrived empty.
    */
   calendarDeadlineMs: 46_000,
-  /** RD: a single source that outlives this is cut, so one slow connector never owns the whole turn. */
-  sourceDeadlineMs: 4_000,
-  /** RD: a start call returns its answer, or its honest partial, inside this, so the owner hears a reply. */
-  answerWithinMs: 6_000,
   /**
-   * N3: the routed calendar read's own budget. It sits well inside `startDeadlineMs` because the read
-   * only survives if it settles before the caller aborts: at 15 s the abort discarded the partial read
-   * and the source reported `empty`. The primary calendar is one call, so this bounds a real read.
+   * P5: the time each source really needs. One 4 s cut for every source equalled the chat connector's
+   * own latency: Mattermost answered at 3,803 ms and was cut at 4,001 ms in the same call, and the
+   * first calendar read took 4.4 s. P5-R1 is the owner's order that depth beats speed: every remote
+   * connector read gets 12 s, and the two local reads (knowledge, memory, 8 s) get the same slack.
+   * This is the single table every per-source bound reads.
    */
-  routedCalendarDeadlineMs: 8_000,
+  sourceDeadline: Object.freeze({
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 8_000,
+  } as Record<SourceKind, number>),
+  /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
+  defaultSourceDeadlineMs: 8_000,
+  /**
+   * P5-R1: the whole research call is the slowest source it reads plus this slack, and never more than
+   * the cap, so a call cannot hang on a source that never answers and cannot outlast what it reads.
+   */
+  answerSlackMs: 2_000,
+  answerCapMs: 20_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -89,13 +97,66 @@ export const RESEARCH = Object.freeze({
   replyLimitChars: 6_000,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
-  mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
+  mailLines: 8, chatLines: 8, calendarLines: 12,
+  /**
+   * P5-R1: knowledge returns up to eight hits with the whole body the connector sends. The old 40 hits
+   * of 1,200-character snippets cut the evidence the owner asked for; the whole-reply budget still
+   * bounds the total, so nothing here can overrun the answer.
+   */
+  knowledgeLines: 8,
   /** K6: how many memory lines one routed memory lookup may show. */
   memoryLines: 12,
-  mailSnippetChars: 200, chatTextChars: 300, knowledgeBodyChars: 1_200, openedBodyChars: 1_500,
+  mailSnippetChars: 200, chatTextChars: 300, openedBodyChars: 1_500,
 });
 
 export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+
+/** P5: the sources a warm-up can reach. Her own memory is read in process, so it has no connector. */
+export type WarmSource = Exclude<SourceKind, 'memory'>;
+
+/**
+ * P5 outcome 2: the cheapest read each connector can serve, used once per live session to pay the cold
+ * start before the owner asks anything. A calendar identity list (no window), a one-line mail list, a
+ * one-word chat, knowledge and company search. Nothing here reads owner data it does not have to.
+ */
+export const WARM_PROBES: Readonly<Record<WarmSource, IntentSubCall>> = Object.freeze({
+  knowledge: { key: 'warm', name: INTERNAL.knowledgeSearch, args: { query: 'warm', limit: 1 } },
+  calendar: { key: 'warm', name: INTERNAL.calendars, args: {} },
+  mail: { key: 'warm', name: INTERNAL.mailList, args: { q: 'in:inbox newer_than:1d', maxResults: 1 } },
+  chat: { key: 'warm', name: INTERNAL.chatSearch, args: { query: 'in:@me', limit: 1 } },
+  mongoose: { key: 'warm', name: INTERNAL.mongooseSearch, args: { query: 'warm' } },
+});
+
+const WARM_SOURCES = Object.keys(WARM_PROBES) as readonly WarmSource[];
+
+export interface WarmOptions {
+  configured: readonly SourceKind[];
+  /** A source that cannot serve a read is not warmed: its failure is already the session's own report. */
+  unavailable?: readonly SourceKind[];
+  signal?: AbortSignal | undefined;
+  /** Defaults to the host log sink. */
+  log?: (event: ConnectorWarmLog) => void;
+}
+
+/**
+ * P5 outcome 2: fire one cheap read per configured, healthy connector in parallel and return at once.
+ * The caller never awaits the probes, so the session starts on time; a probe that hangs is cut by its
+ * own source deadline. One `connector_warm` receipt per probe records {source, ms, ok}.
+ */
+export function warmConnectors(deps: Pick<ResearchDeps, 'execute' | 'now'>, options: WarmOptions): void {
+  const log = options.log ?? ((event: ConnectorWarmLog): void => { hostLogEvent(event); });
+  const skip = new Set<string>(options.unavailable ?? []);
+  for (const source of WARM_SOURCES) {
+    if (!options.configured.includes(source) || skip.has(source)) continue;
+    const deadlineMs = RESEARCH.sourceDeadline[source];
+    const at = deps.now();
+    const signal = options.signal !== undefined ? AbortSignal.any([options.signal, AbortSignal.timeout(deadlineMs)]) : AbortSignal.timeout(deadlineMs);
+    // Deliberately not awaited and never allowed to reject: a warm-up that fails must not reach the session.
+    void deps.execute([WARM_PROBES[source]], signal)
+      .then(results => log({ event: 'connector_warm', source, ms: Math.max(0, deps.now() - at), ok: results.some(result => result.ok) }))
+      .catch(() => log({ event: 'connector_warm', source, ms: Math.max(0, deps.now() - at), ok: false }));
+  }
+}
 
 /**
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
@@ -119,10 +180,23 @@ export interface ResearchRoutedLog {
   ms: number[]; outcomes: LookupOutcome[];
 }
 
-/** One metadata-only receipt per routed lookup: which layer, its outcome and its wall time, no query. */
-export interface ResearchLookupLog {
-  event: 'research_lookup'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
+/**
+ * P5: one receipt per source read: which layer, what became of it, how long it took, and the deadline it
+ * was given. Never a query. The deadline travels with the receipt so a cut read can be judged against the
+ * time the source was actually allowed.
+ */
+export interface ResearchSourceLog {
+  event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
+  deadlineMs: number;
 }
+
+/** P5: one receipt per warm-up probe, so a cold start that never warmed is visible in the log. */
+export interface ConnectorWarmLog {
+  event: 'connector_warm'; source: SourceKind; ms: number; ok: boolean;
+}
+
+/** A source that cannot serve a read right now, with the reason its connector gave. */
+export interface UnavailableSource { source: SourceKind; reason: string }
 
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
 export function normalizeLookups(value: unknown): ResearchLookup[] {
@@ -170,9 +244,32 @@ export function p50SecondsOf(source: SourceKind): number {
   return RESEARCH.p50Seconds.gmail;
 }
 
+/** P5: the lookup layer a source kind reports as, so a receipt and a routed reply name the same layer. */
+export function lookupSourceOf(source: SourceKind): LookupSource {
+  return source === 'mongoose' ? 'company' : source;
+}
+
 export function lambdaAt(elapsedMs: number): number {
   for (const band of RESEARCH.lambda) if (elapsedMs <= band.upToMs) return band.value;
   return 1.5;
+}
+
+/**
+ * P5: the longest one read may run, from the per-source table. A read that fans out over several
+ * sources (`brief`) gets the slowest source it touches, never a sum: they run in parallel.
+ */
+export function sourceDeadlineMs(sources: readonly SourceKind[]): number {
+  if (sources.length === 0) return RESEARCH.defaultSourceDeadlineMs;
+  return Math.max(...sources.map(source => RESEARCH.sourceDeadline[source]));
+}
+
+/**
+ * P5-R1: the whole research call, as the owner ordered it: the slowest source the call reads plus two
+ * seconds, capped at 20 s. A call of local reads is short, and a call that reads nothing slow is never
+ * given a slow source's budget.
+ */
+export function researchCallBudgetMs(sources: readonly SourceKind[]): number {
+  return Math.min(RESEARCH.answerCapMs, sourceDeadlineMs(sources) + RESEARCH.answerSlackMs);
 }
 
 /** pUseful(S) = 1 - product(1 - p_a) over the chosen actions. */
@@ -514,6 +611,8 @@ export interface RunState {
   emptySearches: Map<SourceKind, string>;
   /** N3: sources whose read a deadline cut short, so the reply can say so instead of "nothing matched". */
   cutShort: Set<SourceKind>;
+  /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
+  unavailableReasons: Map<SourceKind, string>;
 }
 
 /** Session-local in-memory ledger. Nothing here is persisted or logged beyond its metadata. */
@@ -530,7 +629,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       cancelled: false, ended: false, stopped: false,
       ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -548,6 +647,7 @@ export class ResearchLedger {
       rounds: 0, cancelled: false, ended: false, stopped: false,
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
+      unavailableReasons: new Map(existing.unavailableReasons),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -617,9 +717,10 @@ export interface ResearchDeps {
   configuredNow?: (() => readonly SourceKind[]) | undefined;
   /**
    * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
-   * once instead of spending its deadline on sub-calls that cannot reach a stopped connector.
+   * once instead of spending its deadline on sub-calls that cannot reach a stopped connector. P5: an
+   * entry may carry its reason (a credential failure, a stop), so the reply names the cause.
    */
-  unavailableNow?: (() => readonly SourceKind[]) | undefined;
+  unavailableNow?: (() => readonly (SourceKind | UnavailableSource)[]) | undefined;
   selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
@@ -639,8 +740,10 @@ export interface ResearchDeps {
   memory?: ((query: string) => { text: string; lines: string[]; total: number } | Promise<{ text: string; lines: string[]; total: number }>) | undefined;
   /** K6: one metadata-only receipt per routed call; defaults to the host log sink. */
   logRouted?: ((event: ResearchRoutedLog) => void) | undefined;
-  /** N3: one receipt per routed lookup, so a per-lookup outcome and ms survive in the host log. */
-  logLookup?: ((event: ResearchLookupLog) => void) | undefined;
+  /** N3/P5: one metadata-only receipt per source read, so its outcome, ms and deadline survive in the host log. */
+  logSource?: ((event: ResearchSourceLog) => void) | undefined;
+  /** P5: one receipt per warm-up probe. */
+  logWarm?: ((event: ConnectorWarmLog) => void) | undefined;
 
   ledger: ResearchLedger;
   replyLimit?: number;
@@ -829,7 +932,8 @@ function insightItems(raw: readonly string[]): string[] {
   let body: string[] = [];
   const flush = (): void => {
     if (heading === undefined) { body = []; return; }
-    items.push(`${heading.id ? `#${heading.id} ` : ''}${heading.title}${body.length ? ` | ${clip(body.join(' '), RESEARCH.knowledgeBodyChars)}` : ''}`);
+    // P5-R1: the body is kept whole: the connector's own result bounds are the only cap on a hit.
+    items.push(`${heading.id ? `#${heading.id} ` : ''}${heading.title}${body.length ? ` | ${body.join(' ')}` : ''}`);
     heading = undefined; body = [];
   };
   for (const line of raw) {
@@ -1033,11 +1137,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     ...searchedNothing,
   ];
   const note = clauses.length === 0 ? undefined : clauses.join(' ');
+  // P5: a source that could not be read names its own reason, so an outage is never read as "nothing
+  // found" and never as a timeout.
+  const unavailableReasons = run.unavailableReasons.size === 0 ? undefined : Object.fromEntries(run.unavailableReasons);
   let dropped = 0;
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
       .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${group.total} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
-    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0, ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}) } };
+    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0, ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;
@@ -1090,9 +1197,10 @@ interface RoutedPlan { lookup: ResearchLookup; read: { source: SourceKind | 'mem
  * carries, so coalescing never shrinks the time each lookup gets, except for the calendar: that read
  * has its own budget which sits inside the start deadline, and multiplying it would put the calendar
  * back on the deadline this change exists to keep it off. Never above what the run has left.
+ * P5: the per-read budget comes from the one per-source table.
  */
 export function lookupBound(source: SourceKind, lookups: number, remainingMs: number): number {
-  const perRead = source === 'calendar' ? RESEARCH.routedCalendarDeadlineMs : RESEARCH.sourceDeadlineMs;
+  const perRead = RESEARCH.sourceDeadline[source];
   const wanted = source === 'calendar' ? perRead : perRead * Math.max(1, lookups);
   return Math.min(wanted, remainingMs);
 }
@@ -1104,16 +1212,20 @@ export function lookupBound(source: SourceKind, lookups: number, remainingMs: nu
  * the number of lookups in the batch. Each lookup still settles on its own outcome from its own
  * sub-results, so a cut or failed read never takes the others down.
  */
-async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
+async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
     ({ lookup: plan.lookup, kind: plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
   const done: RoutedOutcome[] = [];
   // Her own memory is read locally by the composition that holds it, never over the network.
+  const memoryDeadlineMs = RESEARCH.sourceDeadline.memory;
+  const expired = new Promise<'expired'>(resolve => { const timer = setTimeout(() => resolve('expired'), memoryDeadlineMs); timer.unref(); });
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
-    if (deps.memory === undefined) { done.push(settle(plan, 'unavailable')); continue; }
+    if (deps.memory === undefined) { run.unavailableReasons.set('memory', 'no_reader'); done.push(settle(plan, 'unavailable')); continue; }
     try {
-      const found = await deps.memory(plan.lookup.query);
+      const found = await Promise.race([deps.memory(plan.lookup.query), expired]);
+      // P5: the memory table entry is a real bound, so a stalled local read is a cut read, not silence.
+      if (found === 'expired') { run.cutShort.add('memory'); done.push(settle(plan, 'timeout')); continue; }
       const lines = found.lines.slice(0, RESEARCH.memoryLines);
       done.push(settle(plan, lines.length > 0 ? 'ok' : 'empty', lines, found.total));
     } catch { done.push(settle(plan, 'failed')); }
@@ -1122,11 +1234,16 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   if (reads.length === 0) return done;
   const source = reads[0]!.read.source as SourceKind;
   const all = (outcome: LookupOutcome): RoutedOutcome[] => reads.map(plan => settle(plan, outcome));
-  if (!context.configured.includes(source)) return [...done, ...all('unavailable')];
+  /** P5: an unreachable source names its reason in the reply, so an outage is never read as "nothing found". */
+  const unserved = (outcome: LookupOutcome, reason: string): RoutedOutcome[] => {
+    run.unavailableReasons.set(source, reason);
+    return [...done, ...all(outcome)];
+  };
+  if (!context.configured.includes(source)) return unserved('unavailable', 'not_configured');
   // #351: a connector that cannot serve a read right now settles at once, never spending the batch deadline.
-  if (context.unavailable.includes(source)) return [...done, ...all('unavailable')];
+  if (context.unavailable.includes(source)) return unserved('unavailable', context.unavailableReason?.(source) ?? 'connector_unavailable');
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
-  if (remainingMs <= 0) return [...done, ...all('unavailable')];
+  if (remainingMs <= 0) return unserved('unavailable', 'deadline_exhausted');
   const subs: IntentSubCall[] = [];
   const owned: number[][] = reads.map(() => []);
   const seen = new Map<string, number>();
@@ -1141,7 +1258,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       seen.set(signature, subs.length - 1);
     }
   });
-  if (subs.length === 0) return [...done, ...all('unavailable')];
+  if (subs.length === 0) return unserved('unavailable', 'no_query');
   run.ops += Math.max(1, subs.length);
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(lookupBound(source, reads.length, remainingMs))]);
   let results: IntentSubResult[];
@@ -1162,10 +1279,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
-async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
+async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], unavailableReason: (source: SourceKind) => string, signal: AbortSignal, now: () => number, limit: number): Promise<JsonObject> {
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
-  const logLookup = deps.logLookup ?? ((event: ResearchLookupLog): void => { hostLogEvent(event); });
+  const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
@@ -1177,9 +1294,16 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     bucket.push(plan);
     groups.set(plan.read.source, bucket);
   }
-  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, signal, now })))).flat();
+  const outcomes = (await Promise.all([...groups.values()].map(plans => routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now })))).flat();
+  // P5: the receipt carries the deadline the read was given, so a cut read is never judged by a bound it
+  // never had. A same-source batch shares one bound, so the count is the group's own size.
+  const batchSizes = new Map<SourceKind | 'memory', number>();
+  for (const outcome of outcomes) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
   for (const outcome of outcomes) {
-    logLookup({ event: 'research_lookup', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms });
+    logLookup({
+      event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
+      deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
+    });
     const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
     run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
     if (outcome.source === 'memory') {
@@ -1212,8 +1336,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
   const now = () => deps.now();
   const configured = (deps.configuredNow ?? (() => deps.configured))();
-  const unavailable = (deps.unavailableNow ?? (() => []))();
+  // P5: a source that cannot serve a read says why. The composition may hand over the connector's own
+  // reason; a bare source name still reports a cause, never "nothing found".
+  const unavailableEntries = (deps.unavailableNow ?? (() => []))().map(entry => typeof entry === 'string' ? { source: entry, reason: 'connector_unavailable' } : entry);
+  const unavailable = unavailableEntries.map(entry => entry.source);
+  const unavailableReason = (source: SourceKind): string => unavailableEntries.find(entry => entry.source === source)?.reason ?? 'connector_unavailable';
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
+  const logSource = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
   const publishStep = deps.step ?? liveToolStep;
   const stepCallId = call.callId ?? '';
 
@@ -1238,7 +1367,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
-  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, signal, now, limit);
+  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];
@@ -1279,9 +1408,22 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   // RD: a start call answers, or reports its honest partial, inside answerWithinMs. The bound is one cut
   // for the whole run, so the prime-source read that starts before the selector is bounded too.
   const answerCut = new AbortController();
-  const answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), RESEARCH.answerWithinMs) : { unref: () => {}, cancel: () => {} };
-
   const hint = hintedSources(call.sources, configured);
+  let answerMs = researchCallBudgetMs(hint.length > 0 ? hint : []);
+  let answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), answerMs) : { unref: () => {}, cancel: () => {} };
+  /**
+   * P5-R1: the call budget is the slowest source this call reads plus the slack, capped. A batch that
+   * carries a 12 s connector read may not be cut by a local read's smaller budget, and a batch of
+   * local reads only is never widened for a slow source it does not read.
+   */
+  const allowAnswer = (sources: readonly SourceKind[]): void => {
+    if (call.action !== 'start') return;
+    const wanted = researchCallBudgetMs(sources);
+    if (wanted <= answerMs) return;
+    answerMs = wanted;
+    answerTimer.cancel();
+    answerTimer = schedule(() => answerCut.abort(), Math.max(0, answerMs - (now() - started)));
+  };
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
   const knowledgeSubs = candidateSubs('knowledge_search', { question, configured, evidence: run.evidence });
@@ -1378,6 +1520,12 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       const batchDeadline = batch.includes('calendar_window')
         ? Math.max(deadlineAt, started + RESEARCH.calendarDeadlineMs)
         : deadlineAt;
+      // P5: the call's own budget follows the slowest source this batch reads, and only that far.
+      const batchSources = batch.flatMap(kind => {
+        const named = sourceKindOf(kind);
+        return named !== null ? [named] : kind === 'brief' ? [...configured] : [];
+      });
+      allowAnswer(batchSources);
       const remainingMs = batchDeadline - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
       // RD: a start call answers inside answerWithinMs, so the owner hears a reply instead of waiting on
@@ -1416,10 +1564,23 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         for (const source of startSources) {
           publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
         }
+        // P5 outcome 3: a source that cannot serve a read right now never spends this read's deadline, and
+        // the reply carries the reason instead of reporting a timeout or a search that found nothing.
+        const sourceDeadlineMsOfRead = sourceDeadlineMs(startSources);
+        if (startSources.length > 0 && startSources.every(source => unavailable.includes(source))) {
+          for (const source of startSources) {
+            run.unavailableReasons.set(source, unavailableReason(source));
+            run.sourcesFailed.add(source);
+            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead });
+          }
+          return;
+        }
         // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
         const cut = new AbortController();
         const readSignal = AbortSignal.any([roundSignal, cut.signal, abandon.get(kind)!.signal]);
-        const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(RESEARCH.sourceDeadlineMs, deadlineAt - now())));
+        // P5: the cut follows this source's own deadline from the table, never one number for every source.
+        const readDeadlineMs = sourceDeadlineMs(startSources);
+        const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
         // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
         // sent twice, so the connector is asked one question once.
         const issued = subs.filter(call => !run.calls.has(callSignature(call)));
@@ -1483,6 +1644,12 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
             run.emptySearches.set(part.source, queryShapeOf(subs));
           } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
+          // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
+          logSource({
+            event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
+            outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : 'empty',
+            ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead,
+          });
         }
         // A source that answered counts as read, so an empty result is never re-offered as pending.
         if (results.some(result => result.ok)) run.readKinds.add(kind);
@@ -1591,7 +1758,20 @@ function deferred(): Deferred {
 export class ResearchScheduler {
   readonly #deps: ResearchDeps;
   #active = new Map<string, ActiveRun>();
+  #warmed = false;
   constructor(deps: ResearchDeps) { this.#deps = deps; }
+
+  /**
+   * P5 outcome 2: warm the connectors once, at live session start. Fire and forget, so the session
+   * begins on time; a second call in the same session proves nothing twice and does nothing.
+   */
+  warm(signal?: AbortSignal): void {
+    if (this.#warmed) return;
+    this.#warmed = true;
+    const configured = (this.#deps.configuredNow ?? (() => this.#deps.configured))();
+    const unavailable = (this.#deps.unavailableNow ?? (() => []))().map(entry => typeof entry === 'string' ? entry : entry.source);
+    warmConnectors(this.#deps, { configured, unavailable, ...(signal !== undefined ? { signal } : {}), ...(this.#deps.logWarm !== undefined ? { log: this.#deps.logWarm } : {}) });
+  }
 
   call(call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
     if (call.action === 'start') {

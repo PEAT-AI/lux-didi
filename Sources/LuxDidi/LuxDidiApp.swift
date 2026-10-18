@@ -364,7 +364,7 @@ import WebKit
         forwardMicModeReceipt(reading)
     }
 
-    private var appVersion: String {
+    var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
     }
 
@@ -543,6 +543,9 @@ struct RootView: View {
     private var liveCallBadge: AnyCancellable?
     private var liveCallHealth: AnyCancellable?
     private var pickupMenuItem: NSMenuItem?
+    private var accessibilityNoticeItem: NSMenuItem?
+    /// The one line the status menu shows when Right Command has no grant.
+    static let accessibilityNoticeTitle = "Right Command needs Accessibility (open System Settings)"
     private var keyboardMonitor: Any?
     private var terminationMonitor: NSObjectProtocol?
     private var hotkeyCode: OSStatus = noErr
@@ -617,6 +620,12 @@ struct RootView: View {
         menu.addItem(withTitle: "Show mini orb", action: #selector(toggleMiniOrb), keyEquivalent: "")
         singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
         singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
+        // #3p: the one line that says why a silent key is silent, in the status menu the
+        // owner already opens, with a button to the pane that fixes it. Hidden while the
+        // grant is there, and no window of its own.
+        accessibilityNoticeItem = menu.addItem(withTitle: Self.accessibilityNoticeTitle,
+                                               action: #selector(openAccessibilitySettings), keyEquivalent: "")
+        accessibilityNoticeItem?.isHidden = true
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
@@ -637,11 +646,16 @@ struct RootView: View {
         // The orb is there from app start, grey and silent, and it never takes focus.
         presence.setSurfaces()
         // MINI2: the single key is the same toggle as the chord. The grant is
-        // asked for once, on the first interactive launch only, and the chord
-        // works whether or not the key does.
+        // asked for once per app version (#3p: an ad-hoc install can lose it), on an
+        // interactive launch only, and the chord works whether or not the key does.
+        // Every launch then leaves a receipt, so a key that never fires is visible.
         bindRightCommandTap(singleKey, to: presence)
-        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind)
-        singleKey.start()
+        singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
+        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.appVersion)
+        let tapCreated = singleKey.start()
+        model.appendPresenceReceipt(SingleKeyTrigger.stateReceipt(
+            enabled: SingleKeyTrigger.isEnabled, trusted: SingleKeyTrigger.isGranted,
+            tapCreated: tapCreated, signing: SingleKeyTrigger.signing))
         pageReadyObservation = model.$shell
             .compactMap { $0 }
             .flatMap { shell in shell.$state.map { state in (shell: shell, state: state) } }
@@ -814,6 +828,19 @@ struct RootView: View {
         loginMenuItem?.title = loginAvailability?.text ?? "Open at login: unavailable in this launch"
         loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
         loginMenuItem?.isEnabled = loginAvailability != nil
+        // #3p: the notice is only there while the key is on and the grant is missing, and
+        // a grant picked in System Settings while the app runs brings the tap up without
+        // waiting for another launch.
+        let needsGrant = SingleKeyTrigger.isEnabled && !SingleKeyTrigger.isGranted
+        accessibilityNoticeItem?.isHidden = !needsGrant
+        if !needsGrant, SingleKeyTrigger.isEnabled, !singleKey.tapCreated { singleKey.start() }
+    }
+    /// #3p: the notice's button. The Accessibility pane, opened the same way Getting
+    /// Started opens the Microphone pane.
+    @objc private func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
     @objc func startLiveFromMenu() { menuBridge.start() }
     @objc func muteLiveFromMenu() { summonActions.mute() }

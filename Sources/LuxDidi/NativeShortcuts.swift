@@ -7,7 +7,14 @@ enum NativeNoteAction { static let label = "Save note" }
 /// calls, so a test proves the assignment the app really uses rather than a copy of it.
 @MainActor
 func bindRightCommandTap(_ singleKey: SingleKeyTrigger, to presence: NativePresence) {
-    singleKey.onTap = { [weak presence] in presence?.toggle(.hotkey) }
+    singleKey.onTap = { [weak presence] in
+        guard let presence else { return SingleKeyTapOutcome.unbound }
+        let before = presence.state
+        presence.toggle(.hotkey)
+        // The tap receipt names the move the presence machine really made, so the two
+        // lines in the native log can never disagree.
+        return SingleKeyTapOutcome(from: before, to: presence.state)
+    }
 }
 enum ShortcutStatus {
     static func describe(code: Int32) -> String {

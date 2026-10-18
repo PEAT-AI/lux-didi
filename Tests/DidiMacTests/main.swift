@@ -156,6 +156,27 @@ expect(holdDetector.handle(.rightCommandUp, at: 81.05) == [.tap], "a tap after a
 _ = holdDetector.handle(.otherKeyDown, at: 82)
 expect(holdDetector.handle(.rightCommandUp, at: 83) == [], "a chord before any press never fires")
 
+// Q2 review B1, contract outcome 3: a chord during a hold cancels the gesture there and
+// then, so the microphone closes at the chord instead of staying open while Command is
+// used, and the rest of that press is inert.
+_ = holdDetector.handle(.rightCommandDown, at: 90)
+expect(holdDetector.poll(at: 90.5) == [.holdStart], "a hold is open before the chord")
+expect(holdDetector.handle(.otherKeyDown, at: 90.6) == [.holdEnd],
+    "a key pressed during a hold ends the hold at that moment")
+expect(holdDetector.poll(at: 91) == [], "an ended hold does not restart")
+expect(holdDetector.handle(.rightCommandUp, at: 91.2) == [],
+    "the release of a cancelled hold is not a second gesture")
+_ = holdDetector.handle(.rightCommandDown, at: 92)
+expect(holdDetector.poll(at: 92.5) == [.holdStart], "a second hold is open before the modifier")
+expect(holdDetector.handle(.otherModifiers(held: true), at: 92.6) == [.holdEnd],
+    "a modifier during a hold ends the hold at that moment")
+expect(holdDetector.handle(.rightCommandUp, at: 93) == [],
+    "the release after a cancelled hold logs nothing")
+_ = holdDetector.handle(.otherModifiers(held: false), at: 93.1)
+_ = holdDetector.handle(.rightCommandDown, at: 94)
+expect(holdDetector.handle(.rightCommandUp, at: 94.05) == [.tap],
+    "a tap is a tap again once the modifier is released")
+
 // P1-R1 / Q2 (owner order 2026-10-18): the Right Command key is bound to the presence
 // machine by the one function the app installs, not by a copy in the test. Right Option
 // is SuperWhisper's: the detector has no case for it and never consumes an event.
@@ -303,6 +324,32 @@ hotkey.release(at: hotkey.clock)
 expect(hotkey.presence.state == .live && hotkey.closed == closedAtLiveHold,
     "a hold while live releases to the normal live state")
 expect(hotkey.lastAction() == "hold_end", "the live hold's release logs single_key_tap hold_end")
+
+// A chord during a hold cancels the hold where it happens: the fence closes at the chord
+// while the key is still down, and the release adds nothing.
+hotkey.clock += 10
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live, "the session the cancelled hold runs in is live")
+var closedBeforeChordHold = hotkey.closed
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
+hotkey.fireHold()
+expect(hotkey.presence.state == .live && hotkey.fences.last == false, "the hold opens the mic")
+var receiptsBeforeChordHold = hotkey.receipts.count
+hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
+expect(hotkey.presence.state == .hotMuted && hotkey.fences.last == true,
+    "a chord during the hold closes the capture fence at the chord, not at the release")
+expect(hotkey.lastAction() == "hold_end", "a chord during the hold logs single_key_tap hold_end")
+hotkey.release(at: hotkey.clock + 0.2)
+expect(hotkey.presence.state == .hotMuted && hotkey.receipts.count == receiptsBeforeChordHold + 1,
+    "the release of a cancelled hold adds no gesture")
+expect(hotkey.closed == closedBeforeChordHold, "the cancelled hold keeps the session for the answer")
+hotkey.presence.answerCompleted()
+expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeChordHold + 1,
+    "the answer's end still closes the session a cancelled hold left open")
 
 // A Command chord during the press cancels the gesture: no start, no hold, one receipt.
 var receiptsBeforeChord = hotkey.receipts.count

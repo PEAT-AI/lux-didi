@@ -79,18 +79,18 @@ export class ReplayClock implements LiveVoiceClock {
   /** Notified after every timer this clock fires, so the driver can sample the orb between steps. */
   onFire: (() => void) | undefined;
   /** Fire every timer due at or before `target` in (time, id) order, then land on `target`. */
-  async advanceTo(target: number, flush: () => Promise<void>): Promise<void> {
+  async advanceTo(target: number, settle: () => Promise<void>): Promise<void> {
     for (;;) {
       const due = this.#timers.filter(timer => timer.at <= target).sort((a, b) => a.at - b.at || a.id - b.id)[0];
       if (!due) break;
       this.#timers = this.#timers.filter(timer => timer !== due);
       this.#time = Math.max(this.#time, due.at);
       due.fire();
-      await flush();
+      await settle();
       this.onFire?.();
     }
     this.#time = Math.max(this.#time, target);
-    await flush();
+    await settle();
   }
 }
 
@@ -147,7 +147,16 @@ export interface Replay {
 const startedFrame = (): Record<string, unknown> => ({ type: 'session.started', session: { id: 'sess_replay' } });
 
 const tick = (): Promise<void> => new Promise<void>(resolve => setImmediate(resolve));
-const flush = async (): Promise<void> => { await tick(); await tick(); };
+
+/**
+ * Await `promise` while still turning the event loop, so a barrier can be abandoned instead of hanging a test.
+ * Not a sleep: it yields the loop and gives up only after `turns` macrotasks, which is the pathology guard.
+ */
+const bounded = async (promise: Promise<void>, turns = 20_000): Promise<void> => {
+  let done = false;
+  void promise.then(() => { done = true; });
+  for (let i = 0; i < turns && !done; i++) await tick();
+};
 
 /** A provider `function_call` item, as the adapter surfaces a delegated tool call. */
 const isFunctionCall = (frame: Record<string, unknown>): { callId: string; name: string; delegationId: string } | undefined => {
@@ -170,6 +179,16 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   t.after(() => store.close());
   const clock = new ReplayClock();
   const f = await fixture(t);
+  // The socket barrier counts what the adapter writes synchronously, and the fixture's own awaited frame barrier
+  // tells the driver when the provider side has parsed all of it. Nothing here samples on a fixed tick.
+  let written = 0;
+  const base = f.socketFactory;
+  const socketFactory: typeof base = (url, config) => {
+    const client = base(url, config);
+    const send = client.send.bind(client) as (...args: unknown[]) => unknown;
+    (client as unknown as { send: (...args: unknown[]) => unknown }).send = (...args: unknown[]) => { written += 1; return send(...args); };
+    return client;
+  };
   const profile = validateLiveProfile({
     provider: 'openai', liveModelId: 'gpt-live-1', voice: 'marin', keyReference: 'openai-primary',
     route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
@@ -180,7 +199,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'openai', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: { resolve: async () => 'SYNTHETIC-REPLAY-KEY' },
-    socketFactory: f.socketFactory, clock,
+    socketFactory, clock,
     limits: { handshakeMs: 120_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 60_000 },
   });
   const tools = options.tools ? await replayTools(t, store, clock, liveProfileIdentity(profile)) : undefined;
@@ -195,6 +214,8 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   const batches: { epoch: number; at: number; callIds: string[]; creates: Command[] }[] = [];
   let seq = 0;
   let epoch = 0;
+  /** The batch a `response.create` may continue: only while its results are the last thing written. */
+  let currentBatch: { epoch: number; at: number; callIds: string[]; creates: Command[] } | undefined;
   const record = (): void => {
     handshakeNewConnections();
     while (providerFrames.length < f.frames.length) {
@@ -216,14 +237,20 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
           obligation?.outputs.push(command);
           // A batch is the run of output submissions the continuation must follow: the docs say submit results
           // for every pending call, then send `response.create`.
-          const last = batches.at(-1);
-          if (last && last.creates.length === 0 && last.epoch === command.epoch) last.callIds.push(callId);
-          else batches.push({ epoch: command.epoch, at: command.at, callIds: [callId], creates: [] });
+          // A batch is the run of output submissions the continuation must follow: the docs say submit results
+          // for every pending call, then send `response.create`. A submission after a decision opens a new batch.
+          if (currentBatch && currentBatch.epoch === command.epoch && currentBatch.creates.length === 0) currentBatch.callIds.push(callId);
+          else { currentBatch = { epoch: command.epoch, at: command.at, callIds: [callId], creates: [] }; batches.push(currentBatch); }
+        } else {
+          // A non-result item (the host's own text nudge) breaks the adjacency: a later create is not this batch's.
+          currentBatch = undefined;
         }
       }
       if (command.type === 'response.create') {
-        const batch = batches.at(-1);
-        if (batch && batch.epoch === command.epoch) batch.creates.push(command);
+        // Every create that follows a batch's results belongs to it, so a duplicate is visible to invariant 2.
+        if (currentBatch && currentBatch.epoch === command.epoch) currentBatch.creates.push(command);
+      } else if (command.type !== 'response.item.create') {
+        currentBatch = undefined;
       }
     }
   };
@@ -239,6 +266,18 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     projections.push({ at: clock.now(), cause, state, lifecycle: snapshot.lifecycle, terminal, terminalCode });
   };
 
+  /** Wait until the provider side has every frame the adapter wrote and no tool call is in flight. */
+  const drained = async (): Promise<void> => {
+    for (let pass = 0; pass < 8; pass++) {
+      const before = written;
+      if (f.frames.length < before) await bounded(f.frame(before));
+      record();
+      if (tools && tools.inFlight > 0) { await tick(); continue; }
+      await tick();
+      record();
+      if (written === before && f.frames.length === before) return;
+    }
+  };
   const owner = createLiveSessionOwner({
     store, voice: adapter as LiveVoicePort, profile,
     now: () => clock.now(), schedule: (callback, delayMs) => clock.schedule(callback, delayMs), timeZone: 'UTC',
@@ -315,39 +354,39 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
       const call = isFunctionCall(frame);
       if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
       f.send(frame);
-      await flush();
+      await drained();
       record();
       sample(cause);
     },
     async speak(samples = 480) {
       attachment.sendAudio({ pcm: tone(samples) });
-      await flush();
+      await drained();
       record();
     },
     async endInput() {
       attachment.endAudioStream();
-      await flush();
+      await drained();
       record();
       sample('endInput');
     },
     recoverySteps(steps) { recovery = steps; },
     async playback() {
       for (const entry of pendingPlay.splice(0)) playOne(entry.bytes, entry.at);
-      await flush();
+      await drained();
     },
     async advance(ms) {
       const target = clock.now() + Math.max(0, ms);
       for (;;) {
         const due = recoveryQueue.filter(step => step.at <= target).sort((a, b) => a.at - b.at)[0];
         const next = due ? due.at : target;
-        await clock.advanceTo(next, flush);
+        await clock.advanceTo(next, drained);
         record();
         if (!due) break;
         recoveryQueue.splice(recoveryQueue.indexOf(due), 1);
         const call = isFunctionCall(due.event);
         if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
         f.send(due.event);
-        await flush();
+        await drained();
         record();
         sample('recovery');
       }
@@ -363,7 +402,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
         if (condition()) return true;
         if (clock.now() >= limit) return condition();
         // Step by the nearest scheduled timer, or 50 virtual ms, so a host timer fires at its own time.
-        await clock.advanceTo(clock.now() + 50, flush);
+        await clock.advanceTo(clock.now() + 50, drained);
         record();
       }
       return condition();
@@ -371,10 +410,10 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     async release() {
       try { attachment.detach(); } catch { /* already settled */ }
       try { owner.revoke(liveSessionId); } catch { /* already terminal */ }
-      await flush();
+      await drained();
       await api.until(() => outputEnded, 5_000);
       await owner.shutdown();
-      await flush();
+      await drained();
     },
   };
   return api;
@@ -471,6 +510,8 @@ export interface ReplayTools {
   readonly calls: { name: string; args: unknown; at: number }[];
   /** Why the tool journal refused a call, if it did. An empty list means every scripted tool really ran. */
   readonly journalErrors: readonly string[];
+  /** Tool calls currently in flight; zero means every scripted tool has returned to the host. */
+  readonly inFlight: number;
   /** The queue of scripts; an exhausted queue answers immediately with the default synthetic result. */
   script(entry: ToolScript): void;
   /** Called by the driver once the live owner exists: the host's own authority lookup. */
@@ -497,9 +538,14 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
     const at = clock.now();
     calls.push({ name: request.params.name, args: request.params.arguments, at });
     const script = queue.shift() ?? {};
-    if (script.latencyMs) await new Promise<void>(resolve => { clock.setTimer(script.latencyMs!, resolve); });
-    if (script.fail) return { content: [{ type: 'text', text: 'synthetic tool failure' }], isError: true };
-    return { content: [{ type: 'text', text: script.text ?? '#1: Synthetic insight\n[Evidence](https://example.test/evidence)' }] };
+    // The tool barrier: a driver that is about to read the command log first waits until no tool call is in
+    // flight, so a tool's late write cannot land between two observations.
+    inFlight += 1;
+    try {
+      if (script.latencyMs) await new Promise<void>(resolve => { clock.setTimer(script.latencyMs!, resolve); });
+      if (script.fail) return { content: [{ type: 'text', text: 'synthetic tool failure' }], isError: true };
+      return { content: [{ type: 'text', text: script.text ?? '#1: Synthetic insight\n[Evidence](https://example.test/evidence)' }] };
+    } finally { inFlight -= 1; }
   });
   await sdk.connect(transport);
   // The MCP adapter reaches the endpoint over `fetch`; the scripted server answers in process, no network.
@@ -517,6 +563,7 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
   // The tool journal refuses a call for a policy reason; a replay records that reason instead of blaming the
   // fake tool, so a scenario that expects a real result never passes on a refused call.
   const journalErrors: string[] = [];
+  let inFlight = 0;
   const intent = toolOwner.journal.intent.bind(toolOwner.journal);
   toolOwner.journal.intent = (input) => {
     try { return intent(input); } catch (error) { journalErrors.push(error instanceof Error ? error.message : String(error)); throw error; }
@@ -536,6 +583,7 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
     composition: { owner: toolOwner, connectionIds: () => ['lux'] },
     calls,
     journalErrors,
+    get inFlight() { return inFlight; },
     script: entry => { queue.push(entry); },
     setAuthority: lookup => { authority = lookup; },
     async close() { await port.close(); await transport.close(); await sdk.close(); },

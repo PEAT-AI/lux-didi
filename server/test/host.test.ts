@@ -693,7 +693,7 @@ test('POST api/v1/live/prewarm answers the receipt and refuses a body field', as
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-prewarm-route-'));
   const host = await startHost({ dataDir: dir, webRoot, port: 0 });
   const credential = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
-  const headers = { Authorization: `Bearer ${credential}`, 'content-type': 'application/json' };
+  const headers = { Authorization: `Bearer ${credential}`, 'content-type': 'application/json', 'x-didi-authority-epoch': host.store.authorityEpoch };
   try {
     const url = `${host.service.origin}/api/v1/live/prewarm`;
     const asked = await fetch(url, { method: 'POST', headers, body: '{}' });

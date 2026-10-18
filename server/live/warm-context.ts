@@ -8,6 +8,8 @@
  * start either uses the sections as they stand or assembles them from the store,
  * never both. Nothing here talks to a model, so silence stays silent.
  */
+import { localDayWindow, type CalendarDigestReadResult, type CalendarDigestReadState } from '../connectors/google.js';
+
 export const warmContextMaxAgeMs = 10 * 60 * 1000;
 
 export type WarmContextSources = {
@@ -139,5 +141,91 @@ export class WarmContextCache {
     const current = this.#current;
     if (current === undefined) return undefined;
     return this.ageMs! < warmContextMaxAgeMs ? current : undefined;
+  }
+}
+
+/**
+ * The host's calendar digest owner (1015). It reads the digest in the background and caches it with its
+ * fetch time, so a call start answers from the cache with no request-path read. The 5 s per-start abort
+ * this replaces cut a 1.7 to 6 s read short and folded the cut into an empty day.
+ */
+export type CalendarDigestState = CalendarDigestReadState | 'stale';
+/** One cached read and the state a start reports for it. `stale` text never rides an assembly. */
+export type CalendarDigestSnapshot = Omit<CalendarDigestReadResult, 'state'> & { readonly state: CalendarDigestState };
+
+/** How long a cached digest may answer a call start. */
+export const calendarDigestFreshMs = 30 * 60 * 1000;
+/** How often the background owner refreshes the digest. */
+export const calendarDigestRefreshMs = 15 * 60 * 1000;
+/** The longest a call start waits for a read already in flight, then it starts without one. */
+export const calendarDigestStartWaitMs = 1_500;
+
+export class CalendarDigestCache {
+  readonly #read: () => Promise<CalendarDigestReadResult>;
+  readonly #now: () => number;
+  readonly #timeZone: string;
+  #snapshot: CalendarDigestReadResult | undefined;
+  #inflight: Promise<CalendarDigestReadResult> | undefined;
+  #timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(read: () => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string }) {
+    this.#read = read;
+    this.#now = options.now;
+    this.#timeZone = options.timeZone;
+  }
+
+  /** The host's background owner: one read now, then every 15 minutes until `stop`. Off the request path. */
+  begin(): void {
+    if (this.#timer !== undefined) return;
+    void this.refresh();
+    this.#timer = setInterval(() => { void this.refresh(); }, calendarDigestRefreshMs);
+    this.#timer.unref();
+  }
+
+  stop(): void {
+    if (this.#timer === undefined) return;
+    clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+
+  /** One read, deduplicated: every caller inside the same window shares the read already in flight. */
+  refresh(): Promise<CalendarDigestReadResult> {
+    const inflight = this.#inflight;
+    if (inflight !== undefined) return inflight;
+    const pending = this.#read()
+      .catch((): CalendarDigestReadResult => ({ state: 'failed', text: undefined, items: 0, fetchedAt: this.#now() }))
+      .then(result => { this.#snapshot = result; this.#inflight = undefined; return result; });
+    this.#inflight = pending;
+    return pending;
+  }
+
+  /**
+   * What the cache holds right now, with no wait. A digest older than 30 minutes, or one read before
+   * local midnight, is `stale`: it never answers an assembly, and reading it kicks a refresh.
+   */
+  current(): CalendarDigestSnapshot | undefined {
+    const snapshot = this.#snapshot;
+    if (snapshot === undefined) return undefined;
+    const now = this.#now();
+    const sameDay = localDayWindow(now, this.#timeZone).timeMin === localDayWindow(snapshot.fetchedAt, this.#timeZone).timeMin;
+    if (sameDay && now - snapshot.fetchedAt < calendarDigestFreshMs) return snapshot;
+    void this.refresh();
+    return { state: 'stale', text: undefined, items: 0, fetchedAt: snapshot.fetchedAt };
+  }
+
+  /**
+   * What a call start uses: the fresh cache as it stands, otherwise at most `waitMs` for the read
+   * already in flight, otherwise a `timeout` state and no digest. Never a whole read on the path.
+   */
+  async forStart(waitMs = calendarDigestStartWaitMs): Promise<CalendarDigestSnapshot> {
+    const cached = this.current();
+    if (cached !== undefined && cached.state !== 'stale') return cached;
+    const pending = this.#inflight ?? this.refresh();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expiry = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), waitMs); });
+    try {
+      const read = await Promise.race([pending, expiry]);
+      return read ?? { state: 'timeout', text: undefined, items: 0, fetchedAt: this.#now() };
+    } finally { clearTimeout(timer); }
   }
 }

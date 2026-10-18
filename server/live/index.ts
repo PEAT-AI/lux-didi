@@ -11,7 +11,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, chooseStartContext, withProvenance, type WarmContextSections } from './warm-context.js';
+import { WarmContextCache, chooseStartContext, withProvenance, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
@@ -346,11 +346,19 @@ type SummaryHooks = {
 };
 
 /**
- * The warm-context hook wired through the same composition seam: today's calendar digest, built by
- * the host from the configured connector. Never accepted from transport, and absent means the slot
- * stays out of the assembly (issue 339).
+ * The warm-context hook wired through the same composition seam: today's calendar digest, owned by the
+ * host as a cache read off the request path (1015). Never accepted from transport, and absent means
+ * the slot stays out of the assembly (issue 339).
  */
-type WarmHooks = { calendarDigest?: () => Promise<string | undefined> };
+type WarmHooks = { calendarDigest?: CalendarDigestOwner };
+
+/** The host's digest owner as this owner sees it: what a start uses, and a refresh it may ask for. */
+export type CalendarDigestOwner = {
+  /** The cached digest as it stands, waiting at most for a read already in flight. Never a whole read. */
+  forStart(): Promise<CalendarDigestSnapshot>;
+  /** A fresh read off the request path; the wake prewarm asks for one. */
+  refresh(): void;
+};
 
 /**
  * R7: what a wake prewarm can assemble before any session has run. The persona is the frozen prompt and
@@ -644,12 +652,12 @@ export class LiveSessionOwner {
   /** The digest the host built at the last prewarm; absent leaves the calendar slot out (issue 339). */
   #calendar: string | undefined;
   /** R7: what the last read reached, so a suppressed or failed digest is a line and not a silence. */
-  #calendarState: 'present' | 'empty' | 'failed' | 'unconfigured';
+  #calendarState: CalendarDigestState;
   /** R7: when that read finished, so the receipt can say how old the digest was at hello. */
   #calendarAt: number | undefined;
   /** The sections the last start used, so a forced prewarm refreshes without reading the store again. */
   #sections: WarmContextSections | undefined;
-  readonly #calendarDigest: (() => Promise<string | undefined>) | undefined;
+  readonly #calendarDigest: CalendarDigestOwner | undefined;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -712,14 +720,23 @@ export class LiveSessionOwner {
    * asks for it first: one bounded primary-calendar read, never on the voice turn path. Unconfigured,
    * failed or empty leaves the slot out; nothing here can fail the assembly.
    */
-  async prepareCalendar(): Promise<void> {
-    if (this.#calendarDigest === undefined) { this.#calendar = undefined; this.#calendarState = 'unconfigured'; return; }
-    try {
-      const digest = await this.#calendarDigest();
-      this.#calendar = digest !== undefined && digest.trim().length ? digest : undefined;
-      this.#calendarState = this.#calendar === undefined ? 'empty' : 'present';
-    } catch { this.#calendar = undefined; this.#calendarState = 'failed'; }
-    this.#calendarAt = this.#now();
+  /**
+   * R3-R5, 1015: the calendar digest belongs to every warm assembly, so the caller that is about to
+   * assemble asks for it first. The host's cache answers from the digest it already holds and waits at
+   * most 1,500 ms for a read in flight, so a start never waits on a connector read. The state the read
+   * reached is honest: `failed` and `timeout` are never reported as an empty day, and nothing here can
+   * fail the assembly. Returns that state for a caller that wants it.
+   */
+  async prepareCalendar(): Promise<CalendarDigestSnapshot> {
+    const owner = this.#calendarDigest;
+    if (owner === undefined) { this.#calendar = undefined; this.#calendarState = 'unconfigured'; return { state: 'unconfigured', text: undefined, items: 0, fetchedAt: this.#now() }; }
+    let snapshot: CalendarDigestSnapshot;
+    try { snapshot = await owner.forStart(); }
+    catch { snapshot = { state: 'failed', text: undefined, items: 0, fetchedAt: this.#now() }; }
+    this.#calendar = snapshot.text;
+    this.#calendarState = snapshot.state;
+    this.#calendarAt = snapshot.fetchedAt;
+    return snapshot;
   }
 
   /**
@@ -732,6 +749,9 @@ export class LiveSessionOwner {
    */
   async prewarm(): Promise<WarmPrewarmReceipt> {
     const ageBeforeMs = this.#warm.ageMs ?? null;
+    // 1015: a wake is the one moment a stale digest is worth refreshing for, so the prewarm asks for a
+    // read and then takes whatever the cache holds when it answers.
+    this.#calendarDigest?.refresh();
     await this.prepareCalendar();
     const previous = this.#sections;
     // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;

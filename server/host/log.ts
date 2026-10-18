@@ -17,8 +17,9 @@ const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
-// R7: the warm calendar digest's own closed vocabulary.
-const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'unconfigured'];
+// R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
+// their own right, so a cut-off or old read is never reported as an empty day.
+const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */

@@ -239,3 +239,20 @@ test('only a complete v2 record counts as present, and a pasted bearer keeps its
     assert.equal(readFileSync(join(dir, 'pasted.json'), 'utf8'), JSON.stringify({ schemaVersion: 1, token: 'pasted-bearer' }));
   } finally { cleanup(); }
 });
+
+test('the login writer and the runtime reader agree on one exact record key set', () => {
+  const { dir, cleanup } = configDir();
+  try {
+    const full = record();
+    writeMongooseOAuth(dir, 'mongoose-mcp', full);
+    assert.deepEqual(Object.keys(readMongooseOAuth(dir, 'mongoose-mcp')!).sort(), [...MONGOOSE_OAUTH_KEYS].sort());
+    // An added or a missing field is refused, never silently ignored: the two sides cannot drift.
+    writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify({ ...full, pastedBearer: 'stale-field' }), { mode: 0o600 });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+    const { refreshToken: _dropped, ...incomplete } = full;
+    writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify(incomplete), { mode: 0o600 });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+    writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify({ ...full, schemaVersion: 1, token: 'pasted' }), { mode: 0o600 });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+  } finally { cleanup(); }
+});

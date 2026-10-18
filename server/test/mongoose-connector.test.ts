@@ -15,6 +15,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
 import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseFailureStage } from '../connectors/index.js';
 import { projectMongooseResult } from '../tools/mongoose.js';
+import { mongooseAccessToken } from '../host/mongoose-auth.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
@@ -369,6 +370,55 @@ test('the runtime grants every annotated read tool and no write, and forwards on
     assert.ok(grant);
     assert.deepEqual([...grant.toolNames].sort(), ['get_schema', 'lightdash_run_sql', 'list_markets']);
     assert.equal(grant.toolNames.includes('create_ticket'), false);
+  } finally {
+    if (runtime) await runtime.close();
+    await f.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an OAuth record carries the bearer through one tool call and logs no credential stage', async () => {
+  const f = await fixture();
+  // A schemaVersion 2 record whose access token is the one the fixture server accepts: the call can
+  // only succeed if the host resolved the bearer from the record.
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-oauth-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const NOW = Date.now();
+  const oauth = {
+    schemaVersion: 2, base: f.url.replace(/\/mcp$/, ''), clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
+    accessToken: 'test-token', refreshToken: 'refresh-token', expiresAt: NOW + 3_600_000, consentStartedAt: NOW,
+  };
+  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify(oauth), { mode: 0o600 });
+  let store: Store | undefined;
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  const stages: string[] = [];
+  try {
+    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+      schemaVersion: 1, grantMode: 'owner-trusted-reads',
+      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
+    }), { mode: 0o600 });
+    store = new Store(join(dir, 'data'), toolsMigrations);
+    runtime = await composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (_connector, stage) => { stages.push(stage); },
+    });
+    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
+    assert.equal(runtime.status().endpoints[0]?.error, undefined);
+    assert.deepEqual(stages, []);
+    assert.ok(runtime.registry.currentGrant('mongoose'));
+
+    // One real tool call over the same adapter: the fixture only answers with the record's bearer.
+    const registry = new McpRegistry();
+    registry.register({ id: 'source', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp' });
+    registry.enable('source'); registry.allowEgress('source');
+    const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: ref => mongooseAccessToken(configDir, ref) });
+    const digest = await approve(adapter, registry);
+    const result = await reader(adapter, registry, digest).call('get_schema', {});
+    assert.equal(result.state, 'completed');
+    assert.deepEqual(f.calls, [{ name: 'get_schema', arguments: {} }]);
+    await adapter.close();
+    assert.deepEqual(stages, []);
   } finally {
     if (runtime) await runtime.close();
     await f.close();

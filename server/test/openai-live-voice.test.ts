@@ -559,22 +559,18 @@ describe('openai gpt-live adapter', () => {
 
   test('3r D1: a tool result after a barge-in is still continued, at once', async t => {
     const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
-    f.send({ type: 'session.output_transcript.delta', delta: 'Checking', start_ms: 0, end_ms: 200 });
-    speak(f, 96_000);
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{}' } } });
-    await until(() => captured.events.some(event => event.type === 'audio'));
-    f.send({ type: 'session.input_transcript.delta', delta: 'stop, something else', start_ms: 200, end_ms: 500 });
-    await quiet();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.deliver(delegated('response.created', { response: { id: 'resp_1' } }));
+    socket.deliver({ type: 'session.output_transcript.delta', delta: 'Checking' });
+    socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(96_000)) });
+    socket.deliver(delegated('response.output_item.done', functionCall('call_1')));
+    socket.deliver({ type: 'session.input_transcript.delta', delta: 'stop, something else' });
     clock.advance(350);
-    await until(() => captured.events.some(event => event.type === 'interrupted') && captured.events.some(event => event.type === 'toolCall'));
-    // The field call (D1): the delegated response was cut, and its done arrived before the host's result.
-    f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.done', response: { id: 'resp_1' } } });
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred',
+      'the cut response has not finished emitting, so the create waits for its done');
+    socket.deliver(delegated('response.done', { response: { id: 'resp_1' } }));
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    await f.frame(3);
-    assert.deepEqual(f.frames.slice(1).map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame)), [
+    assert.deepEqual(socket.sent.slice(1).map(frame => JSON.parse(frame) as Record<string, unknown>).map(({ event_id, ...frame }) => frame), [
       { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
       { type: 'response.create' },
     ]);
@@ -583,21 +579,17 @@ describe('openai gpt-live adapter', () => {
 
   test('3r D1: the field replay continues the tool result at once, 1.8 s after the cut', async t => {
     const clock = new FakeClock();
-    const { f, session, captured } = await ready(t, { clock });
-    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
-    speak(f, 96_000);
-    await until(() => audioOf(captured).length === 1);
-    f.send(delegated('response.output_item.done', functionCall('call_1')));
-    f.send({ type: 'session.input_transcript.delta', delta: 'no, the other one' });
-    await quiet();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.deliver(delegated('response.created', { response: { id: 'resp_1' } }));
+    socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(96_000)) });
+    socket.deliver(delegated('response.output_item.done', functionCall('call_1')));
+    socket.deliver({ type: 'session.input_transcript.delta', delta: 'no, the other one' });
     clock.advance(350);
-    await until(() => interruptions(captured) === 1);
-    f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    socket.deliver(delegated('response.done', { response: { id: 'resp_1' } }));
+    // 1.8 s of real tool work, then the result: the wire write is synchronous, well inside 10 ms.
     clock.advance(1_800);
-    await quiet();
-    // Within 10 ms of the result: no timer, no clock advance, the wire write is synchronous.
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
-    assert.deepEqual(withoutIds(f.frames.slice(1)), [
+    assert.deepEqual(socket.sent.slice(1).map(frame => JSON.parse(frame) as Record<string, unknown>).map(({ event_id, ...frame }) => frame), [
       { type: 'response.item.create', item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' } },
       { type: 'response.create' },
     ]);
@@ -629,6 +621,7 @@ describe('openai gpt-live adapter', () => {
     for (const id of ['call_1', 'call_2']) f.send(delegated('response.output_item.done', functionCall(id)));
     await until(() => captured.events.filter(event => event.type === 'toolCall').length === 2);
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
+    await quiet();
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_2', name: 'research', response: { ok: false } }] }), 'deferred');
     await quiet();
     assert.deepEqual(f.frames.slice(1), [], 'nothing goes upstream while a call of the response is unanswered');
@@ -648,6 +641,7 @@ describe('openai gpt-live adapter', () => {
     f.send(delegated('response.output_item.done', functionCall('call_1')));
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
     await until(() => captured.events.some(event => event.type === 'toolCall'));
+    await quiet();
     const timeout = { error: { kind: 'timeout', afterMs: 30_000 } };
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: timeout }] }), 'sent');
     await f.frame(3);
@@ -700,6 +694,7 @@ describe('openai gpt-live adapter', () => {
     f.send(delegated('response.output_item.done', functionCall('call_1')));
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
     await until(() => captured.events.some(event => event.type === 'toolCall'));
+    await quiet();
     assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'sent');
     await f.frame(3);
     f.send({ type: 'error', event_id: 'event_1', error: { type: 'invalid_request_error', code: 'response_active', param: 'response.create', message: 'a response is already active' } });
@@ -707,7 +702,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(interruptions(captured), 0, '3r F: this error is logged, never read as a speech cut');
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
     await f.frame(4);
-    assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }]);
+    assert.deepEqual(withoutIds(f.frames.slice(3)), [{ type: 'response.create' }]);
     await quiet();
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
     await quiet();

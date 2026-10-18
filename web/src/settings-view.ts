@@ -210,8 +210,22 @@ ${isCustomVoiceId(voice) ? `<p class="muted">Custom voice: <code>${escapeHtml(vo
 <datalist id="live-voices">${voices}</datalist>
 <label for="live-accent">Accent</label>
 <select id="live-accent" name="accent">${accentOptions}</select>
+${rateRow(row)}
 <p class="muted">Saved to <code>live.json</code>. It applies when Lux Didi next starts; the accent applies from the next call. A call in progress is never switched.</p>
 <div class="button-row"><button type="submit">Save provider</button></div></form>`;
+}
+
+/**
+ * P3: her speaking pace, shown and never edited here. The pitch-preserving rate is a live.json field set
+ * with the config CLI (`select --playback-rate`), so this row is a read-only projection of it.
+ */
+function rateRow(summary: Record<string, unknown> | undefined): string {
+  const value = summary?.['playbackRate'];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '<p><strong>Speaking pace</strong> unknown. Set it with <code>select --playback-rate 1.08</code>.</p>';
+  }
+  return `<p><strong>Speaking pace</strong> ${escapeHtml(value.toFixed(2))}x, pitch unchanged. `
+    + 'Read only here: set it with <code>select --playback-rate</code>.</p>';
 }
 
 /**

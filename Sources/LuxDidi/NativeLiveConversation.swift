@@ -198,6 +198,11 @@ enum State: String, CaseIterable {
                 await coordinator.setCaptureMuted(false, epoch: epoch, diagnosticOwner: token)
                 try Task.checkCancellation()
                 if self?.generation == token { self?.captureDiagnosticOwner = token }
+                // P3: the pace is read once, before the graph is built. A host that cannot answer plays
+                // at 1.0, so a config read never keeps her from speaking.
+                if let rate = (try? await http.configuredPlaybackRate()) ?? nil {
+                    self?.device.playbackRate = rate
+                }
                 // Prepare the single duplex engine before the socket can deliver model PCM.
                 try await self?.device.startFenced { frame, epoch in
                     if await coordinator.captureStateForSubmission(owner: token) == .active {
@@ -258,6 +263,7 @@ enum State: String, CaseIterable {
                 "sentBytes": capture.sentBytes, "droppedBytes": capture.droppedBytes,
                 "residualBytes": capture.residualBytes, "ledgerBalanced": capture.balances,
                 "playbackUnderruns": native.playback.underruns, "lateAfterFlushChunks": native.playback.lateAfterFlush,
+                "playbackRate": native.playback.rate, "playbackUnderrunsPerMinute": native.playback.underrunsPerMinute,
                 "inputSampleRate": capture.inputSampleRate, "inputChannels": capture.inputChannels,
                 "captureEpoch": native.captureEpoch, "captureGeneration": native.captureGeneration,
                 "captureWasMuted": native.muted, "coordinatorSnapshotMatched": transport != nil]

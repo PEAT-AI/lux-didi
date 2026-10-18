@@ -4,7 +4,7 @@ import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor, loadProviderConfig, slotKeyPresent } from '../config/index.js';
-import { loadLiveConfig, saveLiveSelection, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
+import { loadLiveConfig, saveLiveSelection, currentLivePlaybackRate, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { createLiveVoiceAdapter, LiveVoiceError, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import type { Credentials } from '../adapters/model/types.js';
@@ -26,6 +26,7 @@ function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
     service: 'live', status: 'configured', provider: profile.provider, model: profile.liveModelId, voice: profile.voice,
     dataClasses: [...profile.route.dataClasses], profileIdentity: liveProfileIdentity(profile),
+    playbackRate: currentLivePlaybackRate(),
     limits: { sessionMs: profile.limits.sessionMs, idleMs: profile.limits.idleMs },
   };
 }
@@ -38,7 +39,7 @@ function statusPayload(loaded: LiveConfigStatus, profile: LiveProfile | undefine
   const config: LiveConfiguredProfile = loaded.config;
   return {
     service: 'live', status: loaded.status, provider: config.provider, model: config.model, voice: config.voice,
-    dataClasses: [...config.dataClasses], profileIdentity: config.profileIdentity,
+    dataClasses: [...config.dataClasses], profileIdentity: config.profileIdentity, playbackRate: config.playbackRate,
   };
 }
 

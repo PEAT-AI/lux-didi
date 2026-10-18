@@ -29,6 +29,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         let profileIdentity: String?
         let dataClasses: [String]?
         let limits: NativeLiveLimits?
+        let playbackRate: Double?
     }
     let origin: URL
     private let build: NativeLiveRequestBuilder
@@ -94,14 +95,23 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         return data
     }
     private(set) var limits: NativeLiveLimits?
+    /// P3: the live config's pitch-preserving pace, read beside the limits before the graph is built.
+    private(set) var playbackRate: Double?
     func configuredLimits() async throws -> NativeLiveLimits? {
         _ = try await projection(epoch: nil)
         return limits
+    }
+    /// P3: the pace for the session that is about to start. A host that cannot answer leaves it nil,
+    /// and the device plays at 1.0 rather than refusing to speak.
+    func configuredPlaybackRate() async throws -> Double? {
+        _ = try await projection(epoch: nil)
+        return playbackRate
     }
     private func projection(epoch: String?) async throws -> LiveOperatorStatus {
         let host = try JSONDecoder().decode(Envelope<Host>.self, from: await fetch("/api/v1/status", epoch: epoch)).data
         let profile = try JSONDecoder().decode(Envelope<Profile>.self, from: await fetch("/api/v1/live/status", epoch: host.authorityEpoch)).data
         limits = profile.limits
+        playbackRate = profile.playbackRate
         guard profile.status == "configured", let provider = profile.provider, let model = profile.model,
               let voice = profile.voice, let identity = profile.profileIdentity, let classes = profile.dataClasses,
               epoch == nil || epoch == host.authorityEpoch else { throw LiveClientError.unavailable }

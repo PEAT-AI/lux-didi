@@ -3544,9 +3544,7 @@ test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => new Promise<void>(() => {}) });
   const { session } = await openPort(h, 'ceiling-cancelled');
-  fake.emit({ type: 'inputTranscription', text: 'remember this', finished: true });
-  await settlePort();
-  fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The provider cancels the call before the ceiling: its abort signal is set, so the host knows it never ran.
   fake.emit({ type: 'toolCallCancellation', ids: ['c1'] });
@@ -3555,7 +3553,7 @@ test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is
   // S4a-R2 (a): "cancelled before execution" is the provider cancellation's own receipt, and such a call is owed no
   // answer at all, so it never settles at the ceiling (3r keeps that behaviour).
   assert.equal(receipts.filter(entry => entry['event'] === 'tool_ceiling_hit').length, 0, 'no ceiling settlement for a cancelled call');
-  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_cancelled').map(entry => entry['tool']), ['remember_note']);
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_cancelled').map(entry => entry['tool']), ['search_knowledge']);
   assert.deepEqual(fake.toolResponses, [], 'a provider-cancelled call is never answered (3r)');
   h.owner.revoke(session.liveSessionId);
 });

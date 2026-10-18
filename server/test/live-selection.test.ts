@@ -178,8 +178,9 @@ test('P3: the pitch-preserving pace is a live.json field the CLI saves, and anyt
   const saved = runCli(['select', '--config-dir', f.configDir, '--provider', 'openai', '--playback-rate', '1.08']);
   assert.equal(saved.status, 0, saved.err);
   assert.equal(f.saved()['playbackRate'], 1.08);
-  assert.equal(currentLivePlaybackRate(), 1.08);
+  // The next start is what reads it: the loader is the authority on the process-current pace.
   const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  assert.equal(currentLivePlaybackRate(), 1.08);
   assert.equal(loaded.status, 'configured');
   assert.equal(loaded.status === 'configured' ? loaded.config.playbackRate : undefined, 1.08);
   // Both ends of the band are legal; 0.99, 1.21 and a non-number are not.

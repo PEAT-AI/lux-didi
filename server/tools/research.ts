@@ -1405,8 +1405,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   };
   let heartbeat = schedule(beat, RESEARCH.progressEveryMs);
 
-  // RD: a start call answers, or reports its honest partial, inside answerWithinMs. The bound is one cut
-  // for the whole run, so the prime-source read that starts before the selector is bounded too.
+  // RD/P5-R1: a start call answers, or reports its honest partial, inside its own budget. The bound is one
+  // cut for the whole run, so the prime-source read that starts before the selector is bounded too.
   const answerCut = new AbortController();
   const hint = hintedSources(call.sources, configured);
   let answerMs = researchCallBudgetMs(hint.length > 0 ? hint : []);
@@ -1528,7 +1528,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       allowAnswer(batchSources);
       const remainingMs = batchDeadline - now();
       if (remainingMs <= 0) { stopReason = 'deadline'; break; }
-      // RD: a start call answers inside answerWithinMs, so the owner hears a reply instead of waiting on
+      // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on
       // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
       const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal]);
       const latencies = new Map<CandidateKind, number>();

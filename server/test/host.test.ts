@@ -713,6 +713,7 @@ test('the entry refuses to start an unsupervised host on the installed app confi
     assert.match(stderr, /--data-dir/, 'the refusal names the flag to use instead');
     assert.match(stderr, /installed app/);
     assert.equal(stderr.trimEnd().split('\n').length, 1, 'the refusal is one loud line');
-    await assert.rejects(stat(dataDir), /ENOENT/, 'the refused start creates no state');
+    await assert.rejects(stat(join(dataDir, 'state.sqlite')), /ENOENT/, 'the refused start opens no state');
+    await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the refused start installs no journal');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

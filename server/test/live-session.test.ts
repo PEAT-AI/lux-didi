@@ -3220,9 +3220,14 @@ test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps t
   const stopDiagnostics = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stopDiagnostics(); rmSync(captureDir, { recursive: true, force: true }); });
 
+  // A native prompt places the public base and the tool conduct; a bare frozen prompt would replace them.
+  const profile = (provider: 'gemini' | 'openai') => validateLiveProfile({
+    ...profileInput(undefined, provider === 'openai' ? 'gpt-live-1' : MODEL, provider),
+    prompt: { text: NAYA_LIVE_BASE, dataClass: 'ordinary' },
+  });
   const openAi = await openAiFixture(t);
   const openAiLive = composeLive(store, dir, {
-    profile: validateLiveProfile(profileInput(undefined, 'gpt-live-1', 'openai')),
+    profile: profile('openai'),
     credentials: { resolve: async () => CANARY }, socketFactory: openAi.socketFactory,
   }).service;
   t.after(() => openAiLive.shutdown());
@@ -3238,7 +3243,7 @@ test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps t
 
   const gemini = await fixture(t);
   const geminiLive = composeLive(store, dir, {
-    profile: validateLiveProfile(profileInput()),
+    profile: profile('gemini'),
     credentials: { resolve: async () => CANARY }, socketFactory: gemini.socketFactory,
   }).service;
   t.after(() => geminiLive.shutdown());

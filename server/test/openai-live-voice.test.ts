@@ -187,7 +187,8 @@ describe('openai gpt-live adapter', () => {
     session.sendCommentary!({ text: 'Still reading the mail.' });
     await tally(f.frames, 2);
     f.send({ type: 'error', event_id: 'event_1', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'content', message: 'bad content', client_event_id: 'cmt_1' } });
-    await tick();
+    // The frame crosses the socket, so wait for its receipt rather than for one scheduler tick.
+    await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
     assert.equal(captured.events.some(event => event.type === 'interrupted'), false, 'a rejected command cuts nothing');
     const rejected = logged().filter(entry => entry['event'] === 'command_rejected');
     assert.deepEqual(rejected, [{ event: 'command_rejected', code: 'invalid_value', param: 'content', kind: 'cmt' }]);
@@ -211,7 +212,7 @@ describe('openai gpt-live adapter', () => {
     const { f, captured } = await ready(t);
     const before = f.frames.length;
     f.send({ type: 'error', event_id: 'event_1', error: { type: 'mystery_error', code: 'something_new', param: 'field', message: 'unknown', client_event_id: 'cmt_1' } });
-    await tick(); await tick();
+    await until(() => logged().some(entry => entry['event'] === 'provider_error_unclassified'));
     assert.equal(captured.events.some(event => event.type === 'interrupted'), false, 'an unknown code cuts nothing');
     assert.equal(f.frames.length, before, 'and is never retried');
     const trapped = logged().filter(entry => entry['event'] === 'provider_error_unclassified');

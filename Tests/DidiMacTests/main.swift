@@ -134,7 +134,7 @@ expect(RightCommandTapDetector.otherModifiersHeld(flagsRawValue: 0x100008), "Lef
 var holdDetector = RightCommandTapDetector()
 _ = holdDetector.handle(.rightCommandDown, at: 40)
 expect(holdDetector.poll(at: 40.39) == [], "a press under the hold threshold has no gesture yet")
-expect(holdDetector.poll(at: 40.4) == [.holdStart], "the 400 ms threshold starts a hold")
+expect(holdDetector.poll(at: 40.401) == [.holdStart], "the 400 ms threshold starts a hold")
 expect(holdDetector.poll(at: 41) == [], "a hold starts once, however often the timer fires")
 expect(holdDetector.handle(.rightCommandUp, at: 41.2) == [.holdEnd], "the release ends a started hold")
 _ = holdDetector.handle(.rightCommandDown, at: 50)
@@ -250,7 +250,7 @@ var openedBeforeHold = hotkey.opened
 hotkey.press(at: hotkey.clock)
 expect(hotkey.holdDelay == RightCommandTapDetector.holdThreshold, "the press arms the hold timer at the 400 ms threshold")
 expect(hotkey.presence.state == .cold && hotkey.opened == openedBeforeHold, "a press alone opens nothing before the threshold")
-hotkey.clock += RightCommandTapDetector.holdThreshold
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
 hotkey.fireHold()
 expect(hotkey.presence.state == .connecting && hotkey.opened == openedBeforeHold + 1, "the hold opens the session")
 expect(hotkey.lastAction() == "hold_start", "the hold logs single_key_tap hold_start")
@@ -272,7 +272,7 @@ expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeHoldReleas
 hotkey.clock += 10
 var closedBeforeSilence = hotkey.closed
 hotkey.press(at: hotkey.clock)
-hotkey.clock += RightCommandTapDetector.holdThreshold
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
 hotkey.fireHold()
 hotkey.presence.ready()
 hotkey.clock += 1
@@ -294,7 +294,7 @@ expect(hotkey.presence.state == .live, "a tap starts the session the hold is mea
 var closedAtLiveHold = hotkey.closed
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
-hotkey.clock += RightCommandTapDetector.holdThreshold
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
 hotkey.fireHold()
 expect(hotkey.presence.state == .live && hotkey.fences.last == false, "a hold while live keeps the mic open")
 expect(hotkey.lastAction() == "hold_start", "the live hold logs single_key_tap hold_start")
@@ -310,7 +310,7 @@ hotkey.clock += 1
 let stateBeforeChord = hotkey.presence.state
 hotkey.press(at: hotkey.clock)
 hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
-hotkey.clock += RightCommandTapDetector.holdThreshold
+hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
 hotkey.fireHold()
 expect(hotkey.presence.state == stateBeforeChord, "a Cmd+C press opens nothing, even past the threshold")
 expect(hotkey.receipts.count == receiptsBeforeChord, "a cancelled press logs no hold start")

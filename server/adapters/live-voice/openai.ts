@@ -5,6 +5,7 @@ import type { JsonObject } from '../model/types.js';
 import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
+import { redactSecrets } from '../../tools/redact.js';
 import { hostLogEvent } from '../../tools/host-events.js';
 
 /**
@@ -55,6 +56,8 @@ const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
 const PING_INTERVAL_MS = 5_000;
 const PING_MISSED_LIMIT = 2;
+/** A refused setup keeps 300 characters of the provider's own message: enough to name the field, bounded. */
+const SETUP_ERROR_TEXT_LIMIT = 300;
 /** Stall on liveness (3o): no inbound provider frame of any type and no pong for this long ends the transport.
  *  Upload backlog never does; a slow uplink keeps sending frames while the mic queue is shed (UPLINK_SHED_BYTES). */
 const STALL_SILENCE_MS = 8_000;
@@ -148,6 +151,16 @@ function object(value: unknown): value is ObjectValue { return !!value && typeof
 /** Words in the assembled input transcript of one episode: punctuation-only and empty text count zero. */
 function countWords(text: string): number { return text.split(/[^\p{L}\p{N}]+/u).filter(Boolean).length; }
 function fail(code: LiveVoiceErrorCode): never { throw new LiveVoiceError(code); }
+/** One field of a provider refusal: redacted, whitespace-collapsed and bounded, never any request text. */
+function setupErrorText(value: unknown): string {
+  return typeof value === 'string' ? redactSecrets(value).replace(/\s+/g, ' ').trim().slice(0, SETUP_ERROR_TEXT_LIMIT) : '';
+}
+/** The provider's setup refusal as a metadata receipt: its own type, code and param, and 300 characters of
+ *  message. The instructions, the voice payload and the key never cross this boundary. */
+function setupErrorReceipt(error: unknown): { type: string; code: string; param: string; message: string } {
+  const fields = object(error) ? error : {};
+  return { type: setupErrorText(fields['type']), code: setupErrorText(fields['code']), param: setupErrorText(fields['param']), message: setupErrorText(fields['message']) };
+}
 function classList(value: unknown, code: LiveVoiceErrorCode): DataClass[] {
   if (!Array.isArray(value) || !value.length || value.some(item => !classes.includes(item as DataClass)) || new Set(value).size !== value.length) fail(code);
   return [...value] as DataClass[];
@@ -524,8 +537,12 @@ class Session implements LiveVoiceSession {
 
   private dispatch(message: ObjectValue): void {
     if (!this.isReady && message.type !== 'session.started') {
-      // Only the start barrier may precede readiness; an error frame here is a refused setup.
-      if (message.type === 'error') { this.finish('provider_setup_rejected'); return; }
+      // Only the start barrier may precede readiness; an error frame here is a refused setup, and the
+      // provider's own words are the only evidence that says which field it refused.
+      if (message.type === 'error') {
+        hostLogEvent({ event: 'gptlive_setup_error', ...setupErrorReceipt(message['error']) });
+        this.finish('provider_setup_rejected'); return;
+      }
       this.finish('protocol_error'); return;
     }
     switch (message.type) {

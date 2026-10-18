@@ -147,7 +147,7 @@ interface ActiveSession {
   recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
   /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
    *  own audible audio or an ended turn. Inaudible fill and progress speech never clear it (D3, amendment C). */
-  awaitingAnswer: boolean; answerAt?: number;
+  awaitingAnswer: boolean; answerAt: number | undefined;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
@@ -956,7 +956,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),

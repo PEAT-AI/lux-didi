@@ -99,7 +99,8 @@ final class NativeLogClock: @unchecked Sendable {
     /// Wall ms with sub-second precision: `2026-10-18T16:19:05.123Z`.
     static func wallText(_ date: Date) -> String { iso.string(from: date) }
     static func wallMs(_ date: Date) -> Int { Int((date.timeIntervalSince1970 * 1000).rounded()) }
-    private static let iso: ISO8601DateFormatter = {
+    /// ISO8601 formatting is documented thread-safe; one formatter is shared to keep a log line cheap.
+    nonisolated(unsafe) private static let iso: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter

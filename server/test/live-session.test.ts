@@ -3885,7 +3885,8 @@ test('O1b-A: a turn that never becomes audible records the typed stall with what
   await settlePort();
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'call_stall', name: 'search_knowledge', args: { query: 'table', limit: 1 } }] }));
   await settlePort();
-  for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { fake.emit(portEvent(fillFrame)); await settlePort(); h.advance(100); }
+  // D3's own cadence: fill frames every 100 ms of scheduler time, past the 8 s dead-air deadline.
+  for (let elapsed = 0; elapsed < 18_100; elapsed += 100) { fake.emit(portEvent(fillFrame)); await settlePort(); h.advance(100); }
   const stalls = h.store.transaction(tx => tx.all("SELECT detail FROM trace_event WHERE kind='live.dead_air_stalled'"));
   assert.equal(stalls.length, 1, 'one typed stall receipt, not an absence');
   const detail = JSON.parse(String(stalls[0]!['detail']));

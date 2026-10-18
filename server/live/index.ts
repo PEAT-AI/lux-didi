@@ -1901,7 +1901,14 @@ export class LiveSessionOwner {
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
-        // O1b-A: what was actually said, both sides, lands in the content table and nowhere else.
+        if (event.type === 'inputTranscription') {
+          if (!ownerTurnOpen) {
+            ownerTurnOpen = true;
+            this.#openTurn(handle);
+          }
+
+        // O1b-A: what was actually said, both sides, lands in the content table and nowhere else. It is written
+        // after the owner-utterance boundary has opened this turn, so her first words are never dropped.
         if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
           const turnId = handle.connection.turnId;
           if (turnId !== undefined) {
@@ -1911,11 +1918,6 @@ export class LiveSessionOwner {
             } catch { /* a content write never breaks the turn it belongs to */ }
           }
         }
-        if (event.type === 'inputTranscription') {
-          if (!ownerTurnOpen) {
-            ownerTurnOpen = true;
-            this.#openTurn(handle);
-          }
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;

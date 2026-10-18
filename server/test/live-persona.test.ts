@@ -366,7 +366,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '273391a108264adc67350d20ab37553c3c269d0bd3c55ccaa5aee46fdfe2c5e2');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '43d542607473e43f13d813122c4c407057b28f5d86de032601b0909ac48a0658');
   assert.equal(sha(NAYA_VOICE_TOOLS), '4a94f95aa29a8439139cb9f389dda29f6b7dc506ad652f1271a7ec37cba71b78');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '60e007689b0afdf0a2feb43b3bcbcfa97a97142ce0168deabc6cf08653d767a5');
   assert.equal(sha(NAYA_TOOLS), '946c1651d007df23ee1085b013c8c664d4be04d2ac17145123f0df20cf6a59a0');
@@ -866,7 +866,7 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
-  "Open a fresh call with at most two short sentences drawn from today's work, the calendar or an open loop; never reuse the opener of an earlier call, and reach for family, health or fitness only when he raised them in the previous conversation.",
+  "Open a fresh call from work, the calendar or an open work loop; never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence.",
   'When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.',
   'Never make a second research call for the same question until the first has answered.',
 ];
@@ -945,11 +945,12 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
     'Never claim or imply a check that did not run.',
     'Never explain a pause as thinking: say what is actually happening, or simply answer.',
     'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
-    'reach for family, health or fitness only when he raised them in the previous conversation',
+    'never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them',
   ]) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   assert.equal(wrapper.split('Open a fresh call').length - 1, 1, 'one opener rule only');
   for (const retired of [
     "Open a fresh call with at most two short sentences drawn from today's work, calendar or an open loop; never reuse the opener of an earlier call.",
+    "Open a fresh call with at most two short sentences drawn from today's work, the calendar or an open loop; never reuse the opener of an earlier call, and reach for family, health or fitness only when he raised them in the previous conversation.",
     'Open a fresh call with one specific line drawn from what is current',
   ]) assert.equal(wrapper.includes(retired), false, `the replaced opener sentence is gone: ${retired}`);
 });

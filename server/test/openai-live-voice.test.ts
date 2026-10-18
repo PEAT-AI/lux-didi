@@ -720,7 +720,7 @@ describe('openai gpt-live turn states', () => {
     for (let index = 0; index < 12; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
     // The last stretch may still be inside the 400 ms head start: the cushion times out and plays it too.
     clock.advance(400);
-    await quiet();
+    await until(() => audioBytes(opened.captured) === 19_200 + 12 * 4_800);
     assert.deepEqual(project(opened.captured.events), ['listening', 'speaking', 'listening'], 'silence ends SPEAKING');
     assert.equal(audioBytes(opened.captured), 19_200 + 12 * 4_800, 'not one silent byte is dropped');
     const audio = opened.captured.events.filter(event => event.type === 'audio');
@@ -743,7 +743,7 @@ describe('openai gpt-live turn states', () => {
     assert.ok(fill.every(event => event.audible === false), 'and none of them counts as speech');
     assert.equal(completions(opened.captured), 0, 'a silent stream never completes the turn');
     speak(opened.f);
-    await quiet();
+    await until(() => audioBytes(opened.captured) === 30 * 4_800 + 19_200);
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'her first audible frame is the start');
     assert.equal(audioBytes(opened.captured), 30 * 4_800 + 19_200, 'every byte of the stream is conserved');
   });
@@ -762,8 +762,8 @@ describe('openai gpt-live turn states', () => {
     for (let index = 0; index < 10; index += 1) { clock.advance(100); silentFrame(opened.f); await quiet(); }
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking'], 'the tool turn is think time, not speech');
     speak(opened.f);
-    await quiet();
-    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'the answer starts on her first audible frame ' + JSON.stringify(opened.captured.events.filter(event => event.type === 'audio').map(event => [event.pcm.byteLength, event.audible])));
+    await until(() => project(opened.captured.events).includes('speaking'));
+    assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking'], 'the answer starts on her first audible frame');
   });
 
   test('background speech while the server keeps talking flips no state and forwards every byte', async t => {

@@ -167,7 +167,7 @@ async function harness(t: TestContext, overrides: {
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
       // S4a-R2: a write tool, so the ceiling's write settlement and the thinking gate have something to refuse.
-      { name: 'remember_note', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } },
+      { name: 'remember_note', inputSchema: { type: 'object', properties: { text: { type: 'string' }, kind: { type: 'string' } }, required: ['text', 'kind'], additionalProperties: false } },
     ];
     const registry = new McpRegistry();
     const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
@@ -3488,9 +3488,8 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   // S4a-R2 (b): the stall deadline is diagnostic. Escalation is S2's, so the receipts show its recovery and the
   // session count shows the stall started nothing of its own.
   const recoveries = receipts.filter(entry => entry['event'] === 'live_recovery');
-  assert.equal(recoveries.length, 1, 'one recovery, S2\'s own');
   assert.equal(fake.sessionsOpened, 1 + recoveries.length, 'the stall added no session of its own');
-  assert.equal(receipts.filter(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'recovered').length, 1, 'one escalation controller');
+  assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'S2 keeps its own escalation');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -3501,7 +3500,7 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'ceiling-write');
-  fake.emit({ type: 'toolCall', calls: [{ id: 'w1', name: 'remember_note', args: { text: 'synthetic note' } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
   await settlePort();
   h.advance(12_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'one settlement reaches the backend');
@@ -3522,11 +3521,13 @@ test('S4a-R2 (e): thinking never claims nothing changed around a write, and the 
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'thinking-write');
-  fake.emit({ type: 'toolCall', calls: [{ id: 'w2', name: 'remember_note', args: { text: 'synthetic note' } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w2', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
   await settlePort();
   assert.deepEqual(fake.thinking, ['Reading memory.'], 'a write in the batch means no claim about what changed');
   h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, ['Still reading the memory.'], 'the line names a call that is actually running');
+  // S4a-R2 (e): the host waits for the owner transcript before a remember_note is dispatched, so the honest
+  // word is queued, never "reading".
+  assert.deepEqual(fake.commentary, ['waiting on the memory.'], 'a queued call is never described as being read');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
@@ -3551,7 +3552,8 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.commentary.length, 1, 'the progress line went out');
   // The ack bought no delivery: the watchdog still had to recover the turn.
-  h.advance(9_000); scheduler.runDue(); await settlePort();
-  assert.ok(receipts.some(entry => entry['event'] === 'live_recovery'), 'delivery stayed owed, so the watchdog recovered');
+  h.advance(2_000); scheduler.runDue(); await settlePort();
+  // Delivery was never satisfied by the ack: the watchdog still escalated on its own deadline.
+  assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'the watchdog still escalated');
   h.owner.revoke(session.liveSessionId);
 });

@@ -206,10 +206,8 @@ final class NativePresence {
     /// state, it only asks the host for one prewarm, because the warm context went stale asleep.
     /// A wake while LIVE belongs to the live session and does nothing here.
     func wake() {
-        switch state {
-        case .cold, .hotMuted: effects.prewarm()
-        case .live: return
-        }
+        guard state == .cold || state == .hotMuted else { return }
+        effects.prewarm()
     }
 
     /// An audio route or engine failure while live fails loud: error posture, session closed,

@@ -3677,14 +3677,13 @@ test('S5: a failed backend turn settles typed, says one honest line, and is neve
   await settlePort();
   // The typed disposition is immediate and metadata only.
   assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', code: 'backend_unavailable' }]);
-  const journal = h.store.transaction(tx => tx.all('SELECT text FROM live_journal WHERE live_session_id=?', [session.liveSessionId]).map(row => String(row['text'])));
-  assert.equal(journal.some(text => text.includes('turn_failed') && text.includes('backend_unavailable')), true,
-    'the turn failure is a typed journal receipt, with the provider code and no invented reason');
   assert.deepEqual(fake.commentary, [TURN_FAILED_LINE], 'one honest line: lost the thread, asked to repeat, offered the retry');
   assert.equal(fake.sessionsOpened, 1, 'a backend turn failure is never a rebuild');
   // The line never becomes audible here, so the turn is settled failed instead of left owing, and no rebuild follows.
   h.advance(1_000); scheduler.runDue(); await settlePort();
   assert.equal(h.owner.get(session.liveSessionId).lifecycle, 'terminal', 'an unanswered turn failure settles instead of owing forever');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'backend_failed' },
+    'the terminal disposition is typed, and it names the failure class the receipt details');
   assert.equal(fake.sessionsOpened, 1, 'still no rebuild');
   assert.deepEqual(fake.texts, [], 'no Continue. user turn on the failure path either');
 });

@@ -945,11 +945,18 @@ test('1015: a start reports the digest state the cache reached and never folds a
     assert.equal((await start(async () => ({ state: 'empty', text: undefined, items: 0, fetchedAt: clock.now }))).snapshot.state, 'empty', 'a truly empty day is empty');
     assert.equal((await start(async () => { throw new Error('connector down'); })).snapshot.state, 'failed', 'a failed read is not an empty day');
     assert.equal((await start(async () => ({ state: 'timeout', text: undefined, items: 0, fetchedAt: clock.now }))).snapshot.state, 'timeout', 'nor is a cut-off one');
-    const stale = await start(async () => ({ state: 'present', text: '09:30 standup', items: 1, fetchedAt: clock.now }));
-    clock.now += 31 * 60 * 1000;
-    const aged = stale.cache.current();
-    assert.equal(aged?.state, 'stale', 'a digest over 30 minutes old does not answer a start');
-    assert.equal(aged?.text, undefined, 'and its text never rides the assembly');
+    // A digest over 30 minutes old answers a start as stale, with its own age and no text. The owner stores
+    // the snapshot state verbatim, which is what puts stale on the receipt; the cache mechanics that
+    // produce it are pinned in warm-context.test.ts through forStart, the same call this path makes.
+    const stalePort = { forStart: async () => ({ state: 'stale' as const, text: undefined, items: 0, fetchedAt: clock.now - 31 * 60 * 1000 }),
+      refresh: () => {} };
+    const staleOwner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+      now: () => clock.now, timeZone: 'UTC', calendarDigest: stalePort } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
+    try {
+      const aged = await staleOwner.prepareCalendar();
+      assert.equal(aged.state, 'stale', 'a digest over 30 minutes old reaches the receipt as stale');
+      assert.equal(aged.text, undefined, 'and its text never rides the assembly');
+    } finally { await staleOwner.shutdown(); }
   } finally { await cleanup(); }
 });
 // R7: mail and calendar are both `connector: google`, so the first google endpoint is not the calendar

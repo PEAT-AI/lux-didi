@@ -219,8 +219,10 @@ export class CalendarDigestCache {
   }
 
   /**
-   * What a call start uses: the fresh cache as it stands, otherwise at most `waitMs` for the read
-   * already in flight, otherwise a `timeout` state and no digest. Never a whole read on the path.
+   * What a call start uses: the fresh cache as it stands; otherwise at most `waitMs` for the read in
+   * flight, asking for one when none is; otherwise the answer the cache already holds. A digest that was
+   * aged out is reported `stale` with its own fetch time, which is the one state the receipt can carry for
+   * it, and only a start with no snapshot at all reports `timeout`. Never a whole read on the path.
    */
   async forStart(waitMs = calendarDigestStartWaitMs): Promise<CalendarDigestSnapshot> {
     const cached = this.current();
@@ -230,7 +232,8 @@ export class CalendarDigestCache {
     const expiry = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), waitMs); });
     try {
       const read = await Promise.race([pending, expiry]);
-      return read ?? { state: 'timeout', text: undefined, items: 0, fetchedAt: this.#now() };
+      if (read !== undefined) return read;
+      return cached ?? { state: 'timeout', text: undefined, items: 0, fetchedAt: this.#now() };
     } finally { clearTimeout(timer); }
   }
 }

@@ -210,7 +210,7 @@ function digestCache(script: DigestScript, start = digestMonday, intervalMs?: nu
   const read = digestConnector(script, clock);
   const cache = new CalendarDigestCache(async () => await readCalendarDigest(read, { now: () => clock.now, timeZone: 'Asia/Kolkata' }),
     { now: () => clock.now, timeZone: 'Asia/Kolkata', ...(intervalMs === undefined ? {} : { intervalMs }) });
-  return { cache, read, clock };
+  return { cache, read, clock, script };
 }
 
 test('1015: a 6 s read fills the cache and the next start uses it with state present and no read', async () => {
@@ -227,16 +227,28 @@ test('1015: a 6 s read fills the cache and the next start uses it with state pre
   assert.equal(clock.now, digestMonday + 6_000, 'and no clock moved waiting for it');
 });
 
-test('1015: with no cache and a read in flight, a start waits at most 1,500 ms then says timeout', async () => {
+test('1015: with no cache and a read in flight, a start waits out its budget then says timeout', async () => {
   const { cache } = digestCache({ fail: 'hang' });
   void cache.refresh();
   const startedAt = Date.now();
-  const started = await cache.forStart();
+  // The budget is the seam; the constant's own 1,500 ms value is asserted in the constants test below.
+  const started = await cache.forStart(20);
   const waited = Date.now() - startedAt;
   assert.equal(started.state, 'timeout', 'a start never reports a hung read as an empty day');
   assert.equal(started.text, undefined);
-  assert.ok(waited >= calendarDigestStartWaitMs - 50, `waited about the start budget (${waited} ms)`);
-  assert.ok(waited < calendarDigestStartWaitMs + 1_000, `and not a whole read (${waited} ms)`);
+  assert.ok(waited >= 20, `waited out its budget (${waited} ms)`);
+  assert.ok(waited < 1_000, `and not a whole read (${waited} ms)`);
+});
+
+test('1015: a stale cache whose refresh does not arrive is reported stale with its own fetch time', async () => {
+  const { cache, clock, script } = digestCache({});
+  await cache.refresh();
+  clock.now += calendarDigestFreshMs;
+  script.fail = 'hang';
+  const started = await cache.forStart(20);
+  assert.equal(started.state, 'stale', 'the receipt says stale, not that a read just timed out');
+  assert.equal(started.text, undefined, 'and the aged text never rides the assembly');
+  assert.equal(started.fetchedAt, digestMonday, 'the answer carries the last real fetch time, so ageMs is honest');
 });
 
 test('1015: a failing read is failed, never empty, and an unconfigured connector says so', async () => {

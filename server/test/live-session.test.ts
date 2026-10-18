@@ -139,6 +139,7 @@ async function harness(t: TestContext, overrides: {
   let clock = NOW;
   let memorySelections = 0;
   const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model, overrides.provider);
+  console.error('DEBUG_PROFILE', JSON.stringify({ model: overrides.model, provider: overrides.provider, liveModelId: initialProfile.liveModelId, p: initialProfile.provider }));
   const profile = validateLiveProfile({ ...initialProfile,
     ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),

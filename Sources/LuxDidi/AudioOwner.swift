@@ -59,7 +59,7 @@ struct NativeAudioEvent: Equatable {
     func record(_ event: NativeAudioEvent) {
         events.append(event)
         observer?(event)
-        var record = event.fields
+        var record: [String: Any] = event.fields
         record["event"] = event.name
         if let sessionID, record["liveSessionId"] == nil { record["liveSessionId"] = sessionID }
         record.merge(NativeLogClock.shared.stamp("audio", at: event.at)) { current, _ in current }

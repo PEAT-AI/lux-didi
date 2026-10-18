@@ -736,7 +736,7 @@ test('the host owner prewarm answers the quiet receipt when Live is unconfigured
   const host = await startHost({ dataDir: dir, webRoot, port: 0 });
   try {
     const receipt = await host.prewarm();
-    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no session has prepared sections yet');
+    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' }, 'no session has prepared sections yet');
     const lines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
     assert.equal(lines.filter(line => line['event'] === 'warm_prewarm').length, 0, 'no warm owner, so no receipt line');
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }

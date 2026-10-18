@@ -2,6 +2,7 @@ import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
 import { configureDebugJournal } from './journal.js';
+import { supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
@@ -57,8 +58,8 @@ export function installedConfigDirRefusal(configDir: string, supervised: boolean
   if (configDir !== installed && !configDir.startsWith(installed + sep)) return undefined;
   return `Refusing --config-dir ${configDir}: it is the installed app's own folder, which only the app's supervised host may open; run this host with --data-dir <your own state folder> and copy the provider config there instead.`;
 }
-/** `--supervised` is the app's own supervision marker; the host entry keeps it in process.argv. */
-function supervisedHost(config: HostConfig): boolean { return config.supervised ?? process.argv.includes('--supervised'); }
+/** The app's own supervision marker (server/host/supervision.ts) decides the one exception to the refusal. */
+function supervisedHost(config: HostConfig): boolean { return config.supervised ?? supervisionRequested(); }
 export interface RuntimeDescriptor {
   schemaVersion: 1; origin: string; authorityEpoch: string; assistantId: string; pid: number; startedAt: string;
 }

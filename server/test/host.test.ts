@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { installedConfigDirRefusal, pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
@@ -699,6 +700,9 @@ test('the installed app config dir is refused with one line naming --data-dir, a
   assert.equal(installedConfigDirRefusal(installed, true), undefined, 'the installed app supervised host keeps its own config dir');
   assert.equal(installedConfigDirRefusal('/tmp/synthetic/provider-config', false), undefined, 'any other config dir stays allowed');
   assert.equal(installedConfigDirRefusal(join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi-other'), false), undefined);
+  // The refusal is keyed off the named supervision marker, not a literal repeated in this file.
+  assert.equal(supervisionRequested(['node', 'host/index.js', SUPERVISION_FLAG]), true);
+  assert.equal(supervisionRequested(['node', 'host/index.js', '--data-dir', '/tmp/x']), false);
 });
 
 test('the entry refuses to start an unsupervised host on the installed app config dir', async () => {

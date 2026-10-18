@@ -1428,7 +1428,8 @@ class Session implements LiveVoiceSession {
       // O1b-A: the skip is a decision with a reason, not silence. An answer batch that still owes another call's
       // output is already recorded where it defers (writeAnswered), so this names the other wait: the response is
       // still emitting calls, or this connection is retired and can never send the create (epoch_stale).
-      if (this.draining || this.terminal !== undefined) this.continuationReceipt('deferred', 'epoch_stale');
+      if (this.draining) this.continuationReceipt('deferred', 'draining');
+      else if (this.terminal !== undefined) this.continuationReceipt('deferred', 'epoch_stale');
       else if (this.delegatedOutstanding) this.continuationReceipt('deferred', 'awaiting_calls');
       return this.continuationOutcome = 'deferred';
     }

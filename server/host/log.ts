@@ -345,7 +345,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_interrupted', liveSessionId: value.liveSessionId, turnCompleteSeen: value.turnCompleteSeen, msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
   if (value.event === 'live_dead_air') {
-    // E1: the wait between input final and first audio only, never any turn content.
+    // Two waits, both durations and never any turn content: E1's gap between input final and first audio,
+    // and D3's stall receipt, how long the answer was owed and how long since any audible output.
+    const stallKeys = ['event', 'msSinceTool', 'msSinceAudible'].sort().join(',');
+    if (Object.keys(value).sort().join(',') === stallKeys) {
+      if (!isSafeCount(value.msSinceTool)) return;
+      if (!(value.msSinceAudible === null || isSafeCount(value.msSinceAudible))) return;
+      return { event: 'live_dead_air', msSinceTool: value.msSinceTool, msSinceAudible: value.msSinceAudible };
+    }
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };

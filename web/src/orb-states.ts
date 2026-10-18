@@ -108,6 +108,36 @@ export const TRANSITION_MS = 500;
 /** Anything shorter than a quarter second is a flicker, not a state. */
 export const DEBOUNCE_MS = 250;
 
+/** D6: the same flicker rule the mini pill applies, for any state word a surface paints. A request only
+ *  commits once its state has lasted DEBOUNCE_MS, so speaking, listening, speaking inside one blink leaves
+ *  the surface on speaking. Presentation only: lifecycle events are never debounced this way (amendment D). */
+export interface StateDebounce<S extends string> {
+  state(): S;
+  request(state: S, at: number): void;
+  /** The state visible at `at`, committing a pending change once it has lasted the debounce. */
+  settled(at: number): S;
+  /** When the pending change commits, or undefined when nothing is pending. */
+  dueAt(): number | undefined;
+}
+
+export function createStateDebounce<S extends string>(initial: S, ms = DEBOUNCE_MS): StateDebounce<S> {
+  let current = initial;
+  let pending: { state: S; since: number } | undefined;
+  return {
+    state: () => current,
+    request(state, at) {
+      if (state === current) { pending = undefined; return; }
+      if (pending?.state === state) return;
+      pending = { state, since: at };
+    },
+    settled(at) {
+      if (pending && at - pending.since >= ms) { current = pending.state; pending = undefined; }
+      return current;
+    },
+    dueAt() { return pending === undefined ? undefined : pending.since + ms; },
+  };
+}
+
 /** The breathe on the opacity: one slow sine at the state's period, so the orb is alive
  *  without a level. Pure in the clock, so the curve is testable. */
 export function breathe(base: number, breatheMs: number, at: number, depth = 0.05): number {

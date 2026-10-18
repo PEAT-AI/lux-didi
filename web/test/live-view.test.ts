@@ -1160,3 +1160,11 @@ test('the button label and pressed state flip on the press and return to Start a
   assert.match(orbUnder('idle', 'speaking').orbControlsMarkup(), /id="voice-start"[^>]*aria-pressed="false"[^>]*>Start</,
     'Start comes back though the projection still says speaking');
 });
+
+test('D6: the main window paints the orb through the shared debounce, never a raw state', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(source, /import \{ createStateDebounce \} from '\.\/orb-states'/, 'main.ts imports the mini pill debounce');
+  assert.match(source, /orbReveal\.request\(orbState\(\), at\)/, 'every paint requests through it');
+  assert.match(source, /orbReveal\.settled\(at\)/, 'and paints only the settled state');
+  assert.equal(source.includes('appliedOrbState=next;orb?.setState(next)'), false, 'no un-debounced set remains');
+});

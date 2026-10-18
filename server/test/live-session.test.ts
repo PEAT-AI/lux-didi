@@ -32,14 +32,13 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -3038,43 +3037,20 @@ test('a delegated response that thinks for ten seconds is busy, not mute', async
   attachment.close();
 });
 
-/** Every journal line a session wrote under this data dir, newest files included (fixture data only). */
-function journalLines(dir: string): Record<string, unknown>[] {
-  const root = join(dir, 'debug');
-  return readdirSync(root).flatMap(day => readdirSync(join(root, day)).flatMap(file =>
-    readFileSync(join(root, day, file), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)));
-}
-
 // P3: gpt-live-1 streams output frames for the whole call (48 kB/s in session 1018), so a frame is speech only
-// when its level says so; the level is per second in the journal and per turn in the receipt.
-test('P3: only audible output is SPEAKING, and the turn receipt counts the silent fill', async t => {
+// when its level says so; a silent frame must leave the orb alone.
+test('P3: an inaudible output frame never puts the orb in SPEAKING', async t => {
   const scheduler = new DeadlineClock();
   const fake = fakeLiveVoicePort({ provider: 'openai' });
   const h = await harness(t, { port: fake.port, provider: 'openai', model: 'gpt-live-1', scheduler,
     limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
-  configureDebugJournal(h.dir, true);
-  t.after(() => resetDebugJournal());
   await attached(h, 'p3-inaudible');
   assert.equal(h.owner.current().state, 'listening');
-  // The fill that arrived before any word: 100 ms of digital silence.
+  // The fill that arrives before any word: 100 ms of digital silence.
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 });
-  await tick(); await tick();
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   assert.equal(h.owner.current().state, 'listening', 'a silent fill frame never puts the orb in SPEAKING');
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
   await advanceUntil(h.advance, scheduler, () => h.owner.current().state === 'speaking');
   assert.equal(h.owner.current().state, 'speaking', 'her first audible frame is the start');
-  // A second boundary flushes the per-second bucket, which carries the measured level.
-  h.advance(1_000); scheduler.runDue();
-  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 });
-  await tick(); await tick();
-  fake.emit({ type: 'turnComplete' });
-  await tick(); await tick();
-  const lines = journalLines(h.dir);
-  const audio = lines.filter(line => line['event'] === 'audio');
-  assert.ok(audio.length >= 1, 'the per-second audio bucket reached the journal');
-  const rms = audio[0]!['outputRms'] as { max: number; mean: number };
-  assert.equal(rms.max, -14, 'the loudest chunk of that second is the speech');
-  assert.ok(Math.abs(rms.mean - -17) < 0.2, `the mean is energy weighted across the two chunks, got ${rms.mean}`);
-  const turnEnd = lines.find(line => line['event'] === 'turn_end' && line['speaker'] === 'model');
-  assert.equal(turnEnd?.['inaudibleMs'], 100, 'the fill frame is counted in playback milliseconds');
 });

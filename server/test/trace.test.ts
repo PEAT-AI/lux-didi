@@ -447,6 +447,8 @@ test('O1b-A: a turn that stalls before any delegation prints its typed GAP and t
   withStore(store => {
     const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
     openTurn(store, 't1', 1, T0 + 1_000);
+    // The response was created and no delegation or provider id ever came back: that is the D12-1 stall.
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050 });
     record(store, 'live.dead_air_stalled', { ...id, turnId: 't1' }, { stalledAt: T0 + 9_000, turnAgeMs: 8_000, anyAudio: false, inaudibleMs: 0 });
 
     const report = buildTimeline(readOf(store), SESSION);

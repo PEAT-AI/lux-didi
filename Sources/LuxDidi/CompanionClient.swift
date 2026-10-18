@@ -143,6 +143,12 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             bearer: false, page: true, key: key, authority: authority)
         return value
     }
+    /// 338: the owner's wake instruction. The host rebuilds the warm context and returns the
+    /// `warm_prewarm` receipt; the caller only needs to know the instruction was served.
+    func prewarm() async throws -> [String: Any] {
+        let (value, _) = try await request("api/v1/live/prewarm", method: "POST", body: [:])
+        return value
+    }
     func liveConnections() async throws -> [NativeLiveConnection] {
         let (value, _) = try await requestPayload("api/v1/live/connections", bearer: false, page: true)
         guard let rows = value as? [[String: Any]] else { throw CompanionError.invalidResponse }

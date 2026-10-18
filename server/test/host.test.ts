@@ -672,3 +672,20 @@ test('host close kills a stdio MCP child that ignores close within the bound', a
     assert.equal(await childDead(pid, 800), true, 'the child is killed after the bound, so the host can exit');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+// 338: the host owner route carries one prewarm instruction. It returns the receipt the app logs
+// and writes it as one closed host-log line; an unconfigured Live has nothing to assemble.
+test('the host owner prewarm returns a receipt and logs one closed warm_prewarm line', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-prewarm-'));
+  const host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  try {
+    const receipt = await host.prewarm();
+    assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: null, assembled: false }, 'no session has prepared sections yet');
+    const lines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
+    const logged = lines.filter(line => line['event'] === 'warm_prewarm');
+    assert.equal(logged.length, 1, 'one receipt per instruction');
+    const { timestamp, ...fields } = logged[0]!;
+    assert.deepEqual(fields, { event: 'warm_prewarm', ageBeforeMs: null, ageAfterMs: null, assembled: false });
+    assert.equal(typeof timestamp, 'string');
+  } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});

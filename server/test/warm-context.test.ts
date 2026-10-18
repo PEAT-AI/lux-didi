@@ -159,3 +159,35 @@ test('an empty source set assembles nothing rather than an empty block', () => {
   assert.equal(cache.refresh(), undefined);
   assert.equal(cache.take(), undefined);
 });
+
+// 338: the owner's forced prewarm. The refresh assembles from the prepared sources, keeps the
+// digest the owner just read, and the next session start takes those sections instead of asking
+// the store a second time.
+test('a forced refresh rebuilds the assembly and carries the calendar digest', () => {
+  let now = 1_000;
+  const local = sources();
+  const cache = new WarmContextCache({ budget: 4_000, now: () => now, sources: local.value });
+  assert.equal(cache.ageMs, undefined, 'nothing is assembled until a refresh asks for it');
+  const forced = cache.refresh(true);
+  assert.equal(forced?.sections.calendar, sections.calendar, 'the digest the owner read is in the assembly');
+  assert.match(forced?.text ?? '', /Today: 10:00 standup, 15:00 review\./);
+  assert.deepEqual(local.calls, { persona: 1, memory: 1, summary: 1, calendar: 1 }, 'one read per source per assembly');
+  now += 5;
+  cache.refresh(true);
+  assert.deepEqual(local.calls, { persona: 2, memory: 2, summary: 2, calendar: 2 }, 'a forced refresh assembles again');
+  assert.equal(cache.ageMs, 0, 'the receipt ages run from the forced assembly');
+});
+
+test('a start after a forced refresh uses the refreshed sections and reads no source again', () => {
+  let now = 1_000;
+  const local = sources();
+  const cache = new WarmContextCache({ budget: 4_000, now: () => now, sources: local.value });
+  cache.refresh(true);
+  now += 30_000;
+  let assembled = 0;
+  const start = chooseStartContext(cache.take(), () => { assembled += 1; return collected; });
+  assert.equal(start.warm, true, 'the forced assembly is what the next start takes');
+  assert.equal(assembled, 0, 'the store is not read a second time');
+  assert.equal(start.sections.calendar, sections.calendar);
+  assert.equal(local.calls.summary, 1, 'the summary source ran once, at the prewarm');
+});

@@ -376,3 +376,48 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     },
   };
 }
+
+/** The most one warm calendar digest may put in the session's Today: line (issue 339). */
+export const CALENDAR_DIGEST_CHARS = 400;
+/** How long the digest's single primary-calendar read may take before the slot stays absent. */
+export const CALENDAR_DIGEST_READ_MS = 5_000;
+
+/** The one read the warm digest needs: the configured connector reader, or the fake a test supplies. */
+export interface CalendarDigestRead {
+  gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult>;
+}
+
+/**
+ * Today's events on the owner's primary calendar as one bounded line, or undefined when the
+ * connector is unconfigured, the read fails or the day is empty. One read, local host time and no
+ * model call, so a silent session start that finds nothing here leaves the slot out entirely.
+ */
+export async function buildCalendarDigest(read: CalendarDigestRead | undefined, input: { now: number; timeZone: string }): Promise<string | undefined> {
+  if (read === undefined) return undefined;
+  const window = localDayWindow(input.now, input.timeZone);
+  let result: GoogleResult;
+  try {
+    result = await read.gcalList({ calendarId: 'primary', timeMin: window.timeMin, timeMax: window.timeMax, maxResults: GOOGLE_DEFAULTS.listResults }, AbortSignal.timeout(CALENDAR_DIGEST_READ_MS));
+  } catch { return undefined; }
+  if (result.state !== 'completed') return undefined;
+  const text = contentText(result.decodedResult);
+  if (text === undefined) return undefined;
+  let envelope: unknown;
+  try { envelope = JSON.parse(text); } catch { return undefined; }
+  const data = isRecord(envelope) && isRecord(envelope['data']) ? envelope['data'] : {};
+  const events = Array.isArray(data['events']) ? data['events'].filter(isRecord) : [];
+  const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: input.timeZone });
+  const lines: string[] = [];
+  let length = 0;
+  for (const event of events) {
+    const start = event['start'];
+    const stamp = isRecord(start) && typeof start['dateTime'] === 'string' ? clock.format(new Date(start['dateTime'])) : 'all day';
+    const summary = typeof event['summary'] === 'string' ? event['summary'].trim() : '';
+    const line = stamp + ' ' + (summary.length ? summary : 'untitled');
+    const next = lines.length ? ', ' + line : line;
+    if (length + next.length > CALENDAR_DIGEST_CHARS) break;
+    lines.push(line);
+    length += next.length;
+  }
+  return lines.length ? lines.join(', ') : undefined;
+}

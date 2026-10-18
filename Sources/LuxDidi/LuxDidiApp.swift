@@ -347,6 +347,16 @@ import WebKit
         surfaceReceipts.append(record)
         appendPresenceReceipt(record)
     }
+    /// 338: the Mac woke with no session running, so the host rebuilds its warm context once. The
+    /// instruction is best effort and never blocks the wake path: a host that is down, unpaired or
+    /// older than this release leaves `ok: false` and the next session start assembles as it did.
+    func prewarmWarmContext() {
+        guard let client else { return }
+        Task { [weak self] in
+            let ok = (try? await client.prewarm()) != nil
+            self?.appendPresenceReceipt(["type": "presence_prewarm", "ok": ok])
+        }
+    }
 
     // MARK: - Mic Mode (#352)
     /// The observer's wiring. KVO over the two class properties, and nothing else.
@@ -528,7 +538,8 @@ struct RootView: View {
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
-        surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) }))
+        surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
+        prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
     private var presenceGraceTimer: Timer?
     private var presenceMenuItem: NSMenuItem?
     /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
@@ -559,6 +570,9 @@ struct RootView: View {
     static let accessibilityNoticeTitle = "Right Command needs Accessibility (open System Settings)"
     private var keyboardMonitor: Any?
     private var terminationMonitor: NSObjectProtocol?
+    /// 338: the wake observer, paired with the sleep one above so the warm context is refreshed
+    /// exactly when the Mac comes back and no session is running.
+    private var wakeMonitor: NSObjectProtocol?
     private var hotkeyCode: OSStatus = noErr
     private var loginLaunch = false
     private var launchKind: LaunchKind = .interactive
@@ -738,6 +752,12 @@ struct RootView: View {
                 // and wake never reconnects on its own.
                 self?.presence.sleep()
                 self?.model.stopRecording("Mac is going to sleep")
+            }
+        }
+        wakeMonitor = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                // 338: only the idle states prewarm; a wake during a live call belongs to that call.
+                self?.presence.wake()
             }
         }
         Task {
@@ -1128,6 +1148,7 @@ struct RootView: View {
         model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
+        if let wakeMonitor { NSWorkspace.shared.notificationCenter.removeObserver(wakeMonitor) }
     }
     func selfCheck() async {
         do { try await connectedSendProof() }

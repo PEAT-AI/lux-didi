@@ -38,6 +38,8 @@ struct PresenceEffects {
     var providerInputMute: @MainActor (Bool) -> Void = { _ in }
     var receipt: @MainActor ([String: Any]) -> Void = { _ in }
     var surface: @MainActor (PresencePosture) -> Void = { _ in }
+    /// 338: the Mac woke with no session running, so the host rebuilds its warm context once.
+    var prewarm: @MainActor () -> Void = {}
 }
 
 /// The presence machine, in the one place a state can change. `now` is monotonic
@@ -198,6 +200,16 @@ final class NativePresence {
     func sleep() {
         guard state != .cold else { return }
         teardown(.sleep)
+    }
+
+    /// `NSWorkspace.didWakeNotification` (issue 338): with no session running the wake changes no
+    /// state, it only asks the host for one prewarm, because the warm context went stale asleep.
+    /// A wake while LIVE belongs to the live session and does nothing here.
+    func wake() {
+        switch state {
+        case .cold, .hotMuted: effects.prewarm()
+        case .live: return
+        }
     }
 
     /// An audio route or engine failure while live fails loud: error posture, session closed,

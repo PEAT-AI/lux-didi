@@ -3353,6 +3353,8 @@ test('D6: the adapter silence model between her sentences never drops the orb ou
 function progressPort() {
   const commentary: string[] = [];
   const thinking: string[] = [];
+  /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
+  const texts: string[] = [];
   const toolResponses: LiveToolResponse[][] = [];
   let emit: (event: unknown) => void = () => {};
   let sessionsOpened = 0;
@@ -3385,14 +3387,14 @@ function progressPort() {
       return {
         ready: Promise.resolve(), events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
-        sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
         sendCommentary(input: { text: string }): void { commentary.push(input.text); },
         sendThinking(input: { text: string }): void { thinking.push(input.text); },
         close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
-  return { port, commentary, thinking, toolResponses, emit: (event: unknown) => emit(event), get sessionsOpened() { return sessionsOpened; } };
+  return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event), get sessionsOpened() { return sessionsOpened; } };
 }
 
 const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 };
@@ -3422,7 +3424,7 @@ test('progress speech fires once about 6 s into an open delegation, and not befo
   h.owner.revoke(session.liveSessionId);
 });
 
-test('progress speech is suppressed while the owner speaks, and Gemini keeps its Continue. nudge', async t => {
+test('progress speech is suppressed while the owner speaks', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
@@ -3550,18 +3552,22 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'ack-watchdog');
-  fake.emit({ type: 'resumptionHandle', handle: 'synthetic-ack-handle' });
-  await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'a1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   release();
   await settlePort();
+  const nudges = (): number => receipts.filter(entry => entry['event'] === 'live_dead_air_nudge').length;
   h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 1, 'the progress line went out');
-  // The ack bought no delivery: the watchdog still had to recover the turn.
+  assert.equal(fake.commentary.length, 1, 'the progress line went out: that is the ack under test');
+  assert.equal(nudges(), 0, 'the ack is not a delivery and the watchdog has not spoken yet');
+  // The ack bought nothing: the answer is still owed, so the watchdog escalates on its own deadline.
   h.advance(2_000); scheduler.runDue(); await settlePort();
-  // Delivery was never satisfied by the ack: the watchdog still escalated on its own deadline.
-  assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'the watchdog still escalated');
+  assert.equal(nudges(), 1, 'the watchdog still escalated after the commentary ack');
+  // Negative control: only the answer's own audio ends the debt, so no later deadline escalates again.
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  h.advance(20_000); scheduler.runDue(); await settlePort();
+  assert.equal(nudges(), 1, 'audible audio, not an ack, is what the watchdog accepts');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -3579,8 +3585,11 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
   assert.match(fake.thinking[0]!, /Running a lookup across your sources\. Nothing has been sent or booked while that runs\./);
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.commentary.length, 1, 'progress speech goes out for a research lookup');
-  // The line names the source the run actually opened, never the requested list.
-  assert.match(fake.commentary[0]!, /Still reading the (chat|mattermost)\.|waiting on the (chat|mattermost)\./);
+  // The line names a source the run actually opened and its settled receipt, never the requested list.
+  assert.match(fake.commentary[0]!, /chat/, 'the research source is named from its own step');
+  assert.match(fake.commentary[0]!, /is done|failed|Still reading/, 'with the status the run reported');
+  // Review F2: the OpenAI path never sends the dead-air user turn.
+  assert.deepEqual(fake.texts, [], 'no Continue. user message on the Responses-delegation path');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);

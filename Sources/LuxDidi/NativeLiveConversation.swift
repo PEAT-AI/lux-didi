@@ -82,7 +82,7 @@ enum State: String, CaseIterable {
         }
         // O1b-N: every playback receipt goes to the host over the socket this call already holds.
         device.onPlaybackReceipt = { [weak self] receipt in
-            Task { await self?.coordinator.sendPlaybackReceipt(receipt) }
+            Task { await self?.coordinator.sendPlaybackReceipt(receipt.json) }
         }
         device.onUnderrun = { [weak self] arrival in
             guard let self else { return }

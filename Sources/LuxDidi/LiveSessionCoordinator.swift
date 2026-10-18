@@ -416,12 +416,12 @@ public actor LiveSessionCoordinator {
         }
     }
 
-    /// O1b-N: one playback receipt, forwarded over the live socket the call already holds. A receipt
-    /// never changes session state: outside an active call it is dropped, and a send failure is not a
-    /// call failure (the audio path owns that decision, not the receipt).
-    public func sendPlaybackReceipt(_ receipt: NativePlaybackReceipt) async {
+    /// O1b-N: one playback receipt frame, forwarded over the live socket the call already holds. A
+    /// receipt never changes session state: outside an active call it is dropped, and a send failure
+    /// is not a call failure (the audio path owns that decision, not the receipt).
+    public func sendPlaybackReceipt(_ frame: String) async {
         guard state == .active, let socket else { return }
-        try? await socket.sendReceipt(receipt.json)
+        try? await socket.sendReceipt(frame)
     }
 
     public func sendPCM(_ pcm: Data, captureEpoch submittedEpoch: UInt64? = nil, diagnosticOwner: UInt64? = nil) async throws {

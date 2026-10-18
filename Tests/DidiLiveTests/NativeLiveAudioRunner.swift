@@ -109,8 +109,9 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             let nativeRecord = try JSONSerialization.jsonObject(with: Data(nativeLine.dropLast())) as! [String: Any]
             // O1b-N: every native line also carries the launch identity, both clocks and a sequence.
             let identity: Set<String> = ["timestamp", "wall_ms", "mono_ms", "source_instance_id", "source_seq"]
-            let expectedKeys: Set<String> = (error is NativeLiveAudioError && detail != nil
-                ? ["event", "failureClass", "code", "detail"] : ["event", "failureClass", "code"]).union(identity)
+            let body: Set<String> = error is NativeLiveAudioError && detail != nil
+                ? ["event", "failureClass", "code", "detail"] : ["event", "failureClass", "code"]
+            let expectedKeys: Set<String> = body.union(identity)
             try audioRequire(Set(nativeRecord.keys) == expectedKeys && nativeRecord["event"] as? String == "live_precreate_failed"
                 && nativeRecord["failureClass"] as? String == failureClass && nativeRecord["code"] as? String == code,
                 "native line has the exact typed JSONL schema plus timestamp")

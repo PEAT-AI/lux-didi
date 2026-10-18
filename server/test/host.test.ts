@@ -9,10 +9,13 @@ import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { hostMigrations, pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
-import { WarmContextCache, chooseStartContext } from '../live/warm-context.js';
+import { WarmContextCache, chooseStartContext, withProvenance } from '../live/warm-context.js';
+import { createLiveSessionOwner } from '../live/index.js';
+import { loadLiveConfig } from '../config/live.js';
+import type { LiveVoicePort } from '../adapters/live-voice/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
 import type { GoogleEvidence, GoogleResult } from '../connectors/google.js';
 import { listenService } from '../http/server.js';
@@ -804,4 +807,51 @@ test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried
   assert.equal(safeEvent({ ...receipt, ageAfterMs: -1 }), undefined, 'a negative age is refused');
   assert.equal(safeEvent({ ...receipt, assembled: 'yes' }), undefined, 'the flag is a boolean');
   assert.equal(safeEvent({ event: 'warm_prewarm', assembled: true }), undefined, 'both ages are always present');
+});
+
+// F9: a forced refresh of the sections a start chose keeps the summary provenance they were chosen
+// with, so `conversation_summary_injection` still accounts for what the start injected.
+test('a forced refresh keeps the summary provenance the start recorded', () => {
+  const previous = { persona: 'Naya is the owner\'s assistant.', memory: [] as readonly string[],
+    summary: 'Yesterday: release planning.', summaryIds: ['summary-17'] as readonly string[],
+    summaryOmitted: [{ id: 'summary-03', reason: 'budget' as const }], calendar: '09:00 old window' };
+  const cache = new WarmContextCache({ budget: 4_000, now: () => 0 });
+  const refreshed = cache.adopt(withProvenance({ ...previous, calendar: '10:00 standup' }, previous));
+  assert.deepEqual(refreshed?.sections.summaryIds, ['summary-17'], 'the injected ids survive the refresh');
+  assert.deepEqual(refreshed?.sections.summaryOmitted, [{ id: 'summary-03', reason: 'budget' }]);
+  assert.match(refreshed?.text ?? '', /Today: 10:00 standup/, 'the digest the owner read replaces the old one');
+  assert.match(refreshed?.text ?? '', /Recent conversation: Yesterday: release planning\./);
+});
+
+// F4 and R3-R5 at the owner: the digest is read once for each assembly, the prewarm assembles the
+// sections a start prepared, and the receipt carries the real ages instead of the degenerate nulls.
+test('the owner prewarm assembles after a start and reads the digest once per assembly', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-owner-prewarm-'));
+  const store = new Store(dir, hostMigrations);
+  const configDir = join(dir, 'provider-config');
+  let clock = 1_760_000_000_000;
+  let reads = 0;
+  const cleanup = async () => { store.close(); await rm(dir, { recursive: true, force: true }); };
+  try {
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+      dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+    await writeFile(join(configDir, 'live.json'), `${JSON.stringify(live)}\n`);
+    const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+    assert.equal(loaded.status, 'configured');
+    if (loaded.status !== 'configured') throw new Error('live.json must configure');
+    const owner = createLiveSessionOwner({
+      store, voice: {} as LiveVoicePort, profile: loaded.config.profile, now: () => clock, timeZone: 'UTC',
+      calendarDigest: async () => { reads += 1; return '10:00 standup, 15:00 review'; },
+    } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
+    const context = { clientId: 'owner-fixture', auditId: randomUUID(), authorityEpoch: store.authorityEpoch };
+    await owner.prepareCalendar();
+    assert.equal(reads, 1, 'R3-R5: one bounded read per assembly');
+    owner.create({ idempotencyKey: 'k1', inputClass: 'ordinary' }, context);
+    clock += 60_000;
+    const receipt = await owner.prewarm();
+    assert.equal(reads, 2, 'the prewarm reads the digest again for its own assembly');
+    assert.deepEqual(receipt, { ageBeforeMs: 60_000, ageAfterMs: 0, assembled: true }, 'the receipt carries the real ages');
+    await owner.shutdown();
+  } finally { await cleanup(); }
 });

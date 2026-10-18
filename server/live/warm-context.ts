@@ -44,6 +44,15 @@ export function collectSections(sources: WarmContextSources): WarmContextSection
     summaryIds: [], summaryOmitted: [], calendar: sources.calendar() };
 }
 
+/**
+ * A refresh of sections that were already chosen keeps the summary provenance they were chosen
+ * with: a source collection can only describe text, and the ids are what `conversation_summary_injection`
+ * accounts for. Losing them would silently under-report what the start injected.
+ */
+export function withProvenance(next: WarmContextSections, previous: WarmContextSections): WarmContextSections {
+  return { ...next, summaryIds: [...previous.summaryIds], summaryOmitted: [...previous.summaryOmitted] };
+}
+
 /** Sections in priority order, each trimmed to what the instruction budget has left. */
 export function assembleContext(sections: WarmContextSections, budget: number): string {
   const blocks: string[] = [];

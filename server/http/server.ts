@@ -133,6 +133,10 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           if (resolved.kind !== 'live') throw new ServiceError('BAD_REQUEST', 'Invalid Live request');
           const key = req.headers['idempotency-key'];
           if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
+          // R3-R5: one bounded calendar read per warm assembly, before this start assembles. It cannot
+          // fail the start: an absent or failed read leaves the slot out.
+          const warmStart = live as typeof live & { prepareCalendar?: () => Promise<void> };
+          await warmStart.prepareCalendar?.();
           send(res, 200, success(jobs.createWithPending ? jobs.createWithPending(String(resolved.input['inputClass']) as DataClass, key, context, resolved.input['pickupJobId'] as string | undefined) : live.create(String(resolved.input['inputClass']) as DataClass, key, context))); return;
         }
         if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }

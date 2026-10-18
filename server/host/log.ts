@@ -294,6 +294,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.detachedMs)) return;
     return { event: 'consumer_gone_end', detachedMs: value.detachedMs };
   }
+  if (value.event === 'session_end') {
+    // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
+    if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
+    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed') return;
+    if (!isSafeCount(value.msAfterStop)) return;
+    return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
+  }
   if (value.event === 'live_context_usage') {
     // Closed shape: provider-neutral token counts only; no behaviour reads them yet (release 3g-c).
     const keys = Object.keys(value).sort().join(',');

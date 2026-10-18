@@ -546,9 +546,9 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 });
 
 // 3p: the owner's morning call heard two over-long pre-tool cues, a spoken "[sigh]", a self-answered question,
-// one opener word three times, a calendar list before the real read and three factual answers near 69 words.
-// Six unconditional rules replace the six-word cue, the wrapper grows under 600 chars, and the accent block
-// (pinned verbatim by PV1-R1) keeps its wording.
+// one opener word three times, a calendar list before the real read and three padded answers near 69 words.
+// Six unconditional rules replace the six-word cue (P6-R1 keeps rule 6 uncapped: point first, then depth), the
+// wrapper grows under 600 chars, and the accent block (pinned verbatim by PV1-R1) keeps its wording.
 const WRAPPER_3O_CHARS = 6603;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper grows under 600 chars', () => {
   const rules = [
@@ -557,7 +557,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
     'Never ask yourself a question and answer it; say the answer.',
     'Vary how you start replies; never open two replies in a row with the same word.',
     'Query exactly the time window the question names, so today means today, and skip listing calendars unless he asks which calendars exist.',
-    'A factual answer is at most three short sentences unless he asks for more.',
+    'Lead with the point, then give the depth the question deserves; never pad, never summarise what you just said.',
   ];
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of rules) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);

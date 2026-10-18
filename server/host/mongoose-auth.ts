@@ -1,4 +1,4 @@
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 
@@ -127,7 +127,7 @@ async function resolveMongooseToken(configDir: string, reference: string, option
   if (now() < record.expiresAt - MONGOOSE_REFRESH_MARGIN_MS) return record.accessToken;
   if (now() >= record.consentStartedAt + MONGOOSE_CONSENT_CAP_MS) throw new MongooseCredentialError('credential-consent-expired');
   const key = `${configDir}\u0000${reference}`;
-  const release = acquireLock(configDir, reference);
+  const release = acquireLock(configDir, reference, now);
   try {
     // Re-read under the lock: another writer may have rotated the family while we waited.
     const current = readMongooseOAuth(configDir, reference) ?? record;
@@ -146,15 +146,28 @@ async function resolveMongooseToken(configDir: string, reference: string, option
 
 function lockPath(configDir: string, reference: string): string { return join(configDir, `.${reference}.json.lock`); }
 
+/** A refresh that died holding the lock is reclaimed after this long, so a crash cannot wedge the connector. */
+export const MONGOOSE_LOCK_STALE_MS = 60_000;
+
 /** Exclusive create, no waiting: one holder refreshes, every other caller gets a typed refusal. */
-function acquireLock(configDir: string, reference: string): () => void {
+function acquireLock(configDir: string, reference: string, now: () => number): () => void {
   const path = lockPath(configDir, reference);
-  let fd: number | undefined;
-  try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); closeSync(fd); fd = undefined; }
+  const create = (): void => {
+    let fd: number | undefined;
+    try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); closeSync(fd); fd = undefined; }
+    catch (error) {
+      if (fd !== undefined) { try { closeSync(fd); } catch { /* already closed */ } }
+      throw error;
+    }
+  };
+  try { create(); }
   catch (error) {
-    if (fd !== undefined) { try { closeSync(fd); } catch { /* already closed */ } }
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new MongooseCredentialError('credential-refresh-busy');
-    throw new MongooseCredentialError('credential-refresh-failed');
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new MongooseCredentialError('credential-refresh-failed');
+    let stale = false;
+    try { stale = now() - statSync(path).mtimeMs > MONGOOSE_LOCK_STALE_MS; } catch { stale = false; }
+    if (!stale) throw new MongooseCredentialError('credential-refresh-busy');
+    try { unlinkSync(path); create(); }
+    catch { throw new MongooseCredentialError('credential-refresh-busy'); }
   }
   return () => { try { unlinkSync(path); } catch { /* another writer already removed it */ } };
 }

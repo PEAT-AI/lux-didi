@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, readdirSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  MONGOOSE_CONSENT_CAP_MS, MONGOOSE_OAUTH_KEYS, MONGOOSE_REFRESH_MARGIN_MS, MongooseCredentialError,
+  MONGOOSE_CONSENT_CAP_MS, MONGOOSE_LOCK_STALE_MS, MONGOOSE_OAUTH_KEYS, MONGOOSE_REFRESH_MARGIN_MS, MongooseCredentialError,
   mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth, writeMongooseOAuth, type MongooseOAuthRecord,
 } from '../host/mongoose-auth.js';
 import { MongooseLoginError, runMongooseLogin } from '../host/mongoose-login.js';
@@ -254,5 +254,20 @@ test('the login writer and the runtime reader agree on one exact record key set'
     assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
     writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify({ ...full, schemaVersion: 1, token: 'pasted' }), { mode: 0o600 });
     assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+  } finally { cleanup(); }
+});
+
+test('a lock held by a live writer refuses, a stale one is reclaimed, and no lock survives', async () => {
+  const { dir, cleanup } = configDir();
+  try {
+    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    const ok = (async () => new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 })) as unknown as typeof fetch;
+
+    writeFileSync(join(dir, '.mongoose-mcp.json.lock'), '', { mode: 0o600 });
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: ok }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-busy');
+    // The holder crashed a minute ago: the lock is stale and the next caller takes it.
+    await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW + MONGOOSE_LOCK_STALE_MS + 1, fetch: ok });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp')?.accessToken, 'access-token-new');
+    assert.equal(readdirSync(dir).includes('.mongoose-mcp.json.lock'), false);
   } finally { cleanup(); }
 });

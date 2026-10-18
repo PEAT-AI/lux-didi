@@ -17,9 +17,9 @@ import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
-import { capJournalText, journalRecord } from '../host/journal.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
-import { TraceRecordError } from '../trace/record.js';
+import { liveTracePort, record, recordCallResult, recordUtterance, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { hostLogEvent, LIVE_STATE_CAUSES } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
@@ -274,6 +274,9 @@ interface ActiveSession {
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
+  /** O1b-A: this socket's trace epoch, its open turn and the session's turn counter. A rebuilt socket gets a
+   *  fresh object, so a receipt from the socket it replaced can no longer name the epoch it was opened under. */
+  connection: { seq: number; epoch: string; turnId: string | undefined; turnIndex: number };
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
   researchLedger: ResearchLedger;
@@ -607,14 +610,10 @@ function countAudio(handle: ActiveSession, channel: 'input' | 'output', bytes: n
     if (rmsDbfs !== undefined) { bucket.rmsMax = Math.max(bucket.rmsMax, rmsDbfs); bucket.rmsPower += 10 ** (rmsDbfs / 10); bucket.rmsChunks += 1; }
     return;
   }
-  journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio',
-    at: bucket.second, inputBytes: bucket.input, outputBytes: bucket.output,
-    ...(bucket.rmsChunks ? { outputRms: { max: Math.round(bucket.rmsMax * 10) / 10, mean: Math.round(10 * Math.log10(bucket.rmsPower / bucket.rmsChunks) * 10) / 10 } } : {}) });
   if (bucket.output > 0) audioTotals.set(handle, (audioTotals.get(handle) ?? 0) + bucket.output);
   // A stall marker needs a speaking second followed by three with no playback at all.
   if (bucket.output === 0 && handle.speaking) bucket.silent += 1; else bucket.silent = 0;
   if (bucket.silent === 3) {
-    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'audio_marker', marker: 'stall', silentSeconds: bucket.silent });
   }
   audioBuckets.set(handle, { second, input: channel === 'input' ? bytes : 0, output: channel === 'output' ? bytes : 0, silent: bucket.silent, rmsMax: rmsDbfs ?? -Infinity, rmsPower: rmsDbfs === undefined ? 0 : 10 ** (rmsDbfs / 10), rmsChunks: rmsDbfs === undefined ? 0 : 1 });
 }
@@ -870,14 +869,9 @@ export class LiveSessionOwner {
       // only: the state it reached, how many events rode it and how old it was at this start.
       this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),
         ageMs: this.#calendarAt === undefined ? 0 : Math.max(0, now - this.#calendarAt) });
-      // The debug journal's session start: the composed instructions once, then the identity and sizes
-      // a debugging session needs. host.log keeps only the content-free sizes line above.
-      journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'session_start',
-        provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
-        instructionChars: composed.text.length, instructionSections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])),
-        inputClass: input.inputClass, pickup: pickupJob !== undefined, instructions: composed.text,
-        // Release 3u: the plan receipt, metadata only: the kinds offered and the start counter that chose them.
-        openerPlan: { kinds: openerPlan.options.map(option => option.kind), rotation: openerPlan.rotation } });
+      // M1's plan receipt after O1b-A: the journal is gone, so the plan rides the host log beside the sizes.
+      // Metadata only, the kinds offered and the start counter that chose them, never the owner's text.
+      hostLogEvent({ event: 'opener_plan', kinds: openerPlan.options.map(option => option.kind), rotation: openerPlan.rotation });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
@@ -1166,11 +1160,12 @@ export class LiveSessionOwner {
     const deadlineAt = this.#now() + sessionMs;
     const callDeadlineAt = this.#now() + this.#profile.limits.callMaxMs;
     let session: LiveVoiceSession;
-    // The journal's provider clock: request time to the open call, response time to the ready ack.
-    const openedAt = Date.now();
+    // O1b-A: the connection object exists before the handle, because the adapter is handed its receipt door at open
+    // and the receipts it writes must name this connection's epoch from the first frame onward.
+    const connection: ActiveSession['connection'] = { seq: 0, epoch: 'e0', turnId: undefined, turnIndex: 0 };
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits });
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits, trace: this.#tracePort(liveSessionId, connection) });
     } catch (error) {
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
@@ -1181,6 +1176,7 @@ export class LiveSessionOwner {
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       recoveries: 0, awaitingAnswer: false, answerAt: undefined,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
+      connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
@@ -1195,11 +1191,7 @@ export class LiveSessionOwner {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
       catch (error) { handle.done.reject(error); }
     };
-    journalRecord({ kind: 'live', sessionId: liveSessionId, generation: 0, event: 'provider_setup', stage: 'open',
-      requestMs: Date.now() - openedAt, requestChars: request.system.text.length, declarations: declarations.length });
     session.ready.then(() => {
-      journalRecord({ kind: 'live', sessionId: liveSessionId, generation: handle.generation, event: 'provider_setup', stage: 'ready',
-        responseMs: Date.now() - openedAt });
       if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
       const job = this.#jobs.forSession(liveSessionId);
@@ -1214,8 +1206,6 @@ export class LiveSessionOwner {
     // the owner call ceiling ends the call for time exactly as before. Neither is the other.
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
     handle.callTimer = this.#schedule(() => {
-      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'deadline',
-        name: 'call_ceiling', configuredMs: this.#profile.limits.callMaxMs });
       this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle).catch(error => this.#consumeFailed(handle, error));
@@ -1249,7 +1239,7 @@ export class LiveSessionOwner {
       recordPlaybackReceipt(this.#store, handle.liveSessionId, parsePlaybackReceipt(frame));
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
-      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'playback_receipt_rejected', code });
+      hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
     }
   }
 
@@ -1342,7 +1332,6 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || generation !== handle.generation) return;
     const failedAt = this.#now();
     hostLogEvent({ event: 'turn_failed', code });
-    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_failed', code });
     // The turn is over: every call it left open is closed here, never still in flight in the projection.
     for (const id of [...handle.pendingCallIds]) {
       handle.callAborts.get(id)?.abort();
@@ -1480,6 +1469,14 @@ export class LiveSessionOwner {
           hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
             msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
+          // O1b-A (D12-3): a turn that never became audible is a typed stall, with the age it reached and what the
+          // watchdog could see of it, so it is a receipt instead of an absence.
+          const stalledTurn = handle.connection.turnId;
+          if (stalledTurn !== undefined) {
+            this.#receipt(handle, 'live.dead_air_stalled', { turnId: stalledTurn }, {
+              stalledAt: this.#now(), turnAgeMs, anyAudio: handle.firstAudioAt !== undefined, inaudibleMs: Math.round(handle.inaudibleMs),
+            });
+          }
         }
         // S4a: on the GPT-Live path progress speech replaces the "Continue." user message, which under Responses
         // delegation would be a fake owner turn. Gemini keeps its nudge unchanged.
@@ -1533,9 +1530,49 @@ export class LiveSessionOwner {
     await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
   }
 
+  /**
+   * O1b-A: the receipt door an adapter is handed. It binds the session, this connection's epoch and the turn the
+   * host has open, so the adapter names only its own response and call keys.
+   */
+  #tracePort(liveSessionId: string, connection: ActiveSession['connection']): LiveTracePort {
+    return liveTracePort({
+      port: this.#store, liveSessionId, connectionEpoch: connection.epoch,
+      turnId: () => connection.turnId,
+      onReject: (code, kind) => hostLogEvent({ event: 'live_trace_rejected', kind, code }),
+    });
+  }
+
+  /** O1b-A: one host receipt. A refusal is a typed host.log line, never an exception in the turn that wrote it. */
+  #receipt<K extends TraceEventKind>(handle: ActiveSession, kind: K, ids: Omit<TraceEventIds, 'liveSessionId' | 'connectionEpoch'>, detail: TraceDetailMap[K]): void {
+    try {
+      record(this.#store, kind, { ...ids, liveSessionId: handle.liveSessionId, connectionEpoch: handle.connection.epoch }, detail);
+    } catch (error) {
+      hostLogEvent({ event: 'live_trace_rejected', kind, code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+    }
+  }
+
+  /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
+  #openTurn(handle: ActiveSession): void {
+    const connection = handle.connection;
+    connection.turnIndex += 1;
+    const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
+    connection.turnId = turnId;
+    this.#receipt(handle, 'turn.opened', { turnId }, {
+      origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: this.#now(),
+      ...(connection.turnIndex > 1 ? { attributionUncertain: true } : {}),
+    });
+  }
+
+  #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
+    const turnId = handle.connection.turnId;
+    if (turnId === undefined) return;
+    handle.connection.turnId = undefined;
+    this.#receipt(handle, 'turn.closed', { turnId }, {
+      closedAt: this.#now(), closeReason, ...(outcome === undefined ? {} : { outcome }),
+    });
+  }
+
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
-    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'continuity', state: event,
-      ...(reason === undefined ? {} : { reason }) });
     const journalSequence = this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event, ...(reason ? { reason } : {}) }) }, 'continuity');
     if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return; }
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
@@ -1565,8 +1602,6 @@ export class LiveSessionOwner {
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
   #sessionWindowEnded(handle: ActiveSession): void {
-    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'deadline',
-      name: 'provider_session', configuredMs: this.#profile.limits.sessionMs });
     if (this.#attended(handle)) { void this.#continueSession(handle); return; }
     this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null);
   }
@@ -1607,6 +1642,9 @@ export class LiveSessionOwner {
     handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.bargeInCallIds.clear();
     this.#continuity(handle, 'rebuilding', reason ?? undefined);
     if (this.#settled(handle)) return false;
+    // O1b-A: a rebuilt socket is a new connection epoch. Receipts the socket it replaces still emits carry the old
+    // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.
+    handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     const request = path === 'fresh_seeded'
       ? { ...structuredClone(handle.request), history: seed.turns, openingText: LIVE_RECOVERY_PICKUP }
@@ -1615,6 +1653,7 @@ export class LiveSessionOwner {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
+        trace: this.#tracePort(handle.liveSessionId, handle.connection),
       });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
       this.#observeDiagnostics(handle, handle.session);
@@ -1627,8 +1666,6 @@ export class LiveSessionOwner {
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
   #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
-    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'recovery', path,
-      attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
   }
 
   /**
@@ -1706,6 +1743,13 @@ export class LiveSessionOwner {
     this.#guardHandle(handle);
     const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true };
     handle.session.sendText({ text });
+    // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
+    if (handle.connection.turnId === undefined) this.#openTurn(handle);
+    const turnId = handle.connection.turnId;
+    if (turnId !== undefined) {
+      try { recordUtterance(this.#store, { turnId, role: 'owner', at: this.#now(), final: true, text }); }
+      catch { /* a content write never breaks the turn it belongs to */ }
+    }
     this.#armIdle(handle, this.#profile.limits.idleMs);
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
@@ -1861,7 +1905,6 @@ export class LiveSessionOwner {
         if (audible || event.type === 'turnComplete') this.#cancelProgress(handle);
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
-          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'model' });
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
@@ -1879,8 +1922,6 @@ export class LiveSessionOwner {
         if (event.type === 'goAway') {
           handle.goAwayUntil = this.#now() + event.timeLeftMs;
           hostLogEvent({ event: 'live_go_away', timeLeftMs: event.timeLeftMs });
-          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'deadline',
-            name: 'provider_go_away', configuredMs: event.timeLeftMs });
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
         }
@@ -1892,10 +1933,6 @@ export class LiveSessionOwner {
         }
         if (event.type === 'contextUsage') {
           // The provider's own usage report, kept with the other numbers and never a payload.
-          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'context_usage',
-            totalTokens: event.totalTokens,
-            ...(event.promptTokens === undefined ? {} : { promptTokens: event.promptTokens }),
-            ...(event.responseTokens === undefined ? {} : { responseTokens: event.responseTokens }) });
           hostLogEvent({ event: 'live_context_usage', totalTokens: event.totalTokens, ...(event.promptTokens !== undefined ? { promptTokens: event.promptTokens } : {}), ...(event.responseTokens !== undefined ? { responseTokens: event.responseTokens } : {}) });
           continue;
         }
@@ -1949,13 +1986,10 @@ export class LiveSessionOwner {
           // A barge-in ends the model's think time. A tool call in flight or an owed answer still reads as
           // THINKING through it, because that work is still open (D5, amendment C).
           handle.thinking = false;
+          this.#closeTurn(handle, 'interrupted', 'silent');
           this.#noteState(handle, 'interrupted');
           handle.turnInterrupted = true;
           logTurnScript(handle);
-          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'interrupt',
-            sinceLastModelAudioMs: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
-          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'audio_marker', marker: 'drain',
-            outputBytes: audioTotals.get(handle) ?? 0 });
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -1963,12 +1997,15 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'model', reason: 'turn_complete', inaudibleMs: Math.round(handle.inaudibleMs) }); handle.speaking = false; this.#cancelSpeakingHold(handle); handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+        if (event.type === 'turnComplete') { handle.speaking = false; this.#cancelSpeakingHold(handle); handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
+          // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
+          // fact the timeline reads instead of inferring one from a missing receipt (D12-3).
+          this.#closeTurn(handle, 'completed', handle.firstAudioAt === undefined ? 'no_response' : 'answered');
         }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) this.#holdSpeaking(handle); this.#noteState(handle, event.value ? 'silence' : 'input'); }
         if (event.type === 'audio') {
@@ -1993,15 +2030,10 @@ export class LiveSessionOwner {
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
-        // The journal keeps what was actually said, both sides, as each transcription finalises.
-        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
-          journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'transcript',
-            speaker: event.type === 'inputTranscription' ? 'owner' : 'model', text: event.text, final: event.finished === true });
-        }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
-            journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_start', speaker: 'owner' });
+            this.#openTurn(handle);
           }
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
@@ -2010,8 +2042,18 @@ export class LiveSessionOwner {
             handle.inputFinalAt = handle.inputAt;
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
-              journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'turn_end', speaker: 'owner', reason: 'final' });
             }
+          }
+        }
+        // O1b-A: what was actually said, both sides, lands in the two content tables and nowhere else. It is
+        // written after the owner-utterance boundary has opened the turn, so her first words are never dropped.
+        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
+          const turnId = handle.connection.turnId;
+          if (turnId !== undefined) {
+            try {
+              recordUtterance(this.#store, { turnId, role: event.type === 'inputTranscription' ? 'owner' : 'model',
+                at: this.#now(), final: event.finished === true, text: event.text });
+            } catch { /* a content write never breaks the turn it belongs to */ }
           }
         }
         const kind = journalKind(event.type);
@@ -2029,8 +2071,6 @@ export class LiveSessionOwner {
       }
     } catch (error) {
       handle.persistFailure = error;
-      journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'provider_error',
-        message: error instanceof Error ? capJournalText(error.message) : 'unknown' });
     }
     if (!handle.terminal) {
       // A session-deadline continuation opens a new session from the timer; the ended one is superseded.
@@ -2038,10 +2078,6 @@ export class LiveSessionOwner {
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
         outcome ??= await session.done.catch(() => undefined);
-        journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation, event: 'provider_close',
-          status: outcome?.status ?? 'unknown', code: outcome?.code ?? 'unknown',
-          closeCode: outcome?.upstream?.closeCode ?? null, reason: outcome?.upstream?.errorKind ?? null,
-          recoverable: outcome?.recoverable === true });
         const failedRecovery = handle.rebuilding && !handle.ready;
         if (failedRecovery) handle.recoveries += 1;
         if (outcome?.recoverable || failedRecovery) {
@@ -2520,6 +2556,11 @@ export class LiveSessionOwner {
     // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
     // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
+    // O1b-A: the tool result is content, so it lands in the content table only, keyed by the provider call id.
+    for (const response of responses) {
+      try { recordCallResult(this.#store, { callKey: response.id, text: JSON.stringify(response.response) }); }
+      catch { /* a content write never breaks the answer it belongs to */ }
+    }
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
@@ -2559,9 +2600,9 @@ export class LiveSessionOwner {
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
-    // The journal's session end: the terminal code and who ended it, written before the row closes.
-    journalRecord({ kind: 'live', sessionId: handle.liveSessionId, generation: handle.generation, event: 'session_end',
-      code: 'code' in outcome ? outcome.code : outcome.state, by: consumerState, complete });
+    // O1b-A: a session that ends owes no open turn: the turn closes as session_end so the timeline shows the
+    // boundary the call really had.
+    this.#closeTurn(handle, 'session_end');
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;

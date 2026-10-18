@@ -29,7 +29,6 @@ cp "$root"/server/adapters/live-voice/*.ts "$out/source/adapters/live-voice/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
-cp "$root/server/host/journal.ts" "$out/source/host/"
 ln -s "$deps" "$out/node_modules"
 cp "$root/server/test/provider-config.test.ts" "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"

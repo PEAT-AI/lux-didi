@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
-import { TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -405,5 +405,84 @@ test('the timeline prints a drained playback inside its turn when attributable a
     const rendered = renderTimeline(report);
     assert.match(rendered, /^playback inst-a1:1 segment=1 .*turn=none/m);
     assert.deepEqual(report.gaps, [], 'an orphan segment is not a stall: it is printed outside the turns');
+  });
+});
+
+// --- O1b-A: the receipts the adapter and host now write -----------------------------------------
+
+test('O1b-A: a full synthetic call turn prints its turn, ordered utterances, call, continuation, first audible and drain', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0 + 1_000);
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    record(store, 'delegation.created', { ...id, responseKey: 'r1' }, { createdAt: T0 + 1_050, providerResponseId: 'resp_1', callCount: 1 });
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050, providerResponseId: 'resp_1' });
+    record(store, 'call.intent', { ...id, callKey: 'c1', responseKey: 'r1', turnId: 't1' }, { name: 'research', argsChars: 12, intentAt: T0 + 1_100, providerCallId: 'call_1' });
+    record(store, 'call.executed', { ...id, callKey: 'c1' }, { executedAt: T0 + 1_300 });
+    record(store, 'call.output_prepared', { ...id, callKey: 'c1' }, { outputPreparedAt: T0 + 1_300 });
+    record(store, 'call.output_written', { ...id, callKey: 'c1' }, { outputWrittenAt: T0 + 1_320, outcome: 'completed', ms: 220, resultChars: 40 });
+    record(store, 'continuation.decided', { ...id, responseKey: 'r1' }, { decidedAt: T0 + 1_320, outcome: 'sent' });
+    record(store, 'response.terminal', { ...id, responseKey: 'r1' }, { terminalAt: T0 + 1_400, status: 'completed', terminalReason: 'completed' });
+    recordUtterance(store, { turnId: 't1', role: 'owner', at: T0 + 1_000, final: true, text: 'Synthetic question' });
+    recordUtterance(store, { turnId: 't1', role: 'model', at: T0 + 1_500, final: true, text: 'Synthetic answer' });
+    recordCallResult(store, { callKey: 'c1', text: '{"ok":true}' });
+    reply(store, 'p1', 't1', 'r1', T0 + 1_500, T0 + 1_900);
+
+    const report = buildTimeline(readOf(store), SESSION, { content: true });
+    const track = report.turns[0]!;
+    assert.equal(track.turn.turnId, 't1');
+    assert.deepEqual(track.utterances!.map(row => row.role), ['owner', 'model'], 'her words, then the answer');
+    assert.equal(track.calls.length, 1);
+    assert.equal(track.calls[0]!.outputWrittenAt, T0 + 1_320, 'the call carries its output time');
+    assert.equal(track.calls[0]!.continuationAt, T0 + 1_320, 'and the continuation it earned');
+    assert.equal(track.calls[0]!.continuationOutcome, 'sent');
+    assert.equal(track.turn.firstAudibleAt, track.playback[0]!.audibleAt, 'first audible comes from the playback receipt itself');
+    assert.equal(track.playback[0]!.drainedAt, T0 + 1_900);
+    const printed = renderTimeline(report);
+    assert.match(printed, /call c1 research/);
+    assert.match(printed, /continuation=\S+:sent/);
+  });
+});
+
+test('O1b-A: a turn that stalls before any delegation prints its typed GAP and the receipt that would close it', () => {
+  withStore(store => {
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    openTurn(store, 't1', 1, T0 + 1_000);
+    // The response was created and no delegation or provider id ever came back: that is the D12-1 stall.
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050 });
+    record(store, 'live.dead_air_stalled', { ...id, turnId: 't1' }, { stalledAt: T0 + 9_000, turnAgeMs: 8_000, anyAudio: false, inaudibleMs: 0 });
+
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.equal(report.turns[0]!.turn.stallReason, 'no_audible_output', 'the stall receipt lands on the open turn');
+    assert.ok(report.gaps.some(gap => gap.obligation === 'no_delegation'), 'the stall before any delegation is a typed GAP');
+    const printed = renderTimeline(report);
+    assert.match(printed, /GAP/);
+    assert.match(printed, /no_delegation/);
+  });
+});
+
+test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write into it', () => {
+  withStore(store => {
+    const first = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e1' });
+    first.receipt('response.created', { responseKey: 'r1' }, { createdAt: T0 });
+    const rejected: string[] = [];
+    const rebuilt = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e2', onReject: code => rejected.push(code) });
+    rebuilt.receipt('response.observed', { responseKey: 'r1' }, { observedAt: T0 + 10 });
+    assert.deepEqual(rejected, ['STALE_EPOCH'], 'a receipt from the socket the rebuild replaced is refused');
+    assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='response.observed'")).length, 0, 'and it writes no row');
+  });
+});
+
+test('O1b-A: two decisions at the same millisecond resolve to the one decided last, never to chance', () => {
+  withStore(store => {
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    openTurn(store, 't1', 1, T0 + 1_000);
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050 });
+    record(store, 'call.intent', { ...id, callKey: 'c1', responseKey: 'r1', turnId: 't1' }, { name: 'research', argsChars: 4, intentAt: T0 + 1_100 });
+    // A deferral and the send it became, stamped inside the same millisecond: the seq, not the clock, decides.
+    record(store, 'continuation.decided', { ...id, responseKey: 'r1' }, { decidedAt: T0 + 2_000, outcome: 'deferred', skipReason: 'awaiting_calls' });
+    record(store, 'continuation.decided', { ...id, responseKey: 'r1' }, { decidedAt: T0 + 2_000, outcome: 'sent' });
+    const call = buildTimeline(readOf(store), SESSION).turns[0]!.calls[0]!;
+    assert.equal(call.continuationOutcome, 'sent', 'the last decision by (at, seq) is the one reported');
+    assert.equal(call.continuationAt, T0 + 2_000);
   });
 });

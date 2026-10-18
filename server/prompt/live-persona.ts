@@ -518,8 +518,11 @@ export interface OpeningOptionsResult {
 
 /** Line labels, so the recorded plan can be read back by the next start. */
 const OPENING_OPTION_LABELS: Readonly<Record<OpeningOptionKind, string>> = Object.freeze({ calendar: 'calendar', 'open-loop': 'open loop', 'recent-thread': 'recent thread' });
-/** Family, health and fitness are never an opener, whatever a summary or a digest says. */
-const CLOSED_OPENER_TOPIC = /\b(family|mother|father|parent|parents|wife|husband|son|daughter|child|children|health|doctor|hospital|ill|sick|fitness|gym|workout|weight|diet)\b/iu;
+/**
+ * Family, health, fitness including sleep, and personal habits are never an opener, whatever a
+ * summary or a digest says (S4B-R2 holds the same line for the voice's own opener sentence).
+ */
+const CLOSED_OPENER_TOPIC = /\b(family|mother|father|parent|parents|wife|husband|son|daughter|child|children|health|doctor|hospital|ill|sick|fitness|gym|workout|weight|diet|sleep|sleeping|insomnia|habit|habits|drinking|smoking|vaping)\b/iu;
 /** One still-to-do fragment, in the words the distillation prompt writes it with. */
 const OPEN_LOOP_CUE = /\b(still|yet|needs? to|needed to|hasn't|has not|haven't|have not|plans? to|to do|next step)\b/iu;
 const ATTRIBUTION = /^(?:the owner|he|she|they|naya)\s+(?:said|says|mentioned|reported|found|noted)\s+(?:that\s+)?/iu;

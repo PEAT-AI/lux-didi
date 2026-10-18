@@ -1021,11 +1021,14 @@ test('3u: no candidate text appears that is not in the inputs', () => {
   }
 });
 
-test('3u: health, family and fitness are never an opener kind and never supply a candidate', () => {
+test('3u: health, family, fitness, sleep and personal habits are never an opener kind and never supply a candidate', () => {
   const plan = buildOpeningOptions({ candidates: [
     pastSummary(0, 'The owner said his mother is still in hospital and he still has to visit her.'),
-    pastSummary(1, 'He said the gym membership is still to be renewed.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
-  assert.equal(plan.options.length, 0, 'a family, health or fitness loop is never offered');
+    pastSummary(1, 'He said the gym membership is still to be renewed.'),
+    pastSummary(2, 'The owner said he still has to fix his sleep and the late-night habit.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(plan.options.length, 0, 'a family, health, fitness, sleep or habit loop is never offered');
+  const digest = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', calendar: '09:00 doctor, 15:00 sleep clinic, 17:00 review', rotation: 0 });
+  assert.equal(digest.options[0]?.topic, '17:00 review', 'a closed digest item is skipped, never offered');
   assert.equal(plan.section, '', 'a plan with no stored opener adds no section');
   const mixed = buildOpeningOptions({ candidates: [
     pastSummary(0, 'The owner said his mother is still in hospital. The owner said the tax form is still to be filed.')],

@@ -626,7 +626,7 @@ describe('openai gpt-live adapter', () => {
     // S5: an answer whose output is already on the wire is the same answer, never a second submission.
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     await quiet();
-    assert.deepEqual(f.frames.slice(1).length, 2, 'a repeated answer writes nothing');
+    assert.equal(f.frames.slice(1).length, 1, 'a repeated answer writes nothing');
     session.sendToolResponse({ responses: [{ id: 'call_2', name: 'calendar', response: { ok: false } }] });
     await f.frame(4);
     assert.deepEqual(f.frames.slice(1).map(({ event_id, ...frame }) => (assert.equal(typeof event_id, 'string'), frame)), [

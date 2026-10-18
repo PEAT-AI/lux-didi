@@ -182,7 +182,7 @@ expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == [], "a key pressed un
 // Q2 (owner order 2026-10-18): the whole key, through the shipped binding, with a fake
 // clock and a fake hold timer. A tap starts when idle and STOPS when live or muted
 // through the Stop path; a press held to the threshold is push-to-talk.
-final class HotkeyKey {
+@MainActor final class HotkeyKey {
     var opened = 0
     var cancelled = 0
     var closed = 0

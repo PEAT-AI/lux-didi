@@ -820,6 +820,30 @@ test('P7 an open bubble is never split into headline plus detail', () => {
   assert.match(html, /which is long\./, 'the whole answer is visible');
 });
 
+test('P7-R1 the growing and the short closed bubble carry the clamp exemption', () => {
+  const style = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
+  const clamp = style.slice(style.indexOf('.entry[data-feed="turn"] > .markdown{'), style.indexOf('\n', style.indexOf('.entry[data-feed="turn"] > .markdown{')));
+  assert.match(clamp, /-webkit-line-clamp:2/, 'the headline clamp itself stays');
+  const exempt = style.slice(style.indexOf('[data-growing]'), style.indexOf('\n', style.indexOf('[data-growing]')));
+  assert.match(exempt, /\[data-short\]/, 'a closed answer under the threshold is exempt as well');
+  assert.match(exempt, /-webkit-line-clamp:unset/, 'the exemption lifts the clamp');
+  assert.match(exempt, /overflow:visible/, 'and stops hiding the rest of the text');
+  const growing = liveMarkup({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'One long answer that is still being spoken.' },
+  ] } as unknown as LiveCurrent);
+  assert.match(growing, /<article class="entry assistant"[^>]*data-growing/);
+  const short = liveMarkup({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Ship it. Then check.' },
+    { seq: 2, kind: 'turnComplete' },
+  ] } as unknown as LiveCurrent);
+  assert.match(short, /<article class="entry assistant"[^>]*data-short/);
+  const long = liveMarkup({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Ship it. ' + 'And then keep going for a while. '.repeat(12) },
+    { seq: 2, kind: 'turnComplete' },
+  ] } as unknown as LiveCurrent);
+  assert.doesNotMatch(long, /data-short|data-growing/, 'a long closed answer keeps the clamped headline');
+});
+
 test('P7 a growing owner bubble carries the same in-place text node', () => {
   const live = { state: 'listening', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
     { seq: 1, kind: 'outputTranscription', text: 'Sure thing.' },

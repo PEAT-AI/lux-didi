@@ -284,7 +284,8 @@ function toolChipMarkup(entry: LiveEntry): string {
  * a keeper row whose first sentence is the visible headline and whose full answer is a closed detail
  * (spec 2.2 item 1). The assistant class and the leading markdown div are kept for the live-view contract.
  * A bubble still growing (the run the journal has not closed yet) renders its whole text, because a
- * listener reading along must not meet a closed disclosure mid-answer (P7 item 2). */
+ * listener reading along must not meet a closed disclosure mid-answer (P7 item 2). `data-growing` and
+ * `data-short` both lift the two-line clamp, so the text that is in the markup is the text on screen. */
 export const TURN_DETAIL_MIN = 280;
 export function liveLineMarkup(line: LiveLine, seg = '', growing = false): string {
   const key = seg ? ` data-seg="${seg}"` : '';
@@ -295,7 +296,7 @@ export function liveLineMarkup(line: LiveLine, seg = '', growing = false): strin
   }
   const body = renderMarkdown(line.text, TRANSCRIPT_MARKDOWN);
   if (growing) return `<article class="entry assistant" data-feed="turn"${key} data-growing><div class="markdown" data-live-text>${body}</div></article>`;
-  if (line.text.trim().length < TURN_DETAIL_MIN) return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${body}</div></article>`;
+  if (line.text.trim().length < TURN_DETAIL_MIN) return `<article class="entry assistant" data-feed="turn"${key} data-short><div class="markdown">${body}</div></article>`;
   const headline = turnHeadline(line.text);
   const detail = line.text.trim() === headline ? '' : `<details class="feed-turn-detail"><summary>Full answer</summary><div class="markdown">${body}</div></details>`;
   return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${renderMarkdown(headline, TRANSCRIPT_MARKDOWN)}</div>${detail}</article>`;

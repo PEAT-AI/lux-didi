@@ -3,6 +3,7 @@ import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls,
 import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySummaries, type LiveSelection, type LiveSummary, type MemorySummaryItem, saveLiveSelection } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
+import { createStateDebounce } from './orb-states';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
 import { activityMarkup, connectingBeforeFirstSpeech, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
@@ -33,9 +34,23 @@ let transcriptPin: { repin(): void; stop(): void } | undefined;
 // past-sessions panel, so the voice view itself is the current session alone (spec 1.3, UI3b).
 let earlierFeed: EarlierSession[] = [];
 let appliedOrbState: VoiceState | undefined;
+// D6: the full-window orb now applies the mini pill's flicker rule, so a between-sentence listening blip
+// never paints. The debounce is presentation only: every lifecycle event still reaches the projection.
+const orbReveal = createStateDebounce<VoiceState>('CONNECTING');
+let orbRevealTimer: ReturnType<typeof setTimeout> | undefined;
+function applyOrbState() {
+  const at = Date.now();
+  orbReveal.request(orbState(), at);
+  const shown = orbReveal.settled(at);
+  if (shown !== appliedOrbState) { appliedOrbState = shown; orb?.setState(shown); }
+  if (orbRevealTimer !== undefined) { clearTimeout(orbRevealTimer); orbRevealTimer = undefined; }
+  const due = orbReveal.dueAt();
+  if (due === undefined) return;
+  orbRevealTimer = setTimeout(() => { orbRevealTimer = undefined; applyOrbState(); }, Math.max(0, due - Date.now()));
+}
 let appliedLiveState: NativeLiveState | undefined;
 let status: Status | undefined;
-const connectedView = new ConnectedView(() => orb?.setState(orbState()));
+const connectedView = new ConnectedView(() => applyOrbState());
 let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair this browser' = 'Connecting';
 let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefined;
 let memorySummaries: MemorySummaryItem[] = [], summaryIds = new Set<string>();
@@ -617,7 +632,7 @@ function paintLive(){
   // The control reflects the projection: swap the actions in place and rebind, never tear the stage down.
   const actions=document.getElementById('orb-actions');
   if(actions){const controls=orbControlsMarkup();if(actions.innerHTML!==controls){actions.innerHTML=controls;bindOrbControls();}}
-  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
+  applyOrbState();
   if(liveMachine.view.state==='starting')transcriptPin?.repin();
   // The mini stage repaints from the same projection as the full shell. It is
   // the last step of paintLive, not of any other binder (UI3a merge).

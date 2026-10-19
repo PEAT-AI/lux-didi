@@ -1445,6 +1445,153 @@ describe('openai gpt-live turn states', () => {
     session.close();
   });
 
+  test('pending mic writes with no completed upload progress eventually use the recoverable stall path', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    socket.completeWrites = false;
+    session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 20 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(2_000);
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const outcome = captured.events.find(event => event.type === 'outcome');
+    assert.ok(outcome && outcome.type === 'outcome', 'forty seconds without a completed mic write ends the transport');
+    if (outcome.type !== 'outcome') return;
+    assert.equal(outcome.outcome.code, 'transport_error');
+    assert.equal(outcome.outcome.recoverable, true, 'the existing recovery path still owns the rebuild');
+    assert.equal(outcome.outcome.upstream?.errorKind, 'stalled');
+    const stall = receipts().filter(record => record.event === 'live_stall');
+    assert.equal(stall.length, 1, 'one stall receipt');
+    assert.ok(Number(stall[0]!.noProgressMs) >= 30_000, 'the receipt names the bounded local no-progress window');
+    socket.completePendingWrites();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(captured.events.filter(event => event.type === 'outcome').length, 1, 'a callback after teardown creates no second terminal');
+    assert.equal(receipts().filter(record => record.event === 'live_stall').length, 1, 'and no second stall receipt');
+  });
+
+  test('a full upload queue before a mic write cannot shed forever without an outbound callback', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 20 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(2_000);
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(captured.events.some(event => event.type === 'outcome'), true, 'blocked demand is bounded even when no send callback exists yet');
+  });
+
+  test('a queue that drains before thirty seconds starts a fresh blocked episode', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 5; step += 1) {
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(5_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    socket.bufferedAmount = 0;
+    session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 4; step += 1) {
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(5_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'the drained queue cleared the first episode instead of carrying its age forward');
+    session.close();
+  });
+
+  test('a completed local write resets the blocked episode while the socket remains high', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    socket.completeWrites = false;
+    session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 5; step += 1) {
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(5_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    socket.completePendingWrites();
+    for (let step = 0; step < 4; step += 1) {
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(5_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'local write completion reset the thirty-second clock without claiming remote receipt');
+    session.close();
+  });
+
+  test('buffer oscillation above the prior low cannot refresh upload progress forever', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    for (let step = 0; step < 20 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
+      socket.bufferedAmount = step % 2 === 0 ? 400 * 1024 : 390 * 1024;
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(2_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(captured.events.some(event => event.type === 'outcome'), true, 'only a new episode low is progress');
+  });
+
+  test('a blocked mic demand after a long idle receives its own full budget', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    for (let step = 0; step < 8; step += 1) {
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(5_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    socket.bufferedAmount = 400 * 1024;
+    for (let step = 0; step < 4; step += 1) {
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(5_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'idle time before blocked demand is not charged to the upload budget');
+    session.close();
+  });
+
+  test('a real local websocket with paused upload and continuing inbound frames takes the bounded recovery path', { timeout: 10_000 }, async t => {
+    const receipts = hostReceipts(t);
+    const opened = await ready(t, { limits: { handshakeMs: 1_000, idleMs: 10_000, sessionMs: 10_000, closeMs: 50, upstreamStallMs: 1_000 } });
+    opened.f.corkUpload();
+    for (let frame = 0; frame < 5_000 && opened.f.clientBufferedAmount < 64 * 1024; frame += 1) {
+      opened.session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    }
+    assert.ok(opened.f.clientBufferedAmount >= 48 * 1024, 'the actual ws client reached the adapter high-water mark');
+    const drive = setInterval(() => {
+      try {
+        opened.f.send({ type: 'session.keepalive' });
+        opened.session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      } catch {}
+    }, 100);
+    try {
+      const outcome = await opened.session.done;
+      await opened.captured.done;
+      assert.equal(outcome.code, 'transport_error');
+      assert.equal(outcome.recoverable, true);
+      assert.equal(outcome.upstream?.errorKind, 'stalled');
+      const stall = receipts().filter(record => record.event === 'live_stall');
+      assert.equal(stall.length, 1);
+      assert.ok(Number(stall[0]!.noProgressMs) >= 1_000, 'the test override bounds the real local socket wait');
+    } finally {
+      clearInterval(drive);
+    }
+  });
+
   test('pongs go missing while provider frames keep arriving: the session is not dropped', async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     const receipts = hostReceipts(t);

@@ -327,11 +327,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak };
   }
   if (value.event === 'live_stall') {
-    // Closed shape (3o): the inbound silence that ended the transport. Size never appears here: an upload
-    // backlog is shed, not a teardown.
-    if (!closedKeys(value, ['event', 'silentMs'])) return;
-    if (!isSafeCount(value.silentMs)) return;
-    return { event: 'live_stall', silentMs: value.silentMs };
+    // The same recovery path owns inbound silence and bounded outbound no-progress. Each receipt carries only the
+    // local duration that selected it. Socket depth and content stay out of the terminal receipt.
+    if (closedKeys(value, ['event', 'silentMs']) && isSafeCount(value.silentMs)) return { event: 'live_stall', silentMs: value.silentMs };
+    if (closedKeys(value, ['event', 'noProgressMs']) && isSafeCount(value.noProgressMs)) return { event: 'live_stall', noProgressMs: value.noProgressMs };
+    return;
   }
   if (value.event === 'playback_rearm') {
     // Closed shape (3o): head starts re-armed after a drain, counted per turn.

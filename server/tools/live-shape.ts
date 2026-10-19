@@ -39,7 +39,7 @@ export const LIVE_COMBINED_CHARS = 3000;
 
 export interface ShapedSource { title: string; url?: string; sourceType?: string }
 export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
-export interface CalendarPage { events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
+export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
 export interface CalendarScope { received: number; partial: boolean }
 export interface ShapedResult {
   calendarPage?: CalendarPage;
@@ -281,7 +281,9 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     return `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
-  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
+  const upstream = Boolean(data['nextPageToken']) || data['sourceIncomplete'] === true;
+  const note = data['nextPageToken'] ? '\n[upstream continuation available]' : data['sourceIncomplete'] === true ? '\n[upstream coverage incomplete; no continuation token received]' : '';
+  return capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
 }
 
 // --- Calendar ------------------------------------------------------------------------------
@@ -294,7 +296,7 @@ export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult 
     const id = str(entry['id']);
     return id ? `- ${name} [${id}]` : `- ${name}`;
   });
-  return { ...capped(shaped(lines.join('\n'))), calendarScope: { received: lines.length, partial: Boolean(data['nextPageToken'] || data['partial']) } };
+  return { ...capped(shaped(lines.join('\n'))), calendarScope: { received: lines.length, partial: Boolean(data['nextPageToken'] || data['partial'] || data['sourceIncomplete']) } };
 }
 
 export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
@@ -331,8 +333,8 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
   const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
   const nextPageToken = str(data['nextPageToken']);
-  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length, sources }),
-    calendarPage: { events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - CALENDAR_EVENTS), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
+  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || data['sourceIncomplete'] === true || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length, sources }),
+    calendarPage: { ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - CALENDAR_EVENTS), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
 }
 
 // --- Mattermost ----------------------------------------------------------------------------

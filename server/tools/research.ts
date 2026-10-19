@@ -619,7 +619,7 @@ type CalendarReply = JsonObject & { [calendarDelivery]?: CalendarDelivery };
 interface CalendarRead {
   args: JsonObject; events: Map<string, RetainedCalendarEvent>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
-  bodyTruncated: boolean; unread: number; inflight?: boolean;
+  bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
 }
 export interface RunState {
   calendarScopeAttempted?: boolean;
@@ -1228,12 +1228,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: remaining.slice(0, 8).map(([, event]) => event.line), total: calendarEvents.size });
   const calendarReads = [...run.calendar.values()];
   const calendarPending = remaining.length > 8 || calendarReads.some(read => !read.failed && !read.exhausted);
-  const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || !read.exhausted) || remaining.length > 8;
+  const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || read.upstreamIncomplete || !read.exhausted) || remaining.length > 8;
   if (calendarPartial && status === 'answered') status = 'partial';
   const calendarCoverage = calendarReads.length === 0 ? undefined : {
     scope: 'primary', received: calendarEvents.size, remaining: remaining.length,
     upstreamRemaining: calendarReads.some(read => !read.failed && !read.exhausted),
-    failed: calendarReads.some(read => read.failed), bodyTruncated: calendarReads.some(read => read.bodyTruncated),
+    failed: calendarReads.some(read => read.failed), upstreamIncomplete: calendarReads.some(read => read.upstreamIncomplete), bodyTruncated: calendarReads.some(read => read.bodyTruncated),
     calendarListComplete: run.calendarScope ? !run.calendarScope.partial : false,
   };
   const readSources = new Set(run.sourcesDone);
@@ -1388,6 +1388,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
         read.bodyTruncated ||= event.bodyTruncated;
       }
       read.unread += page.unread;
+      read.upstreamIncomplete ||= page.upstreamIncomplete === true;
       const next = page.nextPageToken;
       if (next && (next.length > 4096 || read.tokens.has(next))) { read.failed = true; return; }
       if (next) read.nextPageToken = next;

@@ -226,9 +226,11 @@ async function harness(t: TestContext, overrides: {
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
       calendarSdk.setRequestHandler('tools/call', async req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify({ data: overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'gcal_list'
+        const raw = overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'gcal_list'
           ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
-          : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] } }) }] };
+          : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
+        const { nextPageToken, ...data } = raw;
+        return { content: [{ type: 'text', text: JSON.stringify({ family: 'calendar', tool: req.params.name, data, coverage: { complete: !nextPageToken, next_page_token: nextPageToken ?? null } }) }] };
       });
       await calendarSdk.connect(calendarTransport);
     }

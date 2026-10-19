@@ -577,3 +577,23 @@ test('Gmail precise body read defaults to full and preserves deliberate metadata
     assert.equal((await gmail.gmailRead({ id: 'synthetic-message', format: 'invalid' as 'full' })).state, 'refused');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const family of ['gmail', 'calendar'] as const) test(`Google native envelope: ${family} outer coverage cursor survives the actual SDK projector`, async t => {
+  const name = family === 'gmail' ? 'gmail_list' : 'gcal_list';
+  const sdk = new Server({ name: 'native-google-envelope', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: [{ name, inputSchema: { type: 'object' } }] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family, tool: name, method: name, account: { configured: 'synthetic', provider: null }, data: family === 'gmail' ? { messages: [{ id: 'native-message', threadId: 'native-thread', internalDate: '1792368000000', headers: [{ name: 'Subject', value: 'Native page evidence' }] }] } : { events: [{ id: 'native-event', summary: 'Native page evidence', start: { dateTime: '2026-10-19T10:00:00Z' } }] }, coverage: { returned: 1, complete: false, next_page_token: 'native-next', ...(family === 'calendar' ? { visibility: 'unverified' } : {}) }, diagnostics: [] }) }] }) as never);
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => { const request = new Request(input, init); return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request); });
+  const registry = new McpRegistry(); registry.register({ id: 'native', url: 'http://127.0.0.1:18769/mcp', account: 'synthetic', resource: 'synthetic' }); registry.enable('native'); registry.allowEgress('native');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() }); t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('native'); assert.equal(discovery.state, 'discovered'); if (discovery.state !== 'discovered') throw Error('discovery failed');
+  registry.approve({ endpointId: 'native', schemaDigest: discovery.schemaDigest, toolNames: [name], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const source = createGoogleReader({ port: adapter, registry, config: { endpointId: 'native', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, family } });
+  const result = family === 'gmail' ? await source.gmailList({ q: 'subject:evidence' }) : await source.gcalList({ calendarId: 'primary' });
+  const projected = projectGoogleResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
+  assert.equal(projected.projection.partial, true);
+  if (family === 'calendar') assert.equal(projected.projection.calendarPage?.nextPageToken, 'native-next');
+  else assert.match(projected.projection.text, /upstream continuation available/);
+});

@@ -156,14 +156,26 @@ function extractVerifiedSource(result: CompletedResult,request: CallRequest,boun
   if (!candidates.some(packet => isDeepStrictEqual(record(packet) && packet.jsonrpc === '2.0' ? packet.result ?? packet.error : packet,result.decodedResult))) fail('source_decoded_entity_mismatch');
   const value = result.decodedResult;
   if (!record(value) || Object.keys(value).some(k => !['content','structuredContent','isError','_meta'].includes(k)) || !Array.isArray(value.content) || (value.isError !== undefined && typeof value.isError !== 'boolean')) fail('unsupported_source_shape');
-  if (value.structuredContent !== undefined) fail('structured_source_projection_unavailable');
   const texts: string[] = [];
   for (const part of value.content) {
     if (!record(part) || Object.keys(part).some(k => !['type','text'].includes(k)) || part.type !== 'text' || typeof part.text !== 'string') fail('unsupported_source_content');
     texts.push(part.text);
   }
+  let structuredEquivalence: 'lux_string_v1' | 'mongoose_json_dictionary_v1' | undefined;
+  if (value.structuredContent !== undefined) {
+    const structured = value.structuredContent;
+    if (p.connector === 'lux-knowledge' && texts.length === 1 && record(structured) && Object.keys(structured).length === 1 && structured.result === texts[0]) {
+      structuredEquivalence = 'lux_string_v1';
+    } else if (p.connector === 'mongoose' && texts.length === 1 && record(structured)) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(texts[0]!); } catch { /* Non-JSON text cannot prove dictionary equivalence. */ }
+      if (isDeepStrictEqual(parsed,structured)) structuredEquivalence = 'mongoose_json_dictionary_v1';
+    }
+    if (!structuredEquivalence) fail('structured_source_projection_unavailable');
+  }
   if (!Number.isSafeInteger(result.freshness.receivedAt) || result.freshness.receivedAt < 0) fail('source_receipt_invalid');
   const json = JSON.stringify({version:1,content: texts.map(text => ({type:'text',text})),isError: value.isError ?? false,
+    ...(structuredEquivalence ? {structuredEquivalence} : {}),
     source:{endpointId:source.endpointId,toolName:source.toolName,generation:source.generation,schemaDigest:source.schemaDigest,account:source.account,resource:source.resource,bindingDigest:bindingDigestOf(p.endpoint)},
     coverage:{completeCorpus:false,basis:'single-tool-result',remoteSideEffects:'unverified'},sourceVersion:'unknown',receivedAt:result.freshness.receivedAt});
   if (Buffer.from(json,'utf8').toString('utf8') !== json) fail('source_serialization_invalid');

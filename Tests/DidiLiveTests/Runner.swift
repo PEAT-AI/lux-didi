@@ -1068,8 +1068,10 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(soakCounters.shedFrames == 0 && soakCounters.sendErrors == 0
                 && soakCounters.localSocketSendCompleted == 10_000,
                 "10,000 interleaved receipts never shed a mic frame and never end the call")
-            try require(await soak.state == .active && await soakSocket.inputs == 10_000
-                && await soakSocket.receipts == 10_000, "every receipt and every mic frame reached the wire")
+            let soakState = await soak.state
+            let soakInputs = await soakSocket.inputs, soakReceipts = await soakSocket.receipts
+            try require(soakState == .active && soakInputs == 10_000 && soakReceipts == 10_000,
+                "every receipt and every mic frame reached the wire")
             await soak.stop(); await soakHTTP.finish()
             print("PASS 10,000 interleaved playback receipts and mic frames with zero shed frames and no interruption")
             record("receipt-audio-soak")
@@ -1078,22 +1080,22 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let keyHTTP = TestHTTP(fixture), keyGate = Gate()
             let ready = LiveFrame.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))
             let keySocket = StopProbeSocket([ready, ready], keyGate)
-            let keys = LiveSessionCoordinator(http: keyHTTP, sockets: ProbeSockets(socket: keySocket), sink: SilentSink())
-            await keys.begin(frozen); try await until { await keys.state == .active }
-            let firstCall = try await keys.readSnapshot()
-            await keys.begin(frozen); try await until { await keys.state == .active }
-            let restartedCall = try await keys.readSnapshot()
+            let restartCall = LiveSessionCoordinator(http: keyHTTP, sockets: ProbeSockets(socket: keySocket), sink: SilentSink())
+            await restartCall.begin(frozen); try await until { await restartCall.state == .active }
+            let firstCall = try await restartCall.readSnapshot()
+            await restartCall.begin(frozen); try await until { await restartCall.state == .active }
+            let restartedCall = try await restartCall.readSnapshot()
             let createKeys = await keyHTTP.keys
             try require(createKeys.count == 2 && createKeys[0] != createKeys[1],
                 "the restart carries a new idempotency key")
-            try require(firstCall.idempotencyKey == createKeys[0] && restartedCall.idempotencyKey == createKeys[1]
-                && firstCall.liveSessionId != restartedCall.liveSessionId, "a new call, never the old one")
-            try require(firstCall.grant.voice == restartedCall.grant.voice
-                && firstCall.grant.model == restartedCall.grant.model
-                && firstCall.assistantId == restartedCall.assistantId
-                && firstCall.profileIdentity == restartedCall.profileIdentity,
-                "same persona and voice on the restarted call")
-            await keys.stop(); await keyHTTP.finish()
+            try require(firstCall.idempotencyKey == createKeys[0], "the first call carries the first key")
+            try require(restartedCall.idempotencyKey == createKeys[1], "the restarted call carries the second key")
+            try require(firstCall.liveSessionId != restartedCall.liveSessionId, "a new call, never the old one")
+            let sameVoice = firstCall.grant.voice == restartedCall.grant.voice && firstCall.grant.model == restartedCall.grant.model
+            let samePersona = firstCall.assistantId == restartedCall.assistantId
+                && firstCall.profileIdentity == restartedCall.profileIdentity
+            try require(sameVoice && samePersona, "same persona and voice on the restarted call")
+            await restartCall.stop(); await keyHTTP.finish()
             print("PASS restart begins a new call with a new idempotency key and the same persona and voice")
             record("restart-key")
             if CommandLine.arguments.contains("--durations=10") {

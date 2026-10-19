@@ -4,6 +4,8 @@ import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { WebSocket } from 'ws';
+import { onceDetach, pumpOutput } from '../http/live-upgrade.js';
 // Side-effect import: register the intent-tool suite in this process so a declared check runs it
 // (live-session is in the contract scope; the check scripts are not).
 import './intent-tools.test.js';
@@ -596,6 +598,61 @@ test('a consumer whose socket closed ends the session within one second as consu
   assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
 });
 
+// Release 3x / call 1019: the app's socket went CLOSING mid-answer and the host kept a response and a
+// delegation open for 28 s, because the output pump's throwing send left an empty catch and only the
+// socket's own close watcher could detach. The pump now detaches once, on the socket, not on the send.
+type PumpSocket = Parameters<typeof pumpOutput>[0];
+const closingSocket = (mode: 'throw' | 'closing', onSend: () => void): PumpSocket => {
+  const socket = { OPEN: 1, readyState: mode === 'throw' ? 1 : 2, bufferedAmount: 0,
+    send(): void { onSend(); socket.readyState = 2; if (mode === 'throw') throw new Error('socket closing'); },
+    close(): void { socket.readyState = 3; } };
+  return socket as unknown as PumpSocket;
+};
+
+async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Promise<void> {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  let finish!: () => void;
+  const work = new Promise<void>(resolve => { finish = resolve; });
+  t.after(() => finish());
+  // Only the detach countdown is under test: the idle, session and call ceilings stay far away.
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 },
+    ...(openDelegation ? { tools: true, beforeTool: () => work } : {}) });
+  const { attachment } = await attached(h);
+  if (openDelegation) {
+    h.f.send({ toolCall: { functionCalls: [{ id: 'open1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    while (!h.calls.length) await tick();
+  }
+  // A response is streaming into the socket the app already cancelled.
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  let sends = 0;
+  const detach = onceDetach(attachment);
+  await pumpOutput(closingSocket(openDelegation ? 'closing' : 'throw', () => { sends += 1; }), attachment, detach, 1_024);
+  detach(); // the socket's own close arrives after the pump and must not detach a second time
+  h.advance(1_000); scheduler.runDue();
+  const terminal = await attachment.done;
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_closed' },
+    'the end lands on the consumer-closed bound, not on the five second net');
+  assert.equal(receipts.filter(record => record.event === 'consumer_detach').length, 1, 'one detach, one host line');
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'),
+    [{ event: 'session_end', reason: 'consumer_closed', msAfterStop: 1_000 }]);
+  await h.f.closed; // resolves only when the host closed the provider session's own socket
+  assert.notEqual(h.f.clients[0]!.readyState, WebSocket.OPEN, 'the provider session is closed');
+  assert.equal(sends, openDelegation ? 0 : 1, 'a CLOSING socket is never written to; a throwing one is written once');
+  h.advance(10_000); scheduler.runDue();
+  assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'the five second net never fires');
+}
+
+test('an output pump whose socket goes CLOSING mid-answer detaches once and ends the session as consumer_closed', async t => {
+  await pumpIntoDeadSocket(t, false);
+});
+
+test('the same socket death with an open delegation detaches once and ends the session as consumer_closed', async t => {
+  await pumpIntoDeadSocket(t, true);
+});
+
 test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
   const scheduler = new DeadlineClock();
   const receipts: Record<string, unknown>[] = [];
@@ -710,17 +767,18 @@ test('a durable terminal write failure still logs the failure and reports the re
   assert.equal(JSON.parse(lines[0]!).event, 'live_terminal_write_failed');
 });
 
-test('a failed detach write is logged and a later read no longer reports the session attached', async t => {
-  const lines: string[] = [];
-  t.mock.method(console, 'error', (...args: unknown[]) => {
-    if (typeof args[0] === 'string' && args[0].includes('live_detach_write_failed')) lines.push(args[0]);
-  });
+test('a failed detach write is logged to the host log and a later read no longer reports the session attached', async t => {
+  const lines: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { lines.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
   const h = await harness(t, { failingWrite: "consumer_state='ended'" });
   const { attachment } = await attached(h, 'detach-write-fail');
   assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'attached');
   attachment.detach();
-  assert.equal(lines.length, 1, 'the failed detach write is logged, not swallowed');
-  assert.equal(JSON.parse(lines[0]!).event, 'live_detach_write_failed');
+  assert.deepEqual(lines.map(line => line.event).filter(event => event === 'consumer_detach' || event === 'live_detach_write_failed'),
+    ['consumer_detach', 'live_detach_write_failed'],
+    'one detach line, then the failed write, both in the host log');
+  assert.equal(lines.find(line => line.event === 'consumer_detach')!['consumerState'], 'attached', 'the detach line names the state it found');
   // Reconcile on read: the row still says attached, but the in-memory handle says ended.
   assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'ended');
   assert.notEqual(h.owner.current().state, 'listening', 'a detached session is never projected as listening');
@@ -3899,7 +3957,7 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   const events = h.store.transaction(tx => tx.all('SELECT kind, source, source_seq FROM trace_event WHERE live_session_id=? ORDER BY seq', [session.liveSessionId]));
   assert.deepEqual(events.map(row => row['kind']), ['playback.received', 'playback.enqueued', 'playback.started', 'playback.drained']);
   assert.ok(events.every(row => row['source'] === 'native'));
-  const row = h.store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', ['inst-b2:1']))!;
+  const row = h.store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-b2:1`]))!;
   assert.equal(row['drained_at'], 1_700_000_000_004, 'the producer wall ms lands in the summary row');
   assert.equal(row['turn_id'], null, 'the host never guesses the turn it does not know');
 

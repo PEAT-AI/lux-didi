@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
+import { traceMigrations } from '../trace/schema.js';
 import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
@@ -330,7 +332,7 @@ test('a forwarded receipt sequence records native events and the playback row', 
     assert.deepEqual(events.map(row => row['source_seq']), [1, 2, 3, 4]);
     assert.equal(events[3]!['at'], T0 + 204, 'the producer wall ms is stored as sent, never replaced by the host clock');
     assert.equal(events[3]!['mono_ms'], 1_004);
-    const row = store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${INSTANCE}:1`]))!;
+    const row = store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${SESSION}:${INSTANCE}:1`]))!;
     assert.equal(row['received_at'], T0 + 201);
     assert.equal(row['enqueued_at'], T0 + 202);
     assert.equal(row['started_at'], T0 + 203);
@@ -392,7 +394,8 @@ test('the timeline prints a drained playback inside its turn when attributable a
     assert.equal(report.turns[0]!.playback.length, 1);
     assert.deepEqual(report.unattributedPlayback, []);
     const rendered = renderTimeline(report);
-    assert.match(rendered, /\n {2}playback inst-a1:1 segment=1 .*drained=.*clock=approx/);
+    assert.ok(rendered.includes(`  playback ${SESSION}:inst-a1:1 segment=1 `), rendered);
+    assert.match(rendered, /drained=.*clock=approx/);
     assert.doesNotMatch(rendered, /turn=none/);
   });
   withStore(store => {
@@ -403,7 +406,7 @@ test('the timeline prints a drained playback inside its turn when attributable a
     assert.equal(report.turns[0]!.playback.length, 0);
     assert.equal(report.unattributedPlayback.length, 1);
     const rendered = renderTimeline(report);
-    assert.match(rendered, /^playback inst-a1:1 segment=1 .*turn=none/m);
+    assert.match(rendered, new RegExp(`^playback ${SESSION}:inst-a1:1 segment=1 .*turn=none`, 'm'));
     assert.deepEqual(report.gaps, [], 'an orphan segment is not a stall: it is printed outside the turns');
   });
 });
@@ -485,4 +488,85 @@ test('O1b-A: two decisions at the same millisecond resolve to the one decided la
     assert.equal(call.continuationOutcome, 'sent', 'the last decision by (at, seq) is the one reported');
     assert.equal(call.continuationAt, T0 + 2_000);
   });
+});
+
+// Release 3x / call 1019: the native player restarts its segment numbers with every session, so the
+// row key carries the live session too. Without it a later session's receipts land on an earlier
+// session's row (and its own event is dropped), which the timeline reads as false gaps.
+test('two sessions sharing one native instance keep their own playback rows and report no false gap', () => {
+  withStore(store => {
+    const EARLY = 'ls-early';
+    const LATE = 'ls-late';
+    const receipt = (session: string, name: 'received' | 'drained', segment: number, at: number): void => {
+      recordPlaybackReceipt(store, session, parsePlaybackReceipt(JSON.stringify({
+        type: 'playback_receipt', receipt: name, segment_seq: segment, source_instance_id: INSTANCE,
+        source_seq: segment, mono_ms: at, wall_ms: at,
+      })));
+    };
+    for (const segment of [1, 2]) { receipt(EARLY, 'received', segment, T0 + segment); receipt(EARLY, 'drained', segment, T0 + 100 + segment); }
+    // The later session re-uses segments 1 and 2 of the same instance and continues past them.
+    for (const segment of [1, 2, 3]) { receipt(LATE, 'received', segment, T0 + 1_000 + segment); receipt(LATE, 'drained', segment, T0 + 1_100 + segment); }
+    const keys = store.transaction(tx => tx.all('SELECT live_session_id, segment_seq FROM trace_playback ORDER BY live_session_id, segment_seq'))
+      .map(row => `${row['live_session_id']}:${row['segment_seq']}`);
+    assert.deepEqual(keys, ['ls-early:1', 'ls-early:2', 'ls-late:1', 'ls-late:2', 'ls-late:3'], 'each session keeps its own row');
+    const early = buildTimeline(readOf(store), EARLY);
+    const late = buildTimeline(readOf(store), LATE);
+    assert.deepEqual(early.unattributedPlayback.map(row => row.receivedAt), [T0 + 1, T0 + 2], 'the earlier session keeps its own receipt times');
+    assert.deepEqual(late.unattributedPlayback.map(row => row.receivedAt), [T0 + 1_001, T0 + 1_002, T0 + 1_003]);
+    assert.deepEqual(early.nativeGaps, [], 'no native gap across sessions');
+    assert.deepEqual(late.nativeGaps, []);
+  });
+});
+
+// Z3-R1: the trace v2 replay index is widened to carry the live session, additively. A store already at
+// v1 keeps every row of every trace table, a store already at v2 opens as a no-op with one ledger row,
+// and the widened index accepts the same native sequence in a second session while still refusing a
+// replay inside one session. The Store applies each migration's statements and its ledger row inside the
+// one transaction it already holds open (runtime/store.ts applyMigrations), so a migration is all or none.
+test('the trace v2 migration keeps every v1 row, applies once, and reopens an already-migrated store', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-v1-'));
+  const seeded = { trace_turn: 1, trace_response: 1, trace_call: 1, trace_playback: 1, trace_event: 1, trace_utterance: 1, trace_call_result: 1 };
+  const counts = (store: Store): Record<string, number> => Object.fromEntries(Object.keys(seeded).map(table => [table,
+    Number(store.transaction(tx => tx.get(`SELECT COUNT(*) AS n FROM ${table}`)!['n']))]));
+  const traceVersion = (store: Store): number => Number(store.transaction(tx =>
+    tx.get("SELECT MAX(version) AS v FROM runtime_migrations WHERE owner='trace'")!['v']));
+  try {
+    const db = new DatabaseSync(join(dir, 'state.sqlite'));
+    try {
+      db.exec('PRAGMA journal_mode=WAL');
+      db.exec('CREATE TABLE runtime_migrations(owner TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(owner,version))');
+      for (const sql of traceMigrations[0]!.statements) db.exec(sql);
+      db.exec("INSERT INTO runtime_migrations VALUES ('trace',1)");
+      // Real clock times: the store prunes the two content tables against a thirty day retention at open.
+      const rows = [
+        "INSERT INTO trace_turn(turn_id, live_session_id, turn_index, origin, opened_at, mono_ms) VALUES ('t1','ls-v1',1,'owner',?,1)",
+        "INSERT INTO trace_response(response_key, live_session_id, connection_epoch, status, created_at) VALUES ('r1','ls-v1','e0','completed',?)",
+        "INSERT INTO trace_call(call_key, live_session_id, connection_epoch, name, args_chars, intent_at, outcome) VALUES ('c1','ls-v1','e0','research',4,?,'completed')",
+        "INSERT INTO trace_playback(playback_key, live_session_id, source_instance_id, segment_seq, received_at) VALUES ('inst-v1:1','ls-v1','inst-v1',1,?)",
+        "INSERT INTO trace_event(live_session_id, kind, source, source_instance_id, source_seq, at, mono_ms, received_at, schema_version, detail) VALUES ('ls-v1','playback.received','native','inst-v1',1,?,1,?,1,'{}')",
+        "INSERT INTO trace_utterance(turn_id, role, at, final, text) VALUES ('t1','owner',?,1,'x')",
+        "INSERT INTO trace_call_result(call_key, text, text_truncated) VALUES ('c1','y',0)",
+      ];
+      const now = Date.now();
+      for (const sql of rows) { const count = (sql.match(/\?/g) ?? []).length; db.prepare(sql).run(...Array.from({ length: count }, () => now)); }
+    } finally { db.close(); }
+    const migrated = new Store(dir, []);
+    try {
+      assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
+      assert.equal(traceVersion(migrated), 2);
+      const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
+      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
+        'the same native sequence in another session is its own event, not a replay of ls-v1');
+      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, true,
+        'a replay inside one session is still deduped');
+      assert.deepEqual(counts(migrated), { ...seeded, trace_event: 2, trace_playback: 2 });
+    } finally { migrated.close(); }
+    const again = new Store(dir, []);
+    try {
+      assert.deepEqual(counts(again), { ...seeded, trace_event: 2, trace_playback: 2 }, 'reopening an already-migrated store keeps every row');
+      assert.equal(traceVersion(again), 2);
+      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), 2,
+        'one ledger row per applied version, so the migration ran once');
+    } finally { again.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

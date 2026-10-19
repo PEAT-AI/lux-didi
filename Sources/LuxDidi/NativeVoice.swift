@@ -100,8 +100,8 @@ import WebKit
 
 /// Feeds bounded local levels into the embedded web orb while a live session runs. Every tick
 /// (60 Hz, one per display refresh) posts the orb band frame: the owner's latest capture window and
-/// the model output window at the playback position (#283). The scalar input and output levels still
-/// go through the bridge's batched 20 Hz `levels` contract. The renderer owns smoothing and
+/// the model output window at the playback position (#283). One visible recipient owns the
+/// latest-only publication; hidden surfaces suspend this clock. The renderer owns smoothing and
 /// geometry; this publisher never touches capture, playback or transport authority.
 @MainActor final class NativeOrbLevelPublisher {
     static let intervalNanos: UInt64 = 16_666_667
@@ -112,14 +112,19 @@ import WebKit
     private let bridge: NativeBridge
     private var task: Task<Void, Never>?
     private var lastSilentAt: TimeInterval = 0
-    init(device: NativeLiveAudioDevice, bridge: NativeBridge) { self.device = device; self.bridge = bridge }
-    func start() {
+    private var requested = false
+    init(device: NativeLiveAudioDevice, bridge: NativeBridge) {
+        self.device = device; self.bridge = bridge
+        bridge.orbPublication.onSelectionChanged = { [weak self] in self?.update() }
+    }
+    func start() { requested = true; update() }
+    private func update() {
+        guard requested, bridge.orbPublication.hasRecipient else { task?.cancel(); task = nil; return }
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
                 let now = Date().timeIntervalSince1970
-                self.bridge.pushLevels(input: Double(self.device.inputLevel), output: Double(self.device.outputLevel), now: now)
                 let bands = self.device.orbBands()
                 let frame = BridgeOrbFrame(input: BridgeOrbBands(bands.input), output: BridgeOrbBands(bands.output))
                 if !frame.isSilent || now - self.lastSilentAt >= Self.silentRepeatSeconds {
@@ -130,7 +135,7 @@ import WebKit
             }
         }
     }
-    func stop() { task?.cancel(); task = nil }
+    func stop() { requested = false; task?.cancel(); task = nil }
 }
 
 extension BridgeOrbBands {

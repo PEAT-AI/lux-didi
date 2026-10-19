@@ -66,6 +66,7 @@ export class LatestFrame {
     else if (frame.timestamp - this.richAt < 300) return;
     this.frame = { ...frame };
   }
+  clear() { this.frame = silentFrame(); this.richAt = -Infinity; }
   read(now: number): AudioFrame { return now - this.frame.timestamp > 500 ? silentFrame() : this.frame; }
 }
 

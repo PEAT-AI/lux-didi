@@ -23,6 +23,7 @@ struct MiniSurfaceFacts: Equatable {
 enum MiniPresentOutcome: Equatable {
     case shown(MiniSurfaceFacts)
     case failed(String)
+    case deferred
 }
 
 /// Q4-R1: the mini page's service origin. The host connection publishes the descriptor when
@@ -47,7 +48,7 @@ final class MiniOrbToggle {
     private let liveIsRunning: @MainActor () -> Bool
     private let presentPanel: @MainActor (SurfaceTrigger) -> MiniPresentOutcome
     private let dismissPanel: @MainActor () -> Void
-    private let expandToWindow: @MainActor () -> Void
+    private let requestFullWindow: @MainActor () -> Void
     private let present: @MainActor (PresencePosture) -> Void
     private let receipt: @MainActor ([String: Any]) -> Void
     private(set) var isVisible = false
@@ -55,11 +56,11 @@ final class MiniOrbToggle {
     init(startLive: @escaping @MainActor () -> Void, stopLive: @escaping @MainActor () -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool,
          presentPanel: @escaping @MainActor (SurfaceTrigger) -> MiniPresentOutcome,
-         dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void,
+         dismissPanel: @escaping @MainActor () -> Void, requestFullWindow: @escaping @MainActor () -> Void,
          present: @escaping @MainActor (PresencePosture) -> Void = { _ in },
          receipt: @escaping @MainActor ([String: Any]) -> Void = { _ in }) {
         self.startLive = startLive; self.stopLive = stopLive; self.liveIsRunning = liveIsRunning
-        self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.expandToWindow = expandToWindow
+        self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.requestFullWindow = requestFullWindow
         self.present = present; self.receipt = receipt
     }
 
@@ -71,6 +72,8 @@ final class MiniOrbToggle {
     }
 
     func toggle() { isVisible ? hide() : show() }
+
+    func presentationCommitted(visible: Bool) { isVisible = visible }
 
     /// The chord: show the orb and start Live when it is not already running. The chord, an
     /// orb press and Start are the only starts; the menu item only moves the surface (Q4-R2).
@@ -107,14 +110,11 @@ final class MiniOrbToggle {
         receipt(["event": "mini_hidden", "caller": caller])
     }
 
-    /// A click on the orb: expand the full window and keep Live running.
-    func expand() {
+    func openFullInterface() {
         guard isVisible else { return }
-        isVisible = false
-        dismissPanel()
-        receipt(["event": "mini_hidden", "caller": "expand"])
-        expandToWindow()
+        requestFullWindow()
     }
+
 }
 
 /// Q4-R2: the status menu's "Show mini orb" item. Its action is presentation only, so pressing the
@@ -251,12 +251,14 @@ enum PresenceStep: String, Equatable {
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
+    var onVisibilityChanged: (() -> Void)?
     private let frameKey: String
     private let overlay: MiniOrbHitView
 
     private let onStep: @MainActor (PresenceStep) -> Void
 
-    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onStep: @escaping @MainActor (PresenceStep) -> Void) {
+    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onStep: @escaping @MainActor (PresenceStep) -> Void,
+         onExpand: @escaping @MainActor () -> Void = {}) {
         self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView(); self.onStep = onStep
         super.init(contentRect: NSRect(origin: .zero, size: MiniOrbFrameRestore.size),
                    styleMask: MiniOrbPanelPolicy.styleMask, backing: .buffered, defer: false)
@@ -269,6 +271,10 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         hasShadow = true
         hidesOnDeactivate = false
         overlay.onClick = { [weak self] in self?.press() }
+        overlay.onExpand = onExpand
+        let contextMenu = NSMenu()
+        contextMenu.addItem(overlay.fullInterfaceItem())
+        overlay.menu = contextMenu
         let container = NSView()
         container.wantsLayer = true
         container.layer?.cornerRadius = MiniOrbPanelPolicy.cornerRadius
@@ -313,6 +319,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
     @objc private func screenParametersChanged() { restoreFrame(); rememberFrame() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { onVisibilityChanged?() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
     /// Ask the page which of the three steps this press means. A page that is not ready
@@ -336,6 +343,15 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
 @MainActor
 final class MiniOrbHitView: NSView {
     var onClick: (@MainActor () -> Void)?
+    var onExpand: (@MainActor () -> Void)?
+
+    func fullInterfaceItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Open full interface", action: #selector(openFullInterface), keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func openFullInterface() { onExpand?() }
 
     /// M3-R2: first mouse. The pill is a non-activating panel, so its first click
     /// must reach the orb without activating the app or its window.

@@ -12,6 +12,10 @@ export { LatestFrame, silentFrame } from './orb-level.ts';
  *  destination-out band fades everything before the square edge. */
 export const ORB_PRESENCE = { heroScale: 2.9, vignetteInner: 0.33, vignetteOuter: 0.5 } as const;
 
+export function orbSurfaceVisible(): boolean {
+  return !document.hidden && (globalThis as { didiNativeSurfaceVisible?: boolean }).didiNativeSurfaceVisible !== false;
+}
+
 export class Orb {
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
@@ -42,11 +46,12 @@ export class Orb {
     Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.motionState.low,scale:this.lastScale}),configurable:true});
     this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);
     this.motion.addEventListener('change',this.reset);
-    document.addEventListener('visibilitychange',this.reset);
+    document.addEventListener('visibilitychange',this.surfaceChanged);
+    window.addEventListener('didi-surface-visibility',this.surfaceChanged);
     this.resize();
     // Native player/capture taps post one small level frame here; the renderer owns only the
     // smoothing and geometry, never capture or transport authority.
-    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => this.audio.push(levelFrame(sample));
+    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => { if(orbSurfaceVisible())this.audio.push(levelFrame(sample)); };
   }
   setState(state: VoiceState) { this.state=state; this.reset(); this.transition={activity:this.lastActivity,target:this.lastTarget}; }
   private resize() {
@@ -63,15 +68,25 @@ export class Orb {
     this.canvas.dataset.state=this.state;
     // The first paint (and reduced motion / a hidden tab) may snap to the target. A state change
     // while animating draws the smoothed activity so the transition crossfades, never snaps (F5).
-    const still=this.motion.matches||document.hidden||!this.painted;
+    if(!orbSurfaceVisible())return;
+    const still=this.motion.matches||!this.painted;
     this.painted=true;
     this.draw(performance.now(),still);
-    if(!this.motion.matches&&!document.hidden&&this.context)this.animation=requestAnimationFrame(this.tick);
+    if(!this.motion.matches&&orbSurfaceVisible()&&this.context)this.animation=requestAnimationFrame(this.tick);
   };
+  private surfaceChanged = () => {
+    if(!orbSurfaceVisible())this.audio.clear();
+    this.reset();
+  };
+  prepareSurface(): boolean {
+    if(this.destroyed||!this.context||this.size<=0)return false;
+    this.draw(performance.now(),true);
+    return this.paints>0;
+  }
   /** One still frame on demand, for a canvas whose loop is not running (reduced motion). */
   refreshIfStill() { if(!this.destroyed&&this.animation===undefined)this.reset(); }
   private tick = (time: number) => {
-    if(this.destroyed||this.motion.matches||document.hidden){this.animation=undefined;return;}
+    if(this.destroyed||this.motion.matches||!orbSurfaceVisible()){this.animation=undefined;return;}
     // Frame budget (#283): 60 fps while active, 30 idle in a focused window, 12 idle unfocused.
     const kind=posture(this.state,this.audio.read(time));
     if(shouldPaint(time-this.lastPaint,frameInterval(kind,this.state,document.hasFocus()))){
@@ -126,6 +141,6 @@ export class Orb {
 
   destroy() {
     this.destroyed=true;if(this.animation!==undefined)cancelAnimationFrame(this.animation);
-    this.observer.disconnect();this.motion.removeEventListener('change',this.reset);document.removeEventListener('visibilitychange',this.reset);
+    this.observer.disconnect();this.motion.removeEventListener('change',this.reset);document.removeEventListener('visibilitychange',this.surfaceChanged);window.removeEventListener('didi-surface-visibility',this.surfaceChanged);
   }
 }

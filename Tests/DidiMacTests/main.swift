@@ -39,7 +39,7 @@ expect(Presentation.canSend("  hello\n") && !Presentation.canSend(" \n"), "text 
 expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "accepted is not read")
 
 // W15 mini orb: show starts Live, the same chord hides and stops it, a click
-// expands to the full window and keeps Live running, and the frame is remembered.
+// opens the full interface from its menu without changing Live or hiding before paint.
 var liveStarted = 0, liveStopped = 0, presented = 0, dismissed = 0, expanded = 0
 var liveRunning = false
 let miniFacts = MiniSurfaceFacts(frame: "{{700, 860}, {64, 26}}", screen: "main", alpha: 1,
@@ -50,7 +50,7 @@ let miniOrb = MiniOrbToggle(
     liveIsRunning: { liveRunning },
     presentPanel: { _ in presented += 1; return .shown(miniFacts) },
     dismissPanel: { dismissed += 1 },
-    expandToWindow: { expanded += 1 })
+    requestFullWindow: { expanded += 1 })
 expect(!miniOrb.isVisible, "mini orb starts hidden")
 miniOrb.toggle()
 expect(miniOrb.isVisible && liveStarted == 1 && presented == 1, "mini orb chord shows and starts Live")
@@ -58,8 +58,8 @@ miniOrb.toggle()
 expect(!miniOrb.isVisible && liveStopped == 1 && dismissed == 1, "mini orb chord hides and stops Live")
 miniOrb.show()
 expect(liveStarted == 2 && presented == 2, "mini orb show starts Live once")
-miniOrb.expand()
-expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible, "mini orb click expands and keeps Live")
+miniOrb.openFullInterface()
+expect(expanded == 1 && dismissed == 1 && liveStopped == 1 && miniOrb.isVisible, "mini orb menu requests full and retains its source")
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
@@ -74,7 +74,7 @@ let surface = MiniOrbToggle(startLive: { miniPresence = "live" }, stopLive: { mi
                             liveIsRunning: { miniPresence == "live" },
                             presentPanel: { _ in gatePresents += 1; return .shown(miniFacts) },
                             dismissPanel: { gateDismissals += 1 },
-                            expandToWindow: {})
+                            requestFullWindow: {})
 surface.showSurface(trigger: .other)
 expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
 miniPresence = "hot-muted"
@@ -586,7 +586,7 @@ miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
 // Q4-R1: a page that cannot be hosted fails loud; it never answers with the FULL window.
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a mini orb with no page never falls back to the FULL window")
+expect(coordinator.mode == .full && visibleSurfaces == ["full"], "an unready mini retains the usable FULL window")
 miniPageHostable = true
 
 // UI3A: the orb never becomes key or main, floats above normal windows over every
@@ -966,14 +966,14 @@ let q4Facts = MiniSurfaceFacts(frame: "{{100, 800}, {64, 26}}", screen: "main", 
 let q4Orb = MiniOrbToggle(
     startLive: { q4Starts += 1 }, stopLive: { q4Stops += 1 }, liveIsRunning: { false },
     presentPanel: { trigger in q4Triggers.append(trigger); q4Shows += 1; return .shown(q4Facts) },
-    dismissPanel: {}, expandToWindow: {}, receipt: { q4Receipts.append($0) })
+    dismissPanel: {}, requestFullWindow: {}, receipt: { q4Receipts.append($0) })
 // The status menu's own item, pressed through the selector and target it carries (Q4-R1).
 var menuShows: [SurfaceTrigger] = [], menuStarts = 0, menuStops = 0
 var menuReceipts: [[String: Any]] = []
 let menuOrb = MiniOrbToggle(
     startLive: { menuStarts += 1 }, stopLive: { menuStops += 1 }, liveIsRunning: { false },
     presentPanel: { trigger in menuShows.append(trigger); return .shown(q4Facts) },
-    dismissPanel: {}, expandToWindow: {}, receipt: { menuReceipts.append($0) })
+    dismissPanel: {}, requestFullWindow: {}, receipt: { menuReceipts.append($0) })
 let statusMenuCommand = MiniOrbMenuCommand { trigger in menuOrb.showSurface(trigger: trigger) }
 let showMiniOrbItem = statusMenuCommand.item()
 expect(showMiniOrbItem.title == "Show mini orb", "the status menu carries a Show mini orb item")
@@ -1008,9 +1008,9 @@ let q4Failing = PresentationCoordinator(
     hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
 expect(q4Failing.presentMini(trigger: .menu) == .failed("page_not_ready") && q4MiniShows == 1 && q4FullShows == 0,
        "a mini show with no page never falls back to the FULL window")
-expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_failed"
+expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_deferred"
        && q4Log.last?["reason"] as? String == "page_not_ready",
-       "a failed mini show logs mini_present_failed with its reason")
+       "an unready mini show logs a deferral with its reason")
 
 q4Log = []
 let q4Landing = PresentationCoordinator(

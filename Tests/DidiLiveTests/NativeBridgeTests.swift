@@ -119,7 +119,12 @@ import SwiftUI
         orbBridge.handle(["type": "ready"])
         orbScripts.removeAll()
         orbBridge.pushOrbFrame(orb)
-        check(orbScripts == [orb.script], "an orb frame after ready is posted once")
+        check(orbScripts.isEmpty, "ready alone gives no hidden surface an orb frame")
+        orbBridge.orbPublication.select(ObjectIdentifier(orbBridge), generation: 1, evaluate: { script, completion in
+            orbScripts.append(script); completion()
+        })
+        orbBridge.pushOrbFrame(orb)
+        check(orbScripts == [orb.script], "a selected visible surface receives the orb frame once")
 
         // 8. Conversation state maps onto the bridge vocabulary.
         check(BridgeLiveStateMapping.state(from: "connecting") == "starting", "connecting maps to starting")

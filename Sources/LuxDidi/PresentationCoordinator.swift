@@ -37,94 +37,130 @@ final class PresentationCoordinator {
     enum Mode: Equatable { case hidden, full, mini }
 
     private(set) var mode: Mode = .hidden
+    private(set) var desired: Mode = .full
+    private(set) var generation: UInt64 = 0
+    private(set) var explicitlyHidden = false
+    private var pending: Mode?
+    private var activation = false
+    private var trigger: SurfaceTrigger = .other
     private let showFullWindow: @MainActor (Bool) -> Void
     private let hideFullWindow: @MainActor () -> Void
-    /// The show answer: the panel's own facts when the surface landed, or the reason it could
-    /// not be hosted (Q4-R1).
     private let showMiniOrb: @MainActor (SurfaceTrigger) -> MiniPresentOutcome
-    /// The caller travels with the hide, so `mini_hidden {caller}` says which switch took the
-    /// orb away (Q4-R3).
     private let hideMiniOrb: @MainActor (String) -> Void
     private let liveIsRunning: @MainActor () -> Bool
-    /// Every surface transition leaves a receipt, so a pill that went away has a named caller.
     private let log: @MainActor ([String: Any]) -> Void
+    private let prepare: (@MainActor (Mode, UInt64) -> Void)?
+    private let didCommit: @MainActor (Mode, UInt64) -> Void
+    private let requestChanged: @MainActor () -> Void
 
     init(showFull: @escaping @MainActor (Bool) -> Void, hideFull: @escaping @MainActor () -> Void,
          showMini: @escaping @MainActor (SurfaceTrigger) -> MiniPresentOutcome,
          hideMini: @escaping @MainActor (String) -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool,
-         log: @escaping @MainActor ([String: Any]) -> Void = { _ in }) {
-        self.showFullWindow = showFull
-        self.hideFullWindow = hideFull
-        self.showMiniOrb = showMini
-        self.hideMiniOrb = hideMini
-        self.liveIsRunning = liveIsRunning
-        self.log = log
+         log: @escaping @MainActor ([String: Any]) -> Void = { _ in },
+         prepare: (@MainActor (Mode, UInt64) -> Void)? = nil,
+         didCommit: @escaping @MainActor (Mode, UInt64) -> Void = { _, _ in },
+         requestChanged: @escaping @MainActor () -> Void = {}) {
+        showFullWindow = showFull; hideFullWindow = hideFull
+        showMiniOrb = showMini; hideMiniOrb = hideMini
+        self.liveIsRunning = liveIsRunning; self.log = log
+        self.prepare = prepare; self.didCommit = didCommit; self.requestChanged = requestChanged
     }
 
-    /// The Dock click, the orb click, the menu and the mode button all end here:
-    /// the FULL window, and never the orb as well.
     @discardableResult
     func presentFull(activating: Bool) -> Bool {
-        hideMiniOrb("present_full")
-        showFullWindow(activating)
-        mode = .full
+        begin(.full)
+        activation = activating
+        if let prepare, mode != .full { prepare(.full, generation) }
+        else { commitFull() }
         return true
     }
 
-    /// The mini button and the Dock-less switch: the orb, and never the window as well. A page
-    /// that cannot be hosted fails loud (Q4-R1): the owner asked for the orb, so quietly opening
-    /// the FULL window answers a question nobody asked, and leaves no trace of why the orb is
-    /// missing. The page-ready edge asks again once the host connection exists.
     @discardableResult
     func presentMini(trigger: SurfaceTrigger = .other) -> MiniPresentOutcome {
-        hideFullWindow()
+        begin(.mini)
+        self.trigger = trigger
+        if let prepare {
+            log(["event": "mini_present_deferred", "trigger": trigger.rawValue,
+                 "reason": "awaiting_paint", "generation": generation])
+            prepare(.mini, generation)
+            return .deferred
+        }
+        return commitMini()
+    }
+
+    func prepared(_ target: Mode, generation token: UInt64, failure: String? = nil) {
+        guard token == generation, pending == target, desired == target else { return }
+        pending = nil
+        if let failure {
+            let deferred = failure == "page_not_ready"
+            log(["event": target == .mini ? (deferred ? "mini_present_deferred" : "mini_present_failed") : "full_present_failed",
+                 "trigger": trigger.rawValue, "reason": failure, "generation": token])
+            return
+        }
+        if target == .full { commitFull() } else if target == .mini { _ = commitMini() }
+    }
+
+    func requestPresence() {
+        guard !explicitlyHidden, desired == .mini, mode != .full, pending == nil else { return }
+        if mode != .mini { _ = presentMini() }
+    }
+
+    func allowPresenceReveal() {
+        explicitlyHidden = false
+        if desired == .hidden { _ = presentFull(activating: true) }
+        else { requestPresence() }
+    }
+
+    func hideMiniSurface() { hideAll() }
+
+    func hideAll() {
+        requestChanged()
+        generation &+= 1; desired = .hidden; pending = nil; explicitlyHidden = true
+        hideFullWindow(); hideMiniOrb("hide_all")
+        mode = .hidden; didCommit(mode, generation)
+    }
+
+    func closeFull() {
+        if Self.closeOutcome(liveIsRunning: liveIsRunning()) == .mini { _ = presentMini() }
+        else { hideAll() }
+    }
+
+    static func closeOutcome(liveIsRunning: Bool) -> CloseOutcome { liveIsRunning ? .mini : .hidden }
+
+    func toggleWindow(activating: Bool) {
+        if desired == .full { hideAll() } else { _ = presentFull(activating: activating) }
+    }
+
+    private func begin(_ target: Mode) {
+        requestChanged()
+        generation &+= 1; desired = target; pending = target; explicitlyHidden = false
+    }
+
+    private func commitFull() {
+        showFullWindow(activation)
+        hideMiniOrb("present_full")
+        mode = .full; pending = nil
+        didCommit(mode, generation)
+    }
+
+    private func commitMini() -> MiniPresentOutcome {
         let outcome = showMiniOrb(trigger)
         switch outcome {
         case .shown(let facts):
-            mode = .mini
+            hideFullWindow()
+            mode = .mini; pending = nil
             log(["event": "mini_presented", "trigger": trigger.rawValue, "frame": facts.frame,
                  "screen": facts.screen, "alpha": facts.alpha, "occluded": facts.occluded,
-                 "pageState": facts.pageState])
+                 "pageState": facts.pageState, "generation": generation])
+            didCommit(mode, generation)
         case .failed(let reason):
-            mode = .hidden
-            log(["event": "mini_present_failed", "trigger": trigger.rawValue, "reason": reason])
+            pending = nil
+            log(["event": reason == "page_not_ready" ? "mini_present_deferred" : "mini_present_failed",
+                 "trigger": trigger.rawValue, "reason": reason, "generation": generation])
+        case .deferred: break
         }
         return outcome
-    }
-
-    /// The orb is gone from screen without any window taking its place.
-    func hideMiniSurface() {
-        hideMiniOrb("hide_mini_surface")
-        if mode == .mini { mode = .hidden }
-    }
-
-    /// Nothing on screen: Cmd+W while no Live session runs.
-    func hideAll() {
-        hideFullWindow()
-        hideMiniOrb("hide_all")
-        mode = .hidden
-    }
-
-    /// The close button and Cmd+W (UI3A-R2). An active Live session keeps
-    /// running in the orb; without one the window simply hides and the app
-    /// stays in the Dock.
-    func closeFull() {
-        switch Self.closeOutcome(liveIsRunning: liveIsRunning()) {
-        case .mini: presentMini()
-        case .hidden: hideAll()
-        }
-    }
-
-    /// What a close does (UI3A-R2, UI3A-R7). Pure, so both outcomes are asserted
-    /// without a session, and the key command cannot drift from the close button.
-    static func closeOutcome(liveIsRunning: Bool) -> CloseOutcome {
-        liveIsRunning ? .mini : .hidden
-    }
-
-    /// Ctrl-Opt-Shift-Space: hide the window, or bring it back.
-    func toggleWindow(activating: Bool) {
-        if mode == .full { hideAll() } else { presentFull(activating: activating) }
     }
 }
 

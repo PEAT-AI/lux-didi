@@ -14,7 +14,7 @@ Global shortcuts:
 - Control Option Shift M: mute or unmute Live.
 - Escape while the mini orb is focused: hide the orb and stop Live. Escape while the window is focused: hide the window; Live keeps running.
 
-Click the pill to expand to the full window; Live keeps running.
+Click the mini orb to start, mute or unmute Live. Right-click it and choose **Open full interface** to return to the app without changing Live.
 
 Naya has two modes and only one is ever on screen. The second mode is the **pill**:
 a small capsule, about 64 by 26 points, that sits top-center just below the menu bar
@@ -28,7 +28,7 @@ The full window has a **mini** button in its header (its accessible label is
 "Show the mini orb") that moves the app to the pill. Closing the window with Cmd+W
 while Live is running switches to the pill and keeps the session; closing it while
 Live is off just hides the window. A click on the Dock icon always brings the full
-window back, and clicking the pill opens the full window.
+window back. The mini orb's **Open full interface** context-menu action does the same.
 
 ### The single key
 

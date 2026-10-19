@@ -45,6 +45,9 @@ enum PageRoute {
     /// Keeps the web view's under-page colour with the window when the web changes theme.
     func applyTheme(_ theme: BridgeTheme) { webView.underPageBackgroundColor = theme.backgroundColor }
     let webView: WKWebView
+    private(set) var surfaceGeneration: UInt64 = 0
+    private(set) var surfaceVisible = false
+    private var visibilityAppliedAttempt: Int?
     @Published private(set) var state: PageState = .unavailable
     @Published private(set) var detail = "Connect to the approved service."
     private(set) var deniedNavigations = 0
@@ -76,6 +79,8 @@ enum PageRoute {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController = WKUserContentController() // The `didi` handler is added below.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.didiNativeSurfaceVisible=false", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -84,11 +89,43 @@ enum PageRoute {
         webView.allowsBackForwardNavigationGestures = false
         // Dark before first paint: no white flash while the page loads.
         webView.setValue(false, forKey: "drawsBackground")
-        webView.underPageBackgroundColor = BridgeTheme.dark.backgroundColor
+        webView.underPageBackgroundColor = route == .mini ? .clear : BridgeTheme.dark.backgroundColor
         if let bridge {
             webView.configuration.userContentController.add(self, name: "didi")
             bridge.sendJS = { [weak self] script in self?.webView.evaluateJavaScript(script, completionHandler: nil) }
         }
+    }
+
+    func prepareForPresentation(generation: UInt64) async throws {
+        surfaceGeneration = generation
+        let deadline = ContinuousClock.now + .seconds(Self.loadTimeout)
+        while state == .loading, ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        try Task.checkCancellation()
+        guard state == .ready, route.approves(descriptor, webView.url) else { throw CompanionError.unavailable }
+        let result = try await webView.callAsyncJavaScript(
+            "if(typeof window.didiPrepareSurface!=='function')throw Error('paint_unavailable');return window.didiPrepareSurface(generation)",
+            arguments: ["generation": Double(generation)], in: nil, in: .page)
+        try Task.checkCancellation()
+        guard surfaceGeneration == generation, state == .ready, route.approves(descriptor, webView.url),
+              let proof = result as? [String: Any], proof["generation"] as? Double == Double(generation),
+              proof["painted"] as? Bool == true else { throw CompanionError.invalidResponse }
+    }
+
+    func setSurfaceVisible(_ visible: Bool, generation: UInt64) {
+        if surfaceVisible == visible, surfaceGeneration == generation, visibilityAppliedAttempt == attempt { return }
+        surfaceGeneration = generation
+        surfaceVisible = visible
+        guard state == .ready, route.approves(descriptor, webView.url) else { return }
+        visibilityAppliedAttempt = attempt
+        webView.evaluateJavaScript("window.didiSetSurfaceVisible&&window.didiSetSurfaceVisible(\(visible),\(generation))", completionHandler: nil)
+    }
+
+    func publishOrb(_ script: String, generation: UInt64, completion: @escaping @MainActor () -> Void) {
+        guard surfaceVisible, surfaceGeneration == generation, state == .ready,
+              route.approves(descriptor, webView.url) else { completion(); return }
+        webView.evaluateJavaScript(script) { _, _ in completion() }
     }
 
     // Native side of BRIDGE.md: decode the web's didi messages, never act on them here.

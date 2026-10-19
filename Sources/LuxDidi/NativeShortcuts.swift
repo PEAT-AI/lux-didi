@@ -8,9 +8,9 @@ enum NativeNoteAction { static let label = "Save note" }
 /// installs and the seam test calls, so a test proves the assignment the app really uses
 /// rather than a copy of it.
 @MainActor
-func bindRightCommandKey(_ singleKey: SingleKeyTrigger, to presence: NativePresence) {
-    singleKey.onTap = { [weak presence] in presence?.tap(.hotkey) }
-    singleKey.onHoldStart = { [weak presence] in presence?.holdStarted(.hotkey) }
+func bindRightCommandKey(_ singleKey: SingleKeyTrigger, to presence: NativePresence, present: @escaping () -> Void = {}) {
+    singleKey.onTap = { [weak presence] in present(); presence?.tap(.hotkey) }
+    singleKey.onHoldStart = { [weak presence] in present(); presence?.holdStarted(.hotkey) }
     singleKey.onHoldEnd = { [weak presence] in presence?.holdEnded(.hotkey) }
 }
 enum ShortcutStatus {

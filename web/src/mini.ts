@@ -105,9 +105,9 @@ installMiniMeter();
 /** The FULL window's one mode control (#311): a visible button with an
  * accessible label that asks the native app for the mini orb. Only the native
  * app can move a surface, so a browser shell renders no button at all. */
-export function miniModeButtonMarkup(native: boolean): string {
+export function miniModeButtonMarkup(native: boolean, id = 'mini-mode'): string {
   return native
-    ? '<button id="mini-mode" class="quiet mini-mode" aria-label="Show the mini orb" title="Mini orb (Control-Option-Space)">mini</button>'
+    ? `<button id="${id}" data-mini-mode class="quiet mini-mode" aria-label="Show the mini orb" title="Mini interface (Control-Option-Space)">Mini</button>`
     : '';
 }
 
@@ -138,6 +138,8 @@ export function clickStep(state: MiniState): PresenceStep {
 /** The visual the loop last painted, so a strip can prove a transition moved the colour
  *  without anyone opening an image. */
 let painted: OrbVisual | undefined;
+let refreshVisuals: (() => void) | undefined;
+export function refreshMiniVisuals(): void { refreshVisuals?.(); }
 
 export interface PillVisualHost { didiOrbVisual?: () => OrbVisual | undefined }
 
@@ -189,8 +191,10 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const machine = createOrbStateMachine('cold', { reducedMotion: reducedMotion() });
   let handle: number | undefined;
   let stopped = false;
-  const step = () => {
-    if (stopped) return;
+  let settle: ReturnType<typeof setTimeout> | undefined;
+  const visible = () => typeof document === 'undefined'
+    || (!document.hidden && (globalThis as { didiNativeSurfaceVisible?: boolean }).didiNativeSurfaceVisible !== false);
+  const paint = () => {
     const at = now();
     const stage = doc.querySelector('.mini-stage');
     const pill = doc.querySelector('.mini-pill');
@@ -209,12 +213,33 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
     // The wash is drawn by the stage, so it scales with the orb (M3-R6).
     element?.style?.setProperty('--mini-wash', visual.glow.toFixed(3));
     miniMeter(pill ?? null, visual.followsMic ? pillMic : 0);
-    handle = frame?.(step);
   };
+  const step = () => {
+    handle = undefined;
+    if (stopped || !visible()) return;
+    paint();
+    if (!reducedMotion()) handle = frame(step);
+  };
+  const refresh = () => {
+    if (handle !== undefined) cancel?.(handle);
+    handle = undefined;
+    if (settle !== undefined) clearTimeout(settle);
+    if (!visible()) return;
+    paint();
+    if (reducedMotion()) settle = setTimeout(() => { if (!stopped && visible()) paint(); }, 260);
+    else handle = frame(step);
+  };
+  refreshVisuals = paint;
+  if (typeof window !== 'undefined') window.addEventListener('didi-surface-visibility', refresh);
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);
   handle = frame(step);
   return () => {
     stopped = true;
     if (handle !== undefined) cancel?.(handle);
+    if (settle !== undefined) clearTimeout(settle);
+    if (refreshVisuals === paint) refreshVisuals = undefined;
+    if (typeof window !== 'undefined') window.removeEventListener('didi-surface-visibility', refresh);
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', refresh);
   };
 }
 

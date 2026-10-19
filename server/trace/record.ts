@@ -1,4 +1,6 @@
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
+import { hostClockDomain } from './clock.js';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
 import {
   CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
@@ -20,6 +22,7 @@ export class TraceRecordError extends Error {
 export interface TraceEventIds {
   liveSessionId: string;
   source?: EventSource;
+  clockDomain?: string;
   turnId?: string;
   responseKey?: string;
   callKey?: string;
@@ -46,6 +49,7 @@ export interface TraceDetailMap {
   'response.terminal': { terminalAt: number; status: ResponseStatus; terminalReason: ResponseTerminalReason };
   'call.intent': { name: string; argsChars: number; intentAt: number; providerCallId?: string };
   'call.executed': { executedAt: number };
+  'call.completed': { completedAt: number };
   'call.output_prepared': { outputPreparedAt: number };
   'call.output_written': { outputWrittenAt: number; outcome: CallOutcome; ms: number; resultChars: number };
   /** O1b-A: the single continuation owner's decision, and why a `response.create` was skipped. */
@@ -80,7 +84,7 @@ const isFlag: Check = value => value === true || value === false;
 const isId: Check = value => typeof value === 'string' && ID_SHAPE.test(value);
 const oneOf = (values: readonly string[]): Check => value => isOneOf(values, value);
 
-const ID_FIELDS = ['liveSessionId', 'turnId', 'responseKey', 'callKey', 'playbackKey', 'actionId', 'connectionEpoch', 'sourceInstanceId'] as const;
+const ID_FIELDS = ['liveSessionId', 'turnId', 'responseKey', 'callKey', 'playbackKey', 'actionId', 'connectionEpoch', 'sourceInstanceId', 'clockDomain'] as const;
 const COUNT_FIELDS = ['causedByEventId', 'sourceSeq', 'at', 'monoMs'] as const;
 const KNOWN_ID_KEYS = new Set<string>([...ID_FIELDS, ...COUNT_FIELDS, 'source']);
 
@@ -90,7 +94,7 @@ const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'turn.opened': ['turnId'], 'turn.closed': ['turnId'], 'turn.summary': ['turnId'],
   'delegation.created': ['responseKey'],
   'response.created': ['responseKey'], 'response.observed': ['responseKey'], 'response.terminal': ['responseKey'],
-  'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
+  'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.completed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
   'playback.received': ['playbackKey'], 'playback.audible': ['playbackKey'], 'playback.enqueued': ['playbackKey'],
   'playback.started': ['playbackKey'], 'playback.drained': ['playbackKey'], 'playback.interrupted': ['playbackKey'],
   'playback.terminated': ['playbackKey'],
@@ -127,6 +131,7 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   },
   'call.intent': { name: { check: isId }, argsChars: { check: isCount }, intentAt: { check: isCount }, providerCallId: { check: isId, optional: true } },
   'call.executed': { executedAt: { check: isCount } },
+  'call.completed': { completedAt: { check: isCount } },
   'call.output_prepared': { outputPreparedAt: { check: isCount } },
   'call.output_written': { outputWrittenAt: { check: isCount }, outcome: { check: oneOf(CALL_OUTCOMES) }, ms: { check: isCount }, resultChars: { check: isCount } },
   'playback.received': { segmentSeq: { check: isCount }, receivedAt: { check: isCount } },
@@ -212,13 +217,14 @@ export function record<K extends TraceEventKind>(port: TraceWritePort, kind: K, 
   const receivedAt = Date.now();
   const at = ids.at ?? receivedAt;
   const monoMs = ids.monoMs ?? monoNow();
+  const clockDomain = ids.clockDomain ?? (source === 'native' ? `native:${ids.sourceInstanceId ?? 'unknown'}` : hostClockDomain);
   return port.transaction(tx => {
     const changes = tx.run(
-      `INSERT INTO trace_event(live_session_id, turn_id, response_key, call_key, playback_key, action_id, caused_by_event_id, kind, source, source_instance_id, source_seq, at, mono_ms, received_at, connection_epoch, schema_version, detail)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(live_session_id, source_instance_id, source_seq) DO NOTHING`,
+      `INSERT INTO trace_event(live_session_id, turn_id, response_key, call_key, playback_key, action_id, caused_by_event_id, kind, source, source_instance_id, source_seq, at, mono_ms, received_at, connection_epoch, schema_version, detail, clock_domain)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(live_session_id, source_instance_id, source_seq) DO NOTHING`,
       [ids.liveSessionId, ids.turnId ?? null, ids.responseKey ?? null, ids.callKey ?? null, ids.playbackKey ?? null,
         ids.actionId ?? null, ids.causedByEventId ?? null, kind, source, ids.sourceInstanceId ?? null, ids.sourceSeq ?? null,
-        at, monoMs, receivedAt, epoch, TRACE_SCHEMA_VERSION, JSON.stringify(detail)]);
+        at, monoMs, receivedAt, epoch, TRACE_SCHEMA_VERSION, JSON.stringify(detail),clockDomain]);
     if (changes === 0) {
       // A replay is the same sequence in the same session: another session's sequence is not this one's.
       const row = tx.get('SELECT seq FROM trace_event WHERE live_session_id=? AND source_instance_id=? AND source_seq=?',
@@ -227,6 +233,10 @@ export function record<K extends TraceEventKind>(port: TraceWritePort, kind: K, 
     }
     const seq = Number(tx.get('SELECT last_insert_rowid() AS seq')!.seq);
     applySummary(tx, kind, ids, detail, epoch, seq);
+    if (kind === 'turn.opened') tx.run('UPDATE trace_turn SET clock_domain=? WHERE turn_id=?', [clockDomain,ids.turnId!]);
+    if (source === 'native' && tx.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_sessions'")) {
+      tx.run("UPDATE live_sessions SET native_receipt_state=CASE WHEN native_receipt_state='partial' THEN 'partial' ELSE 'observed' END WHERE live_session_id=?", [ids.liveSessionId]);
+    }
     return { seq, duplicate: false };
   });
 }
@@ -296,6 +306,12 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       const d = detail as TraceDetailMap['call.executed'];
       assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
       tx.run('UPDATE trace_call SET executed_at=? WHERE call_key=?', [d.executedAt, ids.callKey!]);
+      return;
+    }
+    case 'call.completed': {
+      const d = detail as TraceDetailMap['call.completed'];
+      assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
+      tx.run('UPDATE trace_call SET execution_completed_at=? WHERE call_key=?', [d.completedAt,ids.callKey!]);
       return;
     }
     case 'call.output_prepared': {
@@ -425,15 +441,25 @@ export interface LiveTraceBinding {
   onReject?: (code: string, kind: TraceEventKind) => void;
 }
 
+export function scopedTraceKey(session: string, epoch: string, kind: 'call' | 'response', id: string): string {
+  return `${kind}:${createHash('sha256').update(JSON.stringify([session,epoch,id])).digest('hex')}`;
+}
+
 export function liveTracePort(binding: LiveTraceBinding): LiveTracePort {
   return {
     receipt<K extends TraceEventKind>(kind: K, ids: Omit<TraceEventIds, 'liveSessionId' | 'connectionEpoch'>, detail: TraceDetailMap[K]): void {
       try {
         const turnId = ids.turnId ?? binding.turnId?.();
+        const scoped = { ...ids,
+          ...(ids.callKey === undefined ? {} : { callKey: scopedTraceKey(binding.liveSessionId,binding.connectionEpoch,'call',ids.callKey) }),
+          ...(ids.responseKey === undefined ? {} : { responseKey: scopedTraceKey(binding.liveSessionId,binding.connectionEpoch,'response',ids.responseKey) }),
+        };
+        const scopedDetail = 'continuationOfResponseKey' in detail && typeof detail.continuationOfResponseKey === 'string'
+          ? { ...detail,continuationOfResponseKey: scopedTraceKey(binding.liveSessionId,binding.connectionEpoch,'response',detail.continuationOfResponseKey) } : detail;
         record(binding.port, kind, {
-          ...ids, ...(turnId === undefined ? {} : { turnId }),
+          ...scoped, ...(turnId === undefined ? {} : { turnId }),
           liveSessionId: binding.liveSessionId, connectionEpoch: binding.connectionEpoch,
-        }, detail);
+        }, scopedDetail);
       } catch (error) {
         binding.onReject?.(error instanceof TraceRecordError ? error.code : 'record_failed', kind);
       }

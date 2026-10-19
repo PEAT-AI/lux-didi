@@ -1558,8 +1558,9 @@ describe('openai gpt-live receipts', () => {
     assert.equal(rows('delegation.created').length, 1, 'one receipt per delegated response');
     assert.equal(rows('response.created').length, 1);
     assert.equal(rows('response.observed').length, 1, 'the first output is the proof the provider answered');
-    assert.deepEqual(rows('call.intent').map(row => row['call_key']).sort(), ['call_a', 'call_b']);
-    assert.deepEqual(rows('call.output_written').map(row => row['call_key']).sort(), ['call_a', 'call_b']);
+    assert.deepEqual(rows('call.intent').map(row => (JSON.parse(String(row['detail'])) as { providerCallId: string }).providerCallId).sort(), ['call_a', 'call_b']);
+    assert.ok(rows('call.intent').every(row => String(row['call_key']).startsWith('call:')), 'call keys are session/epoch scoped');
+    assert.deepEqual(rows('call.output_written').map(row => row['call_key']).sort(), rows('call.intent').map(row => row['call_key']).sort());
     const decisions = rows('continuation.decided').map(row => JSON.parse(String(row['detail'])) as { outcome: string; skipReason?: string });
     assert.equal(decisions.filter(decision => decision.outcome === 'sent').length, 1, 'one continuation carries both answers');
     assert.equal(decisions[0]!.outcome, 'deferred', 'the first answer cannot create yet');

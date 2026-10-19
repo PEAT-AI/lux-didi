@@ -19,7 +19,8 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallResult, recordUtterance, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
@@ -324,6 +325,7 @@ interface ActiveSession {
   terminal: boolean;
   consumer: OutputChannel;
   consumerState: LiveConsumerState;
+  pendingDiagnosticLoss?: boolean;
   journalEvents: number;
   journalBytes: number;
   /** The sequence the Mac sees, counted once for the whole session: a provider rebuild opens a new adapter
@@ -777,6 +779,7 @@ export class LiveSessionOwner {
       for (const row of rows) {
         const outcome: LiveTerminalOutcome = Number(row['dispatch_intent']) === 1 ? { state: 'outcome_unknown' } : { state: 'not_started' };
         this.#terminalInTx(tx, String(row['live_session_id']), outcome, false, now, 'ended', null);
+        tx.run("UPDATE live_sessions SET diagnostic_metadata_state='unknown',diagnostic_content_state='unknown',native_receipt_state=CASE WHEN native_receipt_state='partial' THEN 'partial' ELSE 'unknown' END,diagnostic_last_reason='host_terminated' WHERE live_session_id=?", [String(row['live_session_id'])]);
       }
       return rows.length;
     });
@@ -886,6 +889,7 @@ export class LiveSessionOwner {
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
+      tx.run("UPDATE live_sessions SET diagnostic_metadata_state='in_progress',diagnostic_content_state='in_progress',native_receipt_state='unknown',diagnostic_failures=0,diagnostic_unattributed_transcripts=0,diagnostic_clock_domain=? WHERE live_session_id=?", [hostClockDomain,liveSessionId]);
       tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
       recordHistorySession(tx, liveSessionId, assistantId, this.#profile.route.dataClasses, injectedSummaryIds, now);
       for (const opener of injectedOpeners) recordHistoryDependency(tx, liveSessionId, opener.sessionId);
@@ -1248,6 +1252,7 @@ export class LiveSessionOwner {
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
+      this.#diagnosticFailure(handle,'native_receipt_rejected');
     }
   }
 
@@ -1546,17 +1551,27 @@ export class LiveSessionOwner {
     return liveTracePort({
       port: this.#store, liveSessionId, connectionEpoch: connection.epoch,
       turnId: () => connection.turnId,
-      onReject: (code, kind) => hostLogEvent({ event: 'live_trace_rejected', kind, code }),
+      onReject: (code, kind) => {
+        hostLogEvent({ event: 'live_trace_rejected', kind, code });
+        const handle = this.#active.get(liveSessionId);
+        if (handle) this.#diagnosticFailure(handle,'trace_write_failed');
+      },
     });
   }
 
   /** O1b-A: one host receipt. A refusal is a typed host.log line, never an exception in the turn that wrote it. */
   #receipt<K extends TraceEventKind>(handle: ActiveSession, kind: K, ids: Omit<TraceEventIds, 'liveSessionId' | 'connectionEpoch'>, detail: TraceDetailMap[K]): void {
     try {
-      record(this.#store, kind, { ...ids, liveSessionId: handle.liveSessionId, connectionEpoch: handle.connection.epoch }, detail);
+      record(this.#store, kind, { ...ids,...(ids.callKey === undefined ? {} : { callKey: scopedTraceKey(handle.liveSessionId,handle.connection.epoch,'call',ids.callKey) }),liveSessionId: handle.liveSessionId,connectionEpoch: handle.connection.epoch }, detail);
     } catch (error) {
       hostLogEvent({ event: 'live_trace_rejected', kind, code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+      this.#diagnosticFailure(handle,'trace_write_failed');
     }
+  }
+
+  #diagnosticFailure(handle: ActiveSession, reason: DiagnosticLoss): void {
+    try { this.#store.transaction(tx => markDiagnosticLoss(tx,handle.liveSessionId,reason)); }
+    catch { handle.pendingDiagnosticLoss = true; }
   }
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
@@ -1754,11 +1769,6 @@ export class LiveSessionOwner {
     handle.session.sendText({ text });
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
-    const turnId = handle.connection.turnId;
-    if (turnId !== undefined) {
-      try { recordUtterance(this.#store, { turnId, role: 'owner', at: this.#now(), final: true, text }); }
-      catch { /* a content write never breaks the turn it belongs to */ }
-    }
     this.#armIdle(handle, this.#profile.limits.idleMs);
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
@@ -2058,17 +2068,6 @@ export class LiveSessionOwner {
             }
           }
         }
-        // O1b-A: what was actually said, both sides, lands in the two content tables and nowhere else. It is
-        // written after the owner-utterance boundary has opened the turn, so her first words are never dropped.
-        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
-          const turnId = handle.connection.turnId;
-          if (turnId !== undefined) {
-            try {
-              recordUtterance(this.#store, { turnId, role: event.type === 'inputTranscription' ? 'owner' : 'model',
-                at: this.#now(), final: event.finished === true, text: event.text });
-            } catch { /* a content write never breaks the turn it belongs to */ }
-          }
-        }
         const kind = journalKind(event.type);
         if (kind === null) continue;
         const persisted = this.#persist(handle, event, kind);
@@ -2084,6 +2083,7 @@ export class LiveSessionOwner {
       }
     } catch (error) {
       handle.persistFailure = error;
+      this.#diagnosticFailure(handle,'journal_write_failed');
     }
     if (!handle.terminal) {
       // A session-deadline continuation opens a new session from the timer; the ended one is superseded.
@@ -2632,11 +2632,6 @@ export class LiveSessionOwner {
     // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
     // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
-    // O1b-A: the tool result is content, so it lands in the content table only, keyed by the provider call id.
-    for (const response of responses) {
-      try { recordCallResult(this.#store, { callKey: response.id, text: JSON.stringify(response.response) }); }
-      catch { /* a content write never breaks the answer it belongs to */ }
-    }
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
@@ -2670,9 +2665,19 @@ export class LiveSessionOwner {
           finished === 1 ? now : null,finished === 1 ? mono : null]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
-      return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
+      const journalId = Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
+      if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
+      if (transcription) {
+        const turnId = handle.connection.turnId;
+        if (turnId !== undefined) {
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,'',journalId]); }
+          catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
+        } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
+      }
+      return journalId;
     };
     const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
+    if (!transaction) handle.pendingDiagnosticLoss = false;
     handle.journalEvents = events;
     handle.journalBytes = total;
     return journalSequence;
@@ -2694,7 +2699,10 @@ export class LiveSessionOwner {
     handle.session.close();
     let journalSequence: number;
     try {
-      journalSequence = this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));
+      journalSequence = this.#store.transaction(tx => {
+        if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
+        return this.#terminalInTx(tx,handle.liveSessionId,outcome,complete,this.#now(),consumerState,rejected);
+      });
     } catch (error) {
       // The durable write failed, but the typed terminal fact must still reach the app. Log the failure
       // (bounded fields only) and resolve done with the in-memory outcome so the socket sends the real code.
@@ -2759,6 +2767,7 @@ export class LiveSessionOwner {
       [liveSessionId, 'terminal', JSON.stringify(outcome), rejected?.kind ?? null, rejected?.sequence ?? null, now]);
     tx.run("UPDATE live_sessions SET lifecycle='terminal', journal_complete=?, terminal_outcome=?, terminal_at=?, consumer_state=?, updated_at=? WHERE live_session_id=?",
       [complete ? 1 : 0, JSON.stringify(outcome), now, consumerState, now, liveSessionId]);
+    tx.run("UPDATE live_sessions SET diagnostic_metadata_state=CASE WHEN diagnostic_metadata_state='in_progress' THEN 'complete' ELSE diagnostic_metadata_state END,diagnostic_content_state=CASE WHEN diagnostic_content_state='in_progress' THEN 'complete' ELSE diagnostic_content_state END WHERE live_session_id=?", [liveSessionId]);
     return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [liveSessionId])!['journal_id']);
   }
 

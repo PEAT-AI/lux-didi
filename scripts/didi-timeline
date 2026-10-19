@@ -57,6 +57,7 @@ async function main() {
 
   const db = new DatabaseSync(database, { readOnly: true });
   try {
+    db.exec('BEGIN');
     const read = {
       all: (sql, params = []) => db.prepare(sql).all(...params),
       get: (sql, params = []) => db.prepare(sql).get(...params),
@@ -75,9 +76,11 @@ async function main() {
     const report = buildTimeline(read, liveSessionId, {
       ...(options.turn === undefined ? {} : { turn: options.turn }),
       content: options.content,
+      ...(options.content ? { contentAuthority: { ownerId: String(read.get("SELECT value FROM runtime_meta WHERE key='assistantId'")?.value ?? ''),allowedClasses: ['ordinary','private','sensitive'] } } : {}),
     });
     process.stdout.write(options.json ? `${JSON.stringify(report, null, 2)}\n` : renderTimeline(report));
   } finally {
+    if (db.isTransaction) db.exec('ROLLBACK');
     db.close();
   }
 }

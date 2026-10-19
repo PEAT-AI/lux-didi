@@ -209,7 +209,8 @@ test('the JSON timeline carries no owner text unless --content asks for it', () 
     assert.ok(!bare.includes('SECRET-OWNER-WORDS'), 'no owner text in the default JSON');
     assert.ok(!bare.includes('SECRET-RESULT'), 'no result text in the default JSON');
     const withContent = JSON.stringify(buildTimeline(readOf(store), SESSION, { content: true }));
-    assert.ok(withContent.includes('SECRET-OWNER-WORDS'), 'content is present only when asked');
+    assert.ok(!withContent.includes('SECRET-OWNER-WORDS'), 'legacy content without current source authority stays denied');
+    assert.ok(withContent.includes('authority_required'));
   });
 });
 
@@ -433,7 +434,8 @@ test('O1b-A: a full synthetic call turn prints its turn, ordered utterances, cal
     const report = buildTimeline(readOf(store), SESSION, { content: true });
     const track = report.turns[0]!;
     assert.equal(track.turn.turnId, 't1');
-    assert.deepEqual(track.utterances!.map(row => row.role), ['owner', 'model'], 'her words, then the answer');
+    assert.deepEqual(track.utterances, [], 'no content without current canonical source authority');
+    assert.equal(report.contentAccess?.state, 'denied');
     assert.equal(track.calls.length, 1);
     assert.equal(track.calls[0]!.outputWrittenAt, T0 + 1_320, 'the call carries its output time');
     assert.equal(track.calls[0]!.continuationAt, T0 + 1_320, 'and the continuation it earned');

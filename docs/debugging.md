@@ -15,7 +15,7 @@ Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA
 
 Three files answer three different questions. `state.sqlite` is the only one whose tables join on
 host-minted ids, so it is the one to read first; `host.log` keeps the content-free metadata around
-it. Owner text lives only in `state.sqlite`'s two trace content tables and in the unified log. The
+it. Canonical transcription lives in `live_journal`; canonical tool views live with their tool executions. Trace content tables retain legacy previews and new transcript references. The unified log can contain retained legacy content. The
 JSONL debug journal that used to sit under `<dataDir>/debug` is gone; its event kinds are accounted
 for below.
 
@@ -32,8 +32,8 @@ query rather than four files that cannot be joined.
 | `trace_call` | one tool call: name, argument and result character counts, intent/execute/output-prepared/output-written times, outcome, ms |
 | `trace_playback` | one audio segment: source instance, segment sequence, response and turn (nullable, audio carries no provider id), received/audible/enqueued/started/drained/interrupted times |
 | `trace_event` | the append-only causal spine: seq, kind, source (`host`, `native`, `provider`), source sequence, producer wall ms, producer monotonic ms, host ingest time, schema version, typed detail |
-| `trace_utterance` | content: transcript lines, by turn and role, final flag |
-| `trace_call_result` | content: tool result text, capped at 16 KB, with its truncation flag |
+| `trace_utterance` | canonical journal references for new transcription; retained legacy text previews, by turn and role |
+| `trace_call_result` | retained legacy tool-result previews, capped at 16,384 characters with truncation flag; not full source-result durability |
 
 The adapter and the host write every step of a call, so an absence is never the only evidence:
 `delegation.created` names each delegated response with its provider id and call count,
@@ -76,7 +76,7 @@ The app forwards its playback receipts (received, enqueued, started, drained, in
 terminated) to the host over the live socket it already holds. Each is one bounded frame with
 `segment_seq`, `source_instance_id`, `source_seq`, `mono_ms` and `wall_ms`; the host validates it
 against a closed shape, refuses an unknown or free-text field, records it as a `native` trace event
-plus its `trace_playback` row, and dedups on `(source_instance_id, source_seq)`. A refused frame is
+plus its `trace_playback` row, and dedups on `(live_session_id, source_instance_id, source_seq)`. A refused frame is
 journaled by typed code and never changes session state. `response_key` and `turn_id` on a playback
 row are set only when the host knows them for that segment; a segment the host cannot attribute is
 printed outside every turn with `turn=none`, never guessed into one.
@@ -120,7 +120,7 @@ in** names the log that already carried it; **dropped** means nothing needs it a
 | --- | --- |
 | `session_start` | replaced by `trace_turn` and `live_started` in `host.log` (provider, model, voice) |
 | `session_end` | replaced by `turn.closed` (`session_end`) and `session_end` in `host.log` |
-| `transcript` | replaced by `trace_utterance` (owner and model text), the only place the words live |
+| `transcript` | replaced by `trace_utterance` (owner and model text), legacy previews; new words are canonical journal rows referenced by trace |
 | `turn_start` | replaced by `turn.opened` |
 | `turn_end` | replaced by `turn.closed` with its close reason and outcome |
 | `interrupt` | retained in `host.log` as `live_interrupted`; the turn closes as `interrupted` |
@@ -227,3 +227,15 @@ The trace content tables hold transcript lines and tool result text, and the uni
 Only the owner and owner-authorized Claude sessions read them. Never paste a transcript or a tool
 result into a public issue, a pull request, a commit, a test
 fixture or a message, and never read the owner's real data directory from a test or a check.
+
+## Current canonical transcription and coverage
+
+New transcription text is retained once in `live_journal`; `trace_utterance.journal_id` references it and its text column stays empty. Existing legacy bytes are preserved until their existing 30-day trace expiry. The supported `didi-timeline --content` reader checks the canonical history session owner, current class, lineage and exclusion state before reading journal text or any legacy preview. A denied source never falls back to a trace preview. Class-unknown legacy sources report unavailable; direct owner SQLite inspection is a separate forensic interface and is never a model permission path.
+
+The timeline includes canonical transcription outside traced turns, including model-first greetings. Text is automatic recognition or generated-output transcription, not proof of words heard. Metadata reports unassociated transcription rows, diagnostic metadata/content coverage, native receipt observation and a failure-count lower bound. Journal completeness keeps its existing independent meaning. A trace-reference write can fail while the journal stays complete; this now records partial trace coverage. Native receipt observation does not mean every generated audio byte was played.
+
+Call and response trace keys are scoped to session and connection epoch; raw provider ids are separate. Event clock domains identify host process or native producer. Historical null domains remain unknown. Execution duration is calculated only from measured start/completion observations in the same non-null domain. Prepared and written events remain distinct; a missing completion is unknown, never zero work. A new host holding the exclusive Store writer lock marks previously in-progress capture unknown/host_terminated. No audio-frame transaction was added.
+
+Always pass `--data-dir` for the installed app: `~/Library/Application Support/ai.peat.lux-didi`. The CLI's older default `Lux Didi` directory is a different runtime. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
+
+Focused actual-runtime proof: after server compilation, run `node server/test/diagnostic-trace.integration.mjs`. It exercises actual adapter, Store and CLI, new reference resolution, model-first greeting, forced write failure, forgotten/class-denied content, restart unknown state, scoped call/response ids and unlike-clock observations. No provider or audio device is used.

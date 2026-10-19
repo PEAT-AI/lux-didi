@@ -156,4 +156,12 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     `ALTER TABLE live_journal ADD COLUMN final_origin TEXT`,
     `ALTER TABLE live_journal ADD COLUMN finalized_at INTEGER`,
     `ALTER TABLE live_journal ADD COLUMN finalized_mono_ms INTEGER`,
+]}, { owner: 'live', version: 9, statements: [
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_metadata_state TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_content_state TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN native_receipt_state TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_failures INTEGER`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_last_reason TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_unattributed_transcripts INTEGER`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_clock_domain TEXT`,
 ]}];

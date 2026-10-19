@@ -1,3 +1,4 @@
+import { diagnosticContentAccess, type DiagnosticContentAuthority, type DiagnosticContentAccess } from './content.js';
 import type { SQLRow, SQLValue } from '../contracts/storage.js';
 import type {
   CallOutcome, ContinuationOutcome, PlaybackTerminationReason, ResponseStatus, ResponseTerminalReason, StallReason,
@@ -21,6 +22,9 @@ export interface ResponseView {
   continuationOfResponseKey: string | null;
 }
 export interface CallView {
+  stages?: { kind: string; at: number; monoMs: number; clockDomain: string | null }[];
+  executionCompletedAt?: number | null;
+  executionMs?: number | null;
   callKey: string; responseKey: string | null; turnId: string | null; name: string; argsChars: number;
   intentAt: number; executedAt: number | null; outputPreparedAt: number | null; outputWrittenAt: number | null;
   outcome: CallOutcome; ms: number | null; resultChars: number | null;
@@ -33,7 +37,7 @@ export interface PlaybackView {
   receivedAt: number; audibleAt: number | null; enqueuedAt: number | null; startedAt: number | null;
   drainedAt: number | null; interruptedAt: number | null; terminationReason: PlaybackTerminationReason | null;
 }
-export interface UtteranceView { role: UtteranceRole; at: number; final: boolean; text: string }
+export interface UtteranceView { role: UtteranceRole; at: number; final: boolean; text: string; source?: 'canonical_journal' | 'legacy_preview' }
 export interface TurnTrack {
   turn: TurnView; responses: ResponseView[]; calls: CallView[]; playback: PlaybackView[]; utterances?: UtteranceView[];
 }
@@ -44,9 +48,14 @@ export interface TraceGap {
 }
 export interface NativeGap { sourceInstanceId: string; fromSeq: number; toSeq: number }
 export interface TimelineReport {
+  coverage?: { metadata: string; content: string; native: string; failureCountLowerBound: number | null; lastReason: string | null; unassociatedTranscriptRows: number | null };
+  contentAccess?: DiagnosticContentAccess;
+  transcript?: { journalId: number; role: UtteranceRole; text: string; final: boolean; finalOrigin: string | null; providerStartMs: number | null; providerEndMs: number | null }[];
   liveSessionId: string; capturedAt: number; turns: TurnTrack[]; gaps: TraceGap[]; nativeGaps: NativeGap[];
   /** Playback the host could not tie to a turn. Printed outside every turn, never guessed into one. */
   unattributedPlayback: PlaybackView[];
+  unattributedCalls: CallView[];
+  unattributedResponses: ResponseView[];
 }
 
 const num = (value: SQLValue | undefined): number | null => value === null || value === undefined ? null : Number(value);
@@ -75,7 +84,7 @@ function callView(row: SQLRow): CallView {
   return {
     callKey: String(row.call_key), responseKey: str(row.response_key), turnId: str(row.turn_id), name: String(row.name),
     argsChars: numOr(row.args_chars, 0), intentAt: numOr(row.intent_at, 0), executedAt: num(row.executed_at),
-    outputPreparedAt: num(row.output_prepared_at), outputWrittenAt: num(row.output_written_at),
+    executionCompletedAt: num(row.execution_completed_at),outputPreparedAt: num(row.output_prepared_at), outputWrittenAt: num(row.output_written_at),
     outcome: String(row.outcome) as CallOutcome, ms: num(row.ms), resultChars: num(row.result_chars),
     continuationAt: null, continuationOutcome: null,
   };
@@ -112,23 +121,35 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
   return decisions;
 }
 
-export interface TimelineOptions { turn?: number; content?: boolean; capturedAt?: number }
+export interface TimelineOptions { turn?: number; content?: boolean; contentAuthority?: DiagnosticContentAuthority; capturedAt?: number }
 
 export function buildTimeline(read: TraceRead, liveSessionId: string, options: TimelineOptions = {}): TimelineReport {
   const turnRows = read.all('SELECT * FROM trace_turn WHERE live_session_id=? ORDER BY turn_index, opened_at', [liveSessionId]);
   const responses = read.all('SELECT * FROM trace_response WHERE live_session_id=? ORDER BY created_at, response_key', [liveSessionId]).map(responseView);
   const continuations = continuationDecisions(read, liveSessionId);
+  const stageRows = read.all("SELECT call_key,kind,at,mono_ms,clock_domain FROM trace_event WHERE live_session_id=? AND kind IN ('call.intent','call.executed','call.completed','call.output_prepared','call.output_written') ORDER BY seq",[liveSessionId]);
+  const coverageRow = read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_sessions'")
+    ? read.get('SELECT diagnostic_metadata_state,diagnostic_content_state,native_receipt_state,diagnostic_failures,diagnostic_last_reason,diagnostic_unattributed_transcripts FROM live_sessions WHERE live_session_id=?',[liveSessionId]) : undefined;
+  const coverage = coverageRow ? { metadata: str(coverageRow.diagnostic_metadata_state) ?? 'unknown',content: str(coverageRow.diagnostic_content_state) ?? 'unknown',native: str(coverageRow.native_receipt_state) ?? 'unknown',failureCountLowerBound: num(coverageRow.diagnostic_failures),lastReason: str(coverageRow.diagnostic_last_reason),unassociatedTranscriptRows: num(coverageRow.diagnostic_unattributed_transcripts) } : undefined;
   const calls = read.all('SELECT * FROM trace_call WHERE live_session_id=? ORDER BY intent_at, call_key', [liveSessionId]).map(callView)
     .map(call => {
       const decided = call.responseKey === null ? undefined : continuations.get(call.responseKey);
-      return { ...call, continuationAt: decided?.at ?? null, continuationOutcome: decided?.outcome ?? null };
+      const stages = stageRows.filter(row => row.call_key === call.callKey).map(row => ({ kind: String(row.kind),at: Number(row.at),monoMs: Number(row.mono_ms),clockDomain: str(row.clock_domain) }));
+      const start = stages.find(row => row.kind === 'call.executed'),end = stages.find(row => row.kind === 'call.completed');
+      const executionMs = start?.clockDomain && start.clockDomain === end?.clockDomain && end.monoMs >= start.monoMs ? end.monoMs-start.monoMs : null;
+      return { ...call,stages,executionMs,continuationAt: decided?.at ?? null,continuationOutcome: decided?.outcome ?? null };
     });
   const playback = read.all('SELECT * FROM trace_playback WHERE live_session_id=? ORDER BY segment_seq, received_at, playback_key', [liveSessionId]).map(playbackView);
-  const utterances = options.content === true
-    ? read.all(`SELECT u.turn_id AS turn_id, u.role AS role, u.at AS at, u.final AS final, u.text AS text
+  const contentAccess = options.content === true ? diagnosticContentAccess(read,liveSessionId,options.contentAuthority) : undefined;
+  const contentAllowed = contentAccess?.state === 'allowed';
+  const utterances = contentAllowed
+    ? read.all(`SELECT u.turn_id,u.role,u.at,CASE WHEN u.journal_id IS NULL THEN u.final ELSE j.finished END AS final,u.journal_id,
+                CASE WHEN u.journal_id IS NULL THEN u.text ELSE j.text END AS text
                 FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
-                WHERE t.live_session_id=? ORDER BY t.turn_index, u.at`, [liveSessionId])
-    : [];
+                LEFT JOIN live_journal j ON j.journal_id=u.journal_id AND j.live_session_id=t.live_session_id
+                WHERE t.live_session_id=? ORDER BY t.turn_index,u.at,u.rowid`, [liveSessionId]) : [];
+  const transcript = contentAllowed ? read.all("SELECT journal_id,kind,text,finished,final_origin,provider_start_ms,provider_end_ms FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') ORDER BY journal_id",[liveSessionId])
+    .map(row => ({ journalId: Number(row.journal_id),role: (row.kind === 'inputTranscription' ? 'owner' : 'model') as UtteranceRole,text: String(row.text ?? ''),final: row.finished === 1,finalOrigin: str(row.final_origin),providerStartMs: num(row.provider_start_ms),providerEndMs: num(row.provider_end_ms) })) : undefined;
 
   const turns: TurnTrack[] = turnRows.map(turnView)
     .filter(turn => options.turn === undefined || turn.turnIndex === options.turn)
@@ -141,14 +162,14 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
       };
       if (options.content === true) {
         track.utterances = utterances.filter(row => String(row.turn_id) === turn.turnId)
-          .map(row => ({ role: String(row.role) as UtteranceRole, at: numOr(row.at, 0), final: Number(row.final) === 1, text: String(row.text) }));
+          .filter(row => row.text !== null).map(row => ({ role: String(row.role) as UtteranceRole,at: numOr(row.at,0),final: Number(row.final) === 1,text: String(row.text),source: row.journal_id === null ? 'legacy_preview' as const : 'canonical_journal' as const }));
       }
       return track;
     });
 
   const gaps = turns.flatMap(gapsFor).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
-    liveSessionId,
+    liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
     capturedAt: options.capturedAt ?? Date.now(),
     turns,
     gaps,
@@ -237,6 +258,10 @@ export function missingNativeRanges(read: TraceRead, liveSessionId: string): Nat
 
 export function resolveSession(read: TraceRead, spec: string): string | undefined {
   if (spec !== 'latest') return spec;
+  if (read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_sessions'")) {
+    const latest = read.get('SELECT live_session_id AS id FROM live_sessions ORDER BY created_at DESC,rowid DESC LIMIT 1');
+    if (latest) return String(latest.id);
+  }
   const turn = read.get('SELECT live_session_id AS id FROM trace_turn GROUP BY live_session_id ORDER BY MAX(opened_at) DESC, MAX(rowid) DESC LIMIT 1');
   if (turn !== undefined) return String(turn.id);
   const event = read.get('SELECT live_session_id AS id FROM trace_event ORDER BY seq DESC LIMIT 1');
@@ -244,11 +269,11 @@ export function resolveSession(read: TraceRead, spec: string): string | undefine
 }
 
 const METADATA_EXPORT = [
-  { table: 'trace_turn', columns: 'turn_id, live_session_id, turn_index, origin, supersedes_turn_id, opened_at, mono_ms, closed_at, close_reason, first_audible_at, playback_drained_at, outcome, stall_reason, attribution_uncertain', order: 'live_session_id, turn_index, opened_at' },
+  { table: 'trace_turn', columns: 'turn_id, live_session_id, turn_index, origin, supersedes_turn_id, opened_at, mono_ms, closed_at, close_reason, first_audible_at, playback_drained_at, outcome, stall_reason, attribution_uncertain, clock_domain', order: 'live_session_id, turn_index, opened_at' },
   { table: 'trace_response', columns: 'response_key, live_session_id, connection_epoch, provider_response_id, delegation_id, turn_id, status, created_at, terminal_at, terminal_reason, continuation_of_response_key', order: 'live_session_id, created_at, response_key' },
-  { table: 'trace_call', columns: 'call_key, live_session_id, connection_epoch, provider_call_id, response_key, turn_id, name, args_chars, intent_at, executed_at, output_prepared_at, output_written_at, outcome, ms, result_chars', order: 'live_session_id, intent_at, call_key' },
+  { table: 'trace_call', columns: 'call_key, live_session_id, connection_epoch, provider_call_id, response_key, turn_id, name, args_chars, intent_at, executed_at, output_prepared_at, output_written_at, outcome, ms, result_chars, execution_completed_at, canonical_owner_id, canonical_run_id, canonical_execution_id, canonical_result_id, canonical_result_sha256', order: 'live_session_id, intent_at, call_key' },
   { table: 'trace_playback', columns: 'playback_key, live_session_id, source_instance_id, segment_seq, response_key, turn_id, received_at, audible_at, enqueued_at, started_at, drained_at, interrupted_at, termination_reason', order: 'live_session_id, segment_seq, playback_key' },
-  { table: 'trace_event', columns: 'seq, live_session_id, turn_id, response_key, call_key, playback_key, action_id, caused_by_event_id, kind, source, source_instance_id, source_seq, at, mono_ms, received_at, connection_epoch, schema_version, detail', order: 'seq' },
+  { table: 'trace_event', columns: 'seq, live_session_id, turn_id, response_key, call_key, playback_key, action_id, caused_by_event_id, kind, source, source_instance_id, source_seq, at, mono_ms, received_at, connection_epoch, schema_version, detail, clock_domain', order: 'seq' },
 ] as const;
 
 /** Named columns from the five metadata tables. Never a database dump, never a content table. */
@@ -304,6 +329,11 @@ export function renderTimeline(report: TimelineReport): string {
       + `${gap.callKey === null ? '' : ` call=${gap.callKey}`}`
       + `${gap.playbackKey === null ? '' : ` playback=${gap.playbackKey}`} ${gap.detail}`);
   }
+  for (const call of report.unattributedCalls) lines.push(`unattributed call ${call.name} key=${call.callKey} outcome=${call.outcome} execution_ms=${call.executionMs ?? 'unknown'}`);
+  for (const response of report.unattributedResponses) lines.push(`unattributed response ${response.responseKey} status=${response.status}`);
+  if (report.coverage) lines.push(`coverage metadata=${report.coverage.metadata} content=${report.coverage.content} native=${report.coverage.native} failures_at_least=${report.coverage.failureCountLowerBound ?? 'unknown'}`);
+  if (report.contentAccess) lines.push(`content: ${report.contentAccess.state}${report.contentAccess.state === 'denied' ? ` reason=${report.contentAccess.reason}` : ''}`);
+  for (const row of report.transcript ?? []) lines.push(`transcript journal=${row.journalId} role=${row.role} source=automatic_transcription final_origin=${row.finalOrigin ?? 'unknown'} ${JSON.stringify(row.text)}`);
   for (const nativeGap of report.nativeGaps) {
     lines.push(`NATIVE-GAP instance=${nativeGap.sourceInstanceId} missing=${nativeGap.fromSeq}..${nativeGap.toSeq}`);
   }

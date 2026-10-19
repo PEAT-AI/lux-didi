@@ -4756,3 +4756,44 @@ test('progress recovery: a slow next mail page is running rather than simultaneo
   release(); for (let n = 0; n < 50 && (h.owner.current().steps ?? []).some(step => step.phase === 'start'); n++) await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
+
+
+test('research 469: known stopped run projects error and retained no-wire delivery projects completed', async t => {
+  const fake = progressPort(), scheduler = new DeadlineClock();
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `continuation-${n}`, headers: [{ name: 'Subject', value: `Synthetic continuation ${n}` }] }));
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, mail: true, mailData: () => ({ messages }) });
+  await openPort(h, 'research-469');
+  const call = async (id: string, args: Record<string, unknown>) => {
+    const before = fake.toolResponses.length;
+    fake.emit({ type: 'toolCall', calls: [{ id, name: 'research', args }] });
+    for (let n = 0; n < 100 && fake.toolResponses.length === before; n++) await settlePort();
+    assert.equal(fake.toolResponses.length, before + 1);
+    const response = fake.toolResponses.at(-1)![0]!.response;
+    const journalEntry = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+    const projection = journalEntry?.tool;
+    assert(projection);
+    return { response, projection, journalEntry };
+  };
+  const first = await call('start', { action: 'start', question: 'List synthetic continuation', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] });
+  assert.equal(first.response['status'], 'partial'); assert.equal(first.projection.status, 'completed');
+  assert.equal(h.calls.length, 1); assert.equal(h.owner.current().steps?.length, 1);
+  const researchId = first.response['researchId'], cursor = first.response['nextCursor'];
+  const next = await call('next', { action: 'continue', researchId, cursor });
+  assert.match(JSON.stringify(next.response['findings']), /Synthetic continuation 12/);
+  const retained = await call('retained', { action: 'continue', researchId, cursor });
+  assert.equal(retained.response['alreadyDelivered'], true); assert.deepEqual(retained.response['findings'], []);
+  assert.equal(retained.projection.status, 'completed'); assert.deepEqual(h.owner.current().steps ?? [], []);
+  const stopped = await call('stop', { action: 'stop', researchId });
+  assert.equal(stopped.response['status'], 'stopped'); assert.equal(stopped.projection.status, 'completed');
+  const unavailable = await call('unavailable', { action: 'continue', researchId });
+  assert.equal(unavailable.response['status'], 'unavailable'); assert.deepEqual(unavailable.response['findings'], []);
+  assert.equal(unavailable.response['canContinue'], false); assert.deepEqual(h.owner.current().steps ?? [], []);
+  const unknown = await call('unknown', { action: 'continue', researchId: 'unknown-synthetic' });
+  assert.equal(unknown.response['error'], 'unknown_research_run'); assert.equal(unknown.projection.status, 'error');
+  assert.equal(h.calls.length, 1, 'no automatic retry or fabricated source execution');
+  t.diagnostic(JSON.stringify({ regression: 'research-469-journal', retained: retained.journalEntry, unavailable: unavailable.journalEntry }));
+  const partial = await call('partial', { action: 'start', question: 'Synthetic unavailable calendar', lookups: [{ source: 'calendar', query: 'today' }] });
+  assert.equal(partial.response['status'], 'partial'); assert.equal(partial.response['error'], undefined); assert.equal(partial.projection.status, 'completed');
+  assert.equal(h.calls.length, 1); assert.deepEqual(h.owner.current().steps ?? [], []);
+  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error', sources: [] } });
+});

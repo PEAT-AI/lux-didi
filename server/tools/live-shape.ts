@@ -242,7 +242,7 @@ function attachmentNames(source: Record<string, unknown>): string[] {
   return list.map(entry => isRecord(entry) ? str(entry['filename'] ?? entry['name']) : str(entry)).filter(Boolean);
 }
 
-export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
+function mailHeaders(data: Record<string, unknown>): string[] {
   const subject = header(data, 'Subject') || '(no subject)';
   const head = [`subject: ${subject}`];
   const from = senderName(data); if (from) head.push(`from: ${from}`);
@@ -251,10 +251,27 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const cc = header(data, 'Cc'); if (cc) head.push(`cc: ${cc}`);
   const tags = labels(data); if (tags.length) head.push(`labels: ${tags.join(', ')}`);
   const files = attachmentNames(data); if (files.length) head.push(`attachments: ${files.join(', ')}`);
-  const body = cleanMailBody(str(data['body']));
+  return head;
+}
+
+/** Full received text for host retention; display cleaning must not destroy reply chains. */
+export function receivedGmailBody(data: Record<string, unknown>): string | undefined {
+  if (data['format'] === 'metadata' || typeof data['body'] !== 'string') return undefined;
+  return `${mailHeaders(data).join('\n')}\n\n${data['body'].replace(/\r\n?/gu, '\n')}`;
+}
+
+export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
+  const head = mailHeaders(data);
+  const metadata = data['format'] === 'metadata';
+  const received = metadata ? '' : str(data['body']).replace(/\r\n?/gu, '\n');
+  const body = cleanMailBody(received);
   const cut = cutAtSentence(body, GMAIL_BODY_CHARS);
-  const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters of body; final, a single message has no partial re-read]` : '';
-  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}`, partial: cut.omitted > 0, originalCharacters: body.length + head.join('\n').length, omittedCharacters: cut.omitted });
+  const coverage = isRecord(data['bodyCoverage']) ? data['bodyCoverage'] : {};
+  const unavailable = !metadata && typeof data['body'] !== 'string';
+  const sourceNote = metadata ? '[Metadata-only view requested; body was not acquired.]' : unavailable ? '[Body unavailable in source response; no body bytes acquired.]' : coverage['complete'] === false ? '[Source reports incomplete inline body coverage.]' : coverage['complete'] !== true ? '[Source inline body completeness is unverified.]' : '';
+  const omitted = Math.max(0, received.length - body.length) + cut.omitted;
+  const note = omitted > 0 ? `\n\n[omitted: ${omitted} received characters of body omitted from this display]` : '';
+  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted });
 }
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {

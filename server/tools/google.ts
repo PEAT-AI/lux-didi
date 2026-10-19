@@ -1,10 +1,12 @@
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import type { CompletedResult, McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { GoogleEvidence, GoogleResult, GoogleTool } from '../connectors/google.js';
+import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import { sha256 } from './canonical.js';
-import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, type ShapedResult, type ShapedSource } from './live-shape.js';
+import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, receivedGmailBody, type ShapedResult, type ShapedSource } from './live-shape.js';
 
 export interface GoogleProjection {
+  [HOST_EVIDENCE]?: HostEvidenceRef;
   calendarPage?: ShapedResult['calendarPage'];
   calendarScope?: ShapedResult['calendarScope'];
   text: string;
@@ -115,7 +117,14 @@ export function projectGoogleResult(port: McpPort, evidence: ConnectorResult): {
   if (token !== undefined && token !== null && (typeof token !== 'string' || token.length === 0 || token.length > 4096)) return { ok: false, reason: 'invalid_google_continuation' };
   if (typeof token === 'string' && data['nextPageToken'] !== undefined && data['nextPageToken'] !== token) return { ok: false, reason: 'conflicting_google_continuation' };
   if (native['complete'] !== undefined && typeof native['complete'] !== 'boolean') return { ok: false, reason: 'invalid_google_coverage' };
-  return { ok: true, projection: renderGoogleTool(evidence.tool, { ...data, ...(typeof token === 'string' ? { nextPageToken: token } : {}), ...(native['complete'] === false ? { sourceIncomplete: true } : {}) }) };
+  const projection = renderGoogleTool(evidence.tool, { ...data, ...(typeof token === 'string' ? { nextPageToken: token } : {}), ...(native['complete'] === false ? { sourceIncomplete: true } : {}) });
+  const body = evidence.tool === 'gmail_read' ? receivedGmailBody(data) : undefined;
+  if (body !== undefined && evidence.response.state === 'available') {
+    const bodyCoverage = isRecord(data['bodyCoverage']) ? data['bodyCoverage'] : {};
+    const complete = typeof bodyCoverage['complete'] === 'boolean' ? bodyCoverage['complete'] : 'unknown';
+    projection[HOST_EVIDENCE] = { kind: 'remote-body', source: structuredClone(evidence.source), entitySha256: evidence.response.sha256, bodySha256: sha256(body), expiresAt: evidence.response.expiresAt, tool: evidence.tool, body, upstreamComplete: complete, upstreamOmitted: complete === 'unknown' ? 'unknown' : !complete };
+  }
+  return { ok: true, projection };
 }
 
 export type { GoogleEvidence, GoogleResult, GoogleTool, CompletedResult };

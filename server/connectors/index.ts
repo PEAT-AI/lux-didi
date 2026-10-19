@@ -2,7 +2,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/
 import type { CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
-import type { ConnectionEndpoint, ConnectionPolicy, ModelSnapshot } from '../tools/types.js';
+import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot } from '../tools/types.js';
 import { createLuxKnowledgeReader, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
@@ -249,6 +249,7 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
       ...(projection.projection.sources ? { sources: projection.projection.sources } : {}),
     },
     dataClasses: [unknownClass] as DataClass[],
+    ...(projection.projection[HOST_EVIDENCE] ? { [HOST_EVIDENCE]: projection.projection[HOST_EVIDENCE] } : {}),
   };
 }
 function googleStatus(evidence: ConnectorEvidence): { state: 'configured'; reason: string } | undefined {

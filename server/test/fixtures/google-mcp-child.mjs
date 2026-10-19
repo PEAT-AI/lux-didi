@@ -44,7 +44,7 @@ function dataFor(name, args) {
     const count = Math.max(1, Math.min(Number.isInteger(args.maxResults) ? args.maxResults : 10, 10));
     return { messages: Array.from({ length: count }, (_, index) => ({ id: `m${index + 1}`, threadId: `t${index + 1}`, snippet, headers: listHeaders })) };
   }
-  if (name === 'gmail_read') return { id: args.id ?? 'm1', threadId: 't1', headers, body: 'b'.repeat(20000) };
+  if (name === 'gmail_read') return { id: args.id ?? 'm1', threadId: 't1', headers, body: args.format === 'full' ? `${mode === 'quoted' ? 'Latest note.\nOn Monday, Synthetic Sender wrote:\n> Synthetic retained historical evidence.\n' : ''}${'b'.repeat(20000)}` : null, format: args.format ?? 'metadata' };
   if (name === 'gcal_calendars') return { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
   if (name === 'gcal_list') return { events: [{ id: 'e1', summary: 'Synthetic standup', location: 'Room 1', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] };
   return { written: true };

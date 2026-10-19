@@ -1,3 +1,4 @@
+import { forgetHistorySessions } from './history-lifecycle.js';
 import { notFound, badRequest } from './contract.js';
 import type { Transaction, SQLRow } from './contract.js';
 import { entryAndParentOrdinary } from './labels.js';
@@ -459,6 +460,7 @@ export function deleteEntry(tx: Transaction, id: string, deletedAt: string, acto
   tx.run("DELETE FROM source_references WHERE owner_kind = 'entry' AND owner_id = ?", [id]);
   tx.run('DELETE FROM entries WHERE id = ?', [id]);
   tx.run('INSERT INTO entry_tombstones(entry_id, deleted_at, actor, reason_code, source_kind, source_key) VALUES (?, ?, ?, ?, ?, ?)', [id, deletedAt, actor, 'owner_request', sourceKey ? 'live-voice' : null, sourceKey]);
+  if (sourceKey) forgetHistorySessions(tx, [sourceKey.slice(0, 36)], Date.parse(deletedAt));
   return { entryId: id, deletedAt, actor, reasonCode: 'owner_request' };
 }
 

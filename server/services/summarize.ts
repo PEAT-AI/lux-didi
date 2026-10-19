@@ -1,6 +1,7 @@
 import type { ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
+import { historyForgotten } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 
 /**
@@ -170,7 +171,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
   const system = distillationPrompt(options.assistantName);
   const serialize = (work: () => Promise<void>): Promise<void> => {
-    chain = chain.then(work, work);
+    const guarded = async () => { try { await work(); } catch (error) { if (!(error instanceof Error && error.message === 'history_forgotten')) throw error; } };
+    chain = chain.then(guarded, guarded);
     return chain;
   };
 
@@ -189,6 +191,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   async function distill(liveSessionId: string, runOptions: { deadHost?: boolean } = {}): Promise<void> {
     const prepared = options.store.transaction(tx => {
+      if (historyForgotten(tx, liveSessionId)) return null;
       const existing = summaries.getBySession(tx, liveSessionId);
       // A row skipped only for a missing text model is not terminal: with a model configured now, the session is
       // distilled again. Every other skip reason and every complete or failed row stays sealed.

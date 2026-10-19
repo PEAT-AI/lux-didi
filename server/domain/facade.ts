@@ -241,7 +241,7 @@ class Domain implements DomainPort {
         })) } as DomainOperations[K]['output'];
       case 'deleteSummary': {
         const i = input as DomainOperations['deleteSummary']['input'];
-        return summaries.deleteSummary(tx, i.id) as DomainOperations[K]['output'];
+        return summaries.deleteSummary(tx, i.id, clockAt(context).now()) as DomainOperations[K]['output'];
       }
       default: {
         throw new Error(`unknown domain operation: ${String(op)}`);

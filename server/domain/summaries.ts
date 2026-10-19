@@ -1,4 +1,5 @@
 import type { SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
+import { historyForgotten, forgetHistorySessions } from './history-lifecycle.js';
 import { newId } from './util.js';
 
 /**
@@ -91,6 +92,7 @@ export function getBySession(tx: Transaction, liveSessionId: string): SummaryRec
 
 /** Idempotent insert keyed by the unique live_session_id; returns the stored row. */
 export function insertSummary(tx: Transaction, input: InsertSummaryInput): SummaryRecord {
+  if (historyForgotten(tx, input.liveSessionId)) throw new Error('history_forgotten');
   const existing = getBySession(tx, input.liveSessionId);
   if (existing) return existing;
   const id = newId();
@@ -138,6 +140,7 @@ export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
        FROM live_sessions s
        LEFT JOIN conversation_summaries c ON c.live_session_id = s.live_session_id
       WHERE s.lifecycle = 'terminal'
+        AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=s.live_session_id)
         AND (c.id IS NULL OR (c.status = 'skipped' AND c.skip_reason = 'no_text_model'))
       ORDER BY (s.terminal_at IS NULL), s.terminal_at ASC, s.created_at ASC`,
   );
@@ -157,6 +160,7 @@ export function failedDeadlineSessionsWithJournal(tx: Transaction, limit: number
     `SELECT c.live_session_id AS id, c.ended_at AS ended_at
        FROM conversation_summaries c
       WHERE c.status = 'failed' AND c.error_code = 'deadline'
+        AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=c.live_session_id)
         AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)
       ORDER BY (c.ended_at IS NULL), c.ended_at DESC, c.rowid DESC
       LIMIT ?`, [limit],
@@ -169,6 +173,7 @@ export function countFailedDeadlineSessionsWithJournal(tx: Transaction): number 
   const row = tx.get(
     `SELECT COUNT(*) AS n FROM conversation_summaries c
       WHERE c.status = 'failed' AND c.error_code = 'deadline'
+        AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=c.live_session_id)
         AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)`);
   return Number(row?.['n'] ?? 0);
 }
@@ -231,7 +236,7 @@ export function injectedSummaryIdsForSession(tx: Transaction, liveSessionId: str
  * Delete summary `id` and every summary that recorded it as injected (they may repeat it).
  * Returns the ids actually removed.
  */
-export function deleteSummary(tx: Transaction, id: string): { deletedIds: string[]; notFound: boolean } {
+export function deleteSummary(tx: Transaction, id: string, now = Date.now()): { deletedIds: string[]; notFound: boolean } {
   const exists = tx.get('SELECT id FROM conversation_summaries WHERE id=?', [id]);
   if (!exists) return { deletedIds: [], notFound: true };
   const all = listSummaries(tx);
@@ -244,6 +249,7 @@ export function deleteSummary(tx: Transaction, id: string): { deletedIds: string
       if (record.injectedSummaryIds.some(injected => deleted.has(injected))) { deleted.add(record.id); grew = true; }
     }
   }
-  for (const deletedId of deleted) tx.run('DELETE FROM conversation_summaries WHERE id=?', [deletedId]);
-  return { deletedIds: [...deleted], notFound: false };
+  const sessions = all.filter(record => deleted.has(record.id)).map(record => record.liveSessionId);
+  const removed = forgetHistorySessions(tx, sessions, now);
+  return { deletedIds: removed, notFound: false };
 }

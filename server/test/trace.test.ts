@@ -486,3 +486,31 @@ test('O1b-A: two decisions at the same millisecond resolve to the one decided la
     assert.equal(call.continuationAt, T0 + 2_000);
   });
 });
+
+// Release 3x / call 1019: the native player restarts its segment numbers with every session, so the
+// row key carries the live session too. Without it a later session's receipts land on an earlier
+// session's row (and its own event is dropped), which the timeline reads as false gaps.
+test('two sessions sharing one native instance keep their own playback rows and report no false gap', () => {
+  withStore(store => {
+    const EARLY = 'ls-early';
+    const LATE = 'ls-late';
+    const receipt = (session: string, name: 'received' | 'drained', segment: number, at: number): void => {
+      recordPlaybackReceipt(store, session, parsePlaybackReceipt(JSON.stringify({
+        type: 'playback_receipt', receipt: name, segment_seq: segment, source_instance_id: INSTANCE,
+        source_seq: segment, mono_ms: at, wall_ms: at,
+      })));
+    };
+    for (const segment of [1, 2]) { receipt(EARLY, 'received', segment, T0 + segment); receipt(EARLY, 'drained', segment, T0 + 100 + segment); }
+    // The later session re-uses segments 1 and 2 of the same instance and continues past them.
+    for (const segment of [1, 2, 3]) { receipt(LATE, 'received', segment, T0 + 1_000 + segment); receipt(LATE, 'drained', segment, T0 + 1_100 + segment); }
+    const keys = store.transaction(tx => tx.all('SELECT live_session_id, segment_seq FROM trace_playback ORDER BY live_session_id, segment_seq'))
+      .map(row => `${row['live_session_id']}:${row['segment_seq']}`);
+    assert.deepEqual(keys, ['ls-early:1', 'ls-early:2', 'ls-late:1', 'ls-late:2', 'ls-late:3'], 'each session keeps its own row');
+    const early = buildTimeline(readOf(store), EARLY);
+    const late = buildTimeline(readOf(store), LATE);
+    assert.deepEqual(early.unattributedPlayback.map(row => row.receivedAt), [T0 + 1, T0 + 2], 'the earlier session keeps its own receipt times');
+    assert.deepEqual(late.unattributedPlayback.map(row => row.receivedAt), [T0 + 1_001, T0 + 1_002, T0 + 1_003]);
+    assert.deepEqual(early.nativeGaps, [], 'no native gap across sessions');
+    assert.deepEqual(late.nativeGaps, []);
+  });
+});

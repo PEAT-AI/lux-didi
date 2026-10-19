@@ -4,6 +4,8 @@ import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { WebSocket } from 'ws';
+import { onceDetach, pumpOutput } from '../http/live-upgrade.js';
 // Side-effect import: register the intent-tool suite in this process so a declared check runs it
 // (live-session is in the contract scope; the check scripts are not).
 import './intent-tools.test.js';
@@ -594,6 +596,60 @@ test('a consumer whose socket closed ends the session within one second as consu
   h.advance(10_000); scheduler.runDue();
   assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'no second end');
   assert.equal(receipts.filter(record => record.event === 'session_end').length, 1, 'no second receipt');
+});
+
+// Release 3x / call 1019: the app's socket went CLOSING mid-answer and the host kept a response and a
+// delegation open for 28 s, because the output pump's throwing send left an empty catch and only the
+// socket's own close watcher could detach. The pump now detaches once, on the socket, not on the send.
+type PumpSocket = Parameters<typeof pumpOutput>[0];
+const closingSocket = (mode: 'throw' | 'closing', onSend: () => void): PumpSocket => {
+  const socket = { OPEN: 1, readyState: mode === 'throw' ? 1 : 2, bufferedAmount: 0,
+    send(): void { onSend(); socket.readyState = 2; if (mode === 'throw') throw new Error('socket closing'); },
+    close(): void { socket.readyState = 3; } };
+  return socket as unknown as PumpSocket;
+};
+
+async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Promise<void> {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  let finish!: () => void;
+  const work = new Promise<void>(resolve => { finish = resolve; });
+  t.after(() => finish());
+  // Only the detach countdown is under test: the idle, session and call ceilings stay far away.
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 },
+    ...(openDelegation ? { tools: true, beforeTool: () => work } : {}) });
+  const { attachment } = await attached(h);
+  if (openDelegation) {
+    h.f.send({ toolCall: { functionCalls: [{ id: 'open1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    while (!h.calls.length) await tick();
+  }
+  // A response is streaming into the socket the app already cancelled.
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  let sends = 0;
+  const detach = onceDetach(attachment);
+  await pumpOutput(closingSocket(openDelegation ? 'closing' : 'throw', () => { sends += 1; }), attachment, detach, 1_024);
+  detach(); // the socket's own close arrives after the pump and must not detach a second time
+  h.advance(1_000); scheduler.runDue();
+  const terminal = await attachment.done;
+  assert.deepEqual(terminal.terminal, { state: 'cancelled', code: 'consumer_closed' },
+    'the end lands on the consumer-closed bound, not on the five second net');
+  assert.equal(receipts.filter(record => record.event === 'consumer_detach').length, 1, 'one detach, one host line');
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'),
+    [{ event: 'session_end', reason: 'consumer_closed', msAfterStop: 1_000 }]);
+  assert.equal(h.f.clients[0]!.readyState, WebSocket.CLOSED, 'the provider session is closed');
+  assert.equal(sends, openDelegation ? 0 : 1, 'a CLOSING socket is never written to; a throwing one is written once');
+  h.advance(10_000); scheduler.runDue();
+  assert.equal(receipts.filter(record => record.event === 'consumer_gone_end').length, 0, 'the five second net never fires');
+}
+
+test('an output pump whose socket goes CLOSING mid-answer detaches once and ends the session as consumer_closed', async t => {
+  await pumpIntoDeadSocket(t, false);
+});
+
+test('the same socket death with an open delegation detaches once and ends the session as consumer_closed', async t => {
+  await pumpIntoDeadSocket(t, true);
 });
 
 test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {

@@ -1,7 +1,7 @@
 import { ConnectorCompositionError } from '../connectors/index.js';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { WebSocketServer, type WebSocket, type RawData } from 'ws';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { ServiceError } from '../contracts/errors.js';
 import type { Store } from '../runtime/store.js';
 import {
@@ -105,6 +105,40 @@ function parseFrame(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
+/**
+ * One detach per attachment: the socket's close and error watchers and the output pump share it, so a
+ * dead socket detaches the session once, whichever of them sees it first.
+ */
+export function onceDetach(attachment: LiveAttachment): () => void {
+  let detached = false;
+  return () => { if (detached) return; detached = true; attachment.detach(); };
+}
+
+/** The socket surface the output pump needs, so a test can drive a socket that goes CLOSING. */
+type OutputSocket = Pick<WebSocket, 'readyState' | 'bufferedAmount' | 'send' | 'close'>;
+
+/** Drain the session's output onto its socket, then report the terminal the session really reached. */
+export async function pumpOutput(ws: OutputSocket, attachment: LiveAttachment, detach: () => void, maxBufferedBytes: number): Promise<void> {
+  try {
+    for await (const chunk of attachment.output) {
+      if (ws.readyState !== WebSocket.OPEN) { detach(); return; }
+      if (chunk.kind === 'audio') ws.send(chunk.pcm, { binary: true });
+      else if (chunk.marker.kind !== 'terminal') ws.send(JSON.stringify(markerFrame(chunk.marker)), { binary: false });
+      if (ws.bufferedAmount > maxBufferedBytes) { attachment.overflow(); ws.close(1013, 'consumer_backpressure'); return; }
+    }
+  } catch { /* transport failure never invents a delivered terminal or heard audio */ }
+  let snapshot: LiveSessionSnapshot | null = null;
+  try { snapshot = await attachment.done; } catch { snapshot = null; }
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (snapshot?.terminal) {
+    const terminal = snapshot.terminal as { state: string; code?: string };
+    ws.send(JSON.stringify({ type: 'terminal', state: terminal.state, code: terminal.code ?? null, complete: snapshot.journal.complete }), { binary: false });
+  }
+  const code = snapshot?.terminal && 'code' in snapshot.terminal ? snapshot.terminal.code : undefined;
+  if (snapshot && !snapshot.ready && code && /^[a-z][a-z0-9_]{0,63}$/.test(code)) ws.close(1008, `attach_rejected:${code}`);
+  else ws.close(1000, 'terminal');
+}
+
 export interface LiveUpgradeOptions {
   live: LiveService;
   store: Store;
@@ -184,8 +218,9 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       ws.send(JSON.stringify(frame));
       return true;
     });
-    ws.on('error', () => { forgetActions(); attachment.detach(); });
-    ws.on('close', () => { forgetActions(); attachment.detach(); });
+    const detach = onceDetach(attachment);
+    ws.on('error', () => { forgetActions(); detach(); });
+    ws.on('close', () => { forgetActions(); detach(); });
     ws.on('message', (data: RawData, isBinary: boolean) => {
       if (ws.readyState !== ws.OPEN) return;
       if (isBinary) {
@@ -208,24 +243,7 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       attachment.close();
       ws.close(1000, 'client_close');
     });
-    try {
-      for await (const chunk of attachment.output) {
-        if (ws.readyState !== ws.OPEN) { attachment.detach(); return; }
-        if (chunk.kind === 'audio') ws.send(chunk.pcm, { binary: true });
-        else if (chunk.marker.kind !== 'terminal') ws.send(JSON.stringify(markerFrame(chunk.marker)), { binary: false });
-        if (ws.bufferedAmount > options.maxBufferedBytes) { attachment.overflow(); ws.close(1013, 'consumer_backpressure'); return; }
-      }
-    } catch { /* transport failure never invents a delivered terminal or heard audio */ }
-    let snapshot: LiveSessionSnapshot | null = null;
-    try { snapshot = await attachment.done; } catch { snapshot = null; }
-    if (ws.readyState !== ws.OPEN) return;
-    if (snapshot?.terminal) {
-      const terminal = snapshot.terminal as { state: string; code?: string };
-      ws.send(JSON.stringify({ type: 'terminal', state: terminal.state, code: terminal.code ?? null, complete: snapshot.journal.complete }), { binary: false });
-    }
-    const code = snapshot?.terminal && 'code' in snapshot.terminal ? snapshot.terminal.code : undefined;
-    if (snapshot && !snapshot.ready && code && /^[a-z][a-z0-9_]{0,63}$/.test(code)) ws.close(1008, `attach_rejected:${code}`);
-    else ws.close(1000, 'terminal');
+    void pumpOutput(ws, attachment, detach, options.maxBufferedBytes);
   }
 
   return {

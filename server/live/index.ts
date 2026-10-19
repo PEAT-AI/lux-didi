@@ -2302,7 +2302,7 @@ export class LiveSessionOwner {
     }));
     for (const entry of settled) {
       responses.push(entry);
-      // F6-R1: the research reply carries no status field; a present `error` key is the failure shape.
+      // Research failures carry `error`; partial, stopped and retained replies may complete successfully.
       const completed = entry.response['error'] === undefined;
       const status: 'completed' | 'error' = completed ? 'completed' : 'error';
       projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });

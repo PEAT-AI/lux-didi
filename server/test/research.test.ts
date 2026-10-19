@@ -1142,4 +1142,11 @@ test('research 469: stopped known continuation fails while retained delivery rem
   assert.deepEqual(await scheduler.call({ action: 'continue', researchId: 'unknown-synthetic' }, signal), { error: 'unknown_research_run' });
   assert.equal(calls, 1); assert.equal(steps.length, before, 'retained, stopped and unavailable calls fabricate no source steps');
   assert.deepEqual(unavailable, { researchId, error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' });
+  const cancellable = await scheduler.call({ action: 'start', question: 'A new synthetic lookup', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] }, signal);
+  const cancelledId = String(cancellable['researchId']), beforeCancelSteps = steps.length;
+  assert.equal(calls, 2); h.deps.ledger.cancelActive();
+  assert.equal(h.deps.ledger.find(cancelledId)?.cancelled, true); assert.equal(h.deps.ledger.find(cancelledId)?.stopped, false);
+  const cancelled = await scheduler.call({ action: 'continue', researchId: cancelledId }, signal);
+  assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
+  assert.equal(calls, 2); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
 });

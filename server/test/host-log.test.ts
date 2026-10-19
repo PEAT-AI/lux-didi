@@ -133,6 +133,11 @@ test('live_go_away and live_upstream_queue keep counts only', () => {
   assert.deepEqual(safeEvent({ event: 'live_upstream_queue', bufferedBytes: 70000 }), { event: 'live_upstream_queue', bufferedBytes: 70000 });
   assert.equal(safeEvent({ event: 'live_upstream_queue', bufferedBytes: 'x' }), undefined, 'a non-integer depth is refused');
 });
+test('live_stall distinguishes inbound silence from outbound no-progress', () => {
+  assert.deepEqual(safeEvent({ event: 'live_stall', silentMs: 8_000 }), { event: 'live_stall', silentMs: 8_000 });
+  assert.deepEqual(safeEvent({ event: 'live_stall', noProgressMs: 30_000 }), { event: 'live_stall', noProgressMs: 30_000 });
+  assert.equal(safeEvent({ event: 'live_stall', silentMs: 8_000, noProgressMs: 30_000 }), undefined, 'the receipt has exactly one local clock');
+});
 test('live_context_usage and live_dead_air_nudge carry numbers only', () => {
   assert.deepEqual(safeEvent({ event: 'live_context_usage', totalTokens: 15 }), { event: 'live_context_usage', totalTokens: 15 });
   assert.deepEqual(safeEvent({ event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 }), { event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 });

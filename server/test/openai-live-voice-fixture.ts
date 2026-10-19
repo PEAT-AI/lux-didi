@@ -37,6 +37,7 @@ export type Frame = Record<string, unknown>;
 
 export async function fixture(t: TestContext) {
   let peer: WebSocket | undefined;
+  let client: WebSocket | undefined;
   let destination = '';
   let requestPath = '';
   let authorization: string | undefined;
@@ -69,9 +70,10 @@ export async function fixture(t: TestContext) {
     get destination() { return destination; },
     get requestPath() { return requestPath; },
     get authorization() { return authorization; },
+    get clientBufferedAmount() { return client?.bufferedAmount ?? 0; },
     socketFactory: ((url: string, config: Parameters<NonNullable<LiveVoiceAdapterOptions['socketFactory']>>[1]) => {
       destination = url;
-      const client = new WebSocket(`ws://127.0.0.1:${address.port}`, config);
+      client = new WebSocket(`ws://127.0.0.1:${address.port}`, config);
       return client;
     }) satisfies NonNullable<LiveVoiceAdapterOptions['socketFactory']>,
     async frame(n: number): Promise<void> {
@@ -79,6 +81,7 @@ export async function fixture(t: TestContext) {
       await new Promise<void>(resolve => waiters.set(n, resolve));
     },
     send(value: unknown) { peer!.send(JSON.stringify(value)); },
+    corkUpload() { (client as unknown as { _socket: { cork(): void } })._socket.cork(); },
     close(code = 1000, reason = 'fixture') { peer!.close(code, reason); },
   };
 }
@@ -126,6 +129,8 @@ export class FakeSocket extends EventEmitter {
   readyState = 0;
   bufferedAmount = 0;
   readonly sent: string[] = [];
+  completeWrites = true;
+  private readonly pendingWriteCallbacks: ((error?: Error) => void)[] = [];
   pings = 0;
   /** A live peer answers a ping; a dead one does not, which is what the 8 s silence rule measures. */
   answersPings = true;
@@ -136,7 +141,15 @@ export class FakeSocket extends EventEmitter {
       return parsed.type === 'session.input_audio.append' && parsed.audio ? [Buffer.from(parsed.audio, 'base64').byteLength] : [];
     });
   }
-  send(frame: string, callback?: (error?: Error) => void) { this.sent.push(frame); callback?.(); }
+  send(frame: string, callback?: (error?: Error) => void) {
+    this.sent.push(frame);
+    if (!callback) return;
+    if (this.completeWrites) callback();
+    else this.pendingWriteCallbacks.push(callback);
+  }
+  completePendingWrites() {
+    for (const callback of this.pendingWriteCallbacks.splice(0)) callback();
+  }
   close() { if (this.readyState === 3) return; this.readyState = 3; this.emit('close', 1000); }
   terminate() { this.close(); }
   ping() { this.pings += 1; if (this.answersPings) queueMicrotask(() => { if (this.readyState === 1) this.emit('pong'); }); }

@@ -327,11 +327,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak };
   }
   if (value.event === 'live_stall') {
-    // Closed shape (3o): the inbound silence that ended the transport. Size never appears here: an upload
-    // backlog is shed, not a teardown.
-    if (!closedKeys(value, ['event', 'silentMs'])) return;
-    if (!isSafeCount(value.silentMs)) return;
-    return { event: 'live_stall', silentMs: value.silentMs };
+    // The same recovery path owns inbound silence and bounded outbound no-progress. Each receipt carries only the
+    // local duration that selected it. Socket depth and content stay out of the terminal receipt.
+    if (closedKeys(value, ['event', 'silentMs']) && isSafeCount(value.silentMs)) return { event: 'live_stall', silentMs: value.silentMs };
+    if (closedKeys(value, ['event', 'noProgressMs']) && isSafeCount(value.noProgressMs)) return { event: 'live_stall', noProgressMs: value.noProgressMs };
+    return;
   }
   if (value.event === 'playback_rearm') {
     // Closed shape (3o): head starts re-armed after a drain, counted per turn.
@@ -797,8 +797,10 @@ export class HostLog {
   event(raw: unknown): void { const event = safeEvent(raw); if (event) this.append(event); }
   terminal(raw: unknown): void {
     if (!raw || typeof raw !== 'object') return;
+    const state = (raw as { state?: unknown }).state;
     const code = (raw as { code?: unknown }).code;
     if (typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(code)) return;
+    if (state === 'closed') { this.append({ event: 'live_terminal', state, code }); return; }
     this.append({ event: 'host_error', class: 'LiveTerminal', code });
   }
   error(error: unknown): void {

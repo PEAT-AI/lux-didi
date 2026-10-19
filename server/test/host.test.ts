@@ -587,12 +587,15 @@ test('provider terminal diagnostics retain only bounded class and code', async (
   const root = await mkdtemp(join(tmpdir(), 'didi-terminal-log-'));
   try {
     const log = new HostLog(root);
+    log.terminal({ state: 'closed', code: 'closed', message: 'SECRET-clean-close' });
     for (const code of ['provider_setup_rejected', 'protocol_error']) log.terminal({ state: 'failed', code, message: 'SECRET-provider' });
     log.terminal({ state: 'failed', code: 'SECRET invalid code' });
     const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
     const records = text.trim().split('\n').map(line => JSON.parse(line));
-    assert.deepEqual(records.map(({ event, class: kind, code }) => ({ event, class: kind, code })),
-      ['provider_setup_rejected', 'protocol_error'].map(code => ({ event: 'host_error', class: 'LiveTerminal', code })));
+    assert.deepEqual(records.map(({ event, class: kind, state, code }) => ({ event, ...(kind === undefined ? {} : { class: kind }), ...(state === undefined ? {} : { state }), code })), [
+      { event: 'live_terminal', state: 'closed', code: 'closed' },
+      ...['provider_setup_rejected', 'protocol_error'].map(code => ({ event: 'host_error', class: 'LiveTerminal', code })),
+    ]);
     assert.ok(!text.includes('SECRET'));
   } finally { await rm(root, { recursive: true, force: true }); }
 });

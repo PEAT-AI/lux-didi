@@ -77,9 +77,11 @@ const PING_INTERVAL_MS = 5_000;
 const PING_MISSED_LIMIT = 2;
 /** A refused setup keeps 300 characters of the provider's own message: enough to name the field, bounded. */
 const SETUP_ERROR_TEXT_LIMIT = 300;
-/** Stall on liveness (3o): no inbound provider frame of any type and no pong for this long ends the transport.
- *  Upload backlog never does; a slow uplink keeps sending frames while the mic queue is shed (UPLINK_SHED_BYTES). */
+/** Inbound silence and blocked upload progress are separate rules: this limit covers provider frames and pongs. */
 const STALL_SILENCE_MS = 8_000;
+/** A blocked mic upload gets a separate, longer budget. The pinned 20 s slow-uplink window stays live; only a
+ *  full 30 s with no local write completion and no new socket-buffer low uses the existing recovery path. */
+const UPLOAD_NO_PROGRESS_MS = 30_000;
 /** Mic shedding (3o): above this much buffered upload the oldest queued mic frames go, so the model hears the
  *  newest speech instead of a backlog of seconds. Measured on the lossy-uplink session (peak 275,222 B). */
 const UPLINK_SHED_BYTES = 48 * 1024;
@@ -148,7 +150,7 @@ function transcriptMetadata(message: ObjectValue): { providerEventId?: string; p
   };
 }
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
-  maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024, upstreamStallMs: 400,
+  maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024, upstreamStallMs: UPLOAD_NO_PROGRESS_MS,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
   ...liveVoiceTimerDefaults,
 });
@@ -410,6 +412,11 @@ class Session implements LiveVoiceSession {
   private missedPongs = 0;
   private pingTimer: ReturnType<typeof setTimeout> | undefined;
   private lastQueueLogAt: number | undefined;
+  /** One episode in which the newest mic frame is retained behind a full socket. Local progress only: neither a
+   *  send callback nor bufferedAmount says the provider consumed the frame. */
+  private uploadBlockedSince: number | undefined;
+  private uploadBufferedLow: number | undefined;
+  private upstreamStallQueued = false;
   private sequence = 0;
   private secret = '';
   private queue: { event: LiveVoiceEvent; bytes: number }[] = [];
@@ -639,17 +646,48 @@ class Session implements LiveVoiceSession {
     this.recoverable = true;
     this.finish('transport_error', this.upstreamDrop);
   }
+  private clearUploadBlock(): void {
+    this.uploadBlockedSince = undefined;
+    this.uploadBufferedLow = undefined;
+  }
+  private outboundProgress(socket: WebSocket): void {
+    if (this.terminal || socket !== this.socket || this.uploadBlockedSince === undefined) return;
+    this.uploadBlockedSince = Date.now();
+    this.uploadBufferedLow = socket.bufferedAmount;
+  }
+  private queueUpstreamStall(socket: WebSocket, receipt: { silentMs: number } | { noProgressMs: number }): void {
+    if (this.upstreamStallQueued) return;
+    this.upstreamStallQueued = true;
+    hostLogEvent({ event: 'live_stall', ...receipt });
+    queueMicrotask(() => { if (socket === this.socket) this.dropUpstream('stalled', socket); });
+  }
   private watchUpstreamStall(socket: WebSocket): void {
     if (this.terminal || socket !== this.socket) return;
     const now = Date.now();
     const buffered = socket.bufferedAmount;
-    // Liveness, never the upload queue: a lossy uplink keeps inbound frames and pongs flowing while the mic
-    // history is shed, so only real silence ends the transport. Both the writes and the ping tick call this.
     const silentMs = now - this.lastInboundAt;
     if (silentMs >= STALL_SILENCE_MS) {
-      hostLogEvent({ event: 'live_stall', silentMs });
-      queueMicrotask(() => { if (socket === this.socket) this.dropUpstream('stalled', socket); });
+      this.queueUpstreamStall(socket, { silentMs });
       return;
+    }
+    // Shedding always retains the newest mic frame. Arm only while that demand is blocked at the high-water mark.
+    // A new low is net local drain across the episode. Comparing with the immediately prior sample would let
+    // queue oscillation refresh the deadline forever.
+    if (this.micPending.length && buffered >= UPLINK_SHED_BYTES) {
+      if (this.uploadBlockedSince === undefined) {
+        this.uploadBlockedSince = now;
+        this.uploadBufferedLow = buffered;
+      } else if (this.uploadBufferedLow !== undefined && buffered < this.uploadBufferedLow) {
+        this.uploadBlockedSince = now;
+        this.uploadBufferedLow = buffered;
+      }
+      const noProgressMs = now - this.uploadBlockedSince;
+      if (noProgressMs >= this.settings.limits.upstreamStallMs) {
+        this.queueUpstreamStall(socket, { noProgressMs });
+        return;
+      }
+    } else {
+      this.clearUploadBlock();
     }
     if (buffered > QUEUE_LOG_BYTES && (this.lastQueueLogAt === undefined || now - this.lastQueueLogAt >= QUEUE_LOG_INTERVAL_MS)) {
       this.lastQueueLogAt = now;
@@ -1354,6 +1392,7 @@ class Session implements LiveVoiceSession {
       if (!this.checkpoint()) return false;
       if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls++; this.diagnostic.localWriteCallbackPendingPCMBytes += pcmBytes; }
       socket.send(frame, error => {
+        if (!error) this.outboundProgress(socket);
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
@@ -1670,6 +1709,7 @@ class Session implements LiveVoiceSession {
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
+    this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.clearInputEpisode(false);

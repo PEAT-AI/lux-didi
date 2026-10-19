@@ -361,7 +361,7 @@ export class ChatService implements ChatPort {
     const route = this.#config.route;
     return JSON.stringify({ version: 1, provider: route.provider, model: route.model,
       endpoint: route.endpoint, apiVersion: route.apiVersion, keyReference: route.keyReference,
-      allowedClasses: [...route.allowedClasses].sort(), policyVersion: 1 });
+      allowedClasses: [...route.allowedClasses].sort(), ...(route.credentialBinding ? { credentialBinding: route.credentialBinding } : {}), policyVersion: 1 });
   }
   #validConsent(row: SQLRow) {
     const route = this.#config.route;
@@ -402,7 +402,7 @@ export class ChatService implements ChatPort {
     const state = this.#conversation(row).state;
     if (state === 'revoked') throw new ChatError('consent_revoked');
     if (state === 'route_changed') throw new ChatError('route_changed');
-    if (!this.#config.route.available) throw new ChatError('unavailable');
+    if (!this.#config.route.available || !this.#config.route.allows(this.#config.route.allowedClasses)) throw new ChatError('unavailable');
     return row;
   }
   enroll(input: EnrollInput, context: DomainContext): ConversationStatus {

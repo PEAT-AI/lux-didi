@@ -1,9 +1,10 @@
+import { boundTextModel, type PinnedProviderBinding } from './provider-binding.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DomainPort } from '../contracts/domain.js';
 import type { Store } from '../runtime/store.js';
 import { ChatService, type ChatToolsComposition } from '../chat/index.js';
 import { loadProviderConfig } from '../config/index.js';
-import { GeminiAdapter, type Credentials, type Transport } from '../adapters/model/index.js';
+import { type Credentials, type Transport, type ModelPort } from '../adapters/model/index.js';
 import { TRUSTED_SYSTEM_CODE_UNIT_LIMIT, validatePreferences } from '../prompt/index.js';
 
 export type ConnectedStatus = { status: 'unconfigured' } | { status: 'error'; code: string }
@@ -16,10 +17,9 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
   let status: ConnectedStatus = ready ? { status: 'configured', provider: 'gemini', model: ready.profile.modelId }
     : loaded.status === 'disabled' ? { status: 'disabled', provider: 'gemini', model: loaded.profile.modelId }
     : loaded.status === 'error' ? { status: 'error', code: loaded.code } : { status: 'unconfigured' };
-  let model: GeminiAdapter | null = null;
+  let model: ModelPort | null = null; let binding: PinnedProviderBinding | undefined;
   if (ready) {
-    try { model = new GeminiAdapter({ modelId: ready.profile.modelId, keyReference: ready.profile.keyReference,
-      route: ready.route, credentials: testing?.credentials ?? ready.credentials, ...(testing?.transport ? { transport: testing.transport } : {}) }); }
+    try { const bound = boundTextModel(configDir, ready, testing); model = bound.model; binding = bound.binding; }
     catch { ready = null; status = { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' }; }
   }
   const route = ready?.route;
@@ -28,7 +28,8 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,
       endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${ready?.profile.modelId ?? ''}:streamGenerateContent?alt=sse`, apiVersion: 'v1beta', keyReference: 'gemini-primary',
-      allowedClasses: route?.dataClasses ?? [], allows: classes => !!route && classes.every(c => route.dataClasses.includes(c)) },
+      ...(binding ? { credentialBinding: binding.identity } : {}),
+      allowedClasses: route?.dataClasses ?? [], allows: classes => !!route && binding?.current() !== false && classes.every(c => route.dataClasses.includes(c)) },
     preferences: ready?.profile.preferences ?? validatePreferences({ schemaVersion: 1, ownerId: store.assistantId, dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' }, store.assistantId),
     classify: (subject, tx) => {
       if (subject.kind === 'recall') return null;

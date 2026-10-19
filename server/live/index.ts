@@ -917,6 +917,7 @@ export class LiveSessionOwner {
 
   /** Additional authority source for a dispatched job only; Live session lookup remains unchanged. */
   lookupJobAuthority(runId: string): LiveAuthority | null {
+    if (this.#invalidated) return null;
     const job = this.#jobs.list().find(job => job.originSessionId === runId && job.state === 'in_progress');
     return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
   }

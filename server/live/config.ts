@@ -123,7 +123,10 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   const promptText = basePromptText(prompt['text']);
   if (!classes.includes(prompt['dataClass'] as DataClass) || !dataClasses.includes(prompt['dataClass'] as DataClass)) fail('invalid_prompt');
   const dataClass = prompt['dataClass'] as DataClass;
+  const binding = input['credentialBinding'];
+  if (binding !== undefined && (!object(binding) || Object.keys(binding).length !== 2 || typeof binding['accountSha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(binding['accountSha256']) || typeof binding['generation'] !== 'string' || !binding['generation'].length || binding['generation'].length > 256)) fail('invalid_route');
   return Object.freeze({
+    ...(binding !== undefined ? { credentialBinding: Object.freeze({ accountSha256: (binding as Record<string, string>)['accountSha256']!, generation: (binding as Record<string, string>)['generation']! }) } : {}),
     ...(input['overlay'] !== undefined ? { overlay: validatePersonaOverlay(input['overlay']) } : {}),
     ...(input['acceptedPrompt'] !== undefined ? { acceptedPrompt: validateAcceptedPrompt(input['acceptedPrompt']) } : {}),
     provider, liveModelId, voice, keyReference,
@@ -134,10 +137,10 @@ export function validateLiveProfile(input: unknown): LiveProfile {
 }
 
 /** Canonical frozen identity from sanitized fields. Shared by the owner, config and status projection. */
-export function liveIdentityOf(input: { provider: LiveProvider; liveModelId: string; voice: string; keyReference: string; modelId: string; dataClasses: readonly DataClass[] }): string {
+export function liveIdentityOf(input: { provider: LiveProvider; liveModelId: string; voice: string; keyReference: string; modelId: string; dataClasses: readonly DataClass[]; credentialBinding?: LiveProfile['credentialBinding'] }): string {
   return createHash('sha256').update(JSON.stringify({
     provider: input.provider, liveModelId: input.liveModelId, voice: input.voice,
-    keyReference: input.keyReference,
+    keyReference: input.keyReference, ...(input.credentialBinding ? { credentialBinding: input.credentialBinding } : {}),
     route: { enabled: true, modelId: input.modelId, dataClasses: input.dataClasses },
   })).digest('hex');
 }
@@ -146,7 +149,7 @@ export function liveIdentityOf(input: { provider: LiveProvider; liveModelId: str
 export function liveProfileIdentity(profile: LiveProfile): string {
   return liveIdentityOf({
     provider: profile.provider, liveModelId: profile.liveModelId, voice: profile.voice,
-    keyReference: profile.keyReference, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses,
+    keyReference: profile.keyReference, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses, ...(profile.credentialBinding ? { credentialBinding: profile.credentialBinding } : {}),
   });
 }
 

@@ -54,6 +54,7 @@ export interface AcceptedPromptSnapshot {
   readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
 }
 export interface LiveProfile {
+  readonly credentialBinding?: import('../host/provider-binding.js').ProviderBindingIdentity;
   readonly overlay?: import('../prompt/live-persona.js').PersonaOverlay;
   readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: LiveProvider;

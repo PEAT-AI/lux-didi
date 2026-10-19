@@ -1,3 +1,4 @@
+import { boundTextModel } from './provider-binding.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
@@ -25,7 +26,6 @@ import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
 import { loadProviderConfig } from '../config/index.js';
-import { GeminiAdapter } from '../adapters/model/index.js';
 import { createSummarizer } from '../services/summarize.js';
 import type { LiveAuthority, ToolsOwner } from '../tools/types.js';
 
@@ -252,13 +252,11 @@ export async function startHost(config: HostConfig) {
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });
-    let summaryModel: GeminiAdapter | null = null;
+    let summaryModel: import('../adapters/model/types.js').ModelPort | null = null;
     let summaryModelId: string | null = null;
     if (providerLoaded.status === 'ready') {
       summaryModelId = providerLoaded.profile.modelId;
-      try { summaryModel = new GeminiAdapter({ modelId: providerLoaded.profile.modelId, keyReference: providerLoaded.profile.keyReference,
-        route: providerLoaded.route, credentials: config.modelTesting?.credentials ?? providerLoaded.credentials,
-        ...(config.modelTesting?.transport ? { transport: config.modelTesting.transport } : {}) }); }
+      try { summaryModel = boundTextModel(providerConfigDir, providerLoaded, config.modelTesting).model; }
       catch { summaryModel = null; }
     }
     const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',

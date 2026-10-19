@@ -1,5 +1,5 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
-import type { CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
+import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot } from '../tools/types.js';
@@ -33,7 +33,7 @@ export const CONNECTOR_ENVELOPES: Readonly<Record<string, readonly string[]>> = 
 };
 
 /** Transport-neutral evidence handed from a connector reader to its projector. */
-export interface ConnectorEvidence {
+export interface ConnectorEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: string;

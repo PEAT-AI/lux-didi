@@ -1,8 +1,9 @@
+import { hostClockDomain, hostMonotonicMs } from '../../trace/clock.js';
 import { Client, ProtocolError, SdkError, SdkErrorCode, StreamableHTTPClientTransport, isJSONRPCErrorResponse } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { McpRegistry } from './registry.js';
-import { isStdioEndpoint } from './port.js';
+import { isStdioEndpoint, observeMcpCall } from './port.js';
 import type { CallRequest, CallResult, CompletedResult, DiscoveryResult, EndpointConfig, McpBudgets, McpPort, ResultScope, ResultStorePort, SliceRequest, SliceResult, StoredPayload, ToolDefinition } from './port.js';
 
 export interface McpTransportState { endpointId: string; session: number; revision: number; state: 'unavailable' | 'retired'; reason: string; recoverable: boolean }
@@ -59,7 +60,7 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   } catch { throw new PolicyError('sdk_protocol_rejected'); }
   throw new PolicyError('sdk_protocol_rejected');
 }
-interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean; httpStatus?: number; matchingResponse?: boolean; invalidProtocol?: boolean }
+interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; dispatchedAt?: number; dispatchedMonoMs?: number; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean; httpStatus?: number; matchingResponse?: boolean; invalidProtocol?: boolean }
 interface Session { id: number; failures: Set<'availability' | 'hard'>; recoveryOffered?: boolean; client: Client; config: EndpointConfig; operations: Map<number, Operation>; child?: ChildExit; pipeClosed?: boolean; dead?: boolean; deathCounted?: boolean; retiring?: Promise<void> }
 /** Two respawns per connector per session; the third child death suspends with a logged stage. */
 const MAX_RESPAWNS = 2;
@@ -123,6 +124,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     if (config.credentialRef) options.assertCredentialCurrent?.(config.credentialRef);
     if (operation) {
       operation.dispatched = true;
+      operation.dispatchedAt = Date.now(); operation.dispatchedMonoMs = hostMonotonicMs();
       if (typeof packet?.id === 'string' || typeof packet?.id === 'number') operation.requestId = packet.id;
     }
     // Bound GET connection establishment without expiring an idle notification stream.
@@ -401,6 +403,8 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     },
     visibleTools(endpointId: string) { return options.registry.visibleTools(endpointId); },
     async call(request: CallRequest, signal?: AbortSignal): Promise<CallResult> {
+      let observedOperation: Operation | undefined;
+      const invoke = async (): Promise<CallResult> => {
       if (closed) return { state: 'refused', reason: 'adapter-closed' };
       let scope: ResultScope;
       try { scope = options.registry.authorize(request); } catch { return { state: 'refused', reason: 'local-read-grant-refused' }; }
@@ -429,11 +433,12 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         }
         // The SDK assigns the JSON-RPC id synchronously, so the map keys every concurrent call apart.
         const operation: Operation = { scope, signal: localSignal, timeoutMs, dispatched: false };
+        observedOperation = operation;
         const requestId = (session.client as unknown as { _requestMessageId: number })._requestMessageId;
         session.operations.set(requestId, operation);
         try {
           // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
-          if (isStdioEndpoint(session.config)) operation.dispatched = true;
+          if (isStdioEndpoint(session.config)) { operation.dispatched = true; operation.dispatchedAt = Date.now(); operation.dispatchedMonoMs = hostMonotonicMs(); }
           const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: timeoutMs }), localSignal);
           if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
           if (!operation.bytes) {
@@ -479,6 +484,10 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
           }
         }
       } finally { gate.release(); }
+      };
+      const result = await invoke();
+      observeMcpCall(result,observedOperation?.dispatched ? {wire:'observed',dispatchedAt:observedOperation.dispatchedAt!,dispatchedMonoMs:observedOperation.dispatchedMonoMs!,clockDomain:hostClockDomain} : {wire:'not_dispatched'});
+      return result;
     },
     readSlice(request: SliceRequest): SliceResult {
       if (closed) return { state: 'refused', reason: 'adapter-closed' };

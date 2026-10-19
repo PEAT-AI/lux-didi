@@ -1,10 +1,13 @@
+import { diagnosticContentAccess } from '../trace/content.js';
+import { hostLogEvent } from './host-events.js';
+import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
-import { endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
@@ -201,7 +204,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return evidence.tool === call.toolName && source.toolName === call.toolName && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
       && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
   };
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef): ToolResultRef => {
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[]): ToolResultRef => {
     const call = callDTO(input);
     try {
       const commit = (tx: Transaction) => {
@@ -211,7 +214,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         classSet(dataClasses); exact(response, [], Object.keys(response));
         if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
         if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
-        const value = { response: detached(response), dataClasses: [...dataClasses], ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
+        if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
+        const value = { response: detached(response), dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
         if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
         return persistTerminal(tx, call, 'completed', value);
       };
@@ -221,14 +225,18 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     } catch (error) { persistenceFailures.add(call.executionId); throw error; }
   };
   const journal: ToolsOwner['journal'] = {
-    intent(input) {
+    intent(input, capture) {
       const call = callDTO(input);
       return store.transaction(tx => {
         const existing = callRow(tx, call);
         if (existing) { if (existing.intent_json !== intentBytes(tx, call) || existing.execution_id !== call.executionId) throw Error('intent_collision'); return 'existing'; }
         const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call);
         if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('intent_policy_denied');
-        tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state) VALUES (?,?,?,?,?,'intent')", [ownerId, call.runId, call.executionId, call.callId ?? null, intentBytes(tx, call)]);
+        let projection = projectDiagnosticInput(call.toolName,capture);
+        const declaration = 'connector' in bound.policy && typeof bound.policy.connector === 'string' ? connectorDescriptor(bound.policy.connector)?.declarations(bound.policy as ConnectionPolicy).find(item => item.name === call.toolName) : undefined;
+        const sourceAccess = diagnosticContentAccess(tx,call.runId,{ownerId,allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))});
+        if (sourceAccess.state !== 'allowed' || projection.sha256 !== call.argumentsHash || (declaration && !declaration.validate(capture))) projection = {json:null,sha256:call.argumentsHash,fidelity:'hash_only_unsupported_v1',keyCount:projection.keyCount};
+        tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state,input_json,input_sha256,input_fidelity,input_key_count) VALUES (?,?,?,?,?,'intent',?,?,?,?)", [ownerId, call.runId, call.executionId, call.callId ?? null, intentBytes(tx, call),projection.json,projection.sha256,projection.fidelity,projection.keyCount]);
         return 'fresh';
       });
     },
@@ -312,8 +320,18 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return endpointBinding(endpoint) === endpointBinding(p.endpoint);
   };
 
+  const dispatch = createDispatchOwner({store,port,ownerId,
+    current(tx,scope) {
+      const snapshot = validateCallRun(tx,scope.call);
+      return sha256(canonicalJSON(snapshot)) === scope.snapshotSha256 && currentPolicies(tx,snapshot,scope.bound.connectionId) && currentProjection(snapshot,scope.bound.connectionId);
+    },
+    failure(reason,scope) {
+      if (!['context_absent','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent','reuse_context_absent'].includes(reason)) options.log?.({event:'tool_failure',code:'connector_error',tool:scope?.call.toolName ?? 'unattributed',connector:scope?.bound.policy.connector ?? 'unknown',errorClass:'Error',messageHead:'connector_error'});
+      hostLogEvent({event:'tool_diagnostic_capture',reason,runId:scope?.call.runId ?? null,executionId:scope?.call.executionId ?? null});
+    },
+  });
   const owner: ToolsOwner = {
-    journal, resultGate, authorizeDelivery, complete,
+    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
       pruneEvidence();
@@ -483,7 +501,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         const p = bound.policy;
         const descriptor = connectorDescriptor(p.connector);
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', p.connectionId, p.connector);
-        const reader = descriptor.createReader({ port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
+        const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
         for (const name of p.toolNames) {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
@@ -524,7 +542,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               });
               if (!call) return { status: 'failed' };
               let evidence: Awaited<ReturnType<typeof reader.call>>;
-              try { evidence = await reader.call(name, callArgs, context.signal); } catch (error) {
+              try { evidence = await dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal)); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
@@ -551,8 +569,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);
+              const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
               let value: ModelSnapshot;
-              try { value = descriptor.project(evidence, port, p); } catch (error) {
+              try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
                 const code = error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
                   : error instanceof Error ? 'connector_error' : 'handler_outcome';
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
@@ -577,9 +596,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               const hostEvidence = value[HOST_EVIDENCE];
               if (hostEvidence?.kind === 'remote-body') {
                 const body = redactSecretsWithCount({ text: hostEvidence.body }).value.text as string;
-                return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, { ...hostEvidence, body, bodySha256: sha256(body) }) };
+                return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, { ...hostEvidence, body, bodySha256: sha256(body) },sourceRefs) };
               }
-              return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, hostEvidence) };
+              return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, hostEvidence,sourceRefs) };
             },
           });
         }

@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {fixture,profile,text,tail} from './dispatch-diagnostics.integration.mjs';
+import {Store} from '../dist/runtime/store.js';
+import {hostMigrations} from '../dist/host/runtime.js';
+import {composeMcpRuntime} from '../dist/host/mcp.js';
+import {createGoogleReader} from '../dist/connectors/google.js';
+import {createLiveSessionOwner} from '../dist/live/index.js';
+import {runToolCalls} from '../dist/tools/declarations.js';
+const tools=[{name:'gcal_calendars',inputSchema:{type:'object',properties:{maxResults:{type:'integer'}}}},{name:'gcal_list',inputSchema:{type:'object',properties:{calendarId:{type:'string'},maxResults:{type:'integer'},timeMin:{type:'string'},timeMax:{type:'string'}}}}];
+const source=await fixture('gcal_calendars',{},'',params=>JSON.stringify({data:params.name==='gcal_calendars'?{calendars:[{id:'owner@example.invalid',name:'Synthetic calendar',primary:true}]}:{events:[{id:'synthetic-event',summary:'Synthetic event',description:text,start:{dateTime:'2026-10-19T09:00:00Z'}}]}}),tools);
+const dir=mkdtempSync('/tmp/didi-dispatch-composition-'),config=join(dir,'config');mkdirSync(config,{mode:0o700});
+writeFileSync(join(config,'mcp.json'),JSON.stringify({schemaVersion:1,grantMode:'owner-trusted-reads',ownerIdentity:'owner@example.invalid',endpoints:[{id:'synthetic-calendar',connector:'google',transport:'streamable-http',url:source.url,account:'synthetic-account',resource:'calendar',credentialRef:null,enabled:true,allowEgress:true,unknownClass:'ordinary'}]}),{mode:0o600});
+const store=new Store(join(dir,'state'),hostMigrations);let mcp,live,authority;
+const captures=()=>store.transaction(tx=>tx.all('SELECT * FROM tool_dispatch_coverage'));
+try{
+ mcp=await composeMcpRuntime({store,ownerId:store.assistantId,configDir:config,lookupAuthority:async()=>authority});
+ assert.equal(mcp.status().endpoints[0].state,'connected');assert.equal(source.calls.length,1,'exactly one startup identity source attempt');
+ assert.equal(captures().filter(row=>row.kind==='unattributed').length,1,'startup identity reader must use canonical observed source port');
+ assert.equal(store.transaction(tx=>tx.all('SELECT * FROM tool_dispatches')).length,0,'startup source body has no invented conversation owner');
+ const grant=mcp.registry.currentGrant('synthetic-calendar');
+ const warm=createGoogleReader({port:mcp.port,registry:mcp.registry,config:{endpointId:grant.endpointId,generation:grant.generation,schemaDigest:grant.schemaDigest,account:grant.account,resource:grant.resource,family:'calendar'}});
+ assert.equal((await warm.gcalList({calendarId:'owner@example.invalid'})).state,'completed');assert.equal(source.calls.length,2);assert.equal(captures().filter(row=>row.kind==='unattributed').length,2,'calendar digest reader must use canonical observed source port');
+ live=createLiveSessionOwner({store,voice:{},profile,timeZone:'UTC'});const session=live.create({inputClass:'ordinary',idempotencyKey:'synthetic'},{clientId:'synthetic',auditId:'synthetic',authorityEpoch:store.authorityEpoch});
+ const accepted={ownerId:store.assistantId,actorId:'synthetic',runId:session.liveSessionId,authorityEpoch:store.authorityEpoch,revision:1,route:{identity:'synthetic-route',provider:'openai',modelId:'gpt-live-1',allowedClasses:['ordinary']},allowedClasses:['ordinary'],connectionIds:mcp.connectionIds()};
+ const acceptedRunHash=store.transaction(tx=>mcp.owner.snapshotRun(tx,accepted).sha256);authority={...accepted,acceptedRunHash};const definitions=mcp.owner.definitions(accepted.runId),host={runId:accepted.runId,actorId:'synthetic',authorityEpoch:store.authorityEpoch,revision:1,grants:definitions.map(t=>({tool:t.name,effect:t.effect,accountId:t.accountId,resourceId:t.resourceId}))};
+ const batch=await runToolCalls(mcp.owner,[{id:'synthetic-calendar-read',name:'gcal_list',args:{calendarId:'owner@example.invalid'}}],{registry:definitions,host,authority:{isCurrent:async()=>true},control:{signal:new AbortController().signal,deadlineMs:Date.now()+10000},step:0,contentIndex:0,seenIds:new Set(),baseClasses:['ordinary'],authorize:true});assert.equal(batch.error,undefined);assert.equal(source.calls.length,3);
+ const dispatches=store.transaction(tx=>tx.all('SELECT * FROM tool_dispatches'));assert.equal(dispatches.length,1);assert.equal(dispatches[0].run_id,session.liveSessionId);assert(dispatches[0].source_json.includes(tail));assert.equal(dispatches[0].wire_state,'observed');assert.equal(captures().length,2);
+ await mcp.close();mcp=undefined;assert.equal(captures().length,2,'discover and close are not tool source attempts');
+ console.log(JSON.stringify({case:'actual_host_composition_source_owner',startupIdentityWire:1,contextFreeCalendarWire:1,researchWire:1,canonicalBodies:1,unattributedMarkers:2,discoveryAndCloseNotCounted:true}));
+}finally{await live?.shutdown();await mcp?.close();store.close();await source.close();rmSync(dir,{recursive:true,force:true});}

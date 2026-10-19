@@ -80,7 +80,7 @@ export function isToolFailureCode(value: string): value is ToolFailureCode {
 }
 export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode };
 export interface ToolCallJournal {
-  intent(call: ToolCallIntent): 'fresh' | 'existing';
+  intent(call: ToolCallIntent, validatedArguments?: unknown): 'fresh' | 'existing';
   refuse(call: ToolCallRefusal, reason: string): ToolResultRef;
   fail(call: ToolCallIntent, status: 'failed' | 'unknown', reason: string): ToolResultRef;
 }

@@ -120,7 +120,7 @@ export interface ResultStorePort {
 export type DiscoveryResult =
   | { state: 'discovered'; endpointId: string; schemaDigest: string; tools: readonly ToolDefinition[]; observedAt: number }
   | { state: 'unavailable'; reason: string; exception?: { class: string; code: string } };
-export interface CompletedResult {
+export interface CompletedResult extends SourceDispatchEvidence {
   /** Parsed MCP result or JSON-RPC error, separate from exact retained wire bytes. */
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
@@ -137,6 +137,7 @@ export interface McpPort {
   visibleTools(endpointId: string): readonly ToolDefinition[];
   call(request: CallRequest, signal?: AbortSignal): Promise<CallResult>;
   readSlice(request: SliceRequest): SliceResult;
+  recordReuse?(origin: SourceDispatchRef | undefined): void;
   /** Bounded observer for a protocol notification, primarily for hosts/tests. */
   whenSuspended(endpointId: string): Promise<void>;
   close(): Promise<void>;
@@ -148,3 +149,13 @@ export interface McpBudgets {
   maxTools: number;
   projectionChars: number;
 }
+
+export interface CallObservation { wire: 'observed' | 'not_dispatched'; dispatchedAt?: number; dispatchedMonoMs?: number; clockDomain?: string }
+const callObservations = new WeakMap<object, Readonly<CallObservation>>();
+export function observeMcpCall(result: CallResult, observation: CallObservation): void { callObservations.set(result,Object.freeze({...observation})); }
+export function mcpCallObservation(result: CallResult): Readonly<CallObservation> | undefined { return callObservations.get(result); }
+
+export interface SourceDispatchRef { readonly id: string }
+export const SOURCE_DISPATCH: unique symbol = Symbol('source-dispatch');
+export const SOURCE_CHILD_DISPATCHES: unique symbol = Symbol('source-child-dispatches');
+export interface SourceDispatchEvidence { [SOURCE_DISPATCH]?: SourceDispatchRef; [SOURCE_CHILD_DISPATCHES]?: readonly SourceDispatchRef[] }

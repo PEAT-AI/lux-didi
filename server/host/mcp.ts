@@ -177,8 +177,9 @@ export async function composeMcpRuntime(options: {
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
   const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
+  const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
-    const empty: McpRuntimeComposition = { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
+    const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
@@ -344,7 +345,7 @@ export async function composeMcpRuntime(options: {
       if (identitySource && descriptor && expectedIdentities.length) {
         registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource, tools: discovery.tools });
         try {
-          const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+          const reader = descriptor.createReader({ port: sourcePort, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
           // The proof is one read call, so it is bounded by the endpoint's own call deadline (30 s for a
           // configured read connector), never a shorter fixed bound. A healthy connector whose first
           // identity call is slow under host load is proven rather than wrongly marked unproven and
@@ -415,7 +416,7 @@ export async function composeMcpRuntime(options: {
     }));
   };
   const composition: McpRuntimeComposition = {
-    registry, port, owner,
+    registry, port: sourcePort, owner,
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only a connector whose current generation is published and ready is callable.
     connectionIds: () => active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id),

@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
@@ -62,7 +63,7 @@ export interface StdioLuxKnowledgeSource {
 export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSource;
 
 /** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
-export interface LuxKnowledgeEvidence {
+export interface LuxKnowledgeEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   classification: 'unknown';
   capability: 'local-only';
@@ -256,6 +257,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       capability: 'local-only',
       tool,
       source: { ...result.source },
+      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       projection: structuredClone(result.projection),

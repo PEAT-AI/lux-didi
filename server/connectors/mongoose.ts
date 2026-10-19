@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -150,7 +151,7 @@ export interface MongooseConfig {
 }
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
-export interface MongooseEvidence {
+export interface MongooseEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   /** The remote tool the server answered; every granted read tool, not only the typed seven. */
@@ -260,6 +261,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       state: result.state,
       tool,
       source: { ...result.source },
+      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       decodedResult: structuredClone(result.decodedResult),

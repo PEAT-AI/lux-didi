@@ -37,7 +37,7 @@ export const HOST_EVIDENCE: unique symbol = Symbol('host-evidence');
 export type HostEvidenceRef = { kind: 'local-history'; sources: HistorySourceRef[] }
   | { kind: 'remote-body'; source: ResultScope; entitySha256: string; bodySha256: string; expiresAt: number; tool: string; body: string;
       upstreamComplete: boolean | 'unknown'; upstreamOmitted: boolean | 'unknown' };
-export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; [HOST_EVIDENCE]?: HostEvidenceRef }
+export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; [HOST_EVIDENCE]?: HostEvidenceRef }
 export type EvidenceConsumption = { state: 'allowed'; evidence: HostEvidenceRef } | { state: 'refused'; reason: string };
 export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
@@ -55,6 +55,7 @@ export interface ConnectionIntent { expectedPolicySha256: string | null; policy:
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }
 export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused' | 'unavailable'; reason: string };
 export interface ToolsOwner {
+  readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;
   /** Trusted synchronous publication boundary; uses the same canonical checks as resultGate. */
   authorizeDelivery(host: HostContext, bindings: readonly ToolResultBinding[], baseClasses: readonly DataClass[], authority: LiveAuthority | null, signal: AbortSignal): Awaited<ReturnType<ToolResultGate['authorize']>>;

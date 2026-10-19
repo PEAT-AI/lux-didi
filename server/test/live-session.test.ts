@@ -121,6 +121,7 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   provider?: 'gemini' | 'openai';
   tools?: boolean;
+  history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
   mongoose?: boolean;
@@ -258,7 +259,7 @@ async function harness(t: TestContext, overrides: {
       return transport.handleRequest(request);
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
-    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, ...(overrides.history ? { grantMode: 'owner-trusted-reads' as const } : {}), lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
     exposedToolOwner = toolOwner;
     if (overrides.beforeGate) {
       const authorize = toolOwner.resultGate.authorize.bind(toolOwner.resultGate);
@@ -4228,4 +4229,74 @@ test('Mongoose current contract: approved company research reaches the actual SD
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
   assert.match(JSON.stringify(frame), /Synthetic company evidence/);
+});
+
+test('history integration: Live canonical research reads exact sixty-day evidence and stable bounded continuation', async t => {
+  const h = await harness(t, { tools: true, history: true, routeClasses: ['ordinary', 'private', 'sensitive'] });
+  const text = 'Mira decided violet flags. ' + 'Retained synthetic detail. '.repeat(550) + 'Exact final decision.';
+  h.store.transaction(tx => {
+    memory.createSession(tx, { title: 'Synthetic sixty-day discussion', startedAt: NOW - 60 * 86400000, timeZone: 'UTC' }, { now: () => NOW }, 'history-source');
+    memory.appendEntry(tx, { sessionId: 'history-source', text, capturedAt: NOW - 60 * 86400000, timeZone: 'UTC' }, { now: () => NOW }, 'history-entry');
+    for (const subject of [{ kind: 'session' as const, id: 'history-source' }, { kind: 'entry' as const, id: 'history-entry' }]) labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'sensitive' }, NOW);
+  });
+  await attached(h, 'history-research');
+  const reply = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'history-search', 'research', { action: 'start', question: 'What did Mira decide?', lookups: [{ source: 'memory', history: { query: 'Mira', limit: 1 } }, { source: 'knowledge', query: 'synthetic' }] });
+  const search = reply(), pages = search['historyPages'] as Record<string, unknown>[];
+  assert.ok(pages, JSON.stringify(search)); assert.equal(pages.length, 1);
+  const hits = pages[0]!['hits'] as Record<string, unknown>[];
+  assert.equal(hits[0]!['dataClass'], 'sensitive'); assert.match(String(hits[0]!['snippet']), /violet flags/);
+  assert.equal(hits[0]!['date'], new Date(NOW - 60 * 86400000).toISOString());
+  const researchId = String(search['researchId']);
+  await settleLiveTool(h, 'history-detail', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { recordRef: hits[0]!['recordRef'] } }] });
+  let page = (reply()['historyPages'] as Record<string, unknown>[])[0]!;
+  let full = String(page['text']); const firstCursor = page['nextCursor'];
+  assert.equal(full.length, 6000); assert.equal(page['complete'], false);
+  await settleLiveTool(h, 'history-next', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { cursor: firstCursor } }] });
+  const second = (reply()['historyPages'] as Record<string, unknown>[])[0]!;
+  await settleLiveTool(h, 'history-repeat', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { cursor: firstCursor } }] });
+  assert.equal((reply()['historyPages'] as Record<string, unknown>[])[0]!['text'], second['text']);
+  page = second; full += page['text'];
+  while (page['nextCursor']) {
+    await settleLiveTool(h, `history-offset-${full.length}`, 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { cursor: page['nextCursor'] } }] });
+    page = (reply()['historyPages'] as Record<string, unknown>[])[0]!; full += page['text'];
+  }
+  assert.equal(full, text);
+  const rows = h.store.transaction(tx => tx.all("SELECT result_json FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='conversation_history'"));
+  assert.ok(rows.length >= 5); assert.ok(rows.every(row => !String(row['result_json']).includes('fingerprint')));
+  await settleLiveTool(h, 'history-stop', 'research', { action: 'stop', researchId });
+  await settleLiveTool(h, 'history-stopped-read', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { recordRef: hits[0]!['recordRef'] } }] });
+  assert.doesNotMatch(JSON.stringify(reply()), /violet flags|Retained synthetic detail/);
+});
+
+test('history integration: parallel sibling await cannot publish deleted or relabeled local evidence', async t => {
+  for (const mutation of ['none', 'delete', 'relabel'] as const) {
+    const started = deferred<void>(), release = deferred<void>(), collected = deferred<void>();
+    const h = await harness(t, { tools: true, history: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await release.promise; } });
+    h.store.transaction(tx => {
+      memory.createSession(tx, { title: 'Synthetic', startedAt: NOW, timeZone: 'UTC' }, { now: () => NOW }, 'history-parent');
+      memory.appendEntry(tx, { sessionId: 'history-parent', text: 'Mira private decision', capturedAt: NOW, timeZone: 'UTC' }, { now: () => NOW }, 'history-race');
+      for (const subject of [{ kind: 'session' as const, id: 'history-parent' }, { kind: 'entry' as const, id: 'history-race' }]) labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'ordinary' }, NOW);
+    });
+    await attached(h, `history-race-${mutation}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'conversation_history')) collected.resolve(); return result;
+    });
+    const running = settleLiveTool(h, 'history-race-call', 'research', { action: 'start', question: 'Mira and project', lookups: [{ source: 'memory', query: 'Mira' }, { source: 'knowledge', query: 'synthetic' }] });
+    let local = false, remote = false; void collected.promise.then(() => { local = true; }); void started.promise.then(() => { remote = true; });
+    t.after(() => release.resolve());
+    for (let n = 0; n < 1000 && !(local && remote); n++) await tick();
+    assert.ok(local && remote, JSON.stringify({ local, remote, calls: h.calls.map(call => call.name), states: h.store.transaction(tx => tx.all('SELECT state FROM tool_calls')) }));
+    if (mutation === 'delete') h.store.transaction(tx => memory.deleteEntry(tx, 'history-race', new Date(NOW).toISOString(), 'synthetic'));
+    if (mutation === 'relabel') h.store.transaction(tx => labels.correct(tx, { subject: { kind: 'session', id: 'history-parent' }, expectedRevision: 1, dataClass: 'sensitive' }, NOW));
+    release.resolve(); await running;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1);
+    if (mutation === 'none') assert.match(JSON.stringify(frame), /Mira private decision/);
+    else assert.doesNotMatch(JSON.stringify(frame), /Mira private decision/);
+  }
+
 });

@@ -18,7 +18,7 @@ export function isIntentTool(name: string): name is IntentToolName {
 /** One internal read the host issues on the model's behalf. `key` is the sub-call id used on the wire. */
 export interface IntentSubCall { key: string; name: string; args: JsonObject }
 /** The shaped outcome of one internal read, already capped by the connector shaping. */
-export interface IntentSubResult { calendarPage?: CalendarPage; calendarScope?: CalendarScope; binding?: ToolResultBinding; key: string; name: string; ok: boolean; text: string; originalCharacters: number; omittedCharacters: number; code?: string }
+export interface IntentSubResult { historyPage?: JsonObject; calendarPage?: CalendarPage; calendarScope?: CalendarScope; binding?: ToolResultBinding; key: string; name: string; ok: boolean; text: string; originalCharacters: number; omittedCharacters: number; code?: string }
 export interface IntentPlan {
   calls: readonly IntentSubCall[];
   /** Optional second phase: reads derived from the first phase's accepted text (calendar: list

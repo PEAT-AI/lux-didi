@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
+import type { DataClass, HostContext, ToolResultBinding, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
@@ -26,6 +26,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 /** Owner-facing evidence text. The model's own functionResponse keeps the model-only bracket notes;
  * this copy strips them, so the strip call site is exercised without a full tool run. */
 export function ownerEvidenceMarkdown(response: Record<string, unknown>): string {
+  if (response.status === 'ok' && Array.isArray(response.hits)) return response.hits.length ? response.hits.map(hit => hit && typeof hit === 'object' ? String((hit as Record<string, unknown>).snippet ?? '') : '').join('\n').slice(0, 4096) : 'No matching eligible local history. Coverage may be incomplete.';
   const text = typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.';
   return stripModelOnlyNotes(text).slice(0, 4096);
 }
@@ -84,6 +85,7 @@ export class ChatService implements ChatPort {
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
   readonly #toolAuthorities = new Map<string, { context: DomainContext; authority: LiveAuthority; policyMatches: boolean }>();
+  readonly #resultEvidence = new Map<string, { host: HostContext; bindings: ToolResultBinding[] }>();
   readonly #admissionLogged = new Set<string>();
   readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
   readonly #subscribers = new Map<string, Set<Subscription<ChatEvent>>>();
@@ -174,6 +176,9 @@ export class ChatService implements ChatPort {
     let dataClass: 'private' | 'sensitive' = 'private';
     const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
       this.#checkPolicy(run.runId, run.sessionId, context);
+      const evidenceClasses = this.#resultClasses(run.runId);
+      if (evidenceClasses === null) throw new ContextFailure('unavailable');
+      outgoing = { ...outgoing, dataClasses: [...new Set([...outgoing.dataClasses, ...evidenceClasses])] };
       if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
       return model.generate(outgoing, outgoingControl);
     };
@@ -229,7 +234,11 @@ export class ChatService implements ChatPort {
       return answered;
       } }, request, registry: acquire, host, control: { ...control, signal }, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
-      journal: tools.owner.journal, resultGate: tools.owner.resultGate });
+      journal: tools.owner.journal, resultGate: { authorize: async (...args) => {
+        const allowed = await tools.owner.resultGate.authorize(...args);
+        if (allowed.state === 'allowed') this.#resultEvidence.set(run.runId, { host, bindings: structuredClone([...args[1]]) });
+        return allowed;
+      } } });
     // A fenced or throwing acquisition still answers from what it gathered.
     let loop: LoopResult | undefined;
     let failure: unknown;
@@ -245,6 +254,8 @@ export class ChatService implements ChatPort {
     // Read its projection through the SAME canonical gate, never from raw journal JSON.
     if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
       const final = await tools.owner.resultGate.authorize(host, loop?.resultBindings ?? [], request.dataClasses, control.signal);
+      if (final.state === 'allowed') this.#resultEvidence.set(run.runId, { host, bindings: structuredClone(loop?.resultBindings ?? []) });
+      if (final.state !== 'allowed' || this.#resultClasses(run.runId) === null) throw new ContextFailure('unavailable');
       // Only journaled bindings are re-gated here; host-answered composed reads keep the evidence the
       // request seam already persisted, so a later empty projection never wipes it.
       const toolEvidence = final.state === 'allowed' && final.results.length ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : null;
@@ -460,6 +471,14 @@ export class ChatService implements ChatPort {
     if (Buffer.byteLength(JSON.stringify(resolved.records), 'utf8') > MAX_SERIALIZED_SELECTION_BYTES) throw new ChatError('selection_too_large');
     return resolved.records;
   }
+  #resultClasses(runId: string): DataClass[] | null {
+    const evidence = this.#resultEvidence.get(runId);
+    if (!evidence) return [];
+    try {
+      const gate = this.#config.tools!.owner.authorizeDelivery(evidence.host, evidence.bindings, [], this.lookupAuthority(runId), new AbortController().signal);
+      return gate.state === 'allowed' ? [...new Set(gate.results.flatMap(result => result.dataClasses))] : null;
+    } catch { return null; }
+  }
   #summaryCurrent(tx: Transaction, runId: string): boolean {
     const row = tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [runId]);
     const trace = row?.trace ? JSON.parse(String(row.trace)) as { summaryEvidence?: HistoryEvidence } : {};
@@ -641,8 +660,11 @@ export class ChatService implements ChatPort {
   #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private',
     extras: { partial?: true; notReached?: readonly string[] } = {}): RunSnapshot {
     this.#authorize(context);
+    const resultCurrent = this.#resultClasses(run.runId) !== null;
+    if (!resultCurrent) { outcome = 'unavailable'; text = ''; }
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
+      if (!resultCurrent && row.trace) { const trace = JSON.parse(String(row.trace)); tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence: [] }), run.runId]); }
       if (row.state === 'terminal') return this.#snapshot(tx, row, context);
       let entryId: string | null = null;
       if (outcome === 'complete') {
@@ -652,7 +674,7 @@ export class ChatService implements ChatPort {
         entryId = entry.id;
       }
       const max = this.#config.maxPartialChars ?? 100000;
-      const partial = outcome === 'complete' || !this.#summaryCurrent(tx, run.runId) ? '' : text || String(row.partial_text);
+      const partial = outcome === 'complete' || !resultCurrent || !this.#summaryCurrent(tx, run.runId) ? '' : text || String(row.partial_text);
       const changed = tx.run(`UPDATE chat_runs SET state='terminal',outcome=?,final_entry_id=?,terminal_at=?,terminal_epoch=?,
         partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state=?`,
         [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), run.runId, context.assistantId, String(row.authority_epoch), String(row.state)]);
@@ -662,7 +684,7 @@ export class ChatService implements ChatPort {
     this.#emit(final.runId, { type: 'snapshot', sequence: final.sequence, run: final, ...extras }); return final;
   }
   #partial(run: RunSnapshot, context: DomainContext, text: string) {
-    if (!this.#config.store.transaction(tx => this.#summaryCurrent(tx, run.runId))) return;
+    if (this.#resultClasses(run.runId) === null || !this.#config.store.transaction(tx => this.#summaryCurrent(tx, run.runId))) return;
     if (!text) return;
     this.#authorize(context);
     const event = this.#config.store.transaction(tx => {
@@ -785,7 +807,7 @@ export class ChatService implements ChatPort {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';
       try { this.#finish(accepted, context, outcome); }
       catch { this.#emit(accepted.runId, { type: 'resync_required', sequence: accepted.sequence, reason: 'storage_unavailable' }); }
-    } finally { if (timeout !== undefined) clearTimeout(timeout); this.#workers.delete(accepted.runId); }
+    } finally { if (timeout !== undefined) clearTimeout(timeout); this.#config.tools?.owner.releaseEvidence(accepted.runId); this.#resultEvidence.delete(accepted.runId); this.#workers.delete(accepted.runId); }
   }
   #outcome(result: Pick<ModelResult, 'status' | 'text'>): Outcome { return result.status === 'complete' && !result.text.trim() ? 'empty' : result.status; }
 }

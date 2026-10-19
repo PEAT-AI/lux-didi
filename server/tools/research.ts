@@ -1,3 +1,5 @@
+import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
+import type { HistoryArguments } from '../domain/history-reader.js';
 import { calendarRange } from './calendar-window.js';
 import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
@@ -141,7 +143,7 @@ export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', '
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
 
-export interface ResearchLookup { source: LookupSource; query: string }
+export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments }
 /**
  * Per-source outcome of a routed call: read something, read nothing, unreachable, the read failed, or
  * the read was cut short by a deadline. `timeout` is its own value because a cut read is not an empty
@@ -179,6 +181,12 @@ export function normalizeLookups(value: unknown): ResearchLookup[] {
   for (const entry of value) {
     if (!isRecord(entry)) continue;
     const raw = typeof entry['source'] === 'string' ? entry['source'].trim().toLowerCase() : '';
+    if (raw === 'memory' && isRecord(entry['history']) && validateHistory(entry['history'])) {
+      const history = entry['history'] as HistoryArguments, key = JSON.stringify(history);
+      if (!seen.has(key)) { seen.add(key); lookups.push({ source: 'memory', query: typeof history.query === 'string' ? history.query : '', history }); }
+      if (lookups.length === MAX_LOOKUPS) break;
+      continue;
+    }
     const text = optionalString(entry['query']);
     if (text === undefined || !(LOOKUP_SOURCES as readonly string[]).includes(raw)) continue;
     const query = text.trim().slice(0, RESEARCH.queryLimitChars);
@@ -622,6 +630,7 @@ interface CalendarRead {
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
 }
 export interface RunState {
+  historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   calendarScopeAttempted?: boolean;
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
@@ -639,8 +648,8 @@ export interface RunState {
   unavailableReasons: Map<SourceKind, string>;
 }
 
-function invalidateCalendar(run: RunState): void {
-  run.calendar.clear(); run.calendarDelivered.clear();
+function invalidateEvidence(run: RunState): void {
+  run.calendar.clear(); run.calendarDelivered.clear(); run.historyBindings = []; run.historyTokens.clear();
   for (const [key, entry] of run.ledger) if (entry.source === 'calendar') run.ledger.delete(key);
 }
 
@@ -650,6 +659,7 @@ export class ResearchLedger {
   #counter = 0;
   #activeId: string | undefined;
   #last: RunState | undefined;
+  constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
   begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number }): RunState {
     const researchId = input.researchId ?? randomUUID();
@@ -657,7 +667,7 @@ export class ResearchLedger {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       cancelled: false, ended: false, stopped: false,
-      calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
+      historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
       calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(),
     };
     this.#runs.set(researchId, run);
@@ -674,6 +684,7 @@ export class ResearchLedger {
       ...existing, runId: ++this.#counter, direction: input.direction ?? existing.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
       rounds: 0, ops: 0, cancelled: false, ended: false, stopped: false,
+      historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens),
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
@@ -691,19 +702,19 @@ export class ResearchLedger {
   /** A new `start` cancels the previous active run. */
   cancelActive(): void {
     const active = this.#activeId ? this.#runs.get(this.#activeId) : undefined;
-    if (active) { active.cancelled = true; invalidateCalendar(active); }
+    if (active) { this.releaseEvidence?.(this.evidenceBindings(active.researchId)); active.cancelled = true; invalidateEvidence(active); }
   }
   stop(researchId?: string): RunState | undefined {
     const run = researchId === undefined ? this.#last : this.#runs.get(researchId);
-    if (run) { run.stopped = true; run.ended = true; invalidateCalendar(run); }
+    if (run) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.stopped = true; run.ended = true; invalidateEvidence(run); }
     return run;
   }
-  close(): void { for (const run of this.#runs.values()) { run.cancelled = true; invalidateCalendar(run); } }
-  calendarBindings(researchId: string): ToolResultBinding[] {
+  close(): void { for (const run of this.#runs.values()) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.cancelled = true; invalidateEvidence(run); } }
+  evidenceBindings(researchId: string): ToolResultBinding[] {
     const run = this.#runs.get(researchId);
-    return run && !run.cancelled && !run.stopped ? [...run.calendar.values()].flatMap(read => read.bindings) : [];
+    return run && !run.cancelled && !run.stopped ? [...run.historyBindings, ...[...run.calendar.values()].flatMap(read => read.bindings)] : [];
   }
-  calendarCurrent(researchId: string): boolean { const run = this.#runs.get(researchId); return Boolean(run && !run.cancelled && !run.stopped); }
+  evidenceCurrent(researchId: string): boolean { const run = this.#runs.get(researchId); return Boolean(run && !run.cancelled && !run.stopped); }
   delivered(researchId: string, runId: number, keys: readonly string[]): void {
     const run = this.#runs.get(researchId);
     if (!run || run.runId !== runId || run.cancelled || run.stopped) return;
@@ -761,7 +772,7 @@ const scheduleTimer: ResearchTimer = (callback, delayMs) => {
 
 export interface ResearchDeps {
   timeZone?: string;
-  authorizeCalendar?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
+  authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
   now(): number;
   /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
   schedule?: ResearchTimer | undefined;
@@ -795,11 +806,6 @@ export interface ResearchDeps {
   late?: ((event: ResearchLateFindings) => void) | undefined;
   /** R6: the readers a first answer left running, handed over so their completion can be awaited. */
   background?: ((done: Promise<void>) => void) | undefined;
-  /**
-   * K6: her own memory, read locally by the composition that holds it, never over the network.
-   * Absent means a memory lookup reports itself unavailable instead of inventing an answer.
-   */
-  memory?: ((query: string) => { text: string; lines: string[]; total: number } | Promise<{ text: string; lines: string[]; total: number }>) | undefined;
   /** K6: one metadata-only receipt per routed call; defaults to the host log sink. */
   logRouted?: ((event: ResearchRoutedLog) => void) | undefined;
   /** N3/P5: one metadata-only receipt per source read, so its outcome, ms and deadline survive in the host log. */
@@ -821,7 +827,7 @@ export function validateResearch(args: unknown): boolean {
   if (!Object.keys(args).every(key => keys.has(key))) return false;
   const action = args['action'];
   if (action !== 'start' && action !== 'continue' && action !== 'stop') return false;
-  if (args['lookups'] !== undefined && (action !== 'start' || !validLookups(args['lookups']))) return false;
+  if (args['lookups'] !== undefined && (action === 'stop' || !validLookups(args['lookups']))) return false;
   if (action === 'start') return optionalString(args['question']) !== undefined;
   return optionalString(args['researchId']) !== undefined;
 }
@@ -830,9 +836,11 @@ export function validateResearch(args: unknown): boolean {
 function validLookups(value: unknown): boolean {
   if (!Array.isArray(value)) return false;
   return value.every(entry => isRecord(entry)
-    && Object.keys(entry).every(key => key === 'source' || key === 'query')
+    && Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history')
     && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source'])
-    && optionalString(entry['query']) !== undefined);
+    && (entry['source'] === 'memory' && entry['history'] !== undefined
+      ? entry['query'] === undefined && validateHistory(entry['history'])
+      : entry['history'] === undefined && optionalString(entry['query']) !== undefined));
 }
 
 /** The display order and human name of every research source the host loop can read today (R2-R2). */
@@ -847,7 +855,7 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  search_knowledge: 'knowledge', search_mongoose: 'mongoose', gcal_list: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
+  conversation_history: 'memory', search_knowledge: 'knowledge', search_mongoose: 'mongoose', gcal_list: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -900,8 +908,9 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
           type: 'array', maxItems: MAX_LOOKUPS,
           description: 'Optional: the layers to read, one lookup each, at most four. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: her own memory of their conversations, what he told her and what he asked her to remember. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: the company knowledge base of who reports to whom, teams, roles, customers, partners and products. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail. chat: his team chat. replies: what is waiting on him in the team chat.',
           items: {
-            type: 'object', additionalProperties: false, required: ['source', 'query'],
+            type: 'object', additionalProperties: false, required: ['source'],
             properties: {
+              history: { ...HISTORY_PARAMETERS, description: 'Only for memory. Canonical local search/date bounds, exact recordRef, or source-native cursor copied from historyPages. Use continue with the same researchId for recordRef or cursor. This cursor is not the top-level consumer continuation cursor. Omit query when history is present.' },
               source: { type: 'string', enum: [...LOOKUP_SOURCES], description: 'The layer this lookup reads.' },
               query: { type: 'string', minLength: 1, maxLength: RESEARCH.queryLimitChars, description: 'A short search string written for that source.' },
             },
@@ -1283,7 +1292,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
  */
 function routedRead(lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
-  if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [] };
+  if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
@@ -1308,7 +1317,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
 
 interface RoutedOutcome {
   lookup: ResearchLookup; kind: LedgerKind; tool: string; source: SourceKind | 'memory';
-  outcome: LookupOutcome; ms: number; lines: string[]; total: number;
+  outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
 }
 
 interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
@@ -1333,14 +1342,14 @@ export function lookupBound(source: SourceKind, lookups: number, remainingMs: nu
  * the number of lookups in the batch. Each lookup still settles on its own outcome from its own
  * sub-results, so a cut or failed read never takes the others down.
  */
-function calendarAllowed(deps: ResearchDeps, run: RunState, signal: AbortSignal): boolean {
+function evidenceAllowed(deps: ResearchDeps, run: RunState, signal: AbortSignal): boolean {
   if (run.cancelled || run.stopped || signal.aborted) return false;
-  try { return deps.authorizeCalendar?.([...run.calendar.values()].flatMap(read => read.bindings), signal) ?? true; }
+  try { return deps.authorizeEvidence?.(deps.ledger.evidenceBindings(run.researchId), signal) ?? true; }
   catch { return false; }
 }
-function deniedCalendar(run: RunState): JsonObject {
-  invalidateCalendar(run); run.cancelled = true;
-  return { researchId: run.researchId, status: 'unavailable', findings: [], canContinue: false, note: 'Calendar results are no longer authorized. Start a new lookup.' };
+function deniedEvidence(run: RunState): JsonObject {
+  invalidateEvidence(run); run.cancelled = true;
+  return { researchId: run.researchId, error: 'tool_result_denied', status: 'unavailable', findings: [], canContinue: false, note: 'Research evidence is no longer authorized. Start a new lookup.' };
 }
 export function markCalendarReply(ledger: ResearchLedger, reply: JsonObject): void {
   const delivery = (reply as CalendarReply)[calendarDelivery];
@@ -1352,22 +1361,22 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
   if (remainingMs <= 0) { run.cutShort.add('calendar'); return; }
   const sourceDeadlineAt = now() + Math.min(RESEARCH.sourceDeadline.calendar, remainingMs);
   const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(RESEARCH.sourceDeadline.calendar, remainingMs)))]);
-  while (now() < sourceDeadlineAt && run.ops < RESEARCH.maxOps && calendarAllowed(deps, run, signal)) {
+  while (now() < sourceDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     const pending = [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight);
     if (pending.length === 0) break;
     const reads = pending.slice(0, RESEARCH.maxOps - run.ops);
     const calls: IntentSubCall[] = reads.map((read, n) => ({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
     const listScope = !run.calendarScopeAttempted && calls.length < RESEARCH.maxOps - run.ops;
     if (listScope) { calls.push({ key: 'calendarScope', name: INTERNAL.calendars, args: { maxResults: 20 } }); run.calendarScopeAttempted = true; }
-    if (!calendarAllowed(deps, run, signal)) break;
+    if (!evidenceAllowed(deps, run, signal)) break;
     for (const read of reads) { read.inflight = true; if (read.nextPageToken) read.tokens.add(read.nextPageToken); }
     run.ops += calls.length;
     let results: IntentSubResult[];
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
-    if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateCalendar(run); break; }
+    if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateEvidence(run); break; }
     if (signal.aborted || now() >= sourceDeadlineAt) { for (const read of reads) { read.failed = true; read.inflight = false; } run.cutShort.add('calendar'); break; }
-    if (!calendarAllowed(deps, run, parent)) { run.cancelled = true; invalidateCalendar(run); break; }
+    if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; invalidateEvidence(run); break; }
     if (listScope) {
       const scope = results[reads.length];
       if (scope?.ok && scope.calendarScope) run.calendarScope = scope.calendarScope;
@@ -1376,9 +1385,9 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.calendarPage || (deps.authorizeCalendar && !result.binding)) { read.failed = true; return; }
+      if (!result?.ok || !result.calendarPage || (deps.authorizeEvidence && !result.binding)) { read.failed = true; return; }
       if (result.binding) read.bindings.push(result.binding);
-      if (!calendarAllowed(deps, run, parent)) { run.cancelled = true; return; }
+      if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.calendarPage;
       for (const [index, event] of page.events.entries()) {
         const instant = Date.parse(event.start);
@@ -1394,7 +1403,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
       if (next) read.nextPageToken = next;
       else { delete read.nextPageToken; read.exhausted = true; }
     });
-    if (run.cancelled) { invalidateCalendar(run); break; }
+    if (run.cancelled) { invalidateEvidence(run); break; }
     if (now() - run.startedAt >= run.deadlineMs) break;
   }
   if (signal.aborted) run.cutShort.add('calendar');
@@ -1427,18 +1436,33 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
     ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
   const done: RoutedOutcome[] = [];
-  // Her own memory is read locally by the composition that holds it, never over the network.
-  const memoryDeadlineMs = RESEARCH.sourceDeadline.memory;
-  const expired = new Promise<'expired'>(resolve => { const timer = setTimeout(() => resolve('expired'), memoryDeadlineMs); timer.unref(); });
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
-    if (deps.memory === undefined) { run.unavailableReasons.set('memory', 'no_reader'); done.push(settle(plan, 'unavailable')); continue; }
+    const args = plan.lookup.history ?? { query: plan.lookup.query };
+    const reference = args.cursor ?? args.recordRef;
+    if (reference && !run.historyTokens.has(reference)) {
+      run.unavailableReasons.set('memory', 'history_reference_unavailable'); done.push(settle(plan, 'unavailable')); continue;
+    }
+    if (!evidenceAllowed(deps, run, context.signal)) { done.push(settle(plan, 'unavailable')); continue; }
+    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(RESEARCH.sourceDeadline.memory)]);
     try {
-      const found = await Promise.race([deps.memory(plan.lookup.query), expired]);
-      // P5: the memory table entry is a real bound, so a stalled local read is a cut read, not silence.
-      if (found === 'expired') { run.cutShort.add('memory'); done.push(settle(plan, 'timeout')); continue; }
-      const lines = found.lines.slice(0, RESEARCH.memoryLines);
-      done.push(settle(plan, lines.length > 0 ? 'ok' : 'empty', lines, found.total));
-    } catch { done.push(settle(plan, 'failed')); }
+      run.ops++;
+      const [result] = await deps.execute(plan.read.subs, signal);
+      if (!result?.ok || !result.binding || !result.historyPage || run.cancelled || run.stopped || signal.aborted) {
+        run.unavailableReasons.set('memory', result?.code ?? 'history_unavailable'); done.push(settle(plan, signal.aborted ? 'timeout' : 'unavailable')); continue;
+      }
+      run.historyBindings.push(result.binding);
+      if (!evidenceAllowed(deps, run, signal)) { done.push(settle(plan, 'unavailable')); continue; }
+      const page = result.historyPage;
+      if (page['status'] !== 'ok') {
+        run.unavailableReasons.set('memory', String(page['status'] ?? 'history_unavailable'));
+        done.push({ ...settle(plan, 'unavailable'), historyPage: page }); continue;
+      }
+      if (typeof page['nextCursor'] === 'string') run.historyTokens.add(page['nextCursor']);
+      const hits = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
+      for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
+      const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
+      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: page });
+    } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); }
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory');
   if (reads.length === 0) return done;
@@ -1549,7 +1573,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         queryChars: outcome.lookup.query.length, queryAuthor: 'routed',
       });
       const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
-      run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
+      if (outcome.source !== 'memory') run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
       if (outcome.source === 'memory') {
         if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
         else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
@@ -1573,6 +1597,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const batch = await routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now });
         record(batch);
         outcomes.push(...batch);
+        first.historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
         const source = batch[0]?.source;
         if (source) {
           first.reading.delete(source);
@@ -1591,7 +1616,10 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     runStatus = cut ? 'failed' : (answered ? 'answered' : 'partial');
     runStop = cut ? 'cancelled' : (answered ? 'answered' : 'insufficient');
     deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
+    if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(run);
     reply = buildReply(run, status, configured, false, limit, sources);
+    const historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
+    reply = withHistoryPages(reply, historyPages);
     logRouted({
       event: 'research_routed', researchId: run.researchId, sources: outcomes.map(outcome => outcome.lookup.source),
       lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
@@ -1613,7 +1641,13 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
  * `firstAnswerMs` when any source has findings; from that moment on each reader that settles with something
  * the reply did not already carry is reported once, so the host can hand it over without holding the turn.
  */
+function withHistoryPages(reply: JsonObject, pages: JsonObject[]): JsonObject {
+  if (!pages.length) return reply;
+  return { ...reply, historyPages: pages, canContinue: reply['canContinue'] === true || pages.some(page => typeof page['nextCursor'] === 'string') };
+}
+
 interface FirstAnswerState {
+  historyPages?: JsonObject[];
   /** When the call answered ahead of its readers; unset until then. */
   at?: number;
   /** Source lines the first reply already carried, so a late block never repeats one. */
@@ -1664,12 +1698,17 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   if (view === undefined) return undefined;
   const found = [...view.run.ledger.values()].flatMap(entry => entry.lines ?? []).concat([...view.run.calendar.values()].flatMap(read => [...read.events.values()].map(event => event.line)));
   // No source has findings yet, so there is no answer to give: the call waits, as today, to its own budget.
-  if (found.length === 0) return loop;
+  if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) return loop;
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
-  const reply = buildReply(view.run, 'partial', view.configured, false, view.limit);
+  if (!evidenceAllowed(deps, view.run, new AbortController().signal)) return deniedEvidence(view.run);
+  const reply = withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []);
   const shown = Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [];
   for (const finding of shown) for (const line of (finding.text ?? '').split('\n').slice(1)) first.seen.add(lineKey(line));
   for (const read of view.run.calendar.values()) for (const event of read.events.values()) if (shown.some(finding => finding.text?.includes(event.line))) first.seen.add(lineKey(event.line));
+  for (const page of first.historyPages ?? []) {
+    if (typeof page['text'] === 'string') first.seen.add(lineKey(page['text']));
+    if (Array.isArray(page['hits'])) for (const hit of page['hits']) if (isRecord(hit) && typeof hit['snippet'] === 'string') first.seen.add(lineKey(hit['snippet']));
+  }
   first.at = deps.now();
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
@@ -1681,10 +1720,10 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const first: FirstAnswerState = { seen: new Set(), delivered: new Set(), reading: new Set() };
   const loop = runResearchLoop(deps, call, signal, first);
   const early = await firstAnswerOf(deps, first, loop);
-  if (early === undefined) { const reply = await loop; if (!deps.authorizeCalendar) markCalendarReply(deps.ledger, reply); return reply; }
+  if (early === undefined) { const reply = await loop; if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply); return reply; }
   // The call answers now. The readers keep going to their own deadlines, so their findings still land.
   deps.background?.(loop.then(() => undefined, () => undefined));
-  if (!deps.authorizeCalendar) markCalendarReply(deps.ledger, early);
+  if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, early);
   return early;
 }
 
@@ -1730,16 +1769,18 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   run.direction = call.direction ?? run.direction;
   first.snapshot = () => ({ run, configured, limit });
 
-  if (call.action === 'continue' && run.calendar.size > 0) {
-    if (!calendarAllowed(deps, run, signal)) return deniedCalendar(run);
+  if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(run);
+  if (call.action === 'continue' && run.calendar.size > 0 && call.lookups === undefined) {
+    if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(run);
     const pendingLocal = [...run.calendar.values()].some(read => [...read.events].some(([key]) => !run.calendarDelivered.has(key)));
     if (!pendingLocal) await collectCalendar(deps, run, signal, Math.min(RESEARCH.sourceDeadline.calendar, run.deadlineMs), now);
-    if (!calendarAllowed(deps, run, signal)) return deniedCalendar(run);
+    if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(run);
     return buildReply(run, 'answered', configured, false, limit);
   }
 
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
-  const lookups = call.action === 'start' ? normalizeLookups(call.lookups) : [];
+  const lookups = normalizeLookups(call.lookups);
+  if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
   if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
 
   const perRound: ResearchRunLog['perRound'] = [];

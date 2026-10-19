@@ -99,6 +99,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   const persistenceFailures = new Set<string>();
   const historyReader = createHistoryReader();
   const retained = new Map<string, { runId: string; executionId: string; resultSha256: string; evidence: HostEvidenceRef }>();
+  const pruneEvidence = (): void => {
+    for (const [id, value] of retained) if (value.evidence.kind === 'remote-body' && value.evidence.expiresAt <= Date.now()) retained.delete(id);
+  };
   const connection = (tx: Transaction, id: string): BoundConnection => {
     const row = tx.get("SELECT c.*,COALESCE(s.binding_mode,'legacy') AS binding_mode FROM tool_connections c LEFT JOIN tool_connection_semantics s ON s.owner_id=c.owner_id AND s.connection_id=c.connection_id WHERE c.owner_id=? AND c.connection_id=?", [ownerId, id]);
     if (!row || typeof row.policy_json !== 'string' || sha256(row.policy_json) !== row.policy_sha256) throw Error('connection_policy_missing_or_corrupt');
@@ -246,6 +249,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     },
   };
   const authorizeDelivery: ToolsOwner['authorizeDelivery'] = (host, bindings, baseClasses, liveInput, signal) => {
+    pruneEvidence();
     if (signal.aborted) return { state: 'refused', reason: 'cancelled' };
     if (!liveInput) return { state: 'refused', reason: 'authority_denied' };
     const live = detached(liveInput); const { acceptedRunHash, ...liveAcceptance } = live;
@@ -308,6 +312,22 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
 
   const owner: ToolsOwner = {
     journal, resultGate, authorizeDelivery, complete,
+    releaseEvidence(runId, bindings) {
+      pruneEvidence();
+      if (bindings === undefined) historyReader.releaseRun(runId);
+      const selected = bindings ? new Set(bindings.map(binding => binding.result.id)) : undefined;
+      for (const [id, reference] of retained) if (reference.runId === runId && (!selected || selected.has(id))) {
+        if (reference.evidence.kind === 'local-history' && selected) {
+          const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND result_id=?', [ownerId, runId, id]));
+          if (typeof row?.result_json === 'string') {
+            const response = (JSON.parse(row.result_json) as ModelSnapshot).response;
+            const tokens = [response['nextCursor'], response['recordRef'], ...(Array.isArray(response['hits']) ? response['hits'].map(hit => hit && typeof hit === 'object' && !Array.isArray(hit) ? hit['recordRef'] : null) : [])].filter((value): value is string => typeof value === 'string');
+            historyReader.releaseReferences(tokens);
+          }
+        }
+        retained.delete(id);
+      }
+    },
     consumeEvidence(host, binding, authority, signal) {
       const authorized = authorizeDelivery(host, [binding], [], authority, signal);
       if (authorized.state !== 'allowed') return authorized;

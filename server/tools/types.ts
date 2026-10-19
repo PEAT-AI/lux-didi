@@ -58,6 +58,7 @@ export interface ToolsOwner {
   journal: ToolCallJournal; resultGate: ToolResultGate;
   /** Trusted synchronous publication boundary; uses the same canonical checks as resultGate. */
   authorizeDelivery(host: HostContext, bindings: readonly ToolResultBinding[], baseClasses: readonly DataClass[], authority: LiveAuthority | null, signal: AbortSignal): Awaited<ReturnType<ToolResultGate['authorize']>>;
+  releaseEvidence(runId: string, bindings?: readonly ToolResultBinding[]): void;
   consumeEvidence(host: HostContext, binding: ToolResultBinding, authority: LiveAuthority | null, signal: AbortSignal): EvidenceConsumption;
   applyConnection(policy: ConnectionPolicy): void;
   applyConnectionIntent(intent: ConnectionIntent): ConnectionApplyResult;

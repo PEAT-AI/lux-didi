@@ -16,7 +16,7 @@ export interface HistorySourceRef {
 export interface HistoryEvidence { sources: HistorySourceRef[] }
 export interface HistoryResult { response: JsonObject; dataClasses: DataClass[]; evidence: HistoryEvidence }
 interface RecordValue { ref: HistorySourceRef; text: string; metadata: JsonObject; date: number }
-interface SearchSnapshot { scope: string; expires: number; sources: HistorySourceRef[]; references: string[]; coverage: JsonObject; limit: number }
+interface SearchSnapshot { runId: string; scope: string; expires: number; sources: HistorySourceRef[]; references: string[]; coverage: JsonObject; limit: number }
 interface Position { snapshot: SearchSnapshot; index: number; offset: number; detail: boolean }
 const PAGE_CHARACTERS = 6000;
 const REFERENCE_LIFETIME_MS = 30 * 60_000;
@@ -139,11 +139,17 @@ export function validHistoryArguments(value: unknown): value is HistoryArguments
 }
 
 /** Metadata snapshots belong to the ToolsOwner lifetime; restart never rehydrates an untrusted cursor. */
-export function createHistoryReader(now: () => number = Date.now): { read(tx: Transaction, scope: HistoryScope, args: HistoryArguments): HistoryResult } {
+export function createHistoryReader(now: () => number = Date.now): { read(tx: Transaction, scope: HistoryScope, args: HistoryArguments): HistoryResult; releaseRun(runId: string): void; releaseReferences(tokens: readonly string[]): void } {
   const positions = new Map<string, Position>();
   const unavailable = (status: string): HistoryResult => ({ response: { status, hits: [], nextCursor: null }, dataClasses: [], evidence: { sources: [] } });
   const token = (position: Position): string => { const id = randomUUID(); positions.set(id, position); return id; };
-  return { read(tx, scope, args) {
+  return {
+    releaseRun(runId) { for (const [id, position] of positions) if (position.snapshot.runId === runId) positions.delete(id); },
+    releaseReferences(tokens) {
+      const snapshots = new Set(tokens.flatMap(id => positions.get(id)?.snapshot ? [positions.get(id)!.snapshot] : []));
+      for (const [id, position] of positions) if (snapshots.has(position.snapshot)) positions.delete(id);
+    },
+    read(tx, scope, args) {
     if (!validHistoryArguments(args)) return unavailable('invalid_history_arguments');
     for (const [id, value] of positions) if (value.snapshot.expires <= now()) positions.delete(id);
     const scopeKey = digest(scope);
@@ -158,7 +164,7 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
       const ranked = records.map(value => ({ value, score: tokens.reduce((sum, term) => sum + (fold(value.text).includes(term) ? 1 : 0), 0) }))
         .filter(({ value, score }) => (!tokens.length || score > 0) && (!args.from || value.date >= Date.parse(args.from)) && (!args.to || value.date < Date.parse(args.to)))
         .sort((a, b) => b.score - a.score || b.value.date - a.value.date || String(a.value.metadata.sourceId).localeCompare(String(b.value.metadata.sourceId)));
-      const snapshot: SearchSnapshot = { scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: args.limit ?? 10 };
+      const snapshot: SearchSnapshot = { runId: scope.runId, scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: args.limit ?? 10 };
       snapshot.references = snapshot.sources.map((_, index) => token({ snapshot, index, offset: 0, detail: true }));
       position = { snapshot, index: 0, offset: 0, detail: false };
     }

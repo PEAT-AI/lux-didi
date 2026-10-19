@@ -104,7 +104,7 @@ test('calendar retained remainder is invalidated by a new start, cancellation, c
     if (mode === 'authority') {
       const execute = h.deps.execute;
       h.deps.execute = async (calls, abort) => (await execute(calls, abort)).map(result => ({ ...result, binding: { executionId: result.key } as NonNullable<IntentSubResult['binding']> }));
-      h.deps.authorizeCalendar = () => allowed;
+      h.deps.authorizeEvidence = () => allowed;
     }
     const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
     const previous = h.calls.length;
@@ -263,7 +263,7 @@ test('calendar R6: a distinct Scheduler Start owns a new window and invalidates 
   try {
     const next = await scheduler.call({ action: 'start', question: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
     assert.notEqual(next['researchId'], first['researchId']);
-    assert.equal(h.deps.ledger.calendarCurrent(String(first['researchId'])), false);
+    assert.equal(h.deps.ledger.evidenceCurrent(String(first['researchId'])), false);
     assert.match(JSON.stringify(next['findings']), /2026-10-21/);
     assert.doesNotMatch(JSON.stringify(next['findings']), /2026-10-19/);
     const old = await scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());

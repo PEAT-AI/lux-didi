@@ -10,7 +10,7 @@ import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
-import { memoryLookup } from '../tools/memory-search.js';
+import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -1185,7 +1185,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
-      researchLedger: new ResearchLedger(),
+      researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2175,6 +2175,7 @@ export class LiveSessionOwner {
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {
     const names = new Set(handle.registry.map(tool => tool.name));
     const sources: ResearchSourceKind[] = [];
+    if (names.has(HISTORY_IDENTITY.name)) sources.push('memory');
     if (names.has('search_knowledge')) sources.push('knowledge');
     // Outcome 3: detect a source by the tool its read actually uses, never a sibling, so a calendar
     // read is never advertised when the connection only grants the calendar-list sibling.
@@ -2222,21 +2223,20 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused';
-        return { key: call.id, name: call.name, ok, text, ...(ok && accepted ? { binding: accepted.binding } : {}),
+        return { key: call.id, name: call.name, ok, text,
+          ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
           ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
           ...(ok && call.name === 'gcal_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: this.#timeZone,
-      authorizeCalendar: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
+      authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(), selector: this.#research, execute,
-      // K6: her own memory is local, so the routed `memory` layer reads it in process and never goes out.
-      memory: query => this.#store.transaction(tx => memoryLookup(tx, query)),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -2324,10 +2324,10 @@ export class LiveSessionOwner {
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
     if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
-    if (event.source === 'calendar') {
-      if (!handle.researchLedger.calendarCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
+    {
+      if (!handle.researchLedger.evidenceCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
       try {
-        if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.calendarBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
+        if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.evidenceBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
       } catch { return drop('result_denied'); }
     }
     const think = handle.session.sendThinking;
@@ -2567,12 +2567,12 @@ export class LiveSessionOwner {
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     const researchDeliveryBindings = new Map<number, ToolResultBinding[]>();
-    for (const [index, entry] of responses.entries()) if (entry.name === RESEARCH_TOOL_NAME && entry.response['calendarCoverage']) {
+    for (const [index, entry] of responses.entries()) if (entry.name === RESEARCH_TOOL_NAME && (entry.response['calendarCoverage'] || entry.response['historyPages'] || handle.researchLedger.evidenceBindings(String(entry.response['researchId'] ?? '')).length > 0)) {
       const id = String(entry.response['researchId'] ?? '');
-      if (!handle.researchLedger.calendarCurrent(id)) {
+      if (!handle.researchLedger.evidenceCurrent(id)) {
         responses[index] = { id: entry.id, name: entry.name, response: { error: 'tool_result_denied' } };
         projections[index] = { name: entry.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
-      } else researchDeliveryBindings.set(index, handle.researchLedger.calendarBindings(id));
+      } else researchDeliveryBindings.set(index, handle.researchLedger.evidenceBindings(id));
     }
     if (researchDeliveryBindings.size > 0 && this.#tools && handle.host) {
       for (const [index, bindings] of researchDeliveryBindings) {
@@ -2681,6 +2681,7 @@ export class LiveSessionOwner {
     this.#closeTurn(handle, 'session_end');
     handle.terminal = true;
     handle.researchLedger.close();
+    this.#tools?.owner.releaseEvidence(handle.liveSessionId);
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();

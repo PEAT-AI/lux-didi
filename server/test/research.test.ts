@@ -28,7 +28,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: ResearchDeps['memory'] } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -51,7 +51,15 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
-    ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+  };
+  const execute = deps.execute;
+  deps.execute = async (calls, signal) => {
+    if (!calls.every(call => call.name === 'conversation_history')) return execute(calls, signal);
+    return calls.map(call => {
+      const found = opts.memory?.(String(call.args['query'] ?? ''));
+      return { key: call.key, name: call.name, ok: !!found, text: '', originalCharacters: 0, omittedCharacters: 0,
+        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
+    });
   };
   return { deps, progress, logs, subcalls, executed, joined };
 }
@@ -926,7 +934,7 @@ test('R6: a call answers at 4.5 s with the layers still reading, then hands over
   const reply = await call;
   assert.deepEqual(reply['pending'], ['knowledge'], 'the reply names the layer still reading');
   assert.equal(reply['status'], 'partial');
-  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'memory'), 'the finding in hand is in the reply');
+  assert.match(JSON.stringify(reply['historyPages']), /dentist on Friday/, 'the canonical page in hand is in the reply');
   assert.deepEqual(first.map(entry => [entry.event, entry.ms, entry.settled, entry.pending]), [['research_first_answer', 4_500, ['memory'], ['knowledge']]], 'one receipt names the moment and the two lists');
   assert.equal(late.length, 0, 'nothing is reported while the reader is still working');
   gate.resolve();
@@ -1046,7 +1054,7 @@ test('R6/M2: stop reaches a run that answered ahead of its readers', async () =>
   const stopped = await scheduler.call({ action: 'stop', researchId: id }, controller.signal);
   assert.equal(stopped['researchId'], id, 'stop finds the run the first answer left reading');
   assert.equal(h.deps.ledger.find(id)?.stopped, true, 'and records that run stopped');
-  assert.ok((stopped['findings'] as unknown[]).length > 0, 'with what it already knew');
+  assert.equal(stopped['historyPages'], undefined, 'stop never republishes copied local evidence');
   gate.resolve();
   controller.abort();
   await reading;
@@ -1081,7 +1089,7 @@ test('R6/M2: continue reaches a run that answered ahead of its readers', async (
   gate.resolve();
   const reply = await continuing;
   assert.equal(reply['researchId'], id, 'continue addresses the same run, never a second one beside it');
-  assert.ok((reply['findings'] as unknown[]).length > 0, 'and reuses the ledger the first answer wrote');
+  assert.equal(reply['historyPages'], undefined, 'local continuation requires an explicit canonical reference');
   controller.abort();
   await reading;
 });

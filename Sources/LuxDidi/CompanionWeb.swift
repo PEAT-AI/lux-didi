@@ -48,7 +48,8 @@ enum PageRoute {
     private(set) var surfaceGeneration: UInt64 = 0
     private(set) var surfaceVisible = false
     private var visibilityAppliedAttempt: Int?
-    @Published private(set) var state: PageState = .unavailable
+    var onStateChanged: (() -> Void)?
+    @Published private(set) var state: PageState = .unavailable { didSet { onStateChanged?() } }
     @Published private(set) var detail = "Connect to the approved service."
     private(set) var deniedNavigations = 0
     private(set) var deniedPopups = 0
@@ -104,9 +105,18 @@ enum PageRoute {
         }
         try Task.checkCancellation()
         guard state == .ready, route.approves(descriptor, webView.url) else { throw CompanionError.unavailable }
+        while ContinuousClock.now < deadline {
+            let installed = try await webView.evaluateJavaScript("typeof window.didiPrepareSurface==='function'") as? Bool == true
+            if installed { break }
+            try await Task.sleep(nanoseconds: 16_000_000)
+            try Task.checkCancellation()
+            guard surfaceGeneration == generation, state == .ready, route.approves(descriptor, webView.url) else { throw CompanionError.unavailable }
+        }
+        try Task.checkCancellation()
+        guard surfaceGeneration == generation, state == .ready, route.approves(descriptor, webView.url) else { throw CompanionError.unavailable }
         let result = try await webView.callAsyncJavaScript(
             "if(typeof window.didiPrepareSurface!=='function')throw Error('paint_unavailable');return window.didiPrepareSurface(generation)",
-            arguments: ["generation": Double(generation)], in: nil, in: .page)
+            arguments: ["generation": Double(generation)], in: nil, contentWorld: .page)
         try Task.checkCancellation()
         guard surfaceGeneration == generation, state == .ready, route.approves(descriptor, webView.url),
               let proof = result as? [String: Any], proof["generation"] as? Double == Double(generation),
@@ -119,7 +129,7 @@ enum PageRoute {
         surfaceVisible = visible
         guard state == .ready, route.approves(descriptor, webView.url) else { return }
         visibilityAppliedAttempt = attempt
-        webView.evaluateJavaScript("window.didiSetSurfaceVisible&&window.didiSetSurfaceVisible(\(visible),\(generation))", completionHandler: nil)
+        webView.evaluateJavaScript("if(window.didiSetSurfaceVisible){window.didiSetSurfaceVisible(\(visible),\(generation))}else{window.didiNativeSurfaceVisible=\(visible)}", completionHandler: nil)
     }
 
     func publishOrb(_ script: String, generation: UInt64, completion: @escaping @MainActor () -> Void) {
@@ -273,5 +283,21 @@ struct SharedServicePanel: View {
                 }.padding(32)
             }
         }
+    }
+}
+
+/// Binds post-assignment page changes to the current surface owner.
+@MainActor final class CompanionPageObservation {
+    private let current: () -> CompanionWeb?
+    private let changed: (CompanionWeb) -> Void
+    init(current: @escaping () -> CompanionWeb?, changed: @escaping (CompanionWeb) -> Void) {
+        self.current = current; self.changed = changed
+    }
+    func bind(_ shell: CompanionWeb?) {
+        shell?.onStateChanged = { [weak self, weak shell] in
+            guard let self, let shell, current() === shell else { return }
+            changed(shell)
+        }
+        if let shell, current() === shell { changed(shell) }
     }
 }

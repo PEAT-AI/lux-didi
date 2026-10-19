@@ -22,7 +22,8 @@ import WebKit
     @Published var captureStatus: CaptureStatus = .idle
     @Published var notificationStatus: NotificationCapability = .unknown
     @Published var hotkeyStatus = "Registering…"
-    @Published var shell: CompanionWeb?
+    var onShellChanged: (() -> Void)?
+    @Published var shell: CompanionWeb? { didSet { onShellChanged?() } }
     @Published private(set) var liveLimits: NativeLiveLimits?
     @Published private(set) var connections: [NativeLiveConnection] = []
     @Published private(set) var connectionsError: String?
@@ -543,7 +544,8 @@ struct RootView: View {
     private var miniShell: CompanionWeb?
     private var miniPanel: MiniOrbPanel?
     private var miniCookie: HTTPCookie?
-    private var miniStateObservation: AnyCancellable?
+    private lazy var miniPageObservation = CompanionPageObservation(current: { [weak self] in self?.miniShell },
+        changed: { [weak self] _ in self?.syncPresentedSurface() })
     private var presentationTask: Task<Void, Never>?
     private lazy var miniOrb = MiniOrbToggle(
         startLive: { [weak self] in self?.startPresence() },
@@ -575,7 +577,15 @@ struct RootView: View {
     /// `pushSingleKeyState` writes as `window.didiSingleKey`.
     private lazy var singleKey = SingleKeyTrigger()
     private var singleKeyMenuItem: NSMenuItem?
-    private var pageReadyObservation: AnyCancellable?
+    private lazy var fullPageObservation = CompanionPageObservation(current: { [weak self] in self?.model.shell },
+        changed: { [weak self] shell in
+            guard let self else { return }
+            if shell.state == .ready {
+                pushSingleKeyState()
+                presence.setSurfaces()
+            }
+            syncPresentedSurface()
+        })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -654,7 +664,7 @@ struct RootView: View {
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
         model.startMicModeWatching()
-           model.onMiniMode = { [weak self] in self?.showMiniOrb() }
+        model.onMiniMode = { [weak self] in self?.showMiniOrb() }
         model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -712,18 +722,12 @@ struct RootView: View {
         model.appendPresenceReceipt(SingleKeyTrigger.stateReceipt(
             enabled: SingleKeyTrigger.isEnabled, trusted: SingleKeyTrigger.isGranted,
             tapCreated: tapCreated, signing: SingleKeyTrigger.signing))
-        pageReadyObservation = model.$shell
-            .compactMap { $0 }
-            .flatMap { shell in shell.$state.map { state in (shell: shell, state: state) } }
-            .sink { [weak self] pair in
-                guard self?.model.shell === pair.shell else { return }
-                guard pair.state == .ready else { self?.syncPresentedSurface(); return }
-                self?.pushSingleKeyState()
-                // Q4-R1: the launch asked for the surfaces before the host connection existed, so
-                // the mini page had no descriptor to host. The page-ready edge asks again.
-                self?.presence.setSurfaces()
-                self?.syncPresentedSurface()
-            }
+        model.onShellChanged = { [weak self] in
+            guard let self else { return }
+            fullPageObservation.bind(model.shell)
+            if model.shell == nil { syncPresentedSurface() }
+        }
+        fullPageObservation.bind(model.shell)
         menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Toggle Naya ⌃ ⌥ ⇧ Space: " + liveShortcuts.windowStatus, action: nil, keyEquivalent: "")
@@ -1192,7 +1196,7 @@ struct RootView: View {
         guard let descriptor = model.shell?.descriptor ?? (try? ServiceDescriptor.configured()) else { return nil }
         let shell = CompanionWeb(descriptor: descriptor, route: .mini)
         miniShell = shell
-        miniStateObservation = shell.$state.sink { [weak self] _ in self?.syncPresentedSurface() }
+        miniPageObservation.bind(shell)
         miniPanel = nil
         return shell
     }

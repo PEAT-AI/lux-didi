@@ -13,7 +13,7 @@ import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
-import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
+import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
@@ -2399,11 +2399,15 @@ export class LiveSessionOwner {
         return { index, call, intent: call.name, subs: plan.calls.map((sub, n) => ({ key: `${call.id}~${n}`, name: sub.name, args: sub.args })), plan };
       });
       const cache = handle.toolCache;
-      const cached = new Map<number, { response: JsonObject; projection: LiveToolProjection }>();
+      type CachedRead = { response: JsonObject; projection: LiveToolProjection; binding: ToolResultBinding };
+      const cached = new Map<number, CachedRead>();
       const pending: Unit[] = [];
       for (const unit of units) {
-        const hit = unit.intent === undefined && cache.cacheable(unit.call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(unit.call.name, unit.call.args) : undefined;
+        const hit = unit.intent === undefined && cache.cacheable(unit.call.name) ? cache.get<CachedRead>(unit.call.name, unit.call.args) : undefined;
         if (!hit) { pending.push(unit); continue; }
+        const gate = await this.#tools.owner.resultGate.authorize(host, [hit.binding], [handle.inputClass], handle.abort.signal);
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        if (gate.state !== 'allowed') { pending.push(unit); continue; }
         hostLogEvent({ event: 'live_read_cache', tool: unit.call.name, cached: true });
         cached.set(unit.index, hit);
       }
@@ -2505,7 +2509,7 @@ export class LiveSessionOwner {
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         projections[index] = projection;
-        if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection });
+        if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
       // Per-turn metadata only: the traces the council requires before any playback fence.

@@ -100,6 +100,7 @@ function profileInput(limits?: Record<string, number>, model = MODEL, provider: 
 
 interface Harness {
   requests: LiveVoiceRequest[];
+  toolRegistry?: McpRegistry;
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
   owner: LiveSessionOwner;
@@ -167,12 +168,13 @@ async function harness(t: TestContext, overrides: {
   });
   let owner!: LiveSessionOwner;
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
+  let toolRegistry: McpRegistry | undefined;
   if (overrides.tools) {
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
     ];
-    const registry = new McpRegistry();
+    const registry = new McpRegistry(); toolRegistry = registry;
     const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
     registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
     const sdk = new Server({ name: 'live-tools-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -281,7 +283,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { ...(toolRegistry ? { toolRegistry } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 /** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
@@ -4053,3 +4055,18 @@ test('O1b-A: a synthetic tool turn writes one turn, ordered utterances, a tool r
 // The dead-air stall the watchdog sees is projected onto the open turn (stall_reason no_audible_output) and the
 // typed GAP a stalled turn prints are covered by trace.test.ts, which drives the store directly; the watchdog's
 // own nudge path is exercised by the D3 tests above.
+
+
+test('fluency: cached Live metadata cannot bypass suspended or revoked connector authority', async t => {
+  for (const revoked of [false, true]) {
+    const h = await harness(t, { tools: true, calendar: true });
+    await attached(h, `cache-authority-${revoked}`);
+    await settleLiveTool(h, 'before', 'gcal_calendars', {});
+    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+    if (revoked) h.toolRegistry!.revoke('calendar'); else h.toolRegistry!.suspend('calendar');
+    await settleLiveTool(h, 'after', 'gcal_calendars', {});
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.ok(frame.toolResponse.functionResponses[0]!.response['error'], 'cached success must not outlive canonical authority');
+    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'denied cache does not dispatch');
+  }
+});

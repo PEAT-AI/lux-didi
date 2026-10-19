@@ -693,8 +693,8 @@ export class ResearchLedger {
     const active = this.#activeId ? this.#runs.get(this.#activeId) : undefined;
     if (active) { active.cancelled = true; invalidateCalendar(active); }
   }
-  stop(researchId: string): RunState | undefined {
-    const run = this.#runs.get(researchId);
+  stop(researchId?: string): RunState | undefined {
+    const run = researchId === undefined ? this.#last : this.#runs.get(researchId);
     if (run) { run.stopped = true; run.ended = true; invalidateCalendar(run); }
     return run;
   }
@@ -1706,7 +1706,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const stepCallId = call.callId ?? '';
 
   if (call.action === 'stop') {
-    const run = call.researchId ? deps.ledger.stop(call.researchId) : deps.ledger.last();
+    const run = deps.ledger.stop(call.researchId);
     if (!run) return { researchId: call.researchId ?? '', status: 'stopped', findings: [], unchecked: configured, canContinue: false };
     deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: Math.max(0, now() - run.startedAt) });
     const reply = buildReply(run, 'stopped', configured, false, limit);
@@ -2152,7 +2152,11 @@ export function knownReply(ledger: ResearchLedger, researchId: string, configure
 }
 
 interface Deferred { promise: Promise<JsonObject>; resolve: (reply: JsonObject) => void }
+function startSignature(call: ResearchCall): string {
+  return JSON.stringify([call.question?.trim() ?? '', call.sources?.trim() ?? '', call.direction?.trim() ?? '', normalizeLookups(call.lookups)]);
+}
 type ActiveRun = {
+  signature?: string;
   superseded: boolean; awaiter: Deferred;
   /** R6/M2: the readers a first answer left running; the run is over when this settles. */
   reading?: Promise<void>;
@@ -2167,8 +2171,8 @@ function deferred(): Deferred {
  * The per-session research call scheduler (R1-R1, R1-R3, wire facts W1). One run exists per researchId.
  * A new call while a run is pending answers the old call at once with a superseded stub, keeps the
  * run going, and answers the new call with the merged result: `continue` runs on with a fresh budget
- * reusing the ledger, `stop` returns what is known now. A continue or stop with a missing or unknown
- * id applies to the single pending run. Stop is never inferred from transcript text.
+ * reusing the ledger, `stop` returns what is known now. A continue or stop with a missing
+ * id applies to the single pending run; an explicit id never retargets another run. Stop is never inferred from transcript text.
  */
 export class ResearchScheduler {
   readonly #deps: ResearchDeps;
@@ -2177,24 +2181,28 @@ export class ResearchScheduler {
 
   call(call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
     if (call.action === 'start') {
-      // Outcome 7: a second start while a run is in flight joins that run and returns its result,
-      // instead of starting a sequential second run.
       const inflight = this.#resolveTarget(undefined);
-      if (inflight !== undefined) {
+      if (inflight !== undefined && inflight.entry.signature === startSignature(call)) {
         this.#deps.logJoined?.(inflight.id);
         return inflight.entry.awaiter.promise;
       }
+      for (const [id, entry] of this.#active) {
+        this.#deps.ledger.stop(id);
+        entry.superseded = true;
+        entry.awaiter.resolve({ researchId: id, status: 'stopped', findings: [], canContinue: false, superseded: true });
+      }
+      this.#active.clear();
       // Z1: the host mints every run id. A researchId the model supplies on a start is ignored, because
       // a model-chosen id that fails the host log's closed id rule takes the run's receipts with it.
       const id = newResearchId();
       return this.#drive({ ...call, researchId: id }, signal, id);
     }
-    // Z1: a continue that names a run the host never minted is a typed error, never a silent second run.
-    if (call.action === 'continue' && call.researchId !== undefined
+    // An explicit unknown id never selects another run.
+    if (call.researchId !== undefined
       && !this.#active.has(call.researchId) && this.#deps.ledger.find(call.researchId) === undefined) {
       return Promise.resolve({ error: 'unknown_research_run' });
     }
-    // R1-R3: a continue or stop with a missing or unknown id applies to the single pending run.
+    // A missing id may resolve the single pending run; explicit ids are exact.
     const target = this.#resolveTarget(call.researchId);
     if (target !== undefined) {
       // Answer the pending call at once, then take the run over.
@@ -2211,8 +2219,8 @@ export class ResearchScheduler {
     }
     // Zero or several pending runs: current behaviour.
     if (call.action === 'stop') {
-      const id = call.researchId ?? '';
-      const run = this.#deps.ledger.stop(id);
+      const run = this.#deps.ledger.stop(call.researchId);
+      const id = run?.researchId ?? call.researchId ?? '';
       if (run) this.#deps.emit({ researchId: id, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, this.#deps.now() - run.startedAt) });
       return Promise.resolve(knownReply(this.#deps.ledger, id, this.#deps.configured));
     }
@@ -2222,14 +2230,14 @@ export class ResearchScheduler {
 
   /** The run a continue or stop applies to: the named run, or the only pending run (R1-R3). */
   #resolveTarget(researchId: string | undefined): { id: string; entry: ActiveRun } | undefined {
-    if (researchId !== undefined) { const entry = this.#active.get(researchId); if (entry !== undefined) return { id: researchId, entry }; }
+    if (researchId !== undefined) { const entry = this.#active.get(researchId); return entry === undefined ? undefined : { id: researchId, entry }; }
     if (this.#active.size === 1) { const [id, entry] = [...this.#active.entries()][0]!; return { id, entry }; }
     return undefined;
   }
 
   #drive(call: ResearchCall, signal: AbortSignal, id: string): Promise<JsonObject> {
     const awaiter = deferred();
-    const entry: ActiveRun = { superseded: false, awaiter };
+    const entry: ActiveRun = { superseded: false, awaiter, ...(call.action === 'start' ? { signature: startSignature(call) } : {}) };
     this.#active.set(id, entry);
     // R6/M2: a call that answered ahead of its readers is still the run those readers belong to, so stop
     // and continue must find it. The entry leaves the active set only when the run itself has ended.

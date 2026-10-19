@@ -229,25 +229,24 @@ test('a continue with no researchId applies to the single pending run (R1-R3)', 
   assert.equal((await second)['researchId'], firstReply['researchId'], 'the takeover keeps the id the host minted');
 });
 
-test('a stop with an unknown researchId applies to the single pending run (R1-R3)', async () => {
+test('an explicit unknown Stop id cannot select the single pending run', async () => {
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const stopped = await scheduler.call({ action: 'stop', researchId: 'unknown-id' }, new AbortController().signal);
-  assert.equal(stopped['status'], 'stopped');
-  assert.match(String(stopped['researchId']), /^[A-Za-z0-9-]{1,64}$/, 'the reply names the minted run, never the invented id');
-  assert.notEqual(String(stopped['researchId']), 'unknown-id');
-  assert.equal((await first)['superseded'], true);
+  assert.equal(stopped['error'], 'unknown_research_run');
+  assert.equal(h.deps.ledger.last()?.stopped, false);
   gate.resolve();
+  assert.equal((await first)['superseded'], undefined);
 });
 
-test('a second start while a run is in flight joins that run instead of starting a second one', async () => {
+test('an identical start while a run is in flight joins that exact intent', async () => {
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
-  const second = scheduler.call({ action: 'start', question: 'b' }, new AbortController().signal);
+  const second = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
   gate.resolve();
   const [a, b] = await Promise.all([first, second]);
   const minted = String(a['researchId']);

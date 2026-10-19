@@ -239,3 +239,76 @@ test('calendar R5: scheduler Stop invalidates a completed retained run before la
   assert.equal(after['canContinue'], false);
   assert.equal(h.calls.length, calls);
 });
+
+test('calendar R6: a distinct Scheduler Start owns a new window and invalidates in-flight retained evidence', async () => {
+  const h = fixture([]);
+  h.deps.timeZone = 'UTC';
+  let due: (() => void) | undefined, entered!: () => void, release!: () => void;
+  h.deps.schedule = (callback, delay) => { if (delay === 4500) due = callback; return { unref() {}, cancel() {} }; };
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const late: string[] = [];
+  h.deps.late = event => { if (event.items.length) late.push(event.researchId); };
+  h.deps.execute = async subs => {
+    h.calls.push(...subs.map(call => ({ name: call.name, ...call.args })));
+    if (subs.some(call => call.args['pageToken'])) { entered(); await held; }
+    return subs.map(call => call.name === 'gcal_calendars'
+      ? { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 }
+      : { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: Array.from({ length: 12 }, (_, n) => ({ id: `${call.args['timeMin']}:${n}`, start: call.args['timeMin'], summary: `Synthetic ${call.args['timeMin']} event ${n}` })), ...(!call.args['pageToken'] && String(call.args['timeMin']).startsWith('2026-10-19') ? { nextPageToken: 'held-monday-page' } : {}) }) });
+  };
+  const scheduler = new ResearchScheduler(h.deps);
+  const pending = scheduler.call({ action: 'start', question: 'Synthetic Monday', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
+  await started; assert.ok(due); due();
+  const first = await pending;
+  try {
+    const next = await scheduler.call({ action: 'start', question: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
+    assert.notEqual(next['researchId'], first['researchId']);
+    assert.equal(h.deps.ledger.calendarCurrent(String(first['researchId'])), false);
+    assert.match(JSON.stringify(next['findings']), /2026-10-21/);
+    assert.doesNotMatch(JSON.stringify(next['findings']), /2026-10-19/);
+    const old = await scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());
+    assert.deepEqual(old['findings'], []); assert.equal(old['canContinue'], false);
+  } finally { release(); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(h.calls.filter(call => call['pageToken'] === 'held-monday-page').length, 1);
+  assert.deepEqual(late, [], 'the superseded calendar source cannot publish late findings');
+});
+
+test('calendar R5: omitted-id Stop resolves and invalidates the last completed run in both owners', async () => {
+  for (const schedulerOwner of [false, true]) {
+    const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
+    const scheduler = new ResearchScheduler(h.deps);
+    const call = (input: Parameters<typeof runResearch>[1]) => schedulerOwner ? scheduler.call(input, signal()) : runResearch(h.deps, input, signal());
+    const first = await call({ action: 'start', question: 'Synthetic week', lookups: [{ source: 'calendar', query: 'week' }] });
+    await call({ action: 'stop' });
+    assert.equal(h.deps.ledger.find(String(first['researchId']))?.stopped, true);
+    const after = await call({ action: 'continue', researchId: String(first['researchId']) });
+    assert.deepEqual(after['findings'], []); assert.equal(after['canContinue'], false);
+  }
+});
+
+test('calendar R6: an explicit retired id cannot retarget a different pending run', async () => {
+  const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
+  h.deps.timeZone = 'UTC';
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'Synthetic Monday', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const execute = h.deps.execute;
+  h.deps.execute = async (subs, abort) => { if (subs.some(call => String(call.args['timeMin']).startsWith('2026-10-21'))) { entered(); await held; } return execute(subs, abort); };
+  const next = scheduler.call({ action: 'start', question: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
+  await started;
+  const current = h.deps.ledger.last()!;
+  try {
+    const retired = await scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());
+    assert.equal(retired['researchId'], first['researchId']);
+    assert.deepEqual(retired['findings'], []);
+    assert.equal(h.deps.ledger.find(current.researchId)?.stopped, false);
+    assert.equal(h.deps.ledger.find(current.researchId)?.cancelled, false);
+    const unknown = await scheduler.call({ action: 'stop', researchId: 'unminted-id' }, signal());
+    assert.equal(unknown['error'], 'unknown_research_run');
+    assert.equal(h.deps.ledger.find(current.researchId)?.stopped, false);
+  } finally { release(); }
+  await next;
+});

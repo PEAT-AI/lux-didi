@@ -379,31 +379,52 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
 
 /** The most one warm calendar digest may put in the session's Today: line (issue 339). */
 export const CALENDAR_DIGEST_CHARS = 400;
-/** How long the digest's single primary-calendar read may take before the slot stays absent. */
-export const CALENDAR_DIGEST_READ_MS = 5_000;
+/**
+ * The digest's single primary-calendar read budget (1015). It used to be 5 s, which aborted a read the
+ * connector itself allows 40 s for and which measures 1.7 to 6 s, so a Monday morning read was cut
+ * short and reported as an empty day.
+ */
+export const CALENDAR_DIGEST_READ_MS = 30_000;
 
 /** The one read the warm digest needs: the configured connector reader, or the fake a test supplies. */
 export interface CalendarDigestRead {
   gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult>;
 }
 
+/** What one digest read reached. `stale` belongs to the cache that holds it, never to a read. */
+export type CalendarDigestReadState = 'present' | 'empty' | 'failed' | 'timeout' | 'unconfigured';
+
+/** One digest read with its honest state and the time it finished, so a caller can cache it. */
+export interface CalendarDigestReadResult {
+  readonly state: CalendarDigestReadState;
+  readonly text: string | undefined;
+  readonly items: number;
+  readonly fetchedAt: number;
+}
+
 /**
- * Today's events on the owner's primary calendar as one bounded line, or undefined when the
- * connector is unconfigured, the read fails or the day is empty. One read, local host time and no
- * model call, so a silent session start that finds nothing here leaves the slot out entirely.
+ * Today's events on the owner's primary calendar as one bounded line, with the state the read reached:
+ * `present` or `empty` for a completed read, `failed` for a refusal or an unreadable answer and
+ * `timeout` for a read the budget aborted. A failure is never reported as an empty day. One read,
+ * local host time and no model call, so a silent session start that finds nothing leaves the slot out.
  */
-export async function buildCalendarDigest(read: CalendarDigestRead | undefined, input: { now: number; timeZone: string }): Promise<string | undefined> {
-  if (read === undefined) return undefined;
-  const window = localDayWindow(input.now, input.timeZone);
+export async function readCalendarDigest(read: CalendarDigestRead | undefined, input: { now: () => number; timeZone: string }, budgetMs = CALENDAR_DIGEST_READ_MS): Promise<CalendarDigestReadResult> {
+  const absent = (state: CalendarDigestReadState): CalendarDigestReadResult => ({ state, text: undefined, items: 0, fetchedAt: input.now() });
+  if (read === undefined) return absent('unconfigured');
+  const window = localDayWindow(input.now(), input.timeZone);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), budgetMs);
   let result: GoogleResult;
   try {
-    result = await read.gcalList({ calendarId: 'primary', timeMin: window.timeMin, timeMax: window.timeMax, maxResults: GOOGLE_DEFAULTS.listResults }, AbortSignal.timeout(CALENDAR_DIGEST_READ_MS));
-  } catch { return undefined; }
-  if (result.state !== 'completed') return undefined;
+    result = await read.gcalList({ calendarId: 'primary', timeMin: window.timeMin, timeMax: window.timeMax, maxResults: GOOGLE_DEFAULTS.listResults }, controller.signal);
+  } catch { return absent(controller.signal.aborted ? 'timeout' : 'failed'); }
+  finally { clearTimeout(timer); }
+  if (controller.signal.aborted) return absent('timeout');
+  if (result.state !== 'completed') return absent('failed');
   const text = contentText(result.decodedResult);
-  if (text === undefined) return undefined;
+  if (text === undefined) return absent('failed');
   let envelope: unknown;
-  try { envelope = JSON.parse(text); } catch { return undefined; }
+  try { envelope = JSON.parse(text); } catch { return absent('failed'); }
   const data = isRecord(envelope) && isRecord(envelope['data']) ? envelope['data'] : {};
   const events = Array.isArray(data['events']) ? data['events'].filter(isRecord) : [];
   const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: input.timeZone });
@@ -419,5 +440,15 @@ export async function buildCalendarDigest(read: CalendarDigestRead | undefined, 
     lines.push(line);
     length += next.length;
   }
-  return lines.length ? lines.join(', ') : undefined;
+  if (lines.length === 0) return absent('empty');
+  return { state: 'present', text: lines.join(', '), items: lines.length, fetchedAt: input.now() };
+}
+
+/**
+ * The text-only projection of one digest read (issue 339), for a caller that wants the slot or nothing.
+ * The state-bearing reader above is what the host's cache uses; nothing here can tell a failure from
+ * an empty day, which is why the cache never goes through it.
+ */
+export async function buildCalendarDigest(read: CalendarDigestRead | undefined, input: { now: number; timeZone: string }): Promise<string | undefined> {
+  return (await readCalendarDigest(read, { now: () => input.now, timeZone: input.timeZone })).text;
 }

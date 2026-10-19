@@ -16,13 +16,14 @@ import { listenService } from '../http/server.js';
 import { createStaticHandler } from '../http/static.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
-import type { WarmPrewarmReceipt } from '../live/index.js';
+import type { CalendarDigestOwner, WarmPrewarmReceipt } from '../live/index.js';
 import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime } from './mcp.js';
 import type { McpRuntimeComposition } from './mcp.js';
-import { buildCalendarDigest, createGoogleReader } from '../connectors/google.js';
+import { createGoogleReader, readCalendarDigest, type CalendarDigestRead } from '../connectors/google.js';
+import { CalendarDigestCache } from '../live/warm-context.js';
 import { loadProviderConfig } from '../config/index.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import { createSummarizer } from '../services/summarize.js';
@@ -39,21 +40,16 @@ export interface LiveToolsComposition {
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource(source: AuthoritySource): void;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
-  /** 339: today's calendar digest for the warm context; absent leaves the slot out. */
-  calendarDigest?(): Promise<string | undefined>;
+  /** 339, 1015: today's calendar digest for the warm context; absent leaves the slot out. */
+  calendarDigest?: CalendarDigestOwner;
 }
 
 export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean; supervised?: boolean }
 
 /**
- * The warm context's calendar digest (issue 339): one bounded read of today's primary calendar through
- * the owner's configured google connector, in the host's own time zone. Without a current calendar
- * grant there is no reader and the slot stays absent, so a session start is never failed by it.
- */
-/**
  * R7: mail and calendar are both `connector: google`, so the first google endpoint is not necessarily the
  * calendar endpoint. The digest reads the endpoint whose current grant carries `gcal_list`; without one
- * there is no reader and the slot stays absent.
+ * there is no reader and the digest says so rather than reporting an empty day.
  */
 export function selectCalendarEndpoint<G extends { readonly toolNames: readonly string[] }>(endpoints: readonly { readonly id: string; readonly connector: string }[], grantOf: (endpointId: string) => G | undefined): G | undefined {
   for (const endpoint of endpoints) {
@@ -63,12 +59,15 @@ export function selectCalendarEndpoint<G extends { readonly toolNames: readonly 
   }
   return undefined;
 }
-async function warmCalendarDigest(mcp: McpRuntimeComposition, now: () => number): Promise<string | undefined> {
+/**
+ * One digest read for the host's cache (1015): the reader the owner's grant allows, or nothing when the
+ * connector is not granted, which the read reports as `unconfigured`.
+ */
+function calendarDigestReader(mcp: McpRuntimeComposition): CalendarDigestRead | undefined {
   const grant = selectCalendarEndpoint(mcp.status().endpoints, id => mcp.registry.currentGrant(id));
   if (grant === undefined) return undefined;
-  const reader = createGoogleReader({ port: mcp.port, registry: mcp.registry,
+  return createGoogleReader({ port: mcp.port, registry: mcp.registry,
     config: { endpointId: grant.endpointId, account: grant.account, resource: grant.resource, schemaDigest: grant.schemaDigest, generation: grant.generation, family: 'calendar' } });
-  return await buildCalendarDigest(reader, { now: now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
 }
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
@@ -242,6 +241,13 @@ export async function startHost(config: HostConfig) {
       return null;
     };
     const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
+    // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
+    // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
+    const digestTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const digestNow = config.now ?? Date.now;
+    const calendarDigest = new CalendarDigestCache(
+      async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: digestTimeZone }),
+      { now: digestNow, timeZone: digestTimeZone });
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });
@@ -263,13 +269,14 @@ export async function startHost(config: HostConfig) {
       status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
-      calendarDigest: () => warmCalendarDigest(mcp, config.now ?? Date.now),
+      calendarDigest: { forStart: () => calendarDigest.forStart(), refresh: () => { void calendarDigest.refresh(); } },
       onSessionTerminal: liveSessionId => summarizer.schedule(liveSessionId),
       log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    calendarDigest.begin();
     // The live service carries the owner's prewarm instruction; an unconfigured live keeps the quiet receipt.
     const warmOwner = live as typeof live & { prewarm?: () => Promise<WarmPrewarmReceipt> };
     // The names a call will use, on the start event: a log alone then proves which provider, model and
@@ -306,6 +313,7 @@ export async function startHost(config: HostConfig) {
         logExit('ready', 'close');
         removeOwnDescriptor(descriptorPath);
         chat.shutdown();
+        calendarDigest.stop();
         try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); stopDiagnostics(); }
       } };
     } catch (error) { await service.close(); throw error; }

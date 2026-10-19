@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WarmContextCache, assembleContext, chooseStartContext, collectSections, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestRefreshMs, calendarDigestStartWaitMs, chooseStartContext, collectSections, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { CALENDAR_DIGEST_READ_MS, readCalendarDigest, type CalendarDigestRead, type GcalListInput, type GoogleResult } from '../connectors/google.js';
 import { NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 
 const sections = {
@@ -176,4 +177,156 @@ test('R7: the warm assembly\'s digest reaches the composed instruction as the ca
   const empty = compose(undefined);
   assert.equal(empty.sections.some(section => section.id === 'calendar'), false, 'no digest, no section');
   assert.doesNotMatch(empty.text, /Today:/);
+});
+
+
+// 1015: the host's calendar digest owner. The six states below are the whole contract: a read fills the
+// cache with its fetch time, a start never waits on one, and a failure is never reported as an empty day.
+// A fake connector scripts the latency and a virtual clock stands in for wall time, so no test sleeps.
+const digestMonday = Date.parse('2026-10-19T04:00:00Z'); // Monday 09:30 in Asia/Kolkata
+const digestEvent = { id: 'e1', summary: 'standup', start: { dateTime: '2026-10-19T04:30:00Z' } };
+
+type DigestScript = { latencyMs?: number; events?: readonly Record<string, unknown>[]; fail?: 'refused' | 'throw' | 'hang' };
+/** One fake connector read: its latency is paid on the virtual clock, so a 6 s read costs no test time. */
+function digestConnector(script: DigestScript, clock: { now: number }): CalendarDigestRead & { calls: GcalListInput[] } {
+  const calls: GcalListInput[] = [];
+  return {
+    calls,
+    async gcalList(input: GcalListInput, _signal?: AbortSignal): Promise<GoogleResult> {
+      calls.push(input);
+      if (script.fail === 'hang') return await new Promise<GoogleResult>(() => {});
+      clock.now += script.latencyMs ?? 0;
+      if (script.fail === 'throw') throw new Error('connector down');
+      if (script.fail === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
+      const data = { events: [...(script.events ?? [digestEvent])] };
+      return { state: 'completed', tool: 'gcal_list', observedAt: clock.now,
+        decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
+        source: {}, coverage: {}, projection: {}, response: {} } as unknown as GoogleResult;
+    },
+  };
+}
+function digestCache(script: DigestScript, start = digestMonday, intervalMs?: number) {
+  const clock = { now: start };
+  const read = digestConnector(script, clock);
+  const cache = new CalendarDigestCache(async () => await readCalendarDigest(read, { now: () => clock.now, timeZone: 'Asia/Kolkata' }),
+    { now: () => clock.now, timeZone: 'Asia/Kolkata', ...(intervalMs === undefined ? {} : { intervalMs }) });
+  return { cache, read, clock, script };
+}
+
+test('1015: a 6 s read fills the cache and the next start uses it with state present and no read', async () => {
+  const { cache, read, clock } = digestCache({ latencyMs: 6_000 });
+  const filled = await cache.refresh();
+  assert.equal(filled.state, 'present', 'a read inside the 30 s budget is a present day');
+  assert.equal(filled.items, 1);
+  assert.equal(filled.fetchedAt, digestMonday + 6_000, 'the fetch time is when the read finished');
+  assert.match(filled.text ?? '', /^10:00 standup$/, 'local host time, as before');
+  const started = await cache.forStart();
+  assert.equal(started.state, 'present', 'the next start reads the cache, not the connector');
+  assert.equal(started.items, 1);
+  assert.equal(read.calls.length, 1, 'the start itself dispatches nothing');
+  assert.equal(clock.now, digestMonday + 6_000, 'and no clock moved waiting for it');
+});
+
+test('1015: with no cache and a read in flight, a start waits out its budget then says timeout', async () => {
+  const { cache } = digestCache({ fail: 'hang' });
+  void cache.refresh();
+  const startedAt = Date.now();
+  // The budget is the seam; the constant's own 1,500 ms value is asserted in the constants test below.
+  const started = await cache.forStart(20);
+  const waited = Date.now() - startedAt;
+  assert.equal(started.state, 'timeout', 'a start never reports a hung read as an empty day');
+  assert.equal(started.text, undefined);
+  assert.ok(waited >= 20, `waited out its budget (${waited} ms)`);
+  assert.ok(waited < 1_000, `and not a whole read (${waited} ms)`);
+});
+
+test('1015: a stale cache whose refresh does not arrive is reported stale with its own fetch time', async () => {
+  const { cache, clock, script } = digestCache({});
+  await cache.refresh();
+  clock.now += calendarDigestFreshMs;
+  script.fail = 'hang';
+  const started = await cache.forStart(20);
+  assert.equal(started.state, 'stale', 'the receipt says stale, not that a read just timed out');
+  assert.equal(started.text, undefined, 'and the aged text never rides the assembly');
+  assert.equal(started.fetchedAt, digestMonday, 'the answer carries the last real fetch time, so ageMs is honest');
+});
+
+test('1015: a failing read is failed, never empty, and an unconfigured connector says so', async () => {
+  for (const fail of ['throw', 'refused'] as const) {
+    const { cache } = digestCache({ fail });
+    assert.equal((await cache.refresh()).state, 'failed', `a ${fail} read is a failure`);
+    assert.equal((await cache.forStart()).state, 'failed', 'and a start repeats the failure rather than an empty day');
+  }
+  assert.equal((await readCalendarDigest(undefined, { now: () => digestMonday, timeZone: 'Asia/Kolkata' })).state, 'unconfigured');
+});
+
+test('1015: a truly empty day is the one case that reports empty', async () => {
+  const { cache } = digestCache({ events: [] });
+  const filled = await cache.refresh();
+  assert.equal(filled.state, 'empty');
+  assert.equal(filled.text, undefined, 'the slot stays out of the assembly');
+  assert.equal(filled.items, 0);
+});
+
+test('1015: an unconfigured connector is never cached, so a start asks again once the grant arrives', async () => {
+  const clock = { now: digestMonday };
+  let granted = false;
+  const cache = new CalendarDigestCache(async () => (granted
+    ? { state: 'present' as const, text: '10:00 standup', items: 1, fetchedAt: clock.now }
+    : { state: 'unconfigured' as const, text: undefined, items: 0, fetchedAt: clock.now }),
+    { now: () => clock.now, timeZone: 'Asia/Kolkata' });
+  assert.equal((await cache.forStart()).state, 'unconfigured', 'no grant, no digest');
+  granted = true;
+  assert.equal((await cache.forStart()).state, 'present', 'the next start reads the calendar the owner just granted');
+});
+
+test('1015: a cache older than 30 min is stale, leaves the slot out and triggers a refresh', async () => {
+  const { cache, read, clock } = digestCache({});
+  await cache.refresh();
+  assert.equal(cache.current()?.state, 'present');
+  clock.now += calendarDigestFreshMs;
+  const stale = cache.current();
+  assert.equal(stale?.state, 'stale', 'the age, not the read, is the problem');
+  assert.equal(stale?.text, undefined, 'stale text never reaches an assembly');
+  assert.equal(read.calls.length, 2, 'reading a stale cache kicks the refresh');
+});
+
+test('1015: a day change past local midnight refreshes the cache', async () => {
+  // Monday 23:50 IST, so twenty minutes later is a Tuesday and the digest is still well inside 30 min.
+  const { cache, read, clock } = digestCache({}, Date.parse('2026-10-19T18:20:00Z'));
+  await cache.refresh();
+  clock.now += 20 * 60 * 1000;
+  assert.equal(cache.current()?.state, 'stale', 'yesterday\'s digest does not answer today');
+  assert.equal(read.calls.length, 2, 'the rollover refreshes it');
+  assert.equal(read.calls[0]!.timeMin, '2026-10-19T00:00:00+05:30');
+  assert.equal(read.calls[1]!.timeMin, '2026-10-20T00:00:00+05:30', 'the refreshed read asks for the new local day');
+});
+
+test('1015: the digest read budget is 30 s, so the aborted 5 s read cannot be a timeout again', () => {
+  assert.equal(CALENDAR_DIGEST_READ_MS, 30_000);
+  assert.equal(calendarDigestRefreshMs, 15 * 60 * 1000, 'the background owner refreshes every 15 min');
+  assert.equal(calendarDigestFreshMs, 30 * 60 * 1000, 'a start accepts a cache under 30 min old');
+  assert.equal(calendarDigestStartWaitMs, 1_500, 'and waits at most 1,500 ms for a read in flight');
+});
+
+test('1015: the background owner reads at host start and on every interval until it is stopped', async t => {
+  // The interval is the owner's own seam, so mock timers drive it instead of a real 15 minute wait. Each
+  // tick is followed by a settle, because a read already in flight is shared rather than dispatched again.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { cache, read } = digestCache({});
+  const settle = async () => { await cache.refresh(); };
+  cache.begin();
+  assert.equal(read.calls.length, 1, 'the host start read happens before any call arrives');
+  await settle();
+  t.mock.timers.tick(calendarDigestRefreshMs);
+  assert.equal(read.calls.length, 2, 'and one every fifteen minutes, off the request path');
+  t.mock.timers.tick(calendarDigestRefreshMs);
+  assert.equal(read.calls.length, 2, 'a tick while that read is still in flight shares it, never a second read');
+  await settle();
+  t.mock.timers.tick(calendarDigestRefreshMs);
+  assert.equal(read.calls.length, 3, 'the owner keeps the digest current while the host runs');
+  await settle();
+  cache.stop();
+  t.mock.timers.tick(calendarDigestRefreshMs * 4);
+  assert.equal(read.calls.length, 3, 'a stopped host reads nothing');
 });

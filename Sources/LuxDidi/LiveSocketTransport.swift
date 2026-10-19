@@ -101,13 +101,19 @@ public enum LiveControl: String, Sendable {
 
 public protocol LiveSocket: Sendable {
     func receive() async throws -> LiveFrame
-    /// Z2: returns false when the frame was shed because the wire was held by a control frame or a
-    /// playback receipt. A shed frame is a gap in the microphone stream, never a failed call.
-    func sendPCM(_ data: Data) async throws -> Bool
+    func sendPCM(_ data: Data) async throws
+    /// Z2: send one microphone frame and say whether it went out. `false` means the wire was held by a
+    /// control frame or a playback receipt and the frame was shed: a gap of milliseconds in the
+    /// microphone stream, never a failed call.
+    func sendPCMReportingShed(_ data: Data) async throws -> Bool
     func sendControl(_ control: LiveControl) async throws
     /// O1b-N: one bounded playback receipt frame on the socket the call already holds.
     func sendReceipt(_ frame: String) async throws
     func cancel() async
+}
+public extension LiveSocket {
+    /// A socket that holds no shared lane has nothing to shed: every frame it accepts went out.
+    func sendPCMReportingShed(_ data: Data) async throws -> Bool { try await sendPCM(data); return true }
 }
 public protocol LiveSocketConnecting: Sendable {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket
@@ -316,7 +322,8 @@ private actor FoundationLiveSocket: LiveSocket {
             throw LiveClientError.transport
         }
     }
-    func sendPCM(_ data: Data) async throws -> Bool {
+    func sendPCM(_ data: Data) async throws { _ = try await sendPCMReportingShed(data) }
+    func sendPCMReportingShed(_ data: Data) async throws -> Bool {
         try LiveSocketTransport.validatePCM(data)
         guard await sends.acquireAudio() else { return false }
         do { try await send(.data(data)) } catch { await sends.release(); throw error }

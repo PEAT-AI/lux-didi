@@ -265,10 +265,10 @@ actor GatedSocket: LiveSocket {
     private var closed = false
     init(_ underlying: any LiveSocket, _ gate: Gate) { self.underlying = underlying; self.gate = gate }
     func receive() async throws -> LiveFrame { try await underlying.receive() }
-    func sendPCM(_ data: Data) async throws -> Bool {
+    func sendPCM(_ data: Data) async throws {
         await gate.wait()
         guard !closed else { throw LiveClientError.unavailable }
-        return try await underlying.sendPCM(data)
+        try await underlying.sendPCM(data)
     }
     func sendControl(_ command: LiveControl) async throws { try await underlying.sendControl(command) }
     func sendReceipt(_ frame: String) async throws { try await underlying.sendReceipt(frame) }
@@ -293,10 +293,9 @@ actor StopProbeSocket: LiveSocket {
         if !frames.isEmpty { return frames.removeFirst() }
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
-    func sendPCM(_ data: Data) async throws -> Bool {
+    func sendPCM(_ data: Data) async throws {
         await gate.wait()
         guard !closed else { throw LiveClientError.unavailable }
-        return true
     }
     func sendControl(_ command: LiveControl) throws {
         guard !closed else { throw LiveClientError.unavailable }
@@ -330,7 +329,12 @@ actor BusyWireSocket: LiveSocket {
         if !frames.isEmpty { return frames.removeFirst() }
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
-    func sendPCM(_ data: Data) throws -> Bool {
+    func sendPCM(_ data: Data) throws {
+        guard !closed else { throw LiveClientError.unavailable }
+        guard !busy else { return }
+        inputs.append(data)
+    }
+    func sendPCMReportingShed(_ data: Data) throws -> Bool {
         guard !closed else { throw LiveClientError.unavailable }
         guard !busy else { return false }
         inputs.append(data); return true
@@ -364,7 +368,7 @@ actor YieldingSocket: LiveSocket {
         if !frames.isEmpty { return frames.removeFirst() }
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
-    func sendPCM(_ data: Data) async -> Bool { await Task.yield(); inputs += 1; return true }
+    func sendPCM(_ data: Data) async { await Task.yield(); inputs += 1 }
     func sendControl(_ command: LiveControl) async { await Task.yield(); controls += 1 }
     func sendReceipt(_ frame: String) async { await Task.yield(); receipts += 1 }
     func cancel() async { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
@@ -381,7 +385,7 @@ actor RestartSocket: LiveSocket, LiveSocketConnecting {
         }
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
-    func sendPCM(_ data: Data) -> Bool { true }
+    func sendPCM(_ data: Data) {}
     func sendControl(_ command: LiveControl) {}
     func sendReceipt(_ frame: String) {}
     func cancel() async { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
@@ -408,7 +412,7 @@ actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
         if !frames.isEmpty { return frames.removeFirst() }
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
-    func sendPCM(_ data: Data) -> Bool { inputs.append(data); return true }
+    func sendPCM(_ data: Data) { inputs.append(data) }
     func sendControl(_ command: LiveControl) { controls.append(command) }
     func sendReceipt(_ frame: String) { receipts.append(frame) }
     func cancel() { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
@@ -422,7 +426,7 @@ actor ScriptedSocket: LiveSocket {
         guard !frames.isEmpty else { throw LiveClientError.transport }
         return frames.removeFirst()
     }
-    func sendPCM(_ data: Data) -> Bool { inputs.append(data); return true }
+    func sendPCM(_ data: Data) { inputs.append(data) }
     func sendControl(_ command: LiveControl) {}
     func sendReceipt(_ frame: String) {}
     func cancel() { frames = [] }

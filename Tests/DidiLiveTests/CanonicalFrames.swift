@@ -33,7 +33,7 @@ private actor ConsumerSocket: LiveSocket {
         let wire = frames[index]; index += 1
         return try LiveSocketTransport.decode(.string(wire))
     }
-    func sendPCM(_ data: Data) async throws -> Bool { throw LiveClientError.invalidFrame }
+    func sendPCM(_ data: Data) async throws { throw LiveClientError.invalidFrame }
     func sendControl(_ control: LiveControl) async throws { controls += 1 }
     func sendReceipt(_ frame: String) async throws {}
     func cancel() async { cancelled = true }

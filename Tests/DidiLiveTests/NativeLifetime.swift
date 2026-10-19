@@ -67,9 +67,7 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
                     throw ProbeError.assertion("actual ready frame")
                 }
                 stage = "provider-pcm"
-                guard try await socket.sendPCM(Data([1, 0])) else {
-                    throw ProbeError.assertion("a free wire takes the provider PCM frame")
-                }
+                try await socket.sendPCM(Data([1, 0]))
                 guard case .pcm(let pcm) = try await socket.receive(), !pcm.isEmpty else {
                     throw ProbeError.assertion("actual returned provider PCM")
                 }

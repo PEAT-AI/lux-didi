@@ -475,7 +475,7 @@ public actor LiveSessionCoordinator {
                 if count && captureDiagnosticOwner == owner { captureDiagnostics.lateInactiveDrops += 1 }
                 throw LiveClientError.staleOperation
             }
-            if try await connection.sendPCM(pcm) {
+            if try await connection.sendPCMReportingShed(pcm) {
                 if count && captureDiagnosticOwner == owner { captureDiagnostics.localSocketSendCompleted += 1 }
             } else if count && captureDiagnosticOwner == owner {
                 // Z2: a control frame or a playback receipt held the wire. One shed mic frame is a gap of

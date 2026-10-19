@@ -841,12 +841,13 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
   ['mail', 'mail'],
   ['chat', 'team chat'],
   ['knowledge', 'knowledge base'],
+  ['mongoose', 'company knowledge'],
   ['memory', 'memory'],
 ];
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  search_knowledge: 'knowledge', gcal_list: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
+  search_knowledge: 'knowledge', search_mongoose: 'mongoose', gcal_list: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -865,6 +866,7 @@ export function researchSourcesForConnector(connector: string): SourceKind[] {
   if (connector === 'google') return ['calendar', 'mail'];
   if (connector === 'mattermost') return ['chat'];
   if (connector === 'lux-knowledge') return ['knowledge'];
+  if (connector === 'mongoose') return ['mongoose'];
   return [];
 }
 
@@ -956,7 +958,7 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
-const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'mongoose' };
+const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge' };
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {

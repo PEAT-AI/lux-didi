@@ -123,6 +123,7 @@ async function harness(t: TestContext, overrides: {
   tools?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
+  mongoose?: boolean;
   knowledgeSearchLimit?: number;
   calendarData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   beforeTool?: () => Promise<void>;
@@ -231,9 +232,25 @@ async function harness(t: TestContext, overrides: {
       });
       await calendarSdk.connect(calendarTransport);
     }
+    let mongooseSdk: Server | undefined;
+    let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const mongooseEndpoint = { id: 'mongoose', url: 'https://fixture.invalid/mongoose', account: 'account', resource: 'resource' };
+    const mongooseSchemas = [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'], additionalProperties: false } }];
+    if (overrides.mongoose) {
+      registry.register(mongooseEndpoint); registry.enable(mongooseEndpoint.id); registry.allowEgress(mongooseEndpoint.id);
+      mongooseSdk = new Server({ name: 'live-mongoose-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      mongooseTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      mongooseSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mongooseSchemas) }) as never);
+      mongooseSdk.setRequestHandler('tools/call', req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        return { content: [{ type: 'text', text: JSON.stringify({ results: [{ entity_type: 'knowledge', id: 'synthetic-company-item', title: 'Synthetic company evidence', snippet: 'A current source answer.' }] }) }] };
+      });
+      await mongooseSdk.connect(mongooseTransport);
+    }
     t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
+      if (mongooseTransport && request.url === mongooseEndpoint.url) return mongooseTransport.handleRequest(request);
       if (mattermostTransport && mattermostEndpoint && request.url === mattermostEndpoint.url) return mattermostTransport.handleRequest(request);
       if (calendarTransport && calendarEndpoint && request.url === calendarEndpoint.url) return calendarTransport.handleRequest(request);
       return transport.handleRequest(request);
@@ -269,10 +286,19 @@ async function harness(t: TestContext, overrides: {
       assert.equal((await port.discover(calendarEndpoint.id)).state, 'discovered');
       toolOwner.projectConnection('calendar');
     }
+    if (overrides.mongoose) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
+        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
+        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      assert.equal((await port.discover('mongoose')).state, 'discovered');
+      toolOwner.projectConnection('mongoose');
+    }
     toolOwner.projectConnection('lux');
-    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
+    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : []), ...(overrides.mongoose ? ['mongoose'] : [])] };
     if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
-    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); });
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); if (mongooseSdk) await mongooseSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
     memorySelections += 1;
@@ -4190,4 +4216,14 @@ test('calendar integration: revocation during a sibling await or final microtask
     assert.doesNotMatch(JSON.stringify(frame), /Calendar publication must be gated/);
     assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
   }
+});
+
+test('Mongoose current contract: approved company research reaches the actual SDK through Live source discovery', async t => {
+  const h = await harness(t, { tools: true, mongoose: true });
+  await attached(h, 'mongoose-configured-research');
+  await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
+  assert.equal(h.calls.filter(call => call.name === 'search_mongoose').length, 1, 'an approved company source must be dispatched');
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
+  assert.match(JSON.stringify(frame), /Synthetic company evidence/);
 });

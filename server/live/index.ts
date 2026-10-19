@@ -2166,6 +2166,7 @@ export class LiveSessionOwner {
     if (names.has('gcal_list')) sources.push('calendar');
     if (names.has('gmail_list')) sources.push('mail');
     if (names.has('mattermost_search')) sources.push('chat');
+    if (names.has('search_mongoose')) sources.push('mongoose');
     // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
     // reply can report them unreachable instead of silently narrowing to the sources still up.
     for (const endpoint of this.#tools?.status?.().endpoints ?? []) {

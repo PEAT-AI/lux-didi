@@ -16,6 +16,7 @@ const OTHER = 'other@example.test';
 
 interface FakeConnector {
   url: string;
+  changeCatalog(): void;
   calls: string[];
   onConnect: Promise<void>;
   releaseConnect(): void;
@@ -66,6 +67,7 @@ async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<
   return {
     url: `http://127.0.0.1:${address.port}/gmail`,
     calls,
+    changeCatalog: () => { Object.assign(tools[0]!, { description: 'Changed same-name schema contract' }); },
     onConnect: options.blockConnect ? new Promise<void>(resolveConnect => { void connectGate.then(resolveConnect); }) : Promise.resolve(),
     releaseConnect: connectResolve,
     onDiscovery: discoveries > 0 ? Promise.resolve() : new Promise<void>(resolveDiscovery => { discoveryWaiters.push(resolveDiscovery); }),
@@ -270,4 +272,16 @@ test('a failed re-verification after a refresh leaves no grant', async t => {
   assert.deepEqual(mcp.connectionIds(), []);
   assert.equal(mcp.status().endpoints[0]!.state, 'error');
   assert.equal(mcp.status().endpoints[0]!.reasonCode, 'identity_mismatch');
+});
+
+
+test('fluency: startup refresh cannot auto-adopt a changed same-name catalog', async t => {
+  const { mcp, store, fake } = await compose(t, { ownerIdentity: null });
+  await mcp.start();
+  const before = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail']));
+  fake.changeCatalog();
+  await mcp.refresh();
+  assert.equal(mcp.status().endpoints[0]!.configurationError, 'owner-approval-required');
+  assert.equal(mcp.connectionIds().length, 0);
+  assert.deepEqual(store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail'])), before);
 });

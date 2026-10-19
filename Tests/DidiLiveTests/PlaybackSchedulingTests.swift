@@ -10,10 +10,10 @@ struct PlaybackChunk {
 /// Drive `NativePlaybackQueue` with a schedule and report what the device would have counted.
 /// A buffer's playback ends when its audio would have played out, so the last buffer of a burst
 /// finishes (and drains the queue) before the next burst arrives.
-func replay(_ schedule: [PlaybackChunk]) -> (underruns: Int, starts: Int, pauses: Int) {
+func replay(_ schedule: [PlaybackChunk]) -> (speechGaps: Int, starts: Int, pauses: Int) {
     var queue = NativePlaybackQueue()
     var ends: [Int] = []
-    var underruns = 0, starts = 0, pauses = 0
+    var speechGaps = 0, starts = 0, pauses = 0
     let frameRate = NativePlaybackQueue.frameRate
     for chunk in schedule {
         while let first = ends.first, first <= chunk.atMs {
@@ -21,7 +21,7 @@ func replay(_ schedule: [PlaybackChunk]) -> (underruns: Int, starts: Int, pauses
             if queue.playedBack(atMs: first) { pauses += 1 }
         }
         let arrival = queue.arrival(frames: chunk.frames, atMs: chunk.atMs)
-        if arrival.underrun { underruns += 1 }
+        if arrival.speechGap { speechGaps += 1 }
         if arrival.start { starts += 1 }
         let previous = ends.last ?? chunk.atMs
         ends.append(max(chunk.atMs, previous) + chunk.frames * 1000 / frameRate)
@@ -30,7 +30,7 @@ func replay(_ schedule: [PlaybackChunk]) -> (underruns: Int, starts: Int, pauses
         ends.removeFirst()
         if queue.playedBack(atMs: first) { pauses += 1 }
     }
-    return (underruns, starts, pauses)
+    return (speechGaps, starts, pauses)
 }
 
 /// P2-R1: replay the way `write()` schedules audio, flushing only when the queue reaches the
@@ -92,34 +92,34 @@ func recordedSchedule() -> (schedule: [PlaybackChunk], starvedTurns: Int) {
     static func run() throws {
         let recorded = recordedSchedule()
         let result = replay(recorded.schedule)
-        try require(result.underruns == recorded.starvedTurns,
-            "recorded schedule counted \(result.underruns) underruns, expected \(recorded.starvedTurns)")
+        try require(result.speechGaps == recorded.starvedTurns,
+            "recorded schedule counted \(result.speechGaps) speech gaps, expected \(recorded.starvedTurns)")
 
         // Bursts with a real pause between them: the drain is a pause, not a glitch.
         let bursts = (0..<6).flatMap { turn in
             (0..<4).map { PlaybackChunk(atMs: turn * 12000 + $0 * 50, frames: 48000) }
         }
         let quiet = replay(bursts)
-        try require(quiet.underruns == 0, "burst/pause schedule counted \(quiet.underruns) underruns")
+        try require(quiet.speechGaps == 0, "burst/pause schedule counted \(quiet.speechGaps) speech gaps")
         try require(quiet.pauses == 6, "burst/pause schedule drained \(quiet.pauses) times, expected 6")
         try require(quiet.starts == 6, "burst/pause schedule re-armed \(quiet.starts) times, expected once per burst")
 
         // A queue that ran dry and is refilled after a pause re-arms the prebuffer and is not a glitch.
         var queue = NativePlaybackQueue()
         let first = queue.arrival(frames: 48000, atMs: 0)
-        try require(first.start && !first.underrun, "first chunk must start playback, not starve it")
+        try require(first.start && !first.speechGap, "first chunk must start playback, not starve it")
         try require(queue.playedBack(atMs: 2000), "the queue drains after the burst plays out")
         let paused = queue.arrival(frames: 48000, atMs: 8000)
         try require(paused.start, "a refill after a pause re-arms the prebuffer")
-        try require(!paused.underrun, "a refill after a pause is a pause, not an underrun")
-        try require(paused.sinceLastChunkMs == 8000, "chunk timing is recorded for the underrun line")
+        try require(!paused.speechGap, "a refill after a pause is a pause, not a speech gap")
+        try require(paused.sinceLastChunkMs == 8000, "chunk timing is recorded for the speech-gap line")
 
         // A refill within the pause threshold is a real starvation.
         var tight = NativePlaybackQueue()
         _ = tight.arrival(frames: 12000, atMs: 0)
         try require(tight.playedBack(atMs: 500), "the short chunk drains")
         let starved = tight.arrival(frames: 12000, atMs: 600)
-        try require(starved.underrun, "a refill within the pause threshold is a real underrun")
+        try require(starved.speechGap, "a refill within the pause threshold is a measured speech gap")
         try require(starved.burstMs == 500, "the drained burst length is recorded as burstMs, got \(starved.burstMs)")
         try require(starved.queuedMs == 500, "a refill states the depth it now holds, got \(starved.queuedMs)")
 
@@ -141,7 +141,7 @@ func recordedSchedule() -> (schedule: [PlaybackChunk], starvedTurns: Int) {
         try require(falling == [4000, 3000, 2000, 1000], "the depth falls as buffers play, got \(falling)")
         try require(live.depthMs == 0, "the depth is 0 after the drain, got \(live.depthMs)")
         let drainedAfter = live.arrival(frames: 24000, atMs: 9000)
-        try require(drainedAfter.queuedMs == 1000 && !drainedAfter.underrun, "a refill after a pause starts a new depth, not an underrun")
+        try require(drainedAfter.queuedMs == 1000 && !drainedAfter.speechGap, "a refill after a pause starts a new depth, not a speech gap")
 
         // D12-5: every owner action names its own trigger; `other` stays for the app's own stops, and
         // a menu trigger armed for one Stop is consumed by exactly that Stop.

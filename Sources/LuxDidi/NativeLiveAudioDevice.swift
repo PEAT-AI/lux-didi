@@ -94,14 +94,14 @@ struct NativeCaptureStatistics: Sendable {
     }
 }
 struct NativePlaybackStatistics: Sendable {
-    var underruns = 0, lateAfterFlush = 0
+    var queueDrains = 0, speechGaps = 0, lateAfterFlush = 0
     /// P3: the pitch-preserving rate this session played at, and how long it ran, so a session with
     /// more chunks per second can be read per minute rather than per session.
     var rate: Double = 1, sessionMs: Int = 0
-    /// Underruns per minute of session. A session shorter than a second reports the raw count.
-    var underrunsPerMinute: Int {
-        guard sessionMs > 0 else { return underruns }
-        return Int((Double(underruns) * 60_000 / Double(sessionMs)).rounded())
+    /// Positive short gaps between audible buffers per minute of the whole session.
+    var speechGapsPerMinute: Int {
+        guard sessionMs > 0 else { return speechGaps }
+        return Int((Double(speechGaps) * 60_000 / Double(sessionMs)).rounded())
     }
 }
 /// P3: the pitch-preserving speech rate band. The live config refuses anything outside it; the device
@@ -121,8 +121,9 @@ enum NativePlaybackRate {
 struct NativePlaybackArrival: Sendable, Equatable {
     /// The prebuffer just filled: the device calls the player's play().
     let start: Bool
-    /// The queue was dry while playback was underway: an utterance starved.
-    let underrun: Bool
+    /// A positive short queue gap between audible buffers; not proof of an audible glitch.
+    let speechGap: Bool
+    let dryGapMs: Int
     /// The burst that just ran dry had held this much audio, in ms (0 when the queue never drained).
     let burstMs: Int
     /// The queue depth now, after this chunk arrived: the real length still to play, in ms.
@@ -130,16 +131,13 @@ struct NativePlaybackArrival: Sendable, Equatable {
     /// Milliseconds since the previous chunk arrived, 0 for the first of a session.
     let sinceLastChunkMs: Int
 }
-/// Deterministic playback queue for model audio: an arrival schedule (timestamps and frame counts)
-/// in, the two scheduling decisions out (whether to start the player, whether the arrival starved an
-/// utterance). It touches no audio API, so a recorded schedule can be replayed in a test.
+/// Model PCM arrivals and completion times determine playback starts and measured queue gaps.
+/// This queue touches no audio API, so schedules can be replayed without hardware.
 struct NativePlaybackQueue {
-    /// ~80 ms of 24 kHz mono audio queued before a turn starts, so a bursty provider never begins
-    /// playback on an empty queue and underruns mid-syllable.
+    /// Keep 80 ms of 24 kHz mono audio queued before a stretch starts to absorb arrival jitter.
     static let prebufferFrames = 1920
     static let frameRate = 24000
-    /// A queue that stays dry at least this long was a pause or the end of a turn, not a dropout.
-    /// Below it the utterance was continuous and the scheduler fell behind: a real underrun.
+    /// Longer gaps are classified as pauses; a shorter measured gap still is not proof of a glitch.
     static let pauseThresholdMs = 500
     /// P2-R1: the playback memory guard. 120 s of queued audio is far beyond any real answer, so a
     /// flush here only protects memory; the old 24-buffer count cap dropped audio mid-answer
@@ -162,6 +160,7 @@ struct NativePlaybackQueue {
     var playingSpeech: Bool { playing && queuedFrames.first?.audible == true }
     var playingLevel: Float { playing ? queuedFrames.first?.level ?? 0 : 0 }
     private var drainedAtMs: Int?
+    private var drainedWasAudible = false
     private var lastArrivalMs: Int?
 
     /// The queue depth: the audio still to play, in ms of audible time. It falls buffer by buffer,
@@ -171,7 +170,8 @@ struct NativePlaybackQueue {
     mutating func arrival(frames: Int, atMs: Int, audible: Bool = true, level: Float = 0) -> NativePlaybackArrival {
         let sinceLastChunkMs = lastArrivalMs.map { atMs - $0 } ?? 0
         lastArrivalMs = atMs
-        let starved = (drainedAtMs.map { atMs - $0 } ?? Int.max) < Self.pauseThresholdMs
+        let gap = max(0, drainedAtMs.map { atMs - $0 } ?? 0)
+        let starved = gap > 0 && gap < Self.pauseThresholdMs && drainedWasAudible && audible
         // A chunk that arrives on an empty queue begins a new burst.
         if scheduledFrames <= 0 { burstFrames = 0 }
         burstFrames += frames
@@ -181,7 +181,7 @@ struct NativePlaybackQueue {
         drainedAtMs = nil
         var start = false
         if !playing, scheduledFrames >= Self.prebufferFrames { playing = true; start = true }
-        return NativePlaybackArrival(start: start, underrun: starved,
+        return NativePlaybackArrival(start: start, speechGap: starved, dryGapMs: gap,
                                      burstMs: starved ? Self.ms(drainedFrames, rate: rate) : 0,
                                      queuedMs: depthMs,
                                      sinceLastChunkMs: sinceLastChunkMs)
@@ -191,21 +191,22 @@ struct NativePlaybackQueue {
     /// is stopped and the next arrival re-arms the prebuffer, so a pause is not a glitch. The frames
     /// that played leave the depth, so `depthMs` falls while the answer is still playing.
     @discardableResult mutating func playedBack(atMs: Int) -> Bool {
-        if !queuedFrames.isEmpty { scheduledFrames = max(0, scheduledFrames - queuedFrames.removeFirst().frames) }
+        let finished = queuedFrames.isEmpty ? nil : queuedFrames.removeFirst()
+        if let finished { scheduledFrames = max(0, scheduledFrames - finished.frames) }
         queuedBuffers = max(0, queuedBuffers - 1)
         guard queuedBuffers == 0 else { return false }
         playing = false
         drainedFrames = burstFrames
         burstFrames = 0
         scheduledFrames = 0
-        drainedAtMs = atMs
+        drainedAtMs = atMs; drainedWasAudible = finished?.audible ?? false
         return true
     }
 
     mutating func flush() {
         queuedBuffers = 0; scheduledFrames = 0; playing = false
         queuedFrames.removeAll()
-        drainedFrames = 0; burstFrames = 0; drainedAtMs = nil; lastArrivalMs = nil
+        drainedFrames = 0; burstFrames = 0; drainedAtMs = nil; drainedWasAudible = false; lastArrivalMs = nil
     }
 
     /// Audible milliseconds for a frame count. At rate 1.0 this is the integer arithmetic it always
@@ -581,8 +582,8 @@ struct NativeLiveInterruptionSample: Sendable {
     private var playbackSegment = 0
     private var segmentActive = false
     private var terminatedSegment = 0
-    /// One recorded underrun per starved arrival, for the native-live.log line.
-    var onUnderrun: ((NativePlaybackArrival) -> Void)?
+    /// One positive short gap between audible buffers, for the native-live.log line.
+    var onSpeechGap: ((NativePlaybackArrival) -> Void)?
     /// Z2: capture was released. Carries the failure that did it (class and code only reach the log).
     var onInterruption: ((Error?) async -> Void)?
     var onInputChange: ((String) -> Void)?
@@ -864,9 +865,10 @@ struct NativeLiveInterruptionSample: Sendable {
     private(set) var timePitchTailFlushes = 0
     private var sessionStartedAt: Date?
     private var outputGeneration: UInt64 = 0
-    /// Bumped only by a barge-in flush, so a chunk whose turn was flushed in flight is dropped.
+    /// Advanced by barge-in and mute, so an in-flight chunk cannot cross either playback fence.
     private var turnGeneration: UInt64 = 0
     private var playback = NativePlaybackStatistics()
+    var playbackStatisticsForTesting: NativePlaybackStatistics { playback }
     /// Contract C1: the wait-cue scheduler, its timer task and a token that cancels a stale task.
     private var waitCue = NativeWaitCueScheduler()
     private var cueTask: Task<Void, Never>?
@@ -901,7 +903,8 @@ struct NativeLiveInterruptionSample: Sendable {
         // P3: one rate per session, decided here and never changed while she speaks.
         sessionRate = NativePlaybackRate.valid(playbackRate)
         playbackQueue.rate = sessionRate
-        playback.rate = sessionRate
+        playback = NativePlaybackStatistics(rate: sessionRate)
+        sessionStartedAt = now()
         sendFrame = send
         // A new session may try once: clear the per-session VPIO and circuit-breaker state.
         voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil
@@ -1034,9 +1037,8 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         owner.didStartEngine(holder: ObjectIdentifier(self))
         log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false"])
-        // P3: one line per session so a faster answer can be read against the underruns it costs.
+        // One rate receipt per session accompanies the queue measurements.
         log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
-        sessionStartedAt = now()
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
         route = "Microphone: " + input.name + " · Output: " + Self.defaultDevice(input: false).name
         activateCapture(capture, send: send)
@@ -1227,13 +1229,14 @@ struct NativeLiveInterruptionSample: Sendable {
         let audible = level >= 0.00316227766
         let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs(), audible: audible, level: level)
         if newSegment { playbackSegment += 1; segmentActive = true; emitReceipt(.received, segment: playbackSegment) }
-        if arrival.underrun { playback.underruns += 1; onUnderrun?(arrival) }
+        if arrival.speechGap { playback.speechGaps += 1; onSpeechGap?(arrival) }
         outputOrb.append(pcm)
         if audible { lastModelAudioAt = now() }
         let completion: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
                 guard let self, self.outputGeneration == token else { return }
                 if self.playbackQueue.playedBack(atMs: self.nowMs()) {
+                    self.playback.queueDrains += 1
                     // The queue ran dry: this is a pause or the end of a turn, never a glitch. Stop the
                     // node so the next burst re-fills the prebuffer before playback restarts.
                     self.emitReceipt(.drained, segment: self.playbackSegment)

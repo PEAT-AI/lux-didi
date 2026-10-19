@@ -422,9 +422,9 @@ private func checkFormatChangeRebuild() throws {
     try audioRequire(summary["inputSampleRate"] as? Int == 48000 && summary["inputChannels"] as? Int == 1
         && summary["localSocketSendCompleted"] as? Int == 0 && summary["sendErrors"] as? Int == 0,
         "numeric format and zero local sends after refused authority")
-    try audioRequire(summary["ledgerBalanced"] as? Bool == true && (summary["playbackUnderruns"] as? Int) == 0
+    try audioRequire(summary["ledgerBalanced"] as? Bool == true && (summary["playbackSpeechGaps"] as? Int) == 0
         && (summary["lateAfterFlushChunks"] as? Int) == 0,
-        "byte ledger balances at call end with no playback underruns")
+        "byte ledger balances at call end with no playback speech gaps")
     device.stop(); await conversation.stop()
     try audioRequire(try String(contentsOf: file, encoding: .utf8).split(separator: "\n").count == records.count,
         "duplicate Stop emits no duplicate summary")
@@ -663,6 +663,62 @@ private func checkPrimaryChannelConversion() throws {
     print("PASS memory guard continuation retains current frame and rejects external mute generation; hardware=false")
 }
 
+@MainActor private func checkPlaybackGapMetrics() async throws {
+    let scenarios: [(Int16, Int16, Int, Int)] = [
+        (0, 0, 0, 0), (5000, 5000, 0, 0), (5000, 5000, 25, 1),
+        (5000, 0, 25, 0), (0, 5000, 25, 0), (5000, 5000, 600, 0)
+    ]
+    for (before, after, delay, expected) in scenarios {
+        var clock = Date(timeIntervalSince1970: 1000)
+        let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice(now: { clock })
+        device.playbackDriverForTesting = driver
+        var gaps: [NativePlaybackArrival] = []
+        device.onSpeechGap = { gaps.append($0) }
+        func pcm(_ value: Int16) -> Data { [Int16](repeating: value, count: 2400).withUnsafeBytes { Data($0) } }
+        try await device.write(pcm(before))
+        clock = clock.addingTimeInterval(0.1)
+        driver.completions[0]()
+        for _ in 0..<8 { await Task.yield() }
+        clock = clock.addingTimeInterval(Double(delay) / 1000)
+        try await device.write(pcm(after))
+        try audioRequire(gaps.count == expected,
+                         "positive speech gaps only: before=\(before), after=\(after), gap=\(delay), expected=\(expected), actual=\(gaps.count)")
+        try audioRequire(device.playbackStatisticsForTesting.queueDrains == 1
+            && device.playbackStatisticsForTesting.speechGaps == expected, "raw drains and positive speech gaps remain separate")
+        if expected > 0 { try audioRequire(gaps[0].dryGapMs == delay, "the gap receipt carries its measured positive duration") }
+    }
+    var clock = Date(timeIntervalSince1970: 1000)
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice(now: { clock })
+    device.playbackDriverForTesting = driver
+    for index in 0..<100 {
+        try await device.write(Data(count: 4800))
+        clock = clock.addingTimeInterval(0.1)
+        driver.completions[index]()
+        for _ in 0..<8 { await Task.yield() }
+    }
+    try audioRequire(device.playbackStatisticsForTesting.queueDrains == 100
+        && device.playbackStatisticsForTesting.speechGaps == 0,
+                     "ten seconds of perfect digital silence reports 100 raw drains and zero speech gaps")
+    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    let sessionDriver = PlaybackDriverFixture()
+    let session = NativeLiveAudioDevice(captureInput: format, defaultInput: { ("synthetic", "Synthetic input") }, now: { clock })
+    session.playbackDriverForTesting = sessionDriver
+    for _ in 0..<2 {
+        try await session.startFenced { _, _ in }
+        try await session.write(Data(count: 4800))
+        clock = clock.addingTimeInterval(0.1)
+        sessionDriver.completions.last?()
+        for _ in 0..<8 { await Task.yield() }
+        clock = clock.addingTimeInterval(0.9)
+        session.stop()
+        let summary = session.takeCaptureSummary()
+        try audioRequire(summary?.playback.queueDrains == 1 && summary?.playback.speechGaps == 0
+            && summary?.playback.sessionMs == 1000 && summary?.playback.rate == 1,
+                         "each synthetic capture lifetime owns fresh playback counters and its full duration at 1.00")
+    }
+    print("PASS actual callback/arrival zero boundaries, silent fill, positive speech gap and long-pause controls; hardware=false")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -679,6 +735,12 @@ private func checkPrimaryChannelConversion() throws {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--playback-metrics-only") {
+            do { try await checkPlaybackGapMetrics() }
+            catch { FileHandle.standardError.write(Data("Playback metrics: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--playback-state-only") {
             do { try await checkPlaybackSilenceState() }
             catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
@@ -726,7 +788,7 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Format change: \(error)") }
             return
         }
-        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation() }
+        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
         catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }
         catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }

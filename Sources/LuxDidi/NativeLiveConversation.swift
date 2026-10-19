@@ -86,11 +86,12 @@ enum State: String, CaseIterable {
         device.onPlaybackReceipt = { [weak self] receipt in
             Task { await self?.coordinator.sendPlaybackReceipt(receipt.json) }
         }
-        device.onUnderrun = { [weak self] arrival in
+        device.onSpeechGap = { [weak self] arrival in
             guard let self else { return }
-            self.appendLocalDiagnostic(["event": "playback_underrun",
+            self.appendLocalDiagnostic(["event": "playback_speech_gap",
                 "session": String(self.captureDiagnosticOwner ?? 0),
-                "burstMs": arrival.burstMs, "queuedMs": arrival.queuedMs, "sinceLastChunkMs": arrival.sinceLastChunkMs])
+                "gapMs": arrival.dryGapMs, "burstMs": arrival.burstMs,
+                "queuedMs": arrival.queuedMs, "sinceLastChunkMs": arrival.sinceLastChunkMs])
         }
         device.onInputChange = { [weak self] name in
             guard let self else { return }
@@ -295,8 +296,9 @@ enum State: String, CaseIterable {
                 "ringDrops": capture.ringDrops, "drainFrames": native.drainFrames,
                 "sentBytes": capture.sentBytes, "droppedBytes": capture.droppedBytes,
                 "residualBytes": capture.residualBytes, "ledgerBalanced": capture.balances,
-                "playbackUnderruns": native.playback.underruns, "lateAfterFlushChunks": native.playback.lateAfterFlush,
-                "playbackRate": native.playback.rate, "playbackUnderrunsPerMinute": native.playback.underrunsPerMinute,
+                "playbackQueueDrains": native.playback.queueDrains, "playbackSpeechGaps": native.playback.speechGaps,
+                "lateAfterFlushChunks": native.playback.lateAfterFlush,
+                "playbackRate": native.playback.rate, "playbackSpeechGapsPerMinute": native.playback.speechGapsPerMinute,
                 "inputSampleRate": capture.inputSampleRate, "inputChannels": capture.inputChannels,
                 "captureEpoch": native.captureEpoch, "captureGeneration": native.captureGeneration,
                 "captureWasMuted": native.muted, "coordinatorSnapshotMatched": transport != nil]

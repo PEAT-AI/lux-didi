@@ -1,3 +1,4 @@
+import { RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -494,6 +495,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'ms'])) return;
     if (!isSafeCount(value.ms)) return;
     return { event: value.event, ms: value.ms };
+  }
+  if (value.event === 'research_refused') {
+    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount'])) return;
+    if (value.state !== 'refused' || !(value.sequence === null || isSafeCount(value.sequence))) return;
+    if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
+    if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
+    if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) return;
+    const fields = value.fields as Record<string, unknown>;
+    if (!closedKeys(fields, [...RESEARCH_ARGUMENT_FIELDS]) || !Object.values(fields).every(type => (RESEARCH_ARGUMENT_TYPES as readonly unknown[]).includes(type))) return;
+    return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
+      fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -1974,7 +1974,7 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          this.#sendThinking(handle, event.calls);
+          this.#sendThinking(handle, event.calls.filter(call => call.name !== RESEARCH_TOOL_NAME));
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
@@ -2274,18 +2274,13 @@ export class LiveSessionOwner {
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
     const settled = await Promise.all(event.calls.map(async call => {
       let response: JsonObject;
-      if (!validateResearch(call.args)) {
-        // R9: a call refused at dispatch never reaches the research tool, so it writes its own failed receipt
-        // here; otherwise a refused lookup leaves no run line at all and reads as a silent no-op.
-        hostLogEvent({
-          event: 'research_run', researchId: newResearchId(), questionClass: 'quick_fact', rounds: 0, perRound: [],
-          stopReason: 'refused', status: 'failed', ops: 0, sources: [], elapsedMs: 0, deadAirMs: 0, selectorMs: 0,
-          fallbackUsed: false, replyBytes: 0, unchecked: [], canContinue: false, findingChars: [],
-        });
-        response = { error: 'invalid_research_arguments' };
+      const parsed = parseResearch(call.args);
+      if (!parsed.ok) {
+        hostLogEvent({ event: 'research_refused', state: 'refused', sequence: event.sequence, reason: parsed.reason, ...parsed.shape });
+        response = researchRepair(parsed.reason);
       } else {
         try {
-          response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
+          response = await scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings

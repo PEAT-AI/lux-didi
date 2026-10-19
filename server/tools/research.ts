@@ -867,16 +867,81 @@ export interface ResearchCall { cursor?: string; action: ResearchAction; questio
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
-export function validateResearch(args: unknown): boolean {
-  if (!isRecord(args)) return false;
-  const keys = new Set(['action', 'question', 'researchId', 'sources', 'direction', 'lookups', 'cursor']);
-  if (!Object.keys(args).every(key => keys.has(key))) return false;
-  const action = args['action'];
-  if (action !== 'start' && action !== 'continue' && action !== 'stop') return false;
-  if (args['cursor'] !== undefined && (action !== 'continue' || typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128 || args['lookups'] !== undefined)) return false;
-  if (args['lookups'] !== undefined && (action === 'stop' || !validLookups(args['lookups']))) return false;
-  if (action === 'start') return optionalString(args['question']) !== undefined;
-  return optionalString(args['researchId']) !== undefined;
+export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
+export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
+export interface ResearchArgumentShape {
+  action: ResearchAction | 'missing' | 'invalid';
+  fields: Record<typeof RESEARCH_ARGUMENT_FIELDS[number], typeof RESEARCH_ARGUMENT_TYPES[number]>;
+  unknownFieldCount: number;
+  lookupCount: number;
+}
+export type ParsedResearch = { ok: true; call: ResearchCall } | { ok: false; reason: ResearchRefusalReason; shape: ResearchArgumentShape };
+
+function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMENT_TYPES[number] {
+  if (!present) return 'absent';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  const type = typeof value;
+  return type === 'string' || type === 'number' || type === 'boolean' || type === 'object' ? type : 'other';
+}
+
+/** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
+export function parseResearch(args: unknown): ParsedResearch {
+  const record = isRecord(args) ? args : {};
+  const action = record['action'];
+  const shape: ResearchArgumentShape = {
+    action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
+    fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, argumentType(record[key], Object.hasOwn(record, key))])) as ResearchArgumentShape['fields'],
+    unknownFieldCount: Object.keys(record).filter(key => !(RESEARCH_ARGUMENT_FIELDS as readonly string[]).includes(key)).length,
+    lookupCount: Array.isArray(record['lookups']) ? record['lookups'].length : 0,
+  };
+  const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
+  if (!isRecord(args)) return refuse('root_type');
+  if (shape.unknownFieldCount) return refuse('unknown_fields');
+  if (!Object.hasOwn(args, 'action')) return refuse('action_missing');
+  if (action !== 'start' && action !== 'continue' && action !== 'stop') return refuse('action_invalid');
+  for (const [key, reason] of [['question', 'question_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
+    if (Object.hasOwn(args, key) && typeof args[key] !== 'string') return refuse(reason);
+  }
+  if (args['question'] !== undefined && optionalString(args['question']) === undefined) return refuse('question_required');
+  if (args['researchId'] !== undefined && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
+  if (action === 'start' && optionalString(args['question']) === undefined) return refuse('question_required');
+  if (action !== 'start' && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
+  if (Object.hasOwn(args, 'cursor')) {
+    if (typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128) return refuse('cursor_type');
+    if (action !== 'continue') return refuse('cursor_action');
+    if (Object.hasOwn(args, 'lookups')) return refuse('cursor_lookups_conflict');
+  }
+  if (Object.hasOwn(args, 'lookups')) {
+    if (action === 'stop') return refuse('lookups_stop');
+    if (!Array.isArray(args['lookups'])) return refuse('lookups_type');
+    if (args['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    for (const entry of args['lookups']) {
+      if (!isRecord(entry)) return refuse('lookup_type');
+      if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
+      if (typeof entry['source'] !== 'string' || !(LOOKUP_SOURCES as readonly string[]).includes(entry['source'])) return refuse('lookup_source');
+      if (Object.hasOwn(entry, 'history')) {
+        if (entry['source'] !== 'memory' || Object.hasOwn(entry, 'query') || Object.hasOwn(entry, 'mail') || !validateHistory(entry['history'])) return refuse('lookup_history');
+      } else if (Object.hasOwn(entry, 'mail')) {
+        if (entry['source'] !== 'mail' || Object.hasOwn(entry, 'query') || !validMailLookup(entry['mail'])) return refuse('lookup_mail');
+      } else {
+        if (optionalString(entry['query']) === undefined) return refuse('lookup_query_required');
+        if (String(entry['query']).length > RESEARCH.queryLimitChars) return refuse('lookup_query_length');
+      }
+    }
+  }
+  return { ok: true, call: args as unknown as ResearchCall };
+}
+
+export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
+
+export function researchRepair(reason: ResearchRefusalReason): JsonObject {
+  return {
+    error: 'invalid_research_arguments', state: 'refused', reason,
+    guidance: 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+  };
 }
 
 function validMailLookup(value: unknown): value is MailLookup {
@@ -884,19 +949,6 @@ function validMailLookup(value: unknown): value is MailLookup {
   if ('id' in value) return Object.keys(value).every(key => key === 'id' || key === 'format') && typeof value['id'] === 'string' && value['id'].length > 0 && (value['format'] === undefined || value['format'] === 'full' || value['format'] === 'metadata');
   return Object.keys(value).every(key => key === 'q' || key === 'maxResults') && typeof value['q'] === 'string' && value['q'].trim().length > 0 && value['q'].length <= 2048
     && (value['maxResults'] === undefined || Number.isSafeInteger(value['maxResults']) && Number(value['maxResults']) > 0 && Number(value['maxResults']) <= 50);
-}
-
-/** K6: every named lookup is a known layer with a short query of its own. */
-function validLookups(value: unknown): boolean {
-  if (!Array.isArray(value)) return false;
-  return value.every(entry => isRecord(entry)
-    && Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')
-    && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source'])
-    && (entry['source'] === 'mail' && entry['mail'] !== undefined
-      ? entry['query'] === undefined && entry['history'] === undefined && validMailLookup(entry['mail'])
-      : entry['mail'] === undefined && (entry['source'] === 'memory' && entry['history'] !== undefined
-      ? entry['query'] === undefined && validateHistory(entry['history'])
-      : entry['history'] === undefined && optionalString(entry['query']) !== undefined)));
 }
 
 /** The display order and human name of every research source the host loop can read today (R2-R2). */
@@ -951,11 +1003,11 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
   return {
     name: RESEARCH_TOOL_NAME,
     description: researchDescription(configured),
-    guidance: 'start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
+    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
       properties: {
-        action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start a lookup, continue one, or stop one.' },
+        action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start requires question; continue and stop require the researchId returned by start. Stop must omit lookups and cursor.' },
         question: { type: 'string', minLength: 1, description: 'The owner question; required for start.' },
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
         sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
@@ -966,8 +1018,16 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
           description: 'Optional: the layers to read, one lookup each, at most four. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat. replies: what is waiting on him in the team chat.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
+            anyOf: [
+              { required: ['source', 'query'], properties: { source: { type: 'string', enum: [...LOOKUP_SOURCES] }, query: { type: 'string', minLength: 1, maxLength: RESEARCH.queryLimitChars } }, additionalProperties: false },
+              { required: ['source', 'history'], properties: { source: { type: 'string', enum: ['memory'] }, history: HISTORY_PARAMETERS }, additionalProperties: false },
+              { required: ['source', 'mail'], properties: { source: { type: 'string', enum: ['mail'] }, mail: { type: 'object' } }, additionalProperties: false },
+            ],
             properties: {
-              mail: { type: 'object', additionalProperties: false, description: 'Only for mail. Exact source search {q,maxResults?} or precise message {id,format?}, mutually exclusive. Omit query. Full message is the default; metadata must be deliberate. IDs come from source evidence, never prose guesses.', properties: { q: { type: 'string', minLength: 1, maxLength: 2048 }, maxResults: { type: 'integer', minimum: 1, maximum: 50 }, id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['full', 'metadata'] } } },
+              mail: { type: 'object', additionalProperties: false, anyOf: [
+                { required: ['id'], properties: { id: { type: 'string' }, format: { type: 'string' } }, additionalProperties: false },
+                { required: ['q'], properties: { q: { type: 'string' }, maxResults: { type: 'integer' } }, additionalProperties: false },
+              ], description: 'Only for mail. Exact source search {q,maxResults?} or precise message {id,format?}, mutually exclusive. Omit query. Full message is the default; metadata must be deliberate. IDs come from source evidence, never prose guesses.', properties: { q: { type: 'string', minLength: 1, maxLength: 2048 }, maxResults: { type: 'integer', minimum: 1, maximum: 50 }, id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['full', 'metadata'] } } },
               history: { ...HISTORY_PARAMETERS, description: 'Only for memory. Canonical local search/date bounds, exact recordRef, or source-native cursor copied from historyPages. Use continue with the same researchId for recordRef or cursor. This cursor is not the top-level consumer continuation cursor. Omit query when history is present.' },
               source: { type: 'string', enum: [...LOOKUP_SOURCES], description: 'The layer this lookup reads.' },
               query: { type: 'string', minLength: 1, maxLength: RESEARCH.queryLimitChars, description: 'A short search string written for that source.' },

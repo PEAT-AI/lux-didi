@@ -13,7 +13,7 @@ import { hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEnd
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
-import { WarmContextCache, chooseStartContext, withProvenance } from '../live/warm-context.js';
+import { CalendarDigestCache, WarmContextCache, chooseStartContext, withProvenance } from '../live/warm-context.js';
 import { createLiveSessionOwner } from '../live/index.js';
 import { loadLiveConfig } from '../config/live.js';
 import type { LiveVoicePort } from '../adapters/live-voice/index.js';
@@ -877,6 +877,15 @@ test('a forced refresh keeps the summary provenance the start recorded', () => {
   assert.match(refreshed?.text ?? '', /Recent conversation: Yesterday: release planning\./);
 });
 
+// 1015: the host's digest owner as the live owner sees it, backed by a fake and counting the refreshes a
+// wake asks for. A start answers from the cache it already holds, so it dispatches nothing.
+function digestPort(now: () => number, onRead: () => void) {
+  return {
+    forStart: async () => ({ state: 'present' as const, text: '10:00 standup, 15:00 review', items: 2, fetchedAt: now() }),
+    refresh: onRead,
+  };
+}
+
 // F4 and R3-R5 at the owner: the digest is read once for each assembly, the prewarm assembles the
 // sections a start prepared, and the receipt carries the real ages instead of the degenerate nulls.
 test('the owner prewarm assembles after a start and reads the digest once per assembly', async () => {
@@ -896,20 +905,62 @@ test('the owner prewarm assembles after a start and reads the digest once per as
     if (loaded.status !== 'configured') throw new Error('live.json must configure');
     const owner = createLiveSessionOwner({
       store, voice: {} as LiveVoicePort, profile: loaded.config.profile, now: () => clock, timeZone: 'UTC',
-      calendarDigest: async () => { reads += 1; return '10:00 standup, 15:00 review'; },
+      calendarDigest: digestPort(() => clock, () => { reads += 1; }),
     } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
     const context = { clientId: 'owner-fixture', auditId: randomUUID(), authorityEpoch: store.authorityEpoch };
     await owner.prepareCalendar();
-    assert.equal(reads, 1, 'R3-R5: one bounded read per assembly');
+    assert.equal(reads, 0, '1015: a start answers from the cached digest and dispatches no read');
     owner.create({ idempotencyKey: 'k1', inputClass: 'ordinary' }, context);
     clock += 60_000;
     const receipt = await owner.prewarm();
-    assert.equal(reads, 2, 'the prewarm reads the digest again for its own assembly');
+    assert.equal(reads, 1, 'the wake asks the background owner for one fresh read');
     assert.deepEqual(receipt, { ageBeforeMs: 60_000, ageAfterMs: 0, assembled: true, reason: 'sections' }, 'the receipt carries the real ages');
     await owner.shutdown();
   } finally { await cleanup(); }
 });
 
+// 1015: the state the host's cache reached is what a call start reports. A failing or cut-off read used to
+// reach the assembly as an empty day, which is why every state below is asserted separately.
+test('1015: a start reports the digest state the cache reached and never folds a failure into empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-digest-state-'));
+  const store = new Store(dir, hostMigrations);
+  const configDir = join(dir, 'provider-config');
+  const clock = { now: Date.parse('2026-10-19T04:00:00Z') };
+  const cleanup = async () => { store.close(); await rm(dir, { recursive: true, force: true }); };
+  try {
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+      dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+    await writeFile(join(configDir, 'live.json'), `${JSON.stringify(live)}\n`, { mode: 0o600 });
+    const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+    if (loaded.status !== 'configured') throw new Error('live.json must configure');
+    const start = async (read: () => Promise<{ state: 'present' | 'empty' | 'failed' | 'timeout' | 'unconfigured'; text: string | undefined; items: number; fetchedAt: number }>) => {
+      const cache = new CalendarDigestCache(read, { now: () => clock.now, timeZone: 'UTC' });
+      const owner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+        now: () => clock.now, timeZone: 'UTC', calendarDigest: cache } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
+      try { await cache.refresh(); return { snapshot: await owner.prepareCalendar(), cache }; } finally { await owner.shutdown(); }
+    };
+    const present = await start(async () => ({ state: 'present', text: '09:30 standup', items: 1, fetchedAt: clock.now }));
+    assert.equal(present.snapshot.state, 'present');
+    assert.equal(present.snapshot.text, '09:30 standup', 'a present digest is what the assembly carries');
+    assert.equal(present.snapshot.items, 1);
+    assert.equal((await start(async () => ({ state: 'empty', text: undefined, items: 0, fetchedAt: clock.now }))).snapshot.state, 'empty', 'a truly empty day is empty');
+    assert.equal((await start(async () => { throw new Error('connector down'); })).snapshot.state, 'failed', 'a failed read is not an empty day');
+    assert.equal((await start(async () => ({ state: 'timeout', text: undefined, items: 0, fetchedAt: clock.now }))).snapshot.state, 'timeout', 'nor is a cut-off one');
+    // A digest over 30 minutes old answers a start as stale, with its own age and no text. The owner stores
+    // the snapshot state verbatim, which is what puts stale on the receipt; the cache mechanics that
+    // produce it are pinned in warm-context.test.ts through forStart, the same call this path makes.
+    const stalePort = { forStart: async () => ({ state: 'stale' as const, text: undefined, items: 0, fetchedAt: clock.now - 31 * 60 * 1000 }),
+      refresh: () => {} };
+    const staleOwner = createLiveSessionOwner({ store, voice: {} as LiveVoicePort, profile: loaded.config.profile,
+      now: () => clock.now, timeZone: 'UTC', calendarDigest: stalePort } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
+    try {
+      const aged = await staleOwner.prepareCalendar();
+      assert.equal(aged.state, 'stale', 'a digest over 30 minutes old reaches the receipt as stale');
+      assert.equal(aged.text, undefined, 'and its text never rides the assembly');
+    } finally { await staleOwner.shutdown(); }
+  } finally { await cleanup(); }
+});
 // R7: mail and calendar are both `connector: google`, so the first google endpoint is not the calendar
 // endpoint. The digest reads the endpoint whose current grant carries gcal_list.
 test('R7: the calendar digest selects the google endpoint by its gcal_list grant', () => {
@@ -925,11 +976,12 @@ test('R7: the calendar digest selects the google endpoint by its gcal_list grant
     'a non-google connector is never the digest reader');
 });
 
-// R7: a suppressed or failed digest used to be silent. The receipt is closed and carries no event text.
-test('R7: calendar_digest is one closed receipt over four states, with no event text', () => {
+// R7, 1015: a suppressed, failed, cut-off or old digest used to be silent or read as an empty day. The
+// receipt is closed over the six states and carries no event text.
+test('R7: calendar_digest is one closed receipt over six states, with no event text', () => {
   const receipt = { event: 'calendar_digest', state: 'present', items: 2, ageMs: 60_000 };
   assert.deepEqual(safeEvent(receipt), receipt);
-  for (const state of ['present', 'empty', 'failed', 'unconfigured']) assert.ok(safeEvent({ ...receipt, state }) !== undefined, `${state} is a state`);
+  for (const state of ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale']) assert.ok(safeEvent({ ...receipt, state }) !== undefined, `${state} is a state`);
   assert.equal(safeEvent({ ...receipt, state: 'silent' }), undefined, 'the state set is closed');
   assert.equal(safeEvent({ ...receipt, digest: '10:00 standup with the board' }), undefined, 'no event text rides the receipt');
   assert.equal(safeEvent({ ...receipt, items: -1 }), undefined, 'a negative count is refused');
@@ -955,7 +1007,7 @@ test('R7: a prewarm before the first start assembles from sources', async () => 
     if (loaded.status !== 'configured') throw new Error('live.json must configure');
     const owner = createLiveSessionOwner({
       store, voice: {} as LiveVoicePort, profile: loaded.config.profile, now: () => 1_760_000_000_000, timeZone: 'UTC',
-      calendarDigest: async () => { reads += 1; return '10:00 standup, 15:00 review'; },
+      calendarDigest: digestPort(() => 1_760_000_000_000, () => { reads += 1; }),
     } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
     const receipt = await owner.prewarm();
     assert.equal(reads, 1, 'one bounded read for the wake');

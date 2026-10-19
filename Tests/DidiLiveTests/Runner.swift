@@ -323,6 +323,8 @@ actor BusyWireSocket: LiveSocket {
     private(set) var receipts: [String] = []
     private(set) var receiptEntered = 0
     private var closed = false
+    /// The single send lane, exactly as FoundationLiveSocket holds it: a receipt owns the wire while it sends.
+    private var busy = false
     init(_ frames: [LiveFrame], _ gate: Gate) { self.frames = frames; self.gate = gate }
     func receive() async throws -> LiveFrame {
         if !frames.isEmpty { return frames.removeFirst() }
@@ -330,12 +332,15 @@ actor BusyWireSocket: LiveSocket {
     }
     func sendPCM(_ data: Data) throws -> Bool {
         guard !closed else { throw LiveClientError.unavailable }
+        guard !busy else { return false }
         inputs.append(data); return true
     }
     func sendControl(_ command: LiveControl) {}
     func sendReceipt(_ frame: String) async {
         receiptEntered += 1
+        busy = true
         await gate.wait()
+        busy = false
         receipts.append(frame)
     }
     func cancel() async {

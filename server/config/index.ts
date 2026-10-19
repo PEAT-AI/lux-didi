@@ -3,7 +3,7 @@ import { isAbsolute, join } from 'node:path';
 import type { Credentials, DataClass, Route } from '../adapters/model/types.js';
 import { validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
 import { isLiveVoiceProvider, type LiveVoiceProvider } from '../adapters/live-voice/types.js';
-import { ConfigError, type ConfigErrorCode, currentUid, fail, fields, parseJson, readPrivate, safeError, validateFile, validateRoot } from './files.js';
+import { ConfigError, type ConfigErrorCode, currentUid, fail, fields, parseJson, readPrivate, requireSettledConfig, safeError, validateFile, validateRoot } from './files.js';
 export { ConfigError, type ConfigErrorCode } from './files.js';
 
 /**
@@ -82,7 +82,7 @@ export interface RequestCredentials {
 }
 // The text model route is the Gemini slot: same endpoint, api-version and key reference as before.
 const textSlot = providerSlots.gemini;
-function routeScopeFrom(raw: unknown): CredentialRouteScope {
+export function routeScopeFrom(raw: unknown): CredentialRouteScope {
   const s = fields(raw, ['provider', 'modelId', 'endpoint', 'apiVersion', 'keyReference', 'allowedClasses'], 'invalid_secret');
   const provider = s['provider'];
   if (!isLiveVoiceProvider(provider)) fail('invalid_secret');
@@ -110,7 +110,7 @@ function receiptFrom(s: Record<string, unknown>): CredentialBindingReceipt {
 function sameScope(a: CredentialRouteScope, b: CredentialRouteScope): boolean {
   return JSON.stringify(a) === JSON.stringify(b); // Both inputs are full canonical non-secret scopes.
 }
-function bindingFrom(text: string, expected: CredentialRouteScope): CredentialBindingReceipt {
+export function bindingFrom(text: string, expected: CredentialRouteScope): CredentialBindingReceipt {
   const b = fields(parseJson(text), ['schemaVersion', 'configuredAccount', 'routeScope', 'bindingGeneration'], 'invalid_secret');
   if (b['schemaVersion'] !== 1) fail('invalid_secret');
   const receipt = receiptFrom(b);
@@ -118,7 +118,7 @@ function bindingFrom(text: string, expected: CredentialRouteScope): CredentialBi
   return receipt;
 }
 /** The route scope a freshly seeded slot pins: the profile's text model for Gemini, the slot's voice model otherwise. */
-function seedScope(provider: LiveVoiceProvider, modelId: string, allowedClasses: readonly DataClass[]): CredentialRouteScope {
+export function seedScope(provider: LiveVoiceProvider, modelId: string, allowedClasses: readonly DataClass[]): CredentialRouteScope {
   return routeScopeFrom({
     provider, modelId, endpoint: slotFor(provider).endpoint, apiVersion: slotFor(provider).apiVersion,
     keyReference: slotFor(provider).keyReference, allowedClasses: [...allowedClasses],
@@ -132,7 +132,7 @@ function optionsValid(options: ConfigOptions): void {
   if (typeof options.ownerId !== 'string' || options.ownerId.length === 0 || options.ownerId.length > 128) fail('invalid_arguments');
   currentUid();
 }
-function profileFrom(text: string, ownerId: string): ProviderProfile {
+export function profileFrom(text: string, ownerId: string): ProviderProfile {
   const p = fields(parseJson(text), ['schemaVersion', 'enabled', 'provider', 'modelId', 'keyReference', 'dataClasses', 'preferences'], 'invalid_profile');
   if (p['schemaVersion'] !== 1 || typeof p['enabled'] !== 'boolean' || p['provider'] !== 'gemini' || typeof p['modelId'] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(p['modelId'])) fail('invalid_profile');
   if (p['keyReference'] !== textSlot.keyReference) fail('invalid_reference');
@@ -150,7 +150,7 @@ function profileFrom(text: string, ownerId: string): ProviderProfile {
 function keyValid(key: unknown): key is string {
   return typeof key === 'string' && key.length <= 1024 && /^[\x21-\x7e]+$/.test(key);
 }
-function secretRecordFrom(text: string, expected: string = textSlot.keyReference): { key: string; receipt?: CredentialBindingReceipt } {
+export function secretRecordFrom(text: string, expected: string = textSlot.keyReference): { key: string; receipt?: CredentialBindingReceipt } {
   const raw = parseJson(text);
   const version = raw && typeof raw === 'object' ? (raw as Record<string, unknown>)['schemaVersion'] : undefined;
   const s = fields(raw, version === 2 ? ['schemaVersion', 'keyReference', 'key', 'configuredAccount', 'routeScope', 'bindingGeneration'] : ['schemaVersion', 'keyReference', 'key'], 'invalid_secret');
@@ -161,6 +161,7 @@ function secretRecordFrom(text: string, expected: string = textSlot.keyReference
 function secretFrom(text: string, expected?: string): string { return secretRecordFrom(text, expected).key; }
 function slotFile(configDir: string, slot: ProviderSlot): string { return join(configDir, `${slot.keyReference}.json`); }
 function readRecord(configDir: string, slot: ProviderSlot): { key: string; receipt?: CredentialBindingReceipt } {
+  requireSettledConfig(configDir);
   if (!validateRoot(configDir)) fail('file_missing');
   return secretRecordFrom(readPrivate(slotFile(configDir, slot), secretLimit), slot.keyReference);
 }
@@ -211,7 +212,7 @@ export function credentialsFor(configDir: string): Credentials {
 }
 export function loadProviderConfig(options: ConfigOptions): ProviderStatus {
   try {
-    optionsValid(options);
+    optionsValid(options); requireSettledConfig(options.configDir);
     if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
     let text: string;
     try { text = readPrivate(join(options.configDir, 'profile.json'), profileLimit); }
@@ -299,7 +300,7 @@ export function initializeProviderConfig(options: InitializeOptions): void {
   } catch (e) { throw safeError(e); }
 }
 
-function boundSecret(key: string, receipt: CredentialBindingReceipt): string {
+export function boundSecret(key: string, receipt: CredentialBindingReceipt): string {
   return JSON.stringify({ schemaVersion: 2, keyReference: receipt.keyReference, key, configuredAccount: receipt.configuredAccount,
     routeScope: receipt.routeScope, bindingGeneration: receipt.bindingGeneration });
 }
@@ -313,7 +314,7 @@ export function migrateProviderBinding(options: MigrateBindingOptions): void {
   const pending = join(options.configDir, '.binding.pending');
   let ownPending = false;
   try {
-    optionsValid(options); pathArgument(options.bindingInputPath);
+    optionsValid(options); requireSettledConfig(options.configDir); pathArgument(options.bindingInputPath);
     if (!validateRoot(options.configDir)) fail('file_missing');
     const profile = profileFrom(readPrivate(join(options.configDir, 'profile.json'), profileLimit), options.ownerId);
     const active = slotFile(options.configDir, textSlot);

@@ -47,7 +47,7 @@ function limit(value: unknown, name: keyof LiveLimits): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > limitBounds[name]) fail('invalid_limit');
   return value;
 }
-function limits(value: unknown): LiveLimits {
+export function validateLiveLimits(value: unknown): LiveLimits {
   if (value !== undefined && !object(value)) fail('invalid_limit');
   for (const key of Object.keys(object(value) ? value : {})) if (!(key in limitBounds)) fail('invalid_limit');
   const source = object(value) ? value : {};
@@ -129,7 +129,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
     provider, liveModelId, voice, keyReference,
     ...(normalizedLanguage !== undefined ? { language: normalizedLanguage } : {}),
     route: Object.freeze({ enabled: true, provider, modelId: liveModelId, dataClasses }),
-    prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),
+    prompt: Object.freeze({ text: promptText, dataClass }), limits: validateLiveLimits(input['limits']),
   });
 }
 

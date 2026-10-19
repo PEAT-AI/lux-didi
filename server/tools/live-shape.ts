@@ -389,7 +389,7 @@ function channelLine(entry: unknown): string {
   const name = field(entry, 'displayName', 'display_name', 'name') || str(entry['id']);
   const posts = channelPosts(entry);
   const last = channelLastActivity(entry);
-  const facts = [posts === undefined ? '' : `${posts} posts`, last ? `last activity ${last}` : ''].filter(Boolean);
+  const facts = [posts === undefined ? '' : `${posts} posts`, last ? `${field(entry, 'lastSyncAt') ? 'archive synced' : 'last activity'} ${last}` : ''].filter(Boolean);
   return facts.length > 0 ? `${name} | ${facts.join(' | ')}` : name;
 }
 /** Epoch milliseconds for a post, whether it carries an ISO stamp or a raw create_at. */

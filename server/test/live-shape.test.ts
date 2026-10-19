@@ -271,13 +271,13 @@ test('mattermost channel list (channels array) shapes display names', () => {
   assert.match(shaped.text, /- Dry Dock/);
 });
 
-test('mattermost channel list is ranked by activity and carries posts and last activity', () => {
+test('mattermost channel list distinguishes archive sync time from message activity', () => {
   const shaped = shapeMattermost('mattermost_list_channels', CHANNELS);
   const lines = shaped.text.split('\n').filter(line => line.startsWith('- '));
   assert.equal(lines.length, 2);
   assert.match(lines[0]!, /Harbour/);
   assert.match(lines[0]!, /128 posts/);
-  assert.match(lines[0]!, /last activity 2026-10-11T10:10:00\.000Z/);
+  assert.match(lines[0]!, /archive synced 2026-10-11T10:10:00\.000Z/);
   assert.match(lines[1]!, /Dry Dock/);
   assert.equal(shaped.text.includes('display_name'), false);
 });

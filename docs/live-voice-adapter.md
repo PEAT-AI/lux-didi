@@ -217,3 +217,9 @@ boundaries itself, and never drops an output frame doing it.
 - The wrapper instructions additionally carry OpenAI's live prompting lines "Do not treat a
   cough, music, or nearby conversation as a new request." and "Keep listening while the owner
   pauses to think."
+
+### Pending interruption check
+
+GPT Live input episodes close after 700 ms without nonempty transcription. An already scheduled 350 ms output-quiet check may finish once after closure, within another 350 ms. New audible output at or beyond closure cancels that pending check; digital-silent fill and whitespace do not. New input, a new backend response or session termination retires the old token. Every callback checks its episode, socket and generation. Local windows use monotonic time.
+
+At an equal clock tick, an already processed speech frame cancels the check; a frame processed after a completed flush cannot reverse it. These event semantics do not establish acoustic owner identification or honk rejection. No energy or word-count rule identifies the speaker. Run `node server/test/interruption-schedule-runtime.mjs` after compiling server to exercise 21 actual-adapter schedules without provider or audio hardware.

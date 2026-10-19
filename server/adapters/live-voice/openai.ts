@@ -77,8 +77,7 @@ const PING_INTERVAL_MS = 5_000;
 const PING_MISSED_LIMIT = 2;
 /** A refused setup keeps 300 characters of the provider's own message: enough to name the field, bounded. */
 const SETUP_ERROR_TEXT_LIMIT = 300;
-/** Stall on liveness (3o): no inbound provider frame of any type and no pong for this long ends the transport.
- *  Upload backlog never does; a slow uplink keeps sending frames while the mic queue is shed (UPLINK_SHED_BYTES). */
+/** Inbound silence and blocked upload progress are separate rules: this limit covers provider frames and pongs. */
 const STALL_SILENCE_MS = 8_000;
 /** A blocked mic upload gets a separate, longer budget. The pinned 20 s slow-uplink window stays live; only a
  *  full 30 s with no local write completion and no new socket-buffer low uses the existing recovery path. */

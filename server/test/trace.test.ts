@@ -392,7 +392,8 @@ test('the timeline prints a drained playback inside its turn when attributable a
     assert.equal(report.turns[0]!.playback.length, 1);
     assert.deepEqual(report.unattributedPlayback, []);
     const rendered = renderTimeline(report);
-    assert.match(rendered, /\n {2}playback inst-a1:1 segment=1 .*drained=.*clock=approx/);
+    assert.ok(rendered.includes(`  playback ${SESSION}:inst-a1:1 segment=1 `), rendered);
+    assert.match(rendered, /drained=.*clock=approx/);
     assert.doesNotMatch(rendered, /turn=none/);
   });
   withStore(store => {

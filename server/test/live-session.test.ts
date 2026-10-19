@@ -638,6 +638,7 @@ async function pumpIntoDeadSocket(t: TestContext, openDelegation: boolean): Prom
   assert.equal(receipts.filter(record => record.event === 'consumer_detach').length, 1, 'one detach, one host line');
   assert.deepEqual(receipts.filter(record => record.event === 'session_end'),
     [{ event: 'session_end', reason: 'consumer_closed', msAfterStop: 1_000 }]);
+  await h.f.closed;
   assert.equal(h.f.clients[0]!.readyState, WebSocket.CLOSED, 'the provider session is closed');
   assert.equal(sends, openDelegation ? 0 : 1, 'a CLOSING socket is never written to; a throwing one is written once');
   h.advance(10_000); scheduler.runDue();
@@ -766,17 +767,17 @@ test('a durable terminal write failure still logs the failure and reports the re
   assert.equal(JSON.parse(lines[0]!).event, 'live_terminal_write_failed');
 });
 
-test('a failed detach write is logged and a later read no longer reports the session attached', async t => {
-  const lines: string[] = [];
-  t.mock.method(console, 'error', (...args: unknown[]) => {
-    if (typeof args[0] === 'string' && args[0].includes('live_detach_write_failed')) lines.push(args[0]);
-  });
+test('a failed detach write is logged to the host log and a later read no longer reports the session attached', async t => {
+  const lines: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { lines.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
   const h = await harness(t, { failingWrite: "consumer_state='ended'" });
   const { attachment } = await attached(h, 'detach-write-fail');
   assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'attached');
   attachment.detach();
-  assert.equal(lines.length, 1, 'the failed detach write is logged, not swallowed');
-  assert.equal(JSON.parse(lines[0]!).event, 'live_detach_write_failed');
+  assert.deepEqual(lines.map(line => line.event), ['consumer_detach', 'live_detach_write_failed'],
+    'one detach line, then the failed write, both in the host log');
+  assert.equal(lines[0]!['consumerState'], 'attached', 'the detach line names the state it found');
   // Reconcile on read: the row still says attached, but the in-memory handle says ended.
   assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'ended');
   assert.notEqual(h.owner.current().state, 'listening', 'a detached session is never projected as listening');
@@ -3955,7 +3956,7 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   const events = h.store.transaction(tx => tx.all('SELECT kind, source, source_seq FROM trace_event WHERE live_session_id=? ORDER BY seq', [session.liveSessionId]));
   assert.deepEqual(events.map(row => row['kind']), ['playback.received', 'playback.enqueued', 'playback.started', 'playback.drained']);
   assert.ok(events.every(row => row['source'] === 'native'));
-  const row = h.store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', ['inst-b2:1']))!;
+  const row = h.store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-b2:1`]))!;
   assert.equal(row['drained_at'], 1_700_000_000_004, 'the producer wall ms lands in the summary row');
   assert.equal(row['turn_id'], null, 'the host never guesses the turn it does not know');
 

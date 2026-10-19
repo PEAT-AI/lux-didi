@@ -54,5 +54,11 @@ try{
  const forgotten=read({query:'Cobalt'});store.transaction(tx=>forgetHistorySessions(tx,['old'],now));
  assert.equal(store.transaction(tx=>historyEvidenceCurrent(tx,scope.ownerId,forgotten.evidence)),false);assert.equal(read({recordRef:found.response.hits[0].recordRef},ordinary).response.status,'history_snapshot_invalidated');
  assert.equal(read({recordRef:imported.recordRef},{...scope,runId:'other-run'}).response.status,'history_reference_unavailable');
- console.log(JSON.stringify({case:'canonical_history_reader',oldDays:60,olderRelevantSurvivesNewerUnrelated:true,ordinaryMiraHits:2,allClassMiraHits:5,legacyUnavailable:true,unknownExcluded:true,stablePagedRecords:60,deleteInvalidates:true,relabelInvalidates:true,exactImportProvenance:true,crossRunDenied:true,fullDetailCharacters:body.length,summaryOmittedDecisionRecovered:true}));
+ const conversation={...scope,conversationId:'synthetic-conversation'};
+ const bridge=read({query:'imported'},conversation);assert.equal(bridge.response.hits.length,1);
+ const coordinate=bridge.response.hits[0].recordRef,bridgePage=read({recordRef:coordinate},conversation);
+ assert.equal(bridgePage.response.status,'ok');
+ assert.deepEqual(read({recordRef:coordinate},{...conversation,runId:'next-run'}).response,bridgePage.response);
+ for(const changed of [{ownerId:'other-owner'},{authorityEpoch:'other-epoch'},{revision:2},{routeIdentity:'other-route'},{allowedClasses:['ordinary']},{conversationId:'other-conversation'}])assert.equal(read({recordRef:coordinate},{...conversation,...changed}).response.status,'history_reference_unavailable');
+ console.log(JSON.stringify({case:'canonical_history_reader',oldDays:60,olderRelevantSurvivesNewerUnrelated:true,ordinaryMiraHits:2,allClassMiraHits:5,legacyUnavailable:true,unknownExcluded:true,stablePagedRecords:60,deleteInvalidates:true,relabelInvalidates:true,exactImportProvenance:true,crossRunDenied:true,conversationIdentityControls:6,fullDetailCharacters:body.length,summaryOmittedDecisionRecovered:true}));
 }finally{store.close();rmSync(dir,{recursive:true,force:true});}

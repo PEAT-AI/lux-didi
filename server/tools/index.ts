@@ -102,6 +102,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   const pruneEvidence = (): void => {
     for (const [id, value] of retained) if (value.evidence.kind === 'remote-body' && value.evidence.expiresAt <= Date.now()) retained.delete(id);
   };
+  const chatRun = (tx: Transaction, runId: string): SQLRow | undefined => tx.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_runs'")
+    ? tx.get('SELECT session_id,state,outcome FROM chat_runs WHERE owner_assistant_id=? AND run_id=?', [ownerId, runId]) : undefined;
   const connection = (tx: Transaction, id: string): BoundConnection => {
     const row = tx.get("SELECT c.*,COALESCE(s.binding_mode,'legacy') AS binding_mode FROM tool_connections c LEFT JOIN tool_connection_semantics s ON s.owner_id=c.owner_id AND s.connection_id=c.connection_id WHERE c.owner_id=? AND c.connection_id=?", [ownerId, id]);
     if (!row || typeof row.policy_json !== 'string' || sha256(row.policy_json) !== row.policy_sha256) throw Error('connection_policy_missing_or_corrupt');
@@ -312,9 +314,15 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
 
   const owner: ToolsOwner = {
     journal, resultGate, authorizeDelivery, complete,
+    releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
       pruneEvidence();
-      if (bindings === undefined) historyReader.releaseRun(runId);
+      if (bindings === undefined) {
+        const chat = store.transaction(tx => chatRun(tx, runId));
+        const successful = chat?.state === 'terminal' && chat.outcome === 'complete';
+        if (chat && !successful) historyReader.releaseConversation(String(chat.session_id));
+        historyReader.releaseRun(runId, successful);
+      }
       const selected = bindings ? new Set(bindings.map(binding => binding.result.id)) : undefined;
       for (const [id, reference] of retained) if (reference.runId === runId && (!selected || selected.has(id))) {
         if (reference.evidence.kind === 'local-history' && selected) {
@@ -462,7 +470,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               toolName: HISTORY_IDENTITY.name, accountId: HISTORY_IDENTITY.accountId, resourceId: HISTORY_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)), ...(call.callId ? { callId: call.callId } : {}) };
             exactIntent(tx, expected);
             const accepted = validateCallRun(tx, call).acceptance;
-            const read = historyReader.read(tx, { ownerId, runId: call.runId, authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
+            const conversation = chatRun(tx, call.runId);
+            const read = historyReader.read(tx, { ownerId, runId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
               routeIdentity: accepted.route.identity, allowedClasses: accepted.allowedClasses.filter(value => accepted.route.allowedClasses.includes(value)) }, args);
             const response = redactSecretsWithCount(read.response).value;
             return complete(call as ToolCallIntent, response, read.dataClasses, tx, { kind: 'local-history', ...read.evidence });

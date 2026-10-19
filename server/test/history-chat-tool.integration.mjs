@@ -13,7 +13,7 @@ async function replay(deleted){
   requests.push(request);calls++;
   const replies=request.contents.flatMap(c=>c.parts.flatMap(p=>p.functionResponse?.name==='conversation_history'?[p.functionResponse.response]:[]));
   const call=args=>({...result(request,'complete',''),providerContent:{role:'model',parts:[{functionCall:{name:'conversation_history',id:'history-'+calls,args}}]}});
-  if(secondTurn){if(!replies.length)return call({recordRef:oldRef});assert.equal(replies.at(-1).status,'history_reference_unavailable');return result(request,'complete','Prior turn reference unavailable; a fresh search is required.');}
+  if(secondTurn){if(!replies.length)return call({recordRef:oldRef});assert.equal(replies.at(-1).status,'ok');assert.match(replies.at(-1).text,/violet flags/);return result(request,'complete','Prior coordinate resolved under this turn authority.');}
   if(!replies.length){assert(request.declarations.some(d=>d.name==='conversation_history'));return call({query:'Mira violet flags'});}
   const page=replies.at(-1);if(page.hits){oldRef=page.hits[0].recordRef;return call({recordRef:oldRef});}
   assert.match(page.text,/violet flags/);assert(request.dataClasses.includes('sensitive'));
@@ -32,7 +32,7 @@ async function replay(deleted){
   const first=await turn('first');assert.equal(first.final.outcome,deleted?'unavailable':'complete',JSON.stringify(first.final));
   if(deleted){assert(JSON.stringify(first.events).includes('Earlier lawful receipt.'));assert(!JSON.stringify(first.events).includes('Later synthesized receipt.'));assert(!JSON.stringify(first.final).includes('Blended answer'));}
   else{secondTurn=true;assert.equal((await turn('second')).final.outcome,'complete');}
-  return {deleted,outcome:first.final.outcome,modelCalls:calls,streamPublicationGated:deleted,nextTurnReferenceUnavailable:!deleted};
+  return {deleted,outcome:first.final.outcome,modelCalls:calls,streamPublicationGated:deleted,nextTurnFreshAuthority:!deleted};
  }finally{chat.shutdown();f.chat.shutdown();f.store.close();rmSync(dir,{recursive:true,force:true});}
 }
 console.log(JSON.stringify({case:'actual_chat_history_tool',controls:[await replay(false),await replay(true)]}));

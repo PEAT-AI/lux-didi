@@ -519,6 +519,7 @@ export class ChatService implements ChatPort {
     const affected = result.scope === 'standing' ? this.#config.store.transaction(tx => new Set(tx.all(
       'SELECT session_id FROM chat_consents WHERE owner_assistant_id=? UNION SELECT session_id FROM chat_consent_enrollments WHERE owner_assistant_id=?',
       [context.assistantId, context.assistantId]).filter(row => !this.#validConsent(this.#consent(tx, String(row.session_id), context))).map(row => String(row.session_id)))) : new Set([sessionId]);
+    for (const id of affected) this.#config.tools?.owner.releaseHistoryConversation(id);
     this.#invalidate(row => affected.has(String(row.session_id)), context);
     return result;
   }
@@ -529,6 +530,7 @@ export class ChatService implements ChatPort {
     return label;
   }
   shutdown() {
+    this.#config.tools?.owner.releaseHistoryConversation();
     for (const controller of this.#workers.values()) controller.abort();
     for (const listeners of this.#subscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
     for (const listeners of this.#conversationSubscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
@@ -614,6 +616,7 @@ export class ChatService implements ChatPort {
   cancel(runId: string, context: DomainContext): RunSnapshot {
     this.#authorize(context);
     const run = this.get(runId, context);
+    this.#config.tools?.owner.releaseHistoryConversation(run.sessionId);
     if (run.state === 'terminal') return run;
     // Durable terminal wins before abort. If write fails, no false cancellation.
     const final = this.#finish(run, context, 'cancelled');

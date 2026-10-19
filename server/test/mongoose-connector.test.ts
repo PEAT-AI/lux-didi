@@ -3,7 +3,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -467,7 +467,7 @@ test('Mongoose current contract: typed detail reads send ref, ticket number and 
 for (const [label, tool, data] of [
   ['flat', 'search_mongoose', { results: [{ entity_type: 'knowledge', id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active', url: 'https://example.invalid/kb/17' }], has_more: true, next_cursor: 1, total_estimate: 2 }],
   ['grouped', 'search_mongoose', { hits: { company: [{ company_name: 'Synthetic Company', name: 'Synthetic Company', snippet: 'Company evidence.' }], knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }], offering: [], ticket: [{ number: 17, title: 'Synthetic ticket', snippet: 'Ticket evidence.' }] }, has_more: true, next_cursor: 1, total: 4 }],
-  ['ask', 'ask_mongoose', { found: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
+  ['ask', 'ask_mongoose', { found: false, has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
 ] as const) {
   test(`Mongoose evidence projection: ${label} preserves entity identity, snippets and answerability through the actual SDK`, async t => {
     const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
@@ -477,7 +477,7 @@ for (const [label, tool, data] of [
     const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
     assert.match(projected.projection.text, /kb-17/); assert.match(projected.projection.text, /Launch delayed to Monday/); assert.match(projected.projection.text, /active/);
     if (label !== 'ask') { assert.equal(projected.projection.partial, true); assert.match(projected.projection.text, /next_cursor: 1/); }
-    else assert.match(projected.projection.text, /answerable: false/);
+    else { assert.match(projected.projection.text, /answerable: false/); assert.equal(projected.projection.partial, false, 'bounded ask with no source or local omissions remains complete'); }
     if (label === 'grouped') { assert.match(projected.projection.text, /company_name: Synthetic Company/); assert.match(projected.projection.text, /number: 17/); }
   });
 }
@@ -489,4 +489,30 @@ test('Mongoose evidence projection: a complete chunk is not a whole body and pre
   const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
   assert.equal(projected.projection.partial, true); assert.equal(projected.projection.omittedCharacters, 0);
   assert.match(projected.projection.text, /whole_body: false/); assert.match(projected.projection.text, /next_cursor: 17/);
+});
+
+test('Mongoose literal projection: knowledge subtype is not an entity type and ask trimming retains its answerability contract', async t => {
+  const literal = JSON.parse(readFileSync(new URL('../../test/fixtures/mongoose-literal-sanitized.json', import.meta.url), 'utf8')) as Record<string, unknown>;
+  const ask = { found: true, answer_state: 'answered', has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', name: 'Synthetic evidence', snippet: 'A received citation.', snippet_truncated: true }] }, hits_total: 12, hits_truncated: true }, answerability: { decision: 'read_evidence', next_tool: { name: 'read_knowledge_body', arguments: { ref: 'engineering/synthetic' } } } };
+  for (const [label, tool, data] of [['flat', 'search_mongoose', literal['flat']], ['grouped', 'search_mongoose', literal['grouped']], ['body', 'read_knowledge_body', literal['bodyChunk']], ['ask', 'ask_mongoose', ask]] as const) {
+    const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
+    const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+    const digest = await approve(adapter, registry);
+    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic' } : tool === 'read_knowledge_body' ? { ref: 'engineering/synthetic' } : { query: 'synthetic' });
+    const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) continue;
+    assert.equal(projected.projection.partial, true);
+    assert.doesNotMatch(projected.projection.text, /fixture@example.invalid|system_role/);
+    if (label === 'flat') { assert.match(projected.projection.text, /entity: knowledge/); assert.doesNotMatch(projected.projection.text, /entity: reference/); }
+    if (label === 'ask') { assert.match(projected.projection.text, /hits_truncated: true/); assert.match(projected.projection.text, /answerability.decision: read_evidence/); assert.match(projected.projection.text, /read_knowledge_body/); assert.match(projected.projection.text, /snippet_truncated: true/); assert.equal(projected.projection.omittedCharacters, 0); }
+  }
+});
+
+test('Mongoose literal projection: local coverage clipping remains bounded and character accounting is exact', async t => {
+  const f = await fixture({ text: JSON.stringify({ found: false, has_more: false, results: { hits: { knowledge: [{ id: 'synthetic', name: 'Synthetic evidence', snippet: 'A received citation.' }] } }, answerability: { decision: 'requires_tool', next_tool: { name: 'search_mongoose', arguments: { query: 'q'.repeat(6000) } } } }) }); t.after(() => f.close());
+  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+  const digest = await approve(adapter, registry);
+  const projected = projectMongooseResult(adapter, await reader(adapter, registry, digest).ask({ question: 'synthetic' })); assert.equal(projected.ok, true); if (!projected.ok) return;
+  assert(projected.projection.text.length <= 4000); assert.equal(projected.projection.partial, true);
+  assert.equal(projected.projection.text.length + projected.projection.omittedCharacters, projected.projection.originalCharacters);
+  assert.equal(f.calls.length, 1, 'source next-tool advice is never executed by projection');
 });

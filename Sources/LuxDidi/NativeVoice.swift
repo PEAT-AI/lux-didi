@@ -113,6 +113,9 @@ import WebKit
     private var task: Task<Void, Never>?
     private var lastSilentAt: TimeInterval = 0
     private var requested = false
+    #if COMPANION_TEST
+    private(set) var sampledFrames = 0
+    #endif
     init(device: NativeLiveAudioDevice, bridge: NativeBridge) {
         self.device = device; self.bridge = bridge
         bridge.orbPublication.onSelectionChanged = { [weak self] in self?.update() }
@@ -125,6 +128,9 @@ import WebKit
             while !Task.isCancelled {
                 guard let self = self else { break }
                 let now = Date().timeIntervalSince1970
+                #if COMPANION_TEST
+                self.sampledFrames += 1
+                #endif
                 let bands = self.device.orbBands()
                 let frame = BridgeOrbFrame(input: BridgeOrbBands(bands.input), output: BridgeOrbBands(bands.output))
                 if !frame.isSilent || now - self.lastSilentAt >= Self.silentRepeatSeconds {

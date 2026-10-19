@@ -8,6 +8,14 @@ import AppKit
         let descriptor = try ServiceDescriptor(origin: "http://127.0.0.1:19997", credentialService: "synthetic", credentialAccount: "synthetic")
         let client = CompanionClient(descriptor: descriptor, credential: { "synthetic-only" })
         let model = AppModel(fixtureClient: client, fixtureOutbox: directory)
+        if let expected = ProcessInfo.processInfo.environment["DIDI_FIXTURE_RELEASE"] {
+            precondition(model.shortcutGrantVersion == expected && model.shortcutGrantVersion != model.appVersion)
+            var remembered: String?
+            var grant = SingleKeyGrantPrompt(askedVersion: { remembered }, remember: { remembered = $0 })
+            precondition(grant.askOnce(enabled: true, trusted: false, version: model.shortcutGrantVersion))
+            precondition(!grant.askOnce(enabled: true, trusted: false, version: model.shortcutGrantVersion))
+            print("RIGHT-COMMAND-RELEASE PASS actual=AppModel key=installed-release-commit repeated-release=no-repeat os-grant=untouched")
+        }
         var opens = 0, closes = 0, fences: [Bool] = []
         let presence = NativePresence(effects: PresenceEffects(
             openSession: { opens += 1 }, cancelConnecting: { closes += 1 }, closeSession: { closes += 1 },
@@ -81,6 +89,36 @@ import AppKit
         publication.offer("hidden-discarded")
         completions.removeFirst()()
         precondition(sent.count == 3 && !publication.hasRecipient)
+        let key = SingleKeyTrigger()
+        var summons = 0
+        bindRightCommandKey(key, to: presence, present: { summons += 1 })
+        key.onTap?()
+        precondition(presence.state == .connecting && summons == 1)
+        key.onTap?()
+        precondition(presence.state == .cold && summons == 2)
+        let device = NativeLiveAudioDevice(defaultInput: { (id: "synthetic", name: "synthetic") }, deviceState: { _ in false })
+        let clockBridge = model.bridge
+        let clock = NativeOrbLevelPublisher(device: device, bridge: clockBridge)
+        var clockEvaluations = 0
+        clock.start()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        precondition(clock.sampledFrames == 0)
+        clockBridge.orbPublication.select(ObjectIdentifier(clockBridge), generation: 1, evaluate: { _, completion in clockEvaluations += 1; completion() })
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(clock.sampledFrames > 0 && clockEvaluations > 0)
+        clockBridge.orbPublication.select(nil, generation: 2, evaluate: nil)
+        let pausedSamples = clock.sampledFrames, pausedEvaluations = clockEvaluations
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(clock.sampledFrames == pausedSamples && clockEvaluations == pausedEvaluations)
+        clockBridge.orbPublication.select(ObjectIdentifier(clockBridge), generation: 3, evaluate: { _, completion in clockEvaluations += 1; completion() })
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(clock.sampledFrames > pausedSamples)
+        clock.stop()
+        let stoppedSamples = clock.sampledFrames
+        try await Task.sleep(nanoseconds: 40_000_000)
+        precondition(clock.sampledFrames == stoppedSamples)
+        clockBridge.orbPublication.select(nil, generation: 4, evaluate: nil)
+        print("PRESENTATION-LIFECYCLE PASS publisher=actual hidden-samples=zero resumed=true stopped=true right-command=semantic-start-stop-summon audio-engine-starts=0")
         if let origin = CommandLine.arguments.dropFirst().first {
             try await verifyAssignedPageState(origin: origin, model: model)
         }
@@ -123,6 +161,17 @@ import AppKit
         }
         precondition(fullEvents.contains(.loading) && fullEvents.contains(.ready))
         precondition(miniEvents.contains(.loading) && miniEvents.contains(.ready))
+        let frameKey = "DidiMiniOrbFrame.fixture." + UUID().uuidString
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let panel = MiniOrbPanel(web: mini.webView, frameKey: frameKey, onStep: { _ in preconditionFailure("fixture must not click") })
+        panel.isReleasedWhenClosed = false
+        precondition(panel.frame.size == CGSize(width: 220, height: 220) && panel.alphaValue == 1)
+        precondition(!panel.isOpaque && !panel.hasShadow && panel.contentView?.layer?.masksToBounds == false)
+        precondition(!panel.isVisible && !panel.isKeyWindow && !panel.isMainWindow)
+        precondition(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmost)
+        panel.close()
+        UserDefaults.standard.removeObject(forKey: frameKey)
+        print("NATIVE-MINI-WINDOW PASS actual=NSPanel frame=220x220 alpha=1 opaque=false shadow=false clips=false visible=false focus=unchanged")
         var accepted = 0
         for shell in [full, mini] {
             shell.publishOrb("window.fixturePublication=(window.fixturePublication||0)+1", generation: 9) { accepted += 1 }

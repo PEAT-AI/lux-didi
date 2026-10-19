@@ -50,6 +50,11 @@ try{
       assert.deepEqual(commands,[{type:'mini'},{type:'mini'}]);
       await page.screenshot({path:join(artifacts,'full-settings-mini.png')});
     }
+    if(mode==='mini'){
+      fixture.setLive({state:'speaking',since:'synthetic-mini-current',entries:[{seq:1,kind:'outputTranscription',text:'Synthetic output'}],cursor:1});
+      await page.evaluate(()=>window.didiSetSurfaceVisible(true,4));
+      await page.locator('.mini-stage[data-mini-state="speaking"]').waitFor();
+    }
     results.push({mode,prepared:proof,retainedCanvas:retained,hiddenPaints:stopped,resumed:true,staleRejected:true});
     await page.close();
   }

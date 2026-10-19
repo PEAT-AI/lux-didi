@@ -101,7 +101,7 @@ function orbState(): VoiceState {
   // The machine owns the look while it is stopping, idle or error, so a Stop press changes it at once (3p).
   // Q4: listening before Naya's first audible frame is the connect window, so the orb says
   // Connecting there instead of Listening.
-  if(!machineOwnsOrb(liveMachine.view) && live && live.state!=='idle')return connectingBeforeFirstSpeech(live)?'CONNECTING':liveVoiceState(live.state);
+  if((miniRoute||!machineOwnsOrb(liveMachine.view)) && live && live.state!=='idle')return connectingBeforeFirstSpeech(live)?'CONNECTING':liveVoiceState(live.state);
   if(liveMachine.view.state==='error')return 'ERROR';
   if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';
@@ -324,7 +324,7 @@ function renderMini() {
   orb?.destroy(); orb = undefined;
   root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live), live?.muted === true), miniCaptionMarkup());
   const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
-  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
+  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState(), true);
 }
 function render() {
   if (miniRoute) { renderMini(); return; }

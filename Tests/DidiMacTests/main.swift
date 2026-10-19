@@ -503,15 +503,14 @@ SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
 // MINI2: the pill is 64x26, sits top-center just below the menu bar (the screens
 // are visible frames, so on a notched display the menu bar carries the notch).
-expect(MiniOrbFrameRestore.size == CGSize(width: 64, height: 26), "the pill is 64x26 pt")
-expect(MiniOrbPanelPolicy.cornerRadius == 13 && MiniOrbPanelPolicy.cornerRadius == MiniOrbFrameRestore.size.height / 2, "the capsule radius is half the pill height")
-expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 688, y: 868, width: 64, height: 26), "default pill frame is top-center just below the menu bar")
+expect(MiniOrbFrameRestore.size == CGSize(width: 220, height: 220), "the floating orb is 220 square points")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 610, y: 674, width: 220, height: 220), "default pill frame is top-center just below the menu bar")
 let notched = CGRect(x: 0, y: 0, width: 1728, height: 1083)
 let notchedPill = MiniOrbFrameRestore.resolve(nil, screens: [notched])
-expect(notchedPill == CGRect(x: 832, y: 1051, width: 64, height: 26), "default pill frame is top-center on a notched display")
+expect(notchedPill == CGRect(x: 754, y: 857, width: 220, height: 220), "default pill frame is top-center on a notched display")
 expect(notchedPill.maxY == notched.maxY - MiniOrbFrameRestore.topMargin, "the pill keeps one menu-bar margin, never inside the notch")
 let miniSaved = CGRect(x: 100, y: 120, width: 300, height: 300)
-expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == CGRect(x: 100, y: 120, width: 64, height: 26), "a remembered pill position is kept at the pill size")
+expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == CGRect(x: 100, y: 120, width: 220, height: 220), "a remembered pill position is kept at the pill size")
 expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen]) != CGRect(x: 5000, y: 5000, width: 300, height: 300), "an off-screen pill frame is replaced")
 // UI3A-R1: the activation policy per launch kind. The interactive, login-item and
 // install-relaunch kinds are regular apps (Dock tile, Cmd-Tab); the four
@@ -601,9 +600,9 @@ expect(behavior.contains(.stationary) == false, "the mini panel moves with its S
 // UI3A: a remembered frame is clamped into a visible screen, on restore and after a
 // display disappears, never discarded and never resized.
 let offScreen = MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen])
-expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 64, height: 26), "an off-screen pill frame is clamped into a visible screen at the pill size")
+expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 220, height: 220), "an off-screen pill frame is clamped into a visible screen at the pill size")
 let halfOff = MiniOrbFrameRestore.resolve(CGRect(x: -120, y: 820, width: 300, height: 300), screens: [miniScreen])
-expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 64, height: 26), "a partly off-screen pill frame is clamped, not resized")
+expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 220, height: 220), "a partly off-screen pill frame is clamped, not resized")
 let goneDisplay = MiniOrbFrameRestore.resolve(CGRect(x: 1600, y: 100, width: 300, height: 300), screens: [miniScreen])
 expect(miniScreen.contains(goneDisplay), "a frame left on a removed display is clamped into the remaining screen")
 
@@ -1025,25 +1024,16 @@ expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigg
        && q4Log.last?["pageState"] as? String == "ready",
        "a show logs mini_presented with its frame, screen, alpha, occlusion, page state and trigger")
 
-// Q4-R3: the idle pill is never more transparent than the named floor, and a first show
-// after an install puts a saved frame that sits far below the top band back in the slot.
-expect(PresenceSurfaceState.minimumIdleOpacity == 0.6, "the idle opacity floor is the named 0.6 constant")
-expect(PresenceSurfaceState.shown(PresencePosture(state: .cold, alwaysShow: true, failed: false)).opacity == 0.6,
-       "the cold pill draws at the floor and never reads as nothing")
-expect(PresenceSurfaceState.shown(PresencePosture(state: .connecting, alwaysShow: true, failed: false)).opacity == 0.6,
-       "the connecting pill draws at the floor too")
-let q4LowPill = CGRect(x: 688, y: 600, width: 64, height: 26)
-expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen], firstShowAfterInstall: true)
-       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
-       "a first show after an install resets a saved pill frame that sits below the top band")
-expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen]) == q4LowPill,
-       "a later show honours the saved pill frame the owner chose")
-expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 26), screens: [miniScreen], firstShowAfterInstall: true)
-       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
-       "a first show after an install resets a saved pill frame that is off every screen")
-let q4HighPill = CGRect(x: 688, y: 820, width: 64, height: 26)
-expect(MiniOrbFrameRestore.resolve(q4HighPill, screens: [miniScreen], firstShowAfterInstall: true) == q4HighPill,
-       "a first show after an install keeps a saved pill frame inside the top band")
+// Visual opacity belongs to the renderer; the native panel always has alpha one.
+for state in [PresenceState.cold, .connecting, .hotMuted, .live] {
+    expect(PresenceSurfaceState.shown(PresencePosture(state: state, alwaysShow: true, failed: false)).opacity == 1,
+           "native opacity stays one in every presence state")
+}
+let rememberedOrb = CGRect(x: 400, y: 300, width: 64, height: 26)
+expect(MiniOrbFrameRestore.resolve(rememberedOrb, screens: [miniScreen]) == CGRect(x: 400, y: 300, width: 220, height: 220),
+       "a valid remembered origin survives the larger orb surface")
+expect(miniScreen.contains(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 26), screens: [miniScreen])),
+       "a stranded orb is clamped into the visible screen")
 
 // 338: a wake prewarms the host's warm context from the idle states only. COLD is exactly one
 // prewarm, HOT_MUTED is one more, and a wake during a live call does nothing at all.

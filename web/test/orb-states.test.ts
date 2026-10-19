@@ -44,7 +44,7 @@ test('every state has one visual, and the colours are the mini palette tokens', 
   // Cold and hot-muted share the quiet colour; hot-muted is the slightly more opaque
   // grey, and cold breathes the slowest of every state.
   assert.equal(ORB_VISUALS['hot-muted'].hue, ORB_VISUALS.cold.hue);
-  assert.ok(Math.abs(ORB_VISUALS.cold.opacity - 0.35) <= 0.02, `cold is about 35 percent, got ${ORB_VISUALS.cold.opacity}`);
+  assert.ok(ORB_VISUALS.cold.opacity === 0.30, `cold base is 30 percent, got ${ORB_VISUALS.cold.opacity}`);
   assert.ok(ORB_VISUALS['hot-muted'].opacity > ORB_VISUALS.cold.opacity, 'hot-muted is slightly more opaque');
   assert.ok(ORB_VISUALS.cold.breatheMs >= 9000, 'cold breathes very slowly');
   assert.ok(ORB_VISUALS['hot-muted'].breatheMs < ORB_VISUALS.cold.breatheMs, 'hot-muted breathes faster than cold');

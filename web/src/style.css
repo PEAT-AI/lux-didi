@@ -493,78 +493,12 @@ html,body{height:100%;overflow:hidden}
 /* (8) The consent line sits inside the 760 px column with the same side padding, small and muted. */
 #connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}
 
-/* MINI2, the pill: the MINI surface is a 64x26 pt capsule (the panel is exactly
-   that size), dark translucent fill, one hairline, radius = height / 2. Inside
-   it an 18 pt orb and a 5-bar level meter and no text at all. All sizes are in
-   CSS pixels, so the same markup renders the same pill at 1x and at 2x.
-   Scoped with html.mini so the small-viewport rules for the full window never
-   resize it. */
+/* The floating surface contains the complete canonical orb and transparent edges. */
 html.mini{background:transparent;color-scheme:dark}
-html.mini body{background:transparent;overflow:hidden}
-/* M3-R4: the mini stage is the orb and its rings, nothing else. The pill's wash and
-   level meter are pill chrome, so a stage captured on its own shows one orb. */
-html.mini .mini-stage{position:relative;flex:0 0 18px;display:block;width:18px;height:18px;min-height:18px;max-width:none;border:none;border-radius:9px;margin:0;overflow:visible}
-/* margin:0 overrides the full-window rule's -48px margins, which would push the
-   orb out of the pill (UI3A-R8). */
-html.mini .mini-stage canvas{position:static;width:18px;height:18px;margin:0;display:block}
-html.mini .mini-pill{position:relative;display:flex;align-items:center;gap:5px;box-sizing:border-box;width:64px;height:26px;min-height:26px;max-width:none;margin:0;padding:0 5px;border:1px solid var(--mini-pill-edge);border-radius:13px;background:var(--mini-pill-bg);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);overflow:hidden}
-/* The presence glow is one soft wash behind the orb, never a second drawing. It belongs
-   to the stage and is sized from it, so it scales with the orb instead of sitting at a
-   fixed spot: at 64x26 it is a wash behind the 18 pt orb, and in the orb window it is the
-   orb's own glow (M3-R6 removed the fixed offset that read as a stray dot at the left). */
-html.mini .mini-stage:before{content:"";position:absolute;left:50%;top:50%;width:180%;height:180%;margin:-90% 0 0 -90%;border-radius:50%;background:radial-gradient(circle,var(--mini-wash-1),var(--mini-wash-0) 70%);opacity:var(--mini-wash,0);pointer-events:none}
-/* The one orb renderer at 18 pt; the canvas backing store is larger so the orb
-   stays crisp on a Retina pill and in a 2x shot. The stage sizes it. */
-html.mini .mini-stage canvas{transform:none}
-html.mini .mini-level{display:flex;align-items:center;justify-content:space-between;flex:1 1 26px;height:12px;gap:2px}
-html.mini .mini-level i{flex:1 1 auto;height:30%;border-radius:1px;background:var(--mini-bar)}
-/* Each state has one motion, so a glance is unambiguous: listening follows the
-   mic in five steps, thinking holds still, speaking pulses, muted is one flat
-   dim bar and connecting is a slow spinner ring. */
-/* The native app pushes the microphone level to the pill (window.didiPillLevel),
-   so the meter follows the voice instead of only animating. Each bar has its own
-   multiplier, and the animation stays as the fallback for a preview with no
-   native push (review B5). */
-html.mini .mini-pill.has-level .mini-level i{animation:none}
-html.mini .mini-pill.has-level .mini-level i:nth-child(1){height:calc(var(--mini-level,0) * 100%)}
-html.mini .mini-pill.has-level .mini-level i:nth-child(2){height:calc(var(--mini-level,0) * 78%)}
-html.mini .mini-pill.has-level .mini-level i:nth-child(3){height:calc(var(--mini-level,0) * 112%)}
-html.mini .mini-pill.has-level .mini-level i:nth-child(4){height:calc(var(--mini-level,0) * 84%)}
-html.mini .mini-pill.has-level .mini-level i:nth-child(5){height:calc(var(--mini-level,0) * 104%)}
-html.mini .mini-stage[data-mini-state=listening] + .mini-level i{animation:mini-level 1.1s ease-in-out infinite}
-html.mini .mini-stage[data-mini-state=listening] + .mini-level i:nth-child(2){animation-delay:.12s}
-html.mini .mini-stage[data-mini-state=listening] + .mini-level i:nth-child(3){animation-delay:.24s}
-html.mini .mini-stage[data-mini-state=listening] + .mini-level i:nth-child(4){animation-delay:.36s}
-html.mini .mini-stage[data-mini-state=listening] + .mini-level i:nth-child(5){animation-delay:.48s}
-html.mini .mini-stage[data-mini-state=thinking] + .mini-level i{height:38%;background:var(--mini-bar-thinking)}
-html.mini .mini-stage[data-mini-state=speaking] + .mini-level i{animation:mini-speak .6s ease-in-out infinite alternate;background:var(--mini-bar-speaking)}
-html.mini .mini-stage[data-mini-state=speaking] + .mini-level i:nth-child(2){animation-delay:.08s}
-html.mini .mini-stage[data-mini-state=speaking] + .mini-level i:nth-child(3){animation-delay:.16s}
-html.mini .mini-stage[data-mini-state=speaking] + .mini-level i:nth-child(4){animation-delay:.24s}
-html.mini .mini-stage[data-mini-state=speaking] + .mini-level i:nth-child(5){animation-delay:.32s}
-html.mini .mini-stage[data-mini-state=muted] + .mini-level i{display:none}
-html.mini .mini-stage[data-mini-state=muted] + .mini-level i:first-child{display:block;height:1px;background:var(--mini-bar-muted)}
-html.mini .mini-stage[data-mini-state=connecting]:after{content:"";position:absolute;right:5px;width:8px;height:8px;border:1px solid var(--mini-pill-edge-dim);border-top-color:var(--mini-pill-spin);border-radius:50%;animation:mini-spin 1.4s linear infinite}
-@keyframes mini-level{0%,100%{height:24%}50%{height:88%}}
-@keyframes mini-speak{from{height:30%}to{height:92%}}
-@keyframes mini-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-
-/* M3: every change of state is a transition, never a jump. The canvas eases its own
-   colour, glow, opacity, grey and brightness over 500 ms in orb-states.ts and writes them
-   every frame, so nothing the loop writes carries a CSS transition (that would ease the
-   grey twice and push a change past the 500 ms the contract bounds). Only the bar colour
-   is left to the stylesheet, on the same 500 ms curve. */
-html.mini .mini-level i{transition:background-color 500ms ease-in-out}
-
-/* A running tool is an amber orb with one steady highlight going round it, which is
-   distinct from thinking's slower inner swirl. */
-html.mini .mini-stage[data-mini-state=tool]:before{content:"";position:absolute;left:9px;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;border:1px solid var(--mini-thinking-warm);border-right-color:transparent;border-radius:50%;animation:mini-orbit 2.2s linear infinite}
-@keyframes mini-orbit{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-/* M3-R2: cold and hot-muted are grey as well as dim, and the state machine paints the
-   exact opacity and grey as CSS variables, so colour is never the only difference and
-   neither number jumps: the loop eases them and the breathe is a slow sine. */
-html.mini .mini-stage canvas{opacity:var(--mini-orb-opacity,1);filter:grayscale(var(--mini-orb-grey,0)) brightness(var(--mini-orb-bright,1))}
-@media (prefers-reduced-motion:reduce){html.mini .mini-level i,html.mini .mini-stage[data-mini-state=connecting]:after,html.mini .mini-stage[data-mini-state=tool]:before{animation:none;content:none}html.mini .mini-pill .mini-level i{height:60%}html.mini .mini-pill canvas,html.mini .mini-pill .presence-glow{transition:none}}
+html.mini body{background:transparent;overflow:hidden;margin:0}
+html.mini .mini-pill,html.mini .mini-stage{position:relative;display:block;width:220px;height:220px;min-height:220px;max-width:none;margin:0;padding:0;border:0;border-radius:0;background:transparent;overflow:visible}
+html.mini .mini-stage canvas{position:relative;display:block;width:220px;height:220px;margin:0;transform:none;opacity:var(--mini-orb-opacity,.30);filter:grayscale(var(--mini-orb-grey,.95)) brightness(var(--mini-orb-bright,.8))}
+html.mini .mini-stage:before{content:"";position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--mini-wash-1) calc(var(--mini-wash,.1) * 100%),transparent),var(--mini-wash-0) 70%);opacity:var(--mini-orb-opacity,.30);pointer-events:none}
 
 /* UI3a: the FULL window's one mode control (issue 311). A quiet text button that sits
    with the live pill in the header; it is only rendered under the native bridge,

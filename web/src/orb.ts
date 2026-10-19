@@ -3,6 +3,7 @@
  */
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU } from './orb-classic.ts';
 import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
+import { OrbInkSurface } from './orb-ink.ts';
 import { orbVisualOf, registerOrbRenderer } from './orb-states.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export type { AudioFrame } from './orb-level.ts';
@@ -17,6 +18,9 @@ export function orbSurfaceVisible(): boolean {
 }
 
 export class Orb {
+  private ink: OrbInkSurface | undefined;
+  private surface: HTMLCanvasElement;
+  private frameReady = false;
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
   private motionState: MotionState = initialMotion();
@@ -39,9 +43,11 @@ export class Orb {
   private lastTarget = 1;
   private transition: { activity: number; target: number } | undefined;
   readonly audio = new LatestFrame();
-  constructor(private canvas: HTMLCanvasElement, private state: VoiceState) {
+  constructor(private canvas: HTMLCanvasElement, private state: VoiceState, transparentInk = false) {
     registerOrbRenderer(canvas, () => this.refreshIfStill());
-    this.context=canvas.getContext('2d');
+    this.surface=transparentInk?document.createElement('canvas'):canvas;
+    this.context=this.surface.getContext('2d');
+    if(transparentInk)this.ink=new OrbInkSurface(canvas,this.surface);
     if(this.context)this.classic=new ClassicRenderer(this.context);
     Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.motionState.low,scale:this.lastScale}),configurable:true});
     this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);
@@ -58,6 +64,7 @@ export class Orb {
     this.size=Math.max(1,this.canvas.clientWidth);
     const ratio=Math.min(devicePixelRatio||1,2);
     this.canvas.width=Math.round(this.size*ratio);this.canvas.height=Math.round(this.size*ratio);
+    if(this.ink){this.surface.width=this.canvas.width;this.surface.height=this.canvas.height;}
     this.context?.setTransform(ratio,0,0,ratio,0,0);this.reset();
   }
   private reset = () => {
@@ -81,7 +88,7 @@ export class Orb {
   prepareSurface(): boolean {
     if(this.destroyed||!this.context||this.size<=0)return false;
     this.draw(performance.now(),true);
-    return this.paints>0;
+    return this.frameReady;
   }
   /** One still frame on demand, for a canvas whose loop is not running (reduced motion). */
   refreshIfStill() { if(!this.destroyed&&this.animation===undefined)this.reset(); }
@@ -137,9 +144,11 @@ export class Orb {
     edge.addColorStop(0,'rgba(0,0,0,0)');edge.addColorStop(0.55,'rgba(0,0,0,0.35)');edge.addColorStop(1,'rgba(0,0,0,1)');
     ctx.fillStyle=edge;ctx.fillRect(0,0,s,s);
     ctx.restore();
+    this.frameReady=this.ink?this.ink.present():true;
   }
 
   destroy() {
+    this.ink?.destroy();
     this.destroyed=true;if(this.animation!==undefined)cancelAnimationFrame(this.animation);
     this.observer.disconnect();this.motion.removeEventListener('change',this.reset);document.removeEventListener('visibilitychange',this.surfaceChanged);window.removeEventListener('didi-surface-visibility',this.surfaceChanged);
   }

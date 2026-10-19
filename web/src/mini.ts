@@ -1,12 +1,6 @@
-/** MINI2: the pill, the MINI surface at 64x26 pt.
- *
- * Reuses the authorized Canvas renderer (orb.ts) at 18 pt, so there is one
- * renderer and one voice surface. The mini route is the same built page with
- * `?view=mini`; main.ts renders this markup instead of the full window shell.
- * The pill carries no text at all: an orb and a 5-bar level meter.
- */
+/** The transparent floating orb reuses the canonical renderer at 220 CSS pixels. */
 import type { VoiceState } from './orb.ts';
-import { breathe, createOrbStateMachine, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
+import { createOrbStateMachine, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
 import type { LiveActivity } from './live-view.ts';
 
 export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted' | 'connecting' | 'tool' | 'error';
@@ -24,19 +18,16 @@ export function isMiniRoute(search: string): boolean {
  * visible under the orb. */
 export function miniState(voice: VoiceState, activity: LiveActivity | undefined, muted = false): MiniState {
   if (voice === 'ERROR' || voice === 'DISCONNECTED' || voice === 'INTERRUPTED') return 'error';
-  if (activity?.kind === 'tools' || activity?.kind === 'failed') return 'tool';
-  // The live projection carries mute beside the voice state, not inside it.
   if (muted) return 'muted';
   if (voice === 'CONNECTING') return 'connecting';
+  if (activity?.kind === 'tools' || activity?.kind === 'failed') return 'tool';
   if (voice === 'SPEAKING') return 'speaking';
   if (voice === 'LISTENING') return 'listening';
   if (voice === 'PROCESSING' || activity?.kind === 'thinking') return 'thinking';
   return 'idle';
 }
 
-/** The pill's markup: the orb canvas and five level bars, and no text. The
- * caption parameter is kept so the caller needs no change; the pill ignores it,
- * because the decision file says no text in the pill. */
+/** The floating surface contains the canonical orb and an accessible state label. */
 /** The state in words for a screen reader only: no visible text lives in the pill. */
 const MINI_ARIA: Readonly<Record<MiniState, string>> = {
   idle: 'Naya is off',
@@ -54,53 +45,10 @@ export function miniAriaLabel(state: MiniState): string {
 }
 
 export function miniMarkup(state: MiniState, _caption = ''): string {
-  const bars = Array.from({ length: 5 }, (_, index) => `<i data-bar="${index + 1}"></i>`).join('');
-  // M3-R4: the stage holds the orb and its rings only. The pill's wash and its level
-  // meter are pill chrome, so the stage can be looked at on its own.
   return '<div class="mini-pill">'
     + `<section class="mini-stage" data-mini-state="${state}" aria-label="${miniAriaLabel(state)}">`
-    + '<canvas id="didi-orb" width="72" height="72" aria-hidden="true"></canvas></section>'
-    + `<div class="mini-level" aria-hidden="true">${bars}</div></div>`;
+    + '<canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></section></div>';
 }
-
-/** Each bar's share of the stage height for one input level (0...1), so the
- * meter is a measured function and not only a keyframe (review B5). Pure, so the
- * curve is tested without a DOM. */
-export function miniBarHeights(level: number): number[] {
-  const clamped = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0));
-  return [1, 0.78, 1.12, 0.84, 1.04].map(share => Math.max(0.06, Math.min(1, clamped * share)));
-}
-
-/** Writes one level onto the pill: the CSS variables the five bars scale by, and
- * the flag that tells the stylesheet a native push is live. */
-export function miniMeter(stage: Element | null, level: number): void {
-  if (!stage) return;
-  const heights = miniBarHeights(level);
-  stage.querySelectorAll<HTMLElement>('.mini-level i').forEach((bar, index) => {
-    bar.style.height = `${(heights[index] ?? 0) * 100}%`;
-  });
-  stage.classList.add('has-level');
-}
-
-/** The global the native app evaluates in the pill's web view, the same shape the
- * full route's renderer already reads. Installed once, when the module loads, so
- * the pill meters without a second round of wiring. */
-export interface PillLevelHost { didiPillLevel?: (level: number) => void }
-
-/** The last microphone level a native push delivered, and the visual gate over it: a
- *  pill that is thinking, using a tool, muted or off never reacts to the microphone. */
-let pillMic = 0;
-
-export function installMiniMeter(host: PillLevelHost = globalThis as PillLevelHost): void {
-  host.didiPillLevel = (level: number) => {
-    // A preview or a test has no document; the hook is still installed and inert.
-    if (typeof document === 'undefined') return;
-    // M3: the level is remembered, never painted here, so the pill's own state decides
-    // whether the microphone may move the bars at all.
-    pillMic = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0));
-  };
-}
-installMiniMeter();
 
 /** The FULL window's one mode control (#311): a visible button with an
  * accessible label that asks the native app for the mini orb. Only the native
@@ -179,8 +127,7 @@ export interface MiniOrbScope {
 
 /** M3: one loop for the pill. It reads the state main.ts already paints on the stage,
  *  eases it through the state machine and hands the renderer the colour, glow and
- *  amplitude; the level bars follow the same gate, so a thinking or muted pill never
- *  reacts to the microphone. Returns the stop function. */
+ *  amplitude. A thinking or muted orb never reacts to the microphone. Returns its cleanup. */
 export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const doc = scope.doc ?? (typeof document === 'undefined' ? undefined : document);
   const frame = scope.frame ?? (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : undefined);
@@ -197,7 +144,6 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const paint = () => {
     const at = now();
     const stage = doc.querySelector('.mini-stage');
-    const pill = doc.querySelector('.mini-pill');
     machine.request(visualState(pillState(stage)), at);
     const visual = machine.visual(at);
     painted = visual;
@@ -207,12 +153,11 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
     // variables so the stylesheet owns the drawing and the breath stays a pure function of
     // the clock. The wash lives on the pill, outside the stage.
     const element = stage as HTMLElement | null | undefined;
-    element?.style?.setProperty('--mini-orb-opacity', breathe(visual.opacity, visual.breatheMs, at).toFixed(3));
+    element?.style?.setProperty('--mini-orb-opacity', visual.opacity.toFixed(3));
     element?.style?.setProperty('--mini-orb-grey', visual.grey.toFixed(3));
     element?.style?.setProperty('--mini-orb-bright', visual.bright.toFixed(3));
     // The wash is drawn by the stage, so it scales with the orb (M3-R6).
     element?.style?.setProperty('--mini-wash', visual.glow.toFixed(3));
-    miniMeter(pill ?? null, visual.followsMic ? pillMic : 0);
   };
   const step = () => {
     handle = undefined;

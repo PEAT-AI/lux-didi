@@ -59,8 +59,8 @@ Status: accepted design directions with named owners. These decisions were taken
   on demand. Full logs, mail archives and long transcripts are never placed in a model prompt
   wholesale. Owner: B11, B05, C03.
 - D-30 Naya has two presentation modes, FULL window and MINI floating orb, with a regular Dock
-  presence. One presentation coordinator owns the visible surface: a Dock click, the hotkey, an orb
-  click, the full window's **mini** button and the close button all report through it, so exactly one
+  presence. One presentation coordinator owns the visible surface: a Dock click, the hotkey, the orb's
+  context-menu expansion, the full window's **mini** button and the close button all report through it, so exactly one
   surface is visible after any sequence. FULL is a standard window at the normal level that does not
   hide on deactivate; MINI is a borderless non-activating panel that can become neither key nor main,
   joins every Space, floats over full screen, stays out of the window cycle, moves by its background

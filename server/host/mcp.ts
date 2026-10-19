@@ -6,7 +6,7 @@ import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwn
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
-import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
 import { mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -73,6 +73,7 @@ export interface McpRuntimeComposition {
   /** Idempotent first connector round. The supervised host writes the ready frame before this. */
   start(): Promise<void>;
   refresh(): Promise<void>;
+  recover(): Promise<void>;
   close(): Promise<void>;
 }
 /** The local read candidate list per connector; the Mongoose classifier narrows it at discovery. */
@@ -162,7 +163,7 @@ export async function composeMcpRuntime(options: {
       throw Error(`credential ${reference} missing or invalid`);
     }
   };
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential, onTransportState: event => transportState(event) });
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
@@ -177,7 +178,7 @@ export async function composeMcpRuntime(options: {
   };
   const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
   if (selection.state === 'missing') {
-    const empty: McpRuntimeComposition = { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, close: () => port.close() };
+    const empty: McpRuntimeComposition = { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
@@ -197,6 +198,67 @@ export async function composeMcpRuntime(options: {
     connectors.set(entry.id, entry.connector);
   }
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
+
+  const eligible = new Map<string, { session: number; revision: number }>();
+  const bursts = new Map<string, { session: number; token: number | undefined }>();
+  const flights = new Map<string, Promise<void>>();
+  const recoverEndpoint = (id: string): Promise<void> => {
+    const running = flights.get(id); if (running) return running;
+    const candidate = eligible.get(id);
+    const entry = active.find(endpoint => endpoint.id === id);
+    if (closed || !candidate || !entry || registry.revision(id) !== candidate.revision) return Promise.resolve();
+    const token = generations.get(id);
+    let firstCheck = true;
+    const assertBinding = (): void => {
+      if (closed || generations.get(id) !== token || eligible.get(id) !== candidate
+          || registry.revision(id) !== candidate.revision + (firstCheck ? 0 : 1)) throw Error('recovery-invalidated');
+      const current = loadMcpEndpoints({ configDir });
+      if (current.state !== 'configured' || selection.state !== 'configured' || canonicalJSON(current.catalog) !== canonicalJSON(selection.catalog)) throw Error('endpoint-selection-changed');
+      firstCheck = false;
+    };
+    const previous = reports.get(id)!;
+    reports.set(id, { ...previous, state: 'connecting', tools: 0, error: 'transport_unavailable' });
+    const flight = (async (): Promise<void> => {
+      const restored = await owner.restoreConnection(id, assertBinding);
+      if (closed || generations.get(id) !== token || eligible.get(id) !== candidate) return;
+      if (restored.state === 'restored') {
+        try { assertBinding(); } catch {
+          registry.suspend(id); eligible.delete(id); ready.delete(id);
+          reports.set(id, { ...previous, state: 'error', tools: 0, error: 'recovery-invalidated' });
+          return;
+        }
+        const grant = registry.currentGrant(id);
+        if (!grant) { eligible.delete(id); reports.set(id, { ...previous, state: 'error', tools: 0, error: 'recovery-invalidated' }); return; }
+        eligible.delete(id); ready.add(id);
+        const { error: _error, exception: _exception, ...report } = previous;
+        reports.set(id, { ...report, state: 'connected', tools: grant.toolNames.length, lastHandshakeAt: new Date(now()).toISOString() });
+      } else {
+        ready.delete(id);
+        const reason = restored.state === 'refused' ? restored.reason : 'transport_unavailable';
+        reports.set(id, { ...previous, state: 'error', tools: 0, error: reason,
+          ...(reason === 'catalog-changed' ? { configurationError: 'owner-approval-required' as const } : {}) });
+        if (restored.state === 'unavailable') candidate.revision = registry.revision(id);
+        else eligible.delete(id);
+      }
+    })().finally(() => { if (flights.get(id) === flight) flights.delete(id); });
+    flights.set(id, flight);
+    return flight;
+  };
+  const transportState = (event: McpTransportState): void => {
+    if (closed || !reports.has(event.endpointId)) return;
+    const id = event.endpointId;
+    if (event.state === 'unavailable') {
+      eligible.delete(id); ready.delete(id);
+      bursts.set(id, { session: event.session, token: generations.get(id) });
+      const previous = reports.get(id)!;
+      reports.set(id, { ...previous, state: 'error', tools: 0, error: event.reason,
+        exception: { class: 'Transport', code: event.reason } });
+    } else if (event.recoverable && registry.revision(id) === event.revision
+        && bursts.get(id)?.session === event.session && bursts.get(id)?.token === generations.get(id)) {
+      eligible.set(id, { session: event.session, revision: event.revision });
+      void recoverEndpoint(id);
+    }
+  };
 
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh'): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
@@ -341,6 +403,7 @@ export async function composeMcpRuntime(options: {
   const run = async (): Promise<void> => {
     if (closed) return;
     await Promise.all(active.map(async entry => {
+      eligible.delete(entry.id); bursts.delete(entry.id);
       const token = (generations.get(entry.id) ?? 0) + 1;
       generations.set(entry.id, token);
       // Any generation bump revokes the superseded grant before a replacement can publish, so an
@@ -356,10 +419,13 @@ export async function composeMcpRuntime(options: {
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only a connector whose current generation is published and ready is callable.
     connectionIds: () => active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id),
-    status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report, connector: connectors.get(report.id) ?? report.id })) }),
+    status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report,
+      ...(report.state === 'connected' && report.tools > 0 && !registry.currentGrant(report.id) ? { state: 'error' as const, tools: 0, error: 'connector-unavailable' } : {}),
+      connector: connectors.get(report.id) ?? report.id })) }),
     start: () => (startPromise ??= run()),
     refresh: async () => { startPromise = undefined; await run(); },
-    close: () => { closed = true; for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } return port.close(); },
+    recover: async () => { await Promise.all([...eligible.keys()].map(recoverEndpoint)); },
+    close: () => { closed = true; for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } eligible.clear(); bursts.clear(); const closing = port.close(); return Promise.all([closing, ...flights.values()]).then(() => {}); },
   };
   if (options.deferConnectors !== true) await composition.start();
   return composition;

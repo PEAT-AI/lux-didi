@@ -68,6 +68,8 @@ export interface LiveProfile {
 
 export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
+  /** One explicit new owner request may retry unavailable transport, never a model tool retry. */
+  recover?(): Promise<void>;
   /** Configured connector endpoints and their state, for the host-generated runtime context. */
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;

@@ -123,6 +123,7 @@ async function harness(t: TestContext, overrides: {
   mattermost?: boolean;
   calendar?: boolean;
   beforeTool?: () => Promise<void>;
+  recover?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
   /** R6: the work one Mattermost read does, so a test can hold a chat source open across a clock advance. */
   mattermostWork?: () => Promise<void>;
@@ -264,7 +265,7 @@ async function harness(t: TestContext, overrides: {
       toolOwner.projectConnection('calendar');
     }
     toolOwner.projectConnection('lux');
-    tools = { owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
+    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
     if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); });
   }
@@ -4069,4 +4070,18 @@ test('fluency: cached Live metadata cannot bypass suspended or revoked connector
     assert.ok(frame.toolResponse.functionResponses[0]!.response['error'], 'cached success must not outlive canonical authority');
     assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'denied cache does not dispatch');
   }
+});
+
+
+test('fluency: demand recovery belongs to new owner input and not repeated model tools', async t => {
+  let demands = 0;
+  const h = await harness(t, { tools: true, calendar: true, recover: async () => { demands++; } });
+  await attached(h, 'distinct-recovery-demand');
+  h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic request', finished: true } } });
+  await settleLiveTool(h, 'first', 'gcal_calendars', {});
+  await settleLiveTool(h, 'model-retry', 'gcal_calendars', {});
+  assert.equal(demands, 1);
+  h.f.send({ serverContent: { inputTranscription: { text: 'A distinct synthetic request', finished: true } } });
+  await settleLiveTool(h, 'new-request', 'gcal_calendars', {});
+  assert.equal(demands, 2);
 });

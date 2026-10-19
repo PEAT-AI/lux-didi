@@ -279,6 +279,7 @@ interface ActiveSession {
   connection: { seq: number; epoch: string; turnId: string | undefined; turnIndex: number };
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
+  connectorRecovery?: Promise<void> | undefined;
   researchLedger: ResearchLedger;
   researchScheduler?: ResearchScheduler;
   registry: readonly ToolDefinition[];
@@ -1732,6 +1733,7 @@ export class LiveSessionOwner {
     if (!handle) throw new LiveError('not_found', 'No active Live session');
     this.#guardHandle(handle);
     const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true };
+    handle.connectorRecovery = this.#tools?.recover?.();
     handle.session.sendText({ text });
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
@@ -2026,6 +2028,7 @@ export class LiveSessionOwner {
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
+            handle.connectorRecovery = this.#tools?.recover?.();
             this.#openTurn(handle);
           }
           handle.inputFinalTimer?.cancel();
@@ -2371,6 +2374,8 @@ export class LiveSessionOwner {
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
     if (this.#tools && handle.host) {
+      await handle.connectorRecovery;
+      if (this.#settled(handle) || generation !== handle.generation) return;
       const authority = this.lookupAuthority(handle.host.runId);
       if (!authority) return;
       const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);

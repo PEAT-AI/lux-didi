@@ -35,6 +35,7 @@ export const hostMigrations = [...domainMigrations, ...chatMigrations, ...liveMi
 /** Structural match for W-B's LiveToolsComposition; kept local and additive until its signature lands. */
 export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>;
 export interface LiveToolsComposition {
+  recover?(): Promise<void>;
   owner: ToolsOwner;
   connectionIds(): string[];
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
@@ -266,6 +267,7 @@ export async function startHost(config: HostConfig) {
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
+      recover: () => mcp.recover(),
       status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,

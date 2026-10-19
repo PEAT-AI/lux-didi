@@ -86,7 +86,7 @@ public struct MicModePrompt: Sendable {
     private let save: @Sendable (String?) -> Void
     private var shownVersion: String?
     private var loaded = false
-    private var lastActive: MicMode?
+    private var lastPreferred: MicMode?
 
     public init(shownVersion: @escaping @Sendable () -> String? = { nil },
                 setShownVersion: @escaping @Sendable (String?) -> Void = { _ in }) {
@@ -94,21 +94,21 @@ public struct MicModePrompt: Sendable {
         self.save = setShownVersion
     }
 
-    /// A LIVE start asks. True at most once per app version, and again only after the mode went back
+    /// A LIVE start asks. True at most once per app version, and again only after the selected mode went back
     /// from Voice Isolation to another mode.
     public mutating func liveStart(_ reading: MicModeReading, version: String) -> Bool {
         note(reading)
-        guard reading.active != .voiceIsolation, shown() != version else { return false }
+        guard reading.preferred != .voiceIsolation, reading.active != .voiceIsolation, shown() != version else { return false }
         remember(version)
         return true
     }
 
-    /// A change notices the return from Voice Isolation, so a later LIVE start may ask again.
+    /// A changed user selection rearms the prompt; an active route transition does not.
     public mutating func modeChanged(_ reading: MicModeReading) { note(reading) }
 
     private mutating func note(_ reading: MicModeReading) {
-        if reading.active != .voiceIsolation, lastActive == .voiceIsolation { remember(nil) }
-        lastActive = reading.active
+        if reading.preferred != .voiceIsolation, lastPreferred == .voiceIsolation { remember(nil) }
+        lastPreferred = reading.preferred
     }
 
     private mutating func shown() -> String? {

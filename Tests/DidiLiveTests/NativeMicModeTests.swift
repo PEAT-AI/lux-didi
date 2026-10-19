@@ -66,6 +66,22 @@ import Foundation
         check(relaunch.liveStart(reading(0, 0), version: "3.1"), "so the same version may ask once more after a change back")
         check(store.value == "3.1", "and the stored version follows")
 
+        // The selected preference survives route teardown even while active processing returns to standard.
+        let selectedStore = Store()
+        var selected = MicModePrompt(shownVersion: { selectedStore.value }, setShownVersion: { selectedStore.value = $0 })
+        check(selected.liveStart(reading(0, 0), version: "3.2"), "the selected-mode fixture records its first prompt")
+        selected.modeChanged(reading(2, 2))
+        selected.modeChanged(reading(2, 0))
+        check(selectedStore.value == "3.2", "active teardown preserves the selected preference prompt history")
+        check(!selected.liveStart(reading(2, 0), version: "3.2"), "selected Voice Isolation awaiting activation never asks again")
+        check(!selected.liveStart(reading(2, 0), version: "3.3"), "a new version does not ask to reselect an existing preference")
+        selected.modeChanged(reading(0, 2))
+        check(selectedStore.value == nil, "an actual preferred change clears prompt history before active processing catches up")
+        check(!selected.liveStart(reading(0, 2), version: "3.3"), "active Voice Isolation never asks while the selection change settles")
+        selected.modeChanged(reading(0, 0))
+        check(selected.liveStart(reading(0, 0), version: "3.3"), "actual preference change to standard rearms one prompt")
+        check(!selected.liveStart(reading(0, 0), version: "3.3"), "the actual preference change prompts only once")
+
         print(failures == 0 ? "NATIVE-MIC-MODE TESTS PASS" : "NATIVE-MIC-MODE TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

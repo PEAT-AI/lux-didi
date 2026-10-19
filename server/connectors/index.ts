@@ -1,3 +1,4 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
@@ -7,7 +8,7 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
-import { createMongooseReader, MONGOOSE_READ_TOOLS } from './mongoose.js';
+import { createMongooseReader, MONGOOSE_READ_TOOLS, type SearchInput, type KnowledgeItemInput, type KnowledgeBodyInput, type CompanyProfileInput, type TicketInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_TOOLS } from './mattermost.js';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
@@ -403,19 +404,29 @@ function mongooseForwardDeclaration(name: string): ConnectorToolDeclaration {
     validate(args) { return isRecord(args) && JSON.stringify(args).length <= 4000; },
   };
 }
+const mongooseSchemaValidator = new AjvJsonSchemaValidator();
+function mongooseDeclaration(name: string, description: string, properties: Record<string, unknown>, required: string[] = []): ConnectorToolDeclaration {
+  const parameters = { type: 'object', additionalProperties: false, properties, required };
+  const validate = mongooseSchemaValidator.getValidator(parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0]);
+  return { name, description, effect: 'read', parameters, validate: args => isRecord(args) && JSON.stringify(args).length <= 4000 && validate(args).valid };
+}
 const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly ConnectorToolDeclaration[] => {
-    const text = Math.min(500, policy.bounds.maxQueryChars);
-    const search = Math.min(50, policy.bounds.maxSearchLimit);
-    const list = Math.min(100, policy.bounds.maxSearchLimit);
-    return [
-      companyDeclaration('ask_mongoose', 'Ask a bounded question of company knowledge.', text, 'question', search),
-      companyDeclaration('search_mongoose', 'Search bounded company knowledge.', text, 'query', search),
-      companyDeclaration('get_knowledge_item', 'Read a company knowledge item by id.', text, 'id'),
-      companyDeclaration('read_knowledge_body', 'Read a company knowledge body by id.', text, 'id'),
-      companyDeclaration('get_company_profile', 'Read the company profile.', text),
-      companyDeclaration('list_tickets', 'List bounded company tickets.', text, undefined, list),
-      companyDeclaration('get_ticket', 'Read a company ticket by id.', text, 'id'),
-    ];
+  const text = { type: 'string', minLength: 1, maxLength: Math.min(500, policy.bounds.maxQueryChars) };
+  const limit = { type: 'integer', minimum: 1, maximum: Math.min(50, policy.bounds.maxSearchLimit) };
+  const offset = { type: 'integer', minimum: 0 };
+  const detail = { type: 'string', enum: ['summary', 'full'] };
+  return [
+    mongooseDeclaration('ask_mongoose', 'Ask company knowledge and preserve the returned evidence and answerability.', { question: text, limit }, ['question']),
+    mongooseDeclaration('search_mongoose', 'Search curated company, product, knowledge and ticket evidence. Use returned entity identifiers for precise reads; offset follows source-native pagination.', {
+      query: text, limit, offset, scope: { type: 'string', enum: ['all', 'knowledge'] }, domain: { type: ['string', 'null'] },
+      include: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }, { type: 'null' }] }, include_strong: { type: 'boolean' },
+    }, ['query']),
+    mongooseDeclaration('get_knowledge_item', 'Read one company knowledge item using id, item_id or identifier. detail selects summary or full.', { id: text, item_id: text, identifier: text, detail }),
+    mongooseDeclaration('read_knowledge_body', 'Read a company knowledge body chunk by returned ref. Continue with its exact cursor; max_chars controls this chunk.', { ref: text, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1 } }, ['ref']),
+    mongooseDeclaration('get_company_profile', 'Read a named company profile; detail and sections select the evidence.', { company_name: text, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: ['array', 'null'], items: { type: 'string' } }, flagship_only: { type: 'boolean' }, launch_year: { type: ['number', 'null'] } }, ['company_name']),
+    companyDeclaration('list_tickets', 'List bounded company tickets.', Math.min(500, policy.bounds.maxQueryChars), undefined, Math.min(100, policy.bounds.maxSearchLimit)),
+    mongooseDeclaration('get_ticket', 'Read a company ticket by its returned number. body_offset continues its body; offset and limit continue its related lists.', { number: { type: ['number', 'string'] }, detail, body_offset: offset, limit, offset }, ['number']),
+  ];
 };
 const mongooseDescriptor: ConnectorDescriptor = {
   id: 'mongoose', envelope: MONGOOSE_READ_TOOLS,
@@ -434,12 +445,12 @@ const mongooseDescriptor: ConnectorDescriptor = {
     return { async call(tool, args, signal) {
       switch (tool) {
         case 'ask_mongoose': return reader.ask(args as { question: string; limit?: number }, signal);
-        case 'search_mongoose': return reader.search(args as { query: string; limit?: number }, signal);
-        case 'get_knowledge_item': return reader.getKnowledgeItem(args as { id: string }, signal);
-        case 'read_knowledge_body': return reader.readKnowledgeBody(args as { id: string }, signal);
-        case 'get_company_profile': return reader.companyProfile(signal);
+        case 'search_mongoose': return reader.search(args as unknown as SearchInput, signal);
+        case 'get_knowledge_item': return reader.getKnowledgeItem(args as KnowledgeItemInput, signal);
+        case 'read_knowledge_body': return reader.readKnowledgeBody(args as unknown as KnowledgeBodyInput, signal);
+        case 'get_company_profile': return reader.companyProfile(args as unknown as CompanyProfileInput, signal);
         case 'list_tickets': return reader.listTickets(args, signal);
-        case 'get_ticket': return reader.getTicket(args as { id: string }, signal);
+        case 'get_ticket': return reader.getTicket(args as unknown as TicketInput, signal);
         default: return reader.call(tool, args, signal);
       }
     } };

@@ -142,7 +142,7 @@ test('a tool outside the read grant refuses before dispatch', async t => {
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry, MONGOOSE_TOOLS.filter(name => name !== 'get_ticket'));
   try {
-    const result = await reader(adapter, registry, digest).getTicket({ id: 'ticket-1' });
+    const result = await reader(adapter, registry, digest).getTicket({ number: 'ticket-1' });
     assert.equal(result.state, 'refused');
     assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-granted');
   } finally { await adapter.close(); }
@@ -157,7 +157,7 @@ test('input budgets refuse malformed arguments before any wire call', async t =>
     assert.equal((await r.search({ query: '   ' })).state, 'refused');
     assert.equal((await r.search({ query: 'ok', limit: 999 })).state, 'refused');
     assert.equal((await r.listTickets({ limit: 0 })).state, 'refused');
-    assert.equal((await r.getTicket({ id: '' })).state, 'refused');
+    assert.equal((await r.getTicket({ number: '' })).state, 'refused');
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); }
 });
@@ -167,7 +167,7 @@ test('a large Mongoose answer is projected as bounded, partial-marked Markdown',
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry);
   try {
-    const result = await reader(adapter, registry, digest).companyProfile();
+    const result = await reader(adapter, registry, digest).companyProfile({ company_name: 'Synthetic Company' });
     assert.equal(result.state, 'completed');
     const projected = projectMongooseResult(adapter, result);
     assert.equal(projected.ok, true);
@@ -438,4 +438,28 @@ test('one widened read tool call carries the bearer resolved from the OAuth reco
     await f.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('Mongoose current contract: typed detail reads send ref, ticket number and company name through original schema validation', async t => {
+  const schemas = [
+    { name: 'read_knowledge_body', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1, maximum: 9000 } }, required: ['ref'], additionalProperties: false } },
+    { name: 'get_ticket', inputSchema: { type: 'object', properties: { number: { type: ['integer', 'string'] }, body_offset: { type: 'integer' }, detail: { type: 'string', enum: ['summary', 'full'] } }, required: ['number'], additionalProperties: false } },
+    { name: 'get_company_profile', inputSchema: { type: 'object', properties: { company_name: { type: 'string' }, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: 'array', items: { type: 'string' } } }, required: ['company_name'], additionalProperties: false } },
+  ];
+  const f = await fixture({ tools: schemas }); t.after(() => f.close());
+  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+  const digest = await approve(adapter, registry, schemas.map(schema => schema.name));
+  const source = reader(adapter, registry, digest);
+  const body = await source.readKnowledgeBody({ ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 });
+  assert.equal(body.state, 'completed');
+  assert.equal((await source.getTicket({ number: 17, body_offset: 1200, detail: 'full' })).state, 'completed');
+  assert.equal((await source.companyProfile({ company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] })).state, 'completed');
+  assert.deepEqual(f.calls, [
+    { name: 'read_knowledge_body', arguments: { ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 } },
+    { name: 'get_ticket', arguments: { number: 17, body_offset: 1200, detail: 'full' } },
+    { name: 'get_company_profile', arguments: { company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] } },
+  ]);
+  const before = f.calls.length;
+  assert.equal((await source.call('read_knowledge_body', { id: 'synthetic-ref' })).state, 'refused', 'old id arguments remain refused by the original schema');
+  assert.equal(f.calls.length, before);
 });

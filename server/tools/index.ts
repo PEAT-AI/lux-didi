@@ -224,36 +224,39 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       });
     },
   };
+  const authorizeDelivery: ToolsOwner['authorizeDelivery'] = (host, bindings, baseClasses, liveInput, signal) => {
+    if (signal.aborted) return { state: 'refused', reason: 'cancelled' };
+    if (!liveInput) return { state: 'refused', reason: 'authority_denied' };
+    const live = detached(liveInput); const { acceptedRunHash, ...liveAcceptance } = live;
+    validateAcceptance(liveAcceptance); classSet(baseClasses);
+    // All persisted state is reread synchronously AFTER the awaited authoritative lookup.
+    return store.transaction(tx => {
+      const { snapshot, hash } = readRun(tx, host.runId); const accepted = snapshot.acceptance;
+      const denied = { state: 'refused' as const, reason: 'authority_policy_or_result_denied' };
+      if (live.ownerId !== ownerId || !hostMatches(accepted, host) || hash !== acceptedRunHash || canonicalJSON(liveAcceptance) !== canonicalJSON(accepted) || baseClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
+      const results: { binding: ToolResultBinding; response: JsonObject; dataClasses: readonly DataClass[] }[] = [];
+      for (const binding of bindings) {
+        const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, host.runId, binding.executionId]);
+        if (!row || row.state === 'intent' || row.state === 'unknown' || row.result_id !== binding.result.id || row.result_sha256 !== binding.result.sha256 || typeof row.result_json !== 'string' || sha256(row.result_json) !== binding.result.sha256) return denied;
+        const call = storedCall(tx, row);
+        if (!hostMatches(accepted, call) || call.executionId !== binding.executionId || call.toolName !== binding.name || call.callId !== binding.callId || row.call_id !== (call.callId ?? null)) return denied;
+        if (row.state !== 'refused') { const selected = target(snapshot, call); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return denied; }
+        const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string }; classSet(value.dataClasses);
+        if (value.intentSha256 !== sha256(intentBytes(tx, call)) || value.routeIdentity !== accepted.route.identity) return denied;
+        if (value.dataClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
+        if (row.state === 'completed') {
+          const bound = target(snapshot, call);
+          if (value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c)) || Buffer.byteLength(row.result_json) > bound.policy.bounds.maxResultBytes) return denied;
+        }
+        results.push({ binding: detached(binding), response: detached(value.response), dataClasses: [...value.dataClasses] });
+      }
+      return { state: 'allowed' as const, results };
+    });
+  };
   const resultGate: ToolResultGate = {
     async authorize(host, bindings, baseClasses, signal) {
       if (signal.aborted) return { state: 'refused', reason: 'cancelled' };
-      const liveInput = await lookupAuthority(host.runId, signal);
-      if (!liveInput || signal.aborted) return { state: 'refused', reason: 'authority_denied' };
-      const live = detached(liveInput); const { acceptedRunHash, ...liveAcceptance } = live;
-      validateAcceptance(liveAcceptance); classSet(baseClasses);
-      // All persisted state is reread synchronously AFTER the awaited authoritative lookup.
-      return store.transaction(tx => {
-        const { snapshot, hash } = readRun(tx, host.runId); const accepted = snapshot.acceptance;
-        const denied = { state: 'refused' as const, reason: 'authority_policy_or_result_denied' };
-        if (live.ownerId !== ownerId || !hostMatches(accepted, host) || hash !== acceptedRunHash || canonicalJSON(liveAcceptance) !== canonicalJSON(accepted) || baseClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
-        const results: { binding: ToolResultBinding; response: JsonObject; dataClasses: readonly DataClass[] }[] = [];
-        for (const binding of bindings) {
-          const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, host.runId, binding.executionId]);
-          if (!row || row.state === 'intent' || row.state === 'unknown' || row.result_id !== binding.result.id || row.result_sha256 !== binding.result.sha256 || typeof row.result_json !== 'string' || sha256(row.result_json) !== binding.result.sha256) return denied;
-          const call = storedCall(tx, row);
-          if (!hostMatches(accepted, call) || call.executionId !== binding.executionId || call.toolName !== binding.name || call.callId !== binding.callId || row.call_id !== (call.callId ?? null)) return denied;
-          if (row.state !== 'refused') { const selected = target(snapshot, call); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return denied; }
-          const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string }; classSet(value.dataClasses);
-          if (value.intentSha256 !== sha256(intentBytes(tx, call)) || value.routeIdentity !== accepted.route.identity) return denied;
-          if (value.dataClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
-          if (row.state === 'completed') {
-            const bound = target(snapshot, call);
-            if (value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c)) || Buffer.byteLength(row.result_json) > bound.policy.bounds.maxResultBytes) return denied;
-          }
-          results.push({ binding: detached(binding), response: detached(value.response), dataClasses: [...value.dataClasses] });
-        }
-        return { state: 'allowed' as const, results };
-      });
+      return authorizeDelivery(host, bindings, baseClasses, await lookupAuthority(host.runId, signal), signal);
     },
   };
   const apply = (input: ConnectionPolicy, expected: string | null | undefined): ConnectionApplyResult => {
@@ -280,7 +283,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
 
   const owner: ToolsOwner = {
-    journal, resultGate, complete,
+    journal, resultGate, authorizeDelivery, complete,
     applyConnection(input) { apply(input, undefined); },
     applyConnectionIntent(intent) {
       exact(intent, ['expectedPolicySha256', 'policy']);

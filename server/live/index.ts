@@ -2371,6 +2371,7 @@ export class LiveSessionOwner {
     };
     for (const call of event.calls) publish('toolCall', { name: call.name, status: 'called', markdown: '', sources: [] });
     if ((this.#settled(handle) || generation !== handle.generation)) return;
+    const cachedDeliveryBindings = new Map<number, ToolResultBinding>();
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
     if (this.#tools && handle.host) {
@@ -2415,6 +2416,7 @@ export class LiveSessionOwner {
         if (gate.state !== 'allowed') { pending.push(unit); continue; }
         hostLogEvent({ event: 'live_read_cache', tool: unit.call.name, cached: true });
         cached.set(unit.index, hit);
+        cachedDeliveryBindings.set(unit.index, hit.binding);
       }
       // One AbortController per model call; the batch stays a single dispatch so same-endpoint reads
       // keep their order, and a cancellation aborts exactly its own call. Each intent sub-read also
@@ -2535,6 +2537,18 @@ export class LiveSessionOwner {
       }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
+    if (cachedDeliveryBindings.size > 0 && this.#tools && handle.host) {
+      let allowed = false;
+      try {
+        allowed = this.#tools.owner.authorizeDelivery(handle.host, [...cachedDeliveryBindings.values()], [handle.inputClass],
+          this.lookupAuthority(handle.host.runId), handle.abort.signal).state === 'allowed';
+      } catch { allowed = false; }
+      if (!allowed) for (const index of cachedDeliveryBindings.keys()) {
+        const call = event.calls[index]!;
+        responses[index] = { id: call.id, name: call.name, response: { error: 'tool_result_denied' } };
+        projections[index] = { name: call.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
+      }
+    }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
       // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call

@@ -101,6 +101,7 @@ function profileInput(limits?: Record<string, number>, model = MODEL, provider: 
 interface Harness {
   requests: LiveVoiceRequest[];
   toolRegistry?: McpRegistry;
+  toolOwner?: ReturnType<typeof createToolsOwner>;
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
   owner: LiveSessionOwner;
@@ -170,6 +171,7 @@ async function harness(t: TestContext, overrides: {
   let owner!: LiveSessionOwner;
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
   let toolRegistry: McpRegistry | undefined;
+  let exposedToolOwner: ReturnType<typeof createToolsOwner> | undefined;
   if (overrides.tools) {
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
@@ -236,6 +238,7 @@ async function harness(t: TestContext, overrides: {
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
     const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    exposedToolOwner = toolOwner;
     if (overrides.beforeGate) {
       const authorize = toolOwner.resultGate.authorize.bind(toolOwner.resultGate);
       t.mock.method(toolOwner.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => { await overrides.beforeGate!(); return authorize(...args); });
@@ -284,7 +287,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { ...(toolRegistry ? { toolRegistry } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 /** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
@@ -4084,4 +4087,45 @@ test('fluency: demand recovery belongs to new owner input and not repeated model
   h.f.send({ serverContent: { inputTranscription: { text: 'A distinct synthetic request', finished: true } } });
   await settleLiveTool(h, 'new-request', 'gcal_calendars', {});
   assert.equal(demands, 2);
+});
+
+
+test('fluency R2: cached metadata is denied after revocation during sibling work or its final authorization microtask', async t => {
+  for (const boundary of ['revoke', 'suspend', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>();
+    const h = await harness(t, { tools: true, calendar: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
+    const { session } = await attached(h, `cache-delivery-${boundary}`);
+    await settleLiveTool(h, 'prime-calendar', 'gcal_calendars', {});
+    await settleLiveTool(h, 'prime-calendar-small', 'gcal_calendars', { maxResults: 1 });
+    if (boundary === 'final-microtask') {
+      const gate = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+      t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof gate>) => {
+        const outcome = await gate(...args);
+        if (outcome.state === 'allowed' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
+        return outcome;
+      });
+    }
+    const before = toolResponseCount(h);
+    h.f.send({ toolCall: { functionCalls: [
+      { id: 'cached-calendar', name: 'gcal_calendars', args: {} },
+      { id: 'cached-calendar-small', name: 'gcal_calendars', args: { maxResults: 1 } },
+      { id: 'slow', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
+    ] } });
+    await started.promise;
+    if (boundary === 'revoke') h.toolRegistry!.revoke('calendar');
+    if (boundary === 'suspend') h.toolRegistry!.suspend('calendar');
+    finish.resolve();
+    for (let i = 0; i < 2000 && toolResponseCount(h) === before; i++) await tick();
+    assert.equal(toolResponseCount(h), before + 1);
+    const frame = h.f.frames.filter(value => typeof value === 'object' && value !== null && 'toolResponse' in value).at(-1) as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } };
+    const cached = frame.toolResponse.functionResponses.find(response => response.id === 'cached-calendar')!.response;
+    assert.equal(h.toolRegistry!.currentGrant('calendar'), undefined, boundary);
+    assert.ok(cached['error'], boundary);
+    assert.equal(cached['text'], undefined, 'no metadata body reaches provider');
+    const projections = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 100 }).fragments.filter(fragment => fragment.kind === 'toolResult');
+    assert.equal(projections.at(-3)?.tool?.status, 'error', 'local receipt must deny too');
+    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'neither completed calendar read replays');
+    const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='gcal_calendars'", [session.liveSessionId]));
+    assert.deepEqual(rows.map(row => row.state), ['completed', 'completed'], 'original completed journal is unchanged');
+  }
 });

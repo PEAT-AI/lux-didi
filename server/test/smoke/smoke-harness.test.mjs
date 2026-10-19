@@ -235,6 +235,14 @@ test('probe5 still fails at stage=runs when no run line arrives before the quest
   assert.equal(turn.stage, 'runs');
 });
 
+// R9: an unreadable host log is a read error, never an empty window: reporting runs=0 would blame the run
+// for a read that never happened.
+test('an unreadable host log fails at the read stage, never as stage=runs runs=0', async () => {
+  const receipt = await awaitRunReceipt({ readAppended: async () => { throw new Error('host.log unreadable'); }, deadline: 90000, tickMs: 1000, researchIds: ['r5'] });
+  assert.equal(receipt.readError, true);
+  assert.equal(receipt.runs.length, 0);
+});
+
 // #397: a probe host must never be handed the installed app's own provider config, so the probes stage a
 // private copy first and run against it. Key file modes survive the copy and no key material is printed.
 test('probes stage the installed provider config into a private temp copy', async () => {

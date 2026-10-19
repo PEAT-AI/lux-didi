@@ -8,7 +8,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, chooseStartContext, withProvenance, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2267,10 +2267,20 @@ export class LiveSessionOwner {
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
     const settled = await Promise.all(event.calls.map(async call => {
       let response: JsonObject;
-      try {
-        if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
-        response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
-      } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+      if (!validateResearch(call.args)) {
+        // R9: a call refused at dispatch never reaches the research tool, so it writes its own failed receipt
+        // here; otherwise a refused lookup leaves no run line at all and reads as a silent no-op.
+        hostLogEvent({
+          event: 'research_run', researchId: newResearchId(), questionClass: 'quick_fact', rounds: 0, perRound: [],
+          stopReason: 'refused', status: 'failed', ops: 0, sources: [], elapsedMs: 0, deadAirMs: 0, selectorMs: 0,
+          fallbackUsed: false, replyBytes: 0, unchecked: [], canContinue: false, findingChars: [],
+        });
+        response = { error: 'invalid_research_arguments' };
+      } else {
+        try {
+          response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
+        } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+      }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
       const pending = response['pending'];

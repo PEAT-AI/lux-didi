@@ -442,8 +442,10 @@ export function researchTurnResult({ calls, runs = [], subcalls = [], findings =
  */
 export async function awaitRunReceipt({ readAppended, deadline, researchIds = [], now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), tickMs = 1000 }) {
   for (;;) {
+    // R9: an unreadable log is its own failure. Reporting it as an empty window would read as runs=0 and
+    // blame the run for a read that never happened, so the caller gets a distinct read-error stage instead.
     const appended = await readAppended().catch(() => null);
-    if (appended === null) return { runs: [], subcalls: [], progress: 0 };
+    if (appended === null) return { runs: [], subcalls: [], progress: 0, readError: true };
     const receipt = parseResearchLog(appended);
     const arrived = researchIds.length ? receipt.runs.some(run => researchIds.includes(run.researchId)) : receipt.runs.length > 0;
     if (arrived || now() >= deadline) return receipt;
@@ -555,7 +557,8 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
       const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
       return Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
     };
-    const { runs, subcalls, progress } = await awaitRunReceipt({ readAppended, deadline, researchIds: [...sessionIds] });
+    const { runs, subcalls, progress, readError } = await awaitRunReceipt({ readAppended, deadline, researchIds: [...sessionIds] });
+    if (readError) return { ok: false, stage: 'log_read', calls, detail: 'host.log unreadable' };
     // Not-called metadata (#260): what the turn did instead of research, so a skipped run is explainable.
     const outputFragments = lastFragments.filter(fragment => fragment.kind === 'outputTranscription');
     const notCalled = {

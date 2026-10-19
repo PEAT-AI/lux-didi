@@ -2221,6 +2221,7 @@ export class LiveSessionOwner {
         const response = accepted?.response ?? {};
         const text = typeof response.text === 'string' ? response.text : '';
         const ok = record?.status === 'completed' && accepted !== undefined;
+        const consumed = ok && accepted ? this.#tools!.owner.consumeEvidence(host, accepted.binding, this.lookupAuthority(host.runId) ?? this.lookupJobAuthority(host.runId), signal) : undefined;
         // Q1-R3(d/e): a failed sub-call names its cause for the research_subcall log, never silently.
         // A sub-call that never dispatched reports its real reason (unknown_tool, grant_not_permitted,
         // invalid_arguments, round_deadline), never a bare refused.
@@ -2230,6 +2231,7 @@ export class LiveSessionOwner {
           : record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused';
         return { key: call.id, name: call.name, ok, text,
+          ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
           ...(ok && call.name === 'gmail_list' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
           ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),

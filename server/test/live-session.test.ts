@@ -4470,3 +4470,160 @@ test('mail integration: an unused cursor keeps its original message coordinates 
   assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(16).map(message => message.id));
   assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
 });
+
+
+test('mail body integration: full received text continues locally once with exact UTF16 coordinates', async t => {
+  const body = `Latest evidence.\nOn Monday, Synthetic Sender wrote:\n> ${'🍃'.repeat(11000)}\nFinal retained evidence.`;
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic full received body' }, body: args['format'] === 'metadata' ? null : body, bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'mail-full-received-body');
+  let received = '';
+  const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+    const result = await authorize(...args);
+    const binding = args[1].find(binding => binding.name === 'gmail_read');
+    if (binding && result.state === 'allowed') {
+      const consumed = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]);
+      if (consumed.state === 'allowed' && consumed.evidence.kind === 'remote-body') received = consumed.evidence.body;
+    }
+    return result;
+  });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
+  assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
+  const calls = h.calls.filter(call => call.name === 'gmail_read'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
+  const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
+  for (;;) {
+    const slices = last()['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string; source: string }[];
+    assert(Array.isArray(slices) && slices.length > 0, 'the full acquired body must have an authorized local consumer');
+    for (const slice of slices) {
+      assert.equal(slice.unit, 'utf16'); assert.equal(slice.source, 'mail'); assert.equal(slice.offset, joined.length); assert.equal(slice.end - slice.offset, slice.text.length); assert.equal(slice.total, received.length);
+      assert(!/[\uDC00-\uDFFF]/u.test(slice.text.slice(0, 1)), 'slice must not begin inside a surrogate pair'); assert(!/[\uD800-\uDBFF]/u.test(slice.text.slice(-1)), 'slice must not end inside a surrogate pair'); joined += slice.text;
+    }
+    assert.doesNotMatch(JSON.stringify(last()), /bodySha256|entitySha256|hostEvidenceRequired/);
+    if (!last()['canContinue']) break;
+    assert.equal(typeof next, 'string'); assert(++count < 30, 'continuation must make bounded progress');
+    await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, cursor: next }); next = last()['nextCursor'];
+  }
+  assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1, 'local body remainder must not re-fetch the message');
+});
+
+test('mail body integration: completed research Stop releases the canonical host evidence', async t => {
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic stop evidence' }, body: 'retained body '.repeat(1800), bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'mail-stop-releases-body');
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+  let captured: Parameters<typeof original> | undefined;
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'stop-message' } }] });
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  const researchId = frame.toolResponse.functionResponses[0]!.response['researchId']; assert(captured);
+  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'allowed');
+  await settleLiveTool(h, 'body-stop', 'research', { action: 'stop', researchId });
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused', 'Stop must release the actual original source ref, not just a private ledger flag');
+  assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+});
+
+test('mail body integration: immutable receipt, metadata opt-out and new-start cleanup use the real owner', async t => {
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Body identity' }, body: args['format'] === 'metadata' ? null : 'Sentence evidence. '.repeat(1600), bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'mail-body-lifecycle');
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined;
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'first-body', 'research', { action: 'start', question: 'Read full mail', lookups: [{ source: 'mail', mail: { id: 'identity' } }] });
+  const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(captured); const held = captured;
+  await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, cursor }); const nextCursor = last()['nextCursor'];
+  await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
+  assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
+  await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
+  assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 2);
+  assert.equal((h.calls.filter(call => call.name === 'gmail_read')[1]!.args as Record<string, unknown>)['format'], 'metadata');
+  assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  await settleLiveTool(h, 'old-body-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor }); assert.equal(last()['error'], 'continuation_unavailable');
+});
+
+test('mail body integration: revocation during sibling await and final microtask blocks every body slice', async t => {
+  for (const boundary of ['sibling', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>(), mailAccepted = deferred<void>();
+    const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Never publish revoked full body' }, body: 'Revoked body evidence. '.repeat(1400), bodyCoverage: { complete: true } }) });
+    await attached(h, `body-race-${boundary}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'gmail_read')) mailAccepted.resolve();
+      if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
+      return result;
+    });
+    const pending = settleLiveTool(h, 'body-race', 'research', { action: 'start', question: 'Read mail and notes', lookups: [{ source: 'mail', mail: { id: 'revoked-body' } }, { source: 'knowledge', query: 'synthetic' }] });
+    let entered = false, collected = false; void started.promise.then(() => { entered = true; }); void mailAccepted.promise.then(() => { collected = true; }); t.after(() => finish.resolve());
+    for (let n = 0; n < 2000 && !(entered && collected); n++) await tick(); assert(entered && collected);
+    if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Revoked body evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  }
+});
+
+test('mail body integration: a source completion after research Stop cannot resurrect canonical evidence', async t => {
+  const entered = deferred<void>(), release = deferred<void>(); const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'ready-calendar', start: '2023-11-15T10:00:00Z', summary: 'Synthetic ready calendar event' }] }, scheduler, limits: { idleMs: 60000, sessionMs: 600000 }, mailData: async (_name, args) => { entered.resolve(); await release.promise; return { id: args['id'], headers: { Subject: 'Late stopped body' }, body: 'Never retain stopped evidence. '.repeat(1000), bodyCoverage: { complete: true } }; } });
+  const { session } = await attached(h, 'body-stop-pending'); t.after(() => release.resolve());
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined; let siblingReady = false;
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gcal_list') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
+  let dispatched = false; void entered.promise.then(() => { dispatched = true; }); for (let n = 0; n < 2000 && !dispatched; n++) await tick(); assert(dispatched);
+  const progress = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 500 }).fragments.find(fragment => fragment.kind === 'researchProgress'); assert(progress?.text);
+  const researchId = (JSON.parse(progress.text) as { researchId: string }).researchId;
+  for (let n = 0; n < 2000 && !siblingReady; n++) await tick(); assert(siblingReady); for (let n = 0; n < 50; n++) await tick(); h.advance(4_500); scheduler.runDue();
+  for (let n = 0; n < 2000 && toolResponseCount(h) === 0; n++) await tick(); assert.equal(toolResponseCount(h), 1, 'ready calendar releases a first answer while mail remains pending');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-stop', name: 'research', args: { action: 'stop', researchId } }] } });
+  const replies = () => h.f.frames.flatMap(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame ? (frame as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses : []);
+  for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-stop'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-stop'));
+  release.resolve(); for (let n = 0; n < 2000 && (!captured || !replies().some(reply => reply.id === 'pending-body-start')); n++) await tick(); assert(captured); assert(replies().some(reply => reply.id === 'pending-body-start'));
+  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+});
+
+test('mail body integration: actual source expiry denies local continuation without another remote read', async t => {
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Expired full body' }, body: 'Expiring received evidence. '.repeat(1300), bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'body-expiry'); let expiresAt = 0; let captured: Parameters<NonNullable<Harness['toolOwner']>['resultGate']['authorize']> | undefined;
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
+    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'gmail_read');
+    if (binding && result.state === 'allowed') { captured = args; const value = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]); if (value.state === 'allowed' && value.evidence.kind === 'remote-body') expiresAt = value.evidence.expiresAt; }
+    return result;
+  });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
+  const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(expiresAt > Date.now());
+  assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  changedClock.mock.restore();
+  await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, cursor });
+  assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+});
+
+test('mail body integration: body consumption preserves simultaneous calendar evidence and its local remainder', async t => {
+  const events = Array.from({ length: 12 }, (_, n) => ({ id: `body-sibling-${n}`, start: '2023-11-15T10:00:00Z', summary: `Body sibling event ${n}` }));
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Mixed body' }, body: 'Mixed-source body evidence. '.repeat(600), bodyCoverage: { complete: true } }) }); await attached(h, 'mixed-body-calendar');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
+  const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
+  for (;;) {
+    for (const match of JSON.stringify(last()['findings']).matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
+    assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
+    if (!last()['canContinue']) break; assert(++count < 20);
+    await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['nextCursor'] } : {}) });
+  }
+  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1); assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+});

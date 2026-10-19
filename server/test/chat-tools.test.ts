@@ -31,7 +31,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const dir = mkdtempSync(join(tmpdir(), 'chat-tools-'));
   const requests: ModelRequest[] = [];
   const responseEntities: string[] = [];
-  let ask = true;
+  let ask = true; let exactRead = false;
   // Fence fixtures: hang the connector after N dispatches, and fail the tool-free answer call.
   let hangAfter: number | null = null;
   let failAnswer = false;
@@ -42,8 +42,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (ask && request.declarations?.some(d => d.name === 'search_knowledge') && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
+    if (ask && request.declarations?.some(d => d.name === (exactRead ? 'get_insight' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: exactRead ? 'get_insight' : 'search_knowledge', args: exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
     if (illegalFinal) {
       control.onEvent?.({ type: 'text', text: 'PROVISIONAL', provisional: true });
@@ -60,14 +60,14 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const endpoint = { id: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
-  let executions = 0;
+  let executions = 0; const sourceRequests: Record<string, unknown>[] = [];
   let exposed = structuredClone(tools);
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;
   let payload = ACCEPTED;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.();
+  sdk.setRequestHandler('tools/call', req => { sourceRequests.push(structuredClone(req.params.arguments ?? {})); executions++; onDispatch?.();
     if (hangAfter !== null && executions > hangAfter) return new Promise(() => {}) as never;
     return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
 
@@ -112,7 +112,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (!finished) throw Error('no terminal snapshot');
     return { run: finished, events };
   };
-  return { ...f, chat, owner, registry, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
+  return { ...f, chat, owner, registry, sourceRequests, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
     slowCalls: (after = 0) => { hangAfter = after; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
@@ -493,3 +493,27 @@ test('the evidence gathered before the fence is answered from even when the answ
 
 
 
+
+test('Lux received-body integration: canonical full body survives preview clipping only inside the active run', async t => {
+  const f = await fixture(t); await f.approveY(); f.exactGet();
+  const raw = JSON.stringify({ id: 42, title: 'Synthetic long insight', content: 'Sentence evidence. '.repeat(1600) + 'LUX_RECEIVED_TAIL' }); f.leak(raw);
+  const original = f.owner.resultGate.authorize.bind(f.owner.resultGate); let full = '';
+  t.mock.method(f.owner.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
+    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'get_insight');
+    if (binding && result.state === 'allowed') { const value = f.owner.consumeEvidence(args[0], binding, f.chat.lookupAuthority(args[0].runId), args[3]); if (value.state === 'allowed' && value.evidence.kind === 'remote-body') { full = value.evidence.body; assert.equal(value.evidence.upstreamComplete, 'unknown'); assert.equal(value.evidence.upstreamOmitted, 'unknown'); } }
+    return result;
+  });
+  const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); assert.equal(full, raw);
+  const row = f.store.transaction(tx => tx.get("SELECT result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='get_insight'", [run.runId]))!;
+  const snapshot = JSON.parse(String(row.result_json)); assert.equal(snapshot.response.partial, true); assert(snapshot.response.omittedCharacters > 0); assert.doesNotMatch(snapshot.response.text, /LUX_RECEIVED_TAIL/); assert.doesNotMatch(String(row.result_json), /LUX_RECEIVED_TAIL|bodySha256/);
+});
+
+test('Lux sensitive integration: trusted whole-source policy selects sensitive discovery and ordinary routes dispatch nothing', async t => {
+  for (const allowed of [false, true]) for (const exact of [false, true]) {
+    const f = await fixture(t, allowed ? ['ordinary', 'private', 'sensitive'] : ['ordinary', 'private']); if (exact) { await f.approveY(); f.exactGet(); } await f.sensitiveOnly();
+    const run = await f.turn(f.session());
+    if (!allowed) { assert.equal(f.executions(), 0); continue; }
+    assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); if (exact) assert.deepEqual(f.sourceRequests[0]!['ids'], [42]); else assert.equal(f.sourceRequests[0]!['include_sensitive'], true);
+    const row = f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE run_id=?', [run.runId]))!; assert.deepEqual(JSON.parse(String(row.result_json)).dataClasses, ['sensitive']);
+  }
+});

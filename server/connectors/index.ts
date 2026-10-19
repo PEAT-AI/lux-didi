@@ -208,7 +208,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
   createReader({ port, registry, policy }) {
     const reader = createLuxKnowledgeReader({
       port, registry,
-      config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, schemaDigest: policy.schemaDigest, generation: policy.generation, ...policy.bounds },
+      config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, schemaDigest: policy.schemaDigest, generation: policy.generation, includeSensitive: policy.sourcePolicy.unknownClass === 'sensitive' && policy.sourcePolicy.allowedClasses.includes('sensitive') && policy.route.allowedClasses.includes('sensitive'), ...policy.bounds },
     });
     return {
       async call(tool, args, signal) {

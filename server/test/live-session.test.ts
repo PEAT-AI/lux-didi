@@ -133,6 +133,7 @@ async function harness(t: TestContext, overrides: {
   knowledgeSearchLimit?: number;
   calendarData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   beforeTool?: () => Promise<void>;
+  knowledgeContent?: string;
   recover?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
   /** R6: the work one Mattermost read does, so a test can hold a chat source open across a clock advance. */
@@ -195,7 +196,7 @@ async function harness(t: TestContext, overrides: {
     sdk.setRequestHandler('tools/call', async req => {
       calls.push({ name: req.params.name, args: req.params.arguments });
       await overrides.beforeTool?.();
-      return { content: [{ type: 'text', text: '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
+      return { content: [{ type: 'text', text: overrides.knowledgeContent ?? '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
     });
     await sdk.connect(transport);
     let mattermostEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
@@ -284,7 +285,7 @@ async function harness(t: TestContext, overrides: {
       if (calendarTransport && calendarEndpoint && request.url === calendarEndpoint.url) return calendarTransport.handleRequest(request);
       return transport.handleRequest(request);
     });
-    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: overrides.mail ? 262144 : 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: overrides.mail ? 65536 : 12000, projectionChars: 10, timeoutMs: 1000 } });
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: (overrides.mail || overrides.knowledgeContent) ? 262144 : 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: (overrides.mail || overrides.knowledgeContent) ? 65536 : 12000, projectionChars: 10, timeoutMs: 1000 } });
     const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, ...(overrides.history ? { grantMode: 'owner-trusted-reads' as const } : {}), lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
     exposedToolOwner = toolOwner;
     if (overrides.beforeGate) {
@@ -295,7 +296,7 @@ async function harness(t: TestContext, overrides: {
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
-      bounds: { maxQueryChars: 80, maxSearchLimit: overrides.knowledgeSearchLimit ?? 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      bounds: { maxQueryChars: 80, maxSearchLimit: overrides.knowledgeSearchLimit ?? 3, maxGetIds: 3, maxEntityBytes: overrides.knowledgeContent ? 65536 : 4096, maxResultBytes: overrides.knowledgeContent ? 65536 : 4096 } });
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
     if (overrides.mattermost && mattermostEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
@@ -4626,4 +4627,23 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
     await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['nextCursor'] } : {}) });
   }
   assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1); assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+});
+
+test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
+  const raw = JSON.stringify({ id: 42, title: 'Synthetic Lux body', content: 'Lux received evidence. '.repeat(1400) + 'LUX_LOCAL_TAIL' });
+  const h = await harness(t, { tools: true, knowledgeContent: raw }); await attached(h, 'lux-local-tail');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'lux-start', 'research', { action: 'start', question: 'Read full insight 42', lookups: [{ source: 'knowledge', query: 'Read full insight 42' }] });
+  const researchId = last()['researchId']; let collected = '', count = 0;
+  for (;;) {
+    const slices = last()['bodySlices'] as { source: string; text: string; offset: number; upstreamComplete: unknown; upstreamOmitted: unknown }[]; assert(Array.isArray(slices) && slices.length, JSON.stringify({ count, calls: h.calls, response: last() }).slice(0, 1800));
+    for (const slice of slices) { assert.equal(slice.source, 'knowledge'); assert.equal(slice.offset, collected.length); assert.equal(slice.upstreamComplete, 'unknown'); assert.equal(slice.upstreamOmitted, 'unknown'); collected += slice.text; }
+    assert.equal(last()['bodyProjection'], 'preview'); assert(JSON.stringify(last()).length <= 24000);
+    if (!last()['canContinue']) break; assert(++count < 25);
+    await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
+  }
+  assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });

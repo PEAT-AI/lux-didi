@@ -628,7 +628,7 @@ function completeKnowledgeIds(results: readonly IntentSubResult[]): ReadonlySet<
 
 export type LedgerKind = CandidateKind | 'memory_search';
 
-export interface LedgerEntry { kind: LedgerKind; source: SourceKind | null; summary: string; lines?: string[]; total?: number }
+export interface LedgerEntry { bodyOnly?: boolean; kind: LedgerKind; source: SourceKind | null; summary: string; lines?: string[]; total?: number }
 interface MailRead {
   args: JsonObject; messages: Map<string, MailMessage>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
@@ -1318,7 +1318,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   if (bodyReply) return bodyReply;
   const groups: { source: SourceKind; label: string; lines: string[]; total: number }[] = [];
   for (const entry of run.ledger.values()) {
-    if (!entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
+    if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
     const existing = groups.find(group => group.source === entry.source);
     const target = existing ?? { source: entry.source, label: SOURCE_LABEL[entry.source], lines: [], total: 0 };
     target.lines.push(...entry.lines);
@@ -1442,6 +1442,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
 }
 
 interface RoutedOutcome {
+  bodyOnly?: boolean;
   lookup: ResearchLookup; kind: LedgerKind; tool: string; source: SourceKind | 'memory';
   outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
 }
@@ -1729,7 +1730,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     const missed = own.some(result => !result.ok);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
-    done.push(settle(plan, outcome, block.lines, block.total));
+    done.push({ ...settle(plan, outcome, block.lines, block.total), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
   });
   return done;
 }
@@ -1794,7 +1795,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         queryChars: outcome.lookup.query.length, queryAuthor: 'routed',
       });
       const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
-      if (outcome.source !== 'memory') run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total });
+      if (outcome.source !== 'memory') run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
       if (outcome.source === 'memory') {
         if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
         else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
@@ -2366,7 +2367,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const parts = creditableSources(kind, results);
           for (const [index, part] of parts.entries()) {
             const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
-            run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total });
+            run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
             if (part.source === null) continue;
             publishStep({ callId: stepCallId, stepId: stepOf(part.source), source: part.source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'end', resultCount: block.total, ok: part.results.some(result => result.ok), ms: Math.max(0, now() - at) });
             if (part.results.some(result => result.ok && result.text.trim())) {

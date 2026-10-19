@@ -10,7 +10,7 @@ assert.equal(prompt.NAYA_CHARACTER,approved.NAYA_CHARACTER);
 assert.equal(prompt.NAYA_VOICE_TOOLS,approved.NAYA_VOICE_TOOLS);
 assert.equal(backend.EVIDENCE_SOURCES_GUIDE,approved['Shared evidence guide for backend and Text']);
 assert.equal(backend.NAYA_BACKEND_PROCEDURE,backend.EVIDENCE_SOURCES_GUIDE+'\n\n'+approved['NAYA_BACKEND_PROCEDURE surface suffix']);
-assert(!/thirty to ninety seconds|offer to keep looking|never say you have adjusted|You can reach his/.test(prompt.NAYA_CHARACTER+prompt.NAYA_VOICE_TOOLS+backend.NAYA_BACKEND_PROCEDURE));
+assert(!/offer to keep looking|You can reach his/.test(prompt.NAYA_VOICE_TOOLS+backend.NAYA_BACKEND_PROCEDURE));
 assert(prompt.PUBLIC_PERSONA.includes('Do not caricature an accent or pretend to be human.'));
 const ownerId='synthetic-owner',preferences=prompt.validatePreferences({schemaVersion:1,ownerId,dataClass:'ordinary',language:'en-US',register:'plain',humor:'off',verbosity:'brief'},ownerId);
 const tool={...HISTORY_IDENTITY,description:'Read canonical retained conversation evidence',parameters:HISTORY_PARAMETERS,effect:'read',validate:validateHistory,execute:async()=>{throw Error('not invoked by compiler');}};
@@ -29,7 +29,15 @@ const ownerProfile={schemaVersion:1,kind:'profile',ownerId,profileVersion:'synth
 const ownerText=prompt.compilePrompt({...input,ownerProfile});
 const frozen=prompt.composeLiveInstruction({base:prompt.NAYA_LIVE_BASE,language:'en'});
 const fullLive=openAiInstructions(prompt.composeLiveSessionInstruction({text:frozen.text,tools:['research'],delegatedBackend:true,records:[],trustedChars:60000}).text);
-for(const system of [ownerText.system,fullLive,openAiInstructions(none.text)])assert.equal(system.split(unknownRule).length-1,1);
+const excluded=JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json',import.meta.url)));
+assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),'1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063','release character must match installed baseline b3bae881 byte for byte');
+assert.notEqual(prompt.NAYA_CHARACTER,excluded.NAYA_CHARACTER);
+for(const system of [ownerText.system,fullLive,openAiInstructions(none.text)]){
+ assert.equal(system.split(prompt.NAYA_CHARACTER).length-1,1);
+ assert(!system.includes(excluded.NAYA_CHARACTER));
+ assert(!system.includes(unknownRule));
+}
+assert(prompt.NAYA_CHARACTER.includes('thirty to ninety seconds'),'baseline duration conflict remains explicitly open in issue 455');
 assert(fullLive.includes(prompt.NAYA_VOICE_TOOLS));
 assert(text.system.includes('Missing coverage is not proof that an event did not happen.'));
-console.log(JSON.stringify({case:'unavailable_is_not_negative_evidence',ownerText:true,fullPublicOpenAiLive:true,noToolsVoice:true,defaultTextExistingRule:true,behaviorObserved:false}));
+console.log(JSON.stringify({case:'excluded_character_release_subset',baseline:'b3bae881',excludedCandidateAbsent:true,ownerText:true,fullPublicOpenAiLive:true,noToolsVoice:true,truthfulToolProceduresRetained:true,defaultTextExistingRule:true,mandatoryDurationConflictOpen:true,behaviorAccepted:false}));

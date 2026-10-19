@@ -46,21 +46,13 @@ test('the public Naya character is new, bounded, neutral and names no biography'
   assert.ok(!/farmer|llama|vicuna|gemini/i.test(NAYA_CHARACTER), 'no model-specific or recon borrowings');
 });
 
-test('the Naya character sets depth and dialogue and drops every brevity cap', () => {
-  assert.equal(NAYA_CHARACTER.includes('natural spoken English'), false, 'the blanket English instruction is gone');
-  assert.match(NAYA_CHARACTER, /never cut useful substance to meet a time or word target/);
-  assert.match(NAYA_CHARACTER, /Consider the strongest objection and what evidence would change the conclusion/);
-  assert.match(NAYA_CHARACTER, /Hold him to commitments supported by memory, never invented ones/);
-  assert.match(NAYA_CHARACTER, /explain the mechanism and give concrete evidence/);
-  assert.ok(!/one to three sentences/.test(NAYA_CHARACTER), 'the small-talk brevity cap is gone');
-  assert.ok(!/at most the top one or two items/.test(NAYA_CHARACTER), 'the top-items cap is gone');
-  assert.ok(!/at most one short clarifying question/.test(NAYA_CHARACTER), 'the clarifying-question cap is gone');
-  assert.ok(!/Keep spoken answers brief/.test(NAYA_CHARACTER), 'the old blanket brevity rule is gone');
-  // The no-URLs-aloud rule moved to the voice surface; every truth rule stays in the character.
+test('the release character holds the installed baseline while issue 455 remains open', () => {
+  assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
+  assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
+  assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
+  assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
+  assert.equal(NAYA_CHARACTER.includes('never cut useful substance to meet a time or word target'), false);
   assert.match(NAYA_VOICE_SURFACE, /never read out URLs, ids, file paths or code/);
-  assert.match(NAYA_CHARACTER, /use the conversation, accepted background and returned evidence/);
-  assert.match(NAYA_CHARACTER, /Never invent a message, event, decision, source or completed action/);
-  assert.match(NAYA_CHARACTER, /never claim to have learned permanently or remembered something without supporting stored evidence/);
 });
 
 test('the composed Live instruction carries NAYA_CHARACTER and NAYA_VOICE_SURFACE verbatim', () => {
@@ -350,7 +342,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
-  assert.equal(sha(NAYA_CHARACTER), '7bcd386fcc94a2ad96256add71bd404c4fcbba5eef6dac187ca1463d7eca8260');
+  assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
   assert.equal(sha(NAYA_VOICE_SURFACE), '43d542607473e43f13d813122c4c407057b28f5d86de032601b0909ac48a0658');
   assert.equal(sha(NAYA_VOICE_TOOLS), '15b04ba0fe834324077e940ad6659ba98c1f67141fdaf6d010931bdd9cf6c722');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');

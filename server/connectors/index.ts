@@ -240,6 +240,7 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
   return {
     response: {
       tool: evidence.tool,
+      ...(projection.projection.mailPage ? { mailPage: projection.projection.mailPage } : {}),
       ...(projection.projection.calendarPage ? { calendarPage: projection.projection.calendarPage } : {}),
       ...(projection.projection.calendarScope ? { calendarScope: projection.projection.calendarScope } : {}),
       text: projection.projection.text,

@@ -41,7 +41,10 @@ export interface ShapedSource { title: string; url?: string; sourceType?: string
 export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
 export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
 export interface CalendarScope { received: number; partial: boolean }
+export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean }
+export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean }
 export interface ShapedResult {
+  mailPage?: MailPage;
   calendarPage?: CalendarPage;
   calendarScope?: CalendarScope;
   text: string;
@@ -277,6 +280,7 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const messages = Array.isArray(data['messages']) ? data['messages'] : [];
   const sources: ShapedSource[] = [];
+  const normalized: MailMessage[] = [];
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
     const snippet = decodeEntities(str(entry['snippet']));
@@ -295,12 +299,18 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     if (date) segments.push(`date: ${date}${unread}${size}`);
     else if (`${unread}${size}`.trim()) segments.push(`${unread}${size}`.trim());
     if (excerpt) segments.push(excerpt);
-    return `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
+    const full = `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
+    const cut = cutAtSentence(full, 600);
+    if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line: cut.text, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length });
+    return full;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
   const upstream = Boolean(data['nextPageToken']) || data['sourceIncomplete'] === true;
   const note = data['nextPageToken'] ? '\n[upstream continuation available]' : data['sourceIncomplete'] === true ? '\n[upstream coverage incomplete; no continuation token received]' : '';
-  return capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
+  const nextPageToken = str(data['nextPageToken']);
+  const invalid = messages.length - normalized.length;
+  return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length, sources }),
+    mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}) } };
 }
 
 // --- Calendar ------------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { sourceCards } from '../tools/source-cards.js';
-import { noEmptyResult, type CalendarPage, type CalendarScope } from '../tools/live-shape.js';
+import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
@@ -2227,6 +2227,7 @@ export class LiveSessionOwner {
           : record ? String(record.status) : 'refused';
         return { key: call.id, name: call.name, ok, text,
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
+          ...(ok && call.name === 'gmail_list' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
           ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
           ...(ok && call.name === 'gcal_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });

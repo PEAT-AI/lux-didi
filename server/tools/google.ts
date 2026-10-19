@@ -6,6 +6,7 @@ import { sha256 } from './canonical.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, receivedGmailBody, type ShapedResult, type ShapedSource } from './live-shape.js';
 
 export interface GoogleProjection {
+  mailPage?: ShapedResult['mailPage'];
   [HOST_EVIDENCE]?: HostEvidenceRef;
   calendarPage?: ShapedResult['calendarPage'];
   calendarScope?: ShapedResult['calendarScope'];

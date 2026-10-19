@@ -585,7 +585,7 @@ for (const family of ['gmail', 'calendar'] as const) test(`Google native envelop
   const sdk = new Server({ name: 'native-google-envelope', version: '1' }, { capabilities: { tools: {} } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   sdk.setRequestHandler('tools/list', () => ({ tools: [{ name, inputSchema: { type: 'object' } }] }) as never);
-  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family, tool: name, method: name, account: { configured: 'synthetic', provider: null }, data: family === 'gmail' ? { messages: [{ id: 'native-message', threadId: 'native-thread', internalDate: '1792368000000', headers: [{ name: 'Subject', value: 'Native page evidence' }] }] } : { events: [{ id: 'native-event', summary: 'Native page evidence', start: { dateTime: '2026-10-19T10:00:00Z' } }] }, coverage: { returned: 1, complete: false, next_page_token: 'native-next', ...(family === 'calendar' ? { visibility: 'unverified' } : {}) }, diagnostics: [] }) }] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family, tool: name, method: name, account: { configured: 'synthetic', provider: null }, data: family === 'gmail' ? { messages: Array.from({ length: 8 }, (_, n) => ({ id: `native-message-${n}`, threadId: 'native-thread', internalDate: String(1792368000000 - n), headers: [{ name: 'Subject', value: `Native page evidence ${n}` }], snippet: `Received native snippet ${n}` })) } : { events: [{ id: 'native-event', summary: 'Native page evidence', start: { dateTime: '2026-10-19T10:00:00Z' } }] }, coverage: { returned: 1, complete: false, next_page_token: 'native-next', ...(family === 'calendar' ? { visibility: 'unverified' } : {}) }, diagnostics: [] }) }] }) as never);
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => { const request = new Request(input, init); return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request); });
   const registry = new McpRegistry(); registry.register({ id: 'native', url: 'http://127.0.0.1:18769/mcp', account: 'synthetic', resource: 'synthetic' }); registry.enable('native'); registry.allowEgress('native');
@@ -597,7 +597,12 @@ for (const family of ['gmail', 'calendar'] as const) test(`Google native envelop
   const projected = projectGoogleResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
   assert.equal(projected.projection.partial, true);
   if (family === 'calendar') assert.equal(projected.projection.calendarPage?.nextPageToken, 'native-next');
-  else assert.match(projected.projection.text, /upstream continuation available/);
+  else {
+    assert.match(projected.projection.text, /upstream continuation available/);
+    const page = (projected.projection as unknown as { mailPage?: { messages: { id: string; threadId: string; internalDate: string }[]; nextPageToken?: string } }).mailPage;
+    assert(page, 'received mail page must survive projection'); assert.equal(page.nextPageToken, 'native-next'); assert.equal(page.messages.length, 8, 'presentation cap must not discard received message identities');
+    assert.equal(page.messages[7]!.id, 'native-message-7'); assert.equal(page.messages[0]!.threadId, 'native-thread'); assert.equal(page.messages[0]!.internalDate, '1792368000000');
+  }
 });
 
 test('Gmail retained evidence: actual SDK full received body is host-only and keeps upstream completeness unknown', async () => {

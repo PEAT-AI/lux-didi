@@ -11,22 +11,13 @@ Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA
 | `<dataDir>/logs/host.log` | content-free metadata: enums, counts and timings only | safe to quote in a bug report |
 | `<dataDir>/logs/native-live.log` | the app's own voice session journal: closed reason codes, counts and timings | content-free |
 | `<dataDir>/logs/audio.log` | numbers only: captured and played byte counts per second | content-free |
-| `<dataDir>/debug/<YYYY-MM-DD>/live-<sessionId>.jsonl` | the full local record of a voice session | owner content, never publish |
-| `<dataDir>/debug/<YYYY-MM-DD>/chat-<sessionId>.jsonl` | the full local record of a chat run | owner content, never publish |
 | the unified log | the app's own OS log, subsystem `ai.lux.didi` | treat as owner content |
 
-The four files are four answers to different questions. `state.sqlite` is the only one whose
-tables join on host-minted ids, so it is the one to read first; `host.log` and the debug journal
-remain the detail and content twins of that record.
-
-The journal root is the parent of the host's config directory, which is `<dataDir>/debug` for the
-default layout (the host reads `live.json` from `<dataDir>/provider-config`). A host started with a
-different config directory writes its journal beside that directory instead, so `--data-dir` is the
-switch that moves both.
-
-The debug journal is the content twin of `host.log`, not a replacement: `host.log` keeps its
-content-free contract, and every debug journal line is one JSON object per line so it can be
-grepped and read by a program.
+Three files answer three different questions. `state.sqlite` is the only one whose tables join on
+host-minted ids, so it is the one to read first; `host.log` keeps the content-free metadata around
+it. Owner text lives only in `state.sqlite`'s two trace content tables and in the unified log. The
+JSONL debug journal that used to sit under `<dataDir>/debug` is gone; its event kinds are accounted
+for below.
 
 ## The trace store
 
@@ -43,6 +34,18 @@ query rather than four files that cannot be joined.
 | `trace_event` | the append-only causal spine: seq, kind, source (`host`, `native`, `provider`), source sequence, producer wall ms, producer monotonic ms, host ingest time, schema version, typed detail |
 | `trace_utterance` | content: transcript lines, by turn and role, final flag |
 | `trace_call_result` | content: tool result text, capped at 16 KB, with its truncation flag |
+
+The adapter and the host write every step of a call, so an absence is never the only evidence:
+`delegation.created` names each delegated response with its provider id and call count,
+`response.created`, `response.observed` and `response.terminal` carry the response key, the provider
+ids and the terminal reason, `call.intent`, `call.executed`, `call.output_prepared` and
+`call.output_written` carry the call key, the provider call id and the outcome, and
+`continuation.decided` records what the single continuation owner did with the answer (`sent`,
+`deferred`, `failed`) and, when it skipped, why (`awaiting_calls`, `draining`, `epoch_stale`). The
+host adds `turn.opened`, `turn.closed` with its close reason, and `live.dead_air_stalled` with the
+turn's age, whether any audio arrived and the inaudible milliseconds, which is the receipt D12-3 was
+missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
+and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
 Only the last two tables hold owner text. Every metadata column is an id, a closed code, a count or
 a duration: the writer refuses any field outside its allowlist, so a provider message, a tool
@@ -81,7 +84,7 @@ printed outside every turn with `turn=none`, never guessed into one.
 ## The SQL timeline
 
 `scripts/didi-timeline` reads `state.sqlite` only and prints one timeline. It never reads the
-journal or `host.log`. Every command accepts `--data-dir <path>`.
+`host.log`. Every command accepts `--data-dir <path>`.
 
 ```sh
 scripts/didi-timeline latest                                  # the most recent traced session, content hidden
@@ -106,85 +109,83 @@ Outstanding obligations are listed at capture time, so a timeline taken mid-turn
 still owed, not a verdict. `NATIVE-GAP` reports an interior hole in a native instance's own
 sequence.
 
-## The debug journal
+## What the JSONL debug journal used to write
 
-One line is written per event:
+The JSONL journal (`<dataDir>/debug/<day>/<session>.jsonl`) is gone: `server/host/journal.ts` was
+deleted with release 3s, because the trace store replaced it. This table accounts for every event
+kind it wrote. **Replaced by** names the trace kind or table that now carries the fact; **retained
+in** names the log that already carried it; **dropped** means nothing needs it and why.
 
-```json
-{"t":"2026-10-17T12:01:03.412Z","mono":1412,"kind":"live","sessionId":"...","generation":0,"event":"tool","tool":"calendar_window","args":{"kind":"today"},"ms":812,"outcome":"completed","resultChars":1204,"result":"..."}
+| journal kind | where it lives now |
+| --- | --- |
+| `session_start` | replaced by `trace_turn` and `live_started` in `host.log` (provider, model, voice) |
+| `session_end` | replaced by `turn.closed` (`session_end`) and `session_end` in `host.log` |
+| `transcript` | replaced by `trace_utterance` (owner and model text), the only place the words live |
+| `turn_start` | replaced by `turn.opened` |
+| `turn_end` | replaced by `turn.closed` with its close reason and outcome |
+| `interrupt` | retained in `host.log` as `live_interrupted`; the turn closes as `interrupted` |
+| `tool` | replaced by `call.intent`, `call.executed`, `call.output_prepared`, `call.output_written` and `trace_call_result` for the result text |
+| `model_round` | retained in `host.log` as `chat_timing` (rounds, fence, acquire, answer ms) |
+| `audio` | replaced by `playback.*` receipts and `live.dead_air_stalled`; the byte counts stay in `host.log` |
+| `audio_marker` | replaced by `live.dead_air_stalled` (`anyAudio`, `inaudibleMs`) and `live_stall` in `host.log` |
+| `deadline` | retained in `host.log` as `session_end` reason and `turn_failed` |
+| `turn_failed` | retained in `host.log` as `turn_failed` |
+| `provider_setup` | retained in `host.log` as `live_started` and `gptlive_setup_error` |
+| `provider_error` | retained in `host.log` as `live_provider_error` and `provider_error_unclassified` |
+| `provider_close` | retained in `host.log` as `session_end` |
+| `context_usage` | retained in `host.log` as `live_context_usage` |
+| `continuity` | retained in `host.log` as `live_recovery`; the turn closes as `recovered` |
+| `recovery` | retained in `host.log` as `live_recovery` |
+| `playback_receipt_rejected` | retained in `host.log` as `live_trace_rejected` (kind plus the store's typed code) |
+| native `native` receipt | retained in `native-live.log` and `host.log`; the stored rows also carry it |
+
+Every trace kind above is allowlisted in `server/trace/record.ts`: ids, closed codes, counts and
+durations only, with transcript and tool result text confined to `trace_utterance` and
+`trace_call_result`.
+
+### Removing the old day directories
+
+The journal wrote `<dataDir>/debug/<YYYY-MM-DD>/<session>.jsonl` with owner content inside. Nothing
+writes there any more and nothing reads it, so the old files are a leftover the owner removes
+himself, one explicit step:
+
+```sh
+rm -rf "$HOME/Library/Application Support/Lux Didi/debug"
 ```
 
-`t` is the wall clock in ISO milliseconds, `mono` the milliseconds since that session started, so
-two lines minutes apart are still one ordered timeline.
-
-Events, with the fields each one carries:
-
-- `session_start`: provider, model, voice, build sha, the instruction section sizes and the full
-  composed instructions text, written once per session.
-- `session_end`: the terminal code and who ended it (`ended`, `detached`, `host`, `owner`).
-- `transcript`: `speaker` is `owner` or `model`, `text` is what was actually said, `final` marks a
-  finished transcription. Chat writes the owner's message and the model's answer here.
-- `turn_start`, `turn_end`, `interrupt`: the turn boundaries and each barge-in.
-- `model_round`: a chat model round, with `requestMs` (time to the first token), `responseMs`, token
-  usage when the provider reports it, and `stopReason`. Live has no such event: a live turn is one
-  provider stream, so its timings are the `provider_setup` request and response ms, the turn
-  boundaries, `context_usage` and the per-tool lines. That is a deliberate gap, not a missing log.
-- `tool`: name, full arguments, `ms`, `outcome`, `resultChars` and the result text itself, already
-  passed through the secret redactor and capped at 16 KB per call.
-- `provider_setup`, `provider_close`, `provider_error`, `context_usage`: the provider handshake, the
-  close status and code, the error text, and the provider's own usage counts.
-- `audio` (numbers only): one line per second with the captured and played byte counts.
-  `audio_marker` records a `drain` (playback a barge-in abandoned) or a `stall`.
-- `deadline`: a configured deadline fired, with its name (`call_ceiling`, `provider_session`,
-  `provider_go_away`) and the value it was configured with.
-- `recovery`, `continuity`: a provider drop, a resume or a fresh seeded window.
-- `native`: a native receipt the app already forwards to the host (an open action and its ack).
-  Mute, presence and window events never leave the app; read those with `naya-logs native` (below).
-
-Safety and housekeeping:
-
-- Files are mode `0600` in mode `0700` day directories, checked the same way `host.log` checks its
-  own file.
-- Retention is 30 days and at most 2 GB; the oldest whole day is deleted first, at start and once
-  per day.
-- A journal write that fails never touches the session: it is counted in `host.log` as
-  `debug_journal_error` with the failing stage only.
-- The setting lives in `live.json` preferences: `"debugJournal": false` turns the journal off.
-  It is on when absent. `host.log` is unchanged either way.
+On Linux substitute the state directory (`${XDG_DATA_HOME:-$HOME/.local/share}/lux-didi/debug`).
+Take that decision deliberately: the files hold transcripts, and deleting them is the point.
 
 ## The reader
 
-`scripts/naya-logs.mjs` reads the journal and `host.log` and prints aligned plain text, capped at
-200 lines per command. Every command accepts `--data-dir <path>`, `--json` and `--lines <n>`.
+`scripts/naya-logs.mjs` reads `host.log` and prints aligned plain text, capped at 200 lines per
+command. Every command accepts `--data-dir <path>`, `--json` and `--lines <n>`. `host.log` is
+content-free by contract, so nothing it prints is owner text; for the per-turn record, including
+what was said, read the trace store with `scripts/didi-timeline` (see the SQL timeline above).
 
 ```sh
 node scripts/naya-logs.mjs sessions                      # id, kind, start, duration, provider, turns, tools, terminal
 node scripts/naya-logs.mjs sessions --since 24h --kind live
-node scripts/naya-logs.mjs timeline latest                # merged millisecond timeline, content hidden
-node scripts/naya-logs.mjs timeline <id> --content        # same, with transcripts, instructions and tool results
-node scripts/naya-logs.mjs tools <id>                     # each tool call: args, ms, outcome, result size
-node scripts/naya-logs.mjs errors --since 24h             # failures across sessions, plus host.log receipts
-node scripts/naya-logs.mjs slow --since 24h --over 5000   # slowest model rounds and tools first
+node scripts/naya-logs.mjs tools <id>                    # each tool receipt: time, event, call, ms
+node scripts/naya-logs.mjs errors --since 24h            # failures across sessions
+node scripts/naya-logs.mjs slow --since 24h --over 5000   # the slowest tool and answer timings first
 node scripts/naya-logs.mjs native <id>                    # the app's own OS log for the session window
 ```
 
-`timeline` merges the journal with every `host.log` record that names the session, and with the
-session-less records that fall inside its window.
-
-`--json` prints the records as stored, owner content included, because it is for machine use; the
-plain-text output is the one that hides content behind `--content`. `native` reads the app subsystem
-(`ai.lux.didi`) from `/usr/bin/log show` for the session window; `NAYA_LOG_BIN` overrides the
-binary, `NAYA_LOG_SUBSYSTEM` the subsystem.
+There is no `timeline` command: its journal half is gone and its per-turn half is
+`scripts/didi-timeline`, which reads SQL and prints turns, responses, calls with their continuation,
+first audible and the playback track. `native` reads the app subsystem (`ai.lux.didi`) from
+`/usr/bin/log show` for the session window; `NAYA_LOG_BIN` overrides the binary, `NAYA_LOG_SUBSYSTEM`
+the subsystem.
 
 ## When the owner says "inspect the logs"
 
 1. `didi-timeline latest` for the shape of the session and its typed `GAP` obligations.
 2. `sessions --since 24h` and find the same session by start time, duration and terminal code.
 3. `errors --since 24h` and see whether that session is already named there.
-4. `timeline <id>` and read the journal detail: turn boundaries, tool calls, provider close.
-5. `slow --over 5000` for the timings, then `tools <id>` for the arguments of the slow call.
-6. Rerun `timeline <id> --content` for the words, and `native <id>` when the question is about what
-   the app did.
+4. `didi-timeline latest --content` for the words: the owner and model utterances in turn order.
+5. `slow --over 5000` for the timings, then `tools <id>` for which call it was.
+6. `native <id>` when the question is about what the app did with the audio.
 
 Read content only as far as the question needs it: the point of the ordering is to find the one
 line that matters before reading a transcript.
@@ -222,8 +223,7 @@ production seam, not a longer trace.
 
 ## Privacy rule
 
-The debug journal holds owner content: transcripts, the composed instructions, tool arguments and
-tool results. The trace content tables hold transcript lines and tool result text, and the unified
-log may too. Only the owner and owner-authorized Claude sessions read them. Never paste a debug
-journal line, a transcript or a tool result into a public issue, a pull request, a commit, a test
+The trace content tables hold transcript lines and tool result text, and the unified log may too.
+Only the owner and owner-authorized Claude sessions read them. Never paste a transcript or a tool
+result into a public issue, a pull request, a commit, a test
 fixture or a message, and never read the owner's real data directory from a test or a check.

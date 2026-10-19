@@ -43,14 +43,26 @@ export type ProgressReason = (typeof PROGRESS_REASONS)[number];
 export const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 
+/** O1b-A (D12-1): what happened to the continuation the answered calls owed. `sent` is a
+ *  `response.create` on the wire, `deferred` an answer held while the gate waits, `failed` nothing written. */
+export const CONTINUATION_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
+export type ContinuationOutcome = (typeof CONTINUATION_OUTCOMES)[number];
+
+/** O1b-A (D12-2): why the continuation owner skipped a `response.create`, as a closed set. */
+export const SKIP_REASONS = ['awaiting_calls', 'draining', 'epoch_stale'] as const;
+export type SkipReason = (typeof SKIP_REASONS)[number];
+
 // The immutable causal spine. A kind names one state transition; its fields are fixed below.
 export const EVENT_KINDS = [
   'turn.opened', 'turn.closed', 'turn.summary',
+  'delegation.created',
   'response.created', 'response.observed', 'response.terminal',
   'call.intent', 'call.executed', 'call.output_prepared', 'call.output_written',
+  'continuation.decided',
   'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
   'playback.drained', 'playback.interrupted', 'playback.terminated',
   'progress.commentary', 'progress.thinking', 'call.ceiling', 'command.rejected',
+  'live.dead_air_stalled',
 ] as const;
 export type TraceEventKind = (typeof EVENT_KINDS)[number];
 

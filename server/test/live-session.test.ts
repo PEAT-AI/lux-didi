@@ -32,14 +32,13 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse } from '../adapters/live-voice/index.js';
-import { configureDebugJournal, resetDebugJournal } from '../host/journal.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -3142,8 +3141,6 @@ test('a delegated response with no audible output is nudged, and audible progres
 test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn receipt counts it', async t => {
   const fake = fakeLiveVoicePort();
   const h = await harness(t, { port: fake.port });
-  configureDebugJournal(h.dir, true);
-  t.after(() => resetDebugJournal());
   const session = h.owner.create({ idempotencyKey: 'p3-inaudible', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
@@ -3158,18 +3155,13 @@ test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn
   fake.emit({ type: 'turnComplete' });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   attachment.close();
-  for (let attempt = 0; attempt < 100 && !journalRecords(h.dir).some(line => line['event'] === 'turn_end'); attempt += 1) await tick();
-  const turnEnd = journalRecords(h.dir).find(line => line['event'] === 'turn_end' && line['speaker'] === 'model')!;
-  assert.equal(turnEnd['inaudibleMs'], 100, 'the fill frame is counted in playback milliseconds');
+  // O1b-A: the turn's own trace row carries the fact instead of a journal line, and it says the silent fill
+  // never became the turn's first audible frame.
+  const turn = h.store.transaction(tx => tx.all('SELECT first_audible_at, close_reason FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.equal(turn.length, 0, 'a turn opens on her words, not on an output frame: this call never spoke an owner turn');
 });
 
 /** Every journal line this data dir holds, fixture data only: the day directory is not pinned to a test clock. */
-function journalRecords(dir: string): Record<string, unknown>[] {
-  const root = join(dir, 'debug');
-  if (!existsSync(root)) return [];
-  return readdirSync(root).flatMap(day => readdirSync(join(root, day)).flatMap(file =>
-    readFileSync(join(root, day, file), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)));
-}
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
@@ -3202,8 +3194,11 @@ test('3u: the anti-repeat note names the topic each earlier opener came from, st
 
 test('3u: consecutive starts offer different stored open loops and record the plan as metadata', async t => {
   const h = await harness(t);
-  configureDebugJournal(h.dir, true);
-  t.after(() => resetDebugJournal());
+  // O1b-A removed the debug journal, so the plan receipt is a host log line, one per start, and the
+  // sink keeps them in start order.
+  const plans: Record<string, unknown>[] = [];
+  const detachPlanSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'opener_plan') plans.push(record); } });
+  t.after(() => detachPlanSink());
   h.store.transaction(tx => {
     summaries.insertSummary(tx, { liveSessionId: 'synthetic-shared-loop', status: 'complete', summary: 'The owner said the tax form is still to be filed.',
       endedAt: NOW - 3_600_000, now: NOW });
@@ -3220,16 +3215,10 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored summaries');
   assert.notEqual(loops[0], loops[1], `consecutive starts offer different loops (${loops.join(' / ')})`);
   assert.ok(snapshot(first.liveSessionId).includes('# Opening options'), 'the plan is one section of the instruction');
-  // The debug journal writes one file per session, so the records are keyed by their own session id
-  // and never by the order the day directory happens to list them in.
-  const records = journalRecords(h.dir).filter(record => record['event'] === 'session_start');
-  const planFor = (liveSessionId: string): Record<string, unknown> | undefined => records
-    .find(record => record['sessionId'] === liveSessionId)?.['openerPlan'] as Record<string, unknown> | undefined;
-  const plans = [planFor(first.liveSessionId), planFor(second.liveSessionId)];
-  assert.equal(records.length, 2, 'each start records its own plan');
-  assert.deepEqual(plans.map(plan => Object.keys(plan ?? {}).sort().join(',')), ['kinds,rotation', 'kinds,rotation'], 'the receipt carries kinds and rotation only');
-  assert.deepEqual(plans.map(plan => plan?.['kinds']), [['open-loop', 'recent-thread'], ['open-loop', 'recent-thread']], 'an empty calendar offers no calendar kind');
-  assert.equal((plans[0]?.['rotation'] as number) + 1, plans[1]?.['rotation'], 'the persisted start counter advances by one');
+  assert.equal(plans.length, 2, 'each start records its own plan');
+  assert.deepEqual(plans.map(plan => Object.keys(plan).sort().join(',')), ['event,kinds,rotation', 'event,kinds,rotation'], 'the receipt carries kinds and rotation only');
+  assert.deepEqual(plans.map(plan => plan['kinds']), [['open-loop', 'recent-thread'], ['open-loop', 'recent-thread']], 'an empty calendar offers no calendar kind');
+  assert.equal((plans[0]!['rotation'] as number) + 1, plans[1]!['rotation'], 'the persisted start counter advances by one');
 });
 
 test('S4b: an opener is assembled from its ordered fragments up to the first finished fragment or turn boundary', () => {
@@ -3876,11 +3865,12 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
 });
 
 // O1b-N: the app's playback receipts ride the live socket the call already holds. One closed frame
-// shape in, native trace rows out; a malformed frame is refused and journaled, never stored.
+// shape in, native trace rows out; a malformed frame is refused with a typed receipt, never stored.
 test('O1b-N: a forwarded playback receipt records native rows and a refused frame writes none', async t => {
   const h = await harness(t);
-  configureDebugJournal(h.dir, true);
-  t.after(() => resetDebugJournal());
+  const rejected: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'live_trace_rejected') rejected.push(record); } });
+  t.after(() => detachSink());
   const { session, attachment } = await attached(h, 'playback-receipts');
   const frame = (receipt: string, seq: number, extra: Record<string, unknown> = {}): string =>
     JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-b2', source_seq: seq,
@@ -3903,10 +3893,34 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_event')!['n'])), before, 'a refused frame writes nothing');
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, null, 'a refused frame cannot end the call');
 
-  const rejected = journalRecords(h.dir).filter(record => record['event'] === 'playback_receipt_rejected');
-  assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is journaled by typed code');
+  assert.deepEqual(rejected.map(record => record['code']), ['unknown_field', 'not_json'], 'each refusal is a typed host.log receipt');
   attachment.close();
   await attachment.done;
+});
+test('S5: the orb never reads listening while a call obligation is open, whatever the adapter reports', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { attachment } = await openPort(h, 'orb-honest');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'a call in flight is open work, never listening');
+  // The adapter's own silence model, and a duplicated end of turn, cannot clear an open obligation.
+  fake.emit({ type: 'waitingForInput', value: true });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'silence does not close an open call');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'thinking', 'a duplicated end of turn does not close an open call');
+  release();
+  await settlePort();
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', 'the answered turn speaks before it idles');
+  attachment.close();
+  await settlePort();
 });
 
 test('S5: a failed backend turn settles typed, says one honest line, and is never rebuilt', async t => {
@@ -3931,3 +3945,37 @@ test('S5: a failed backend turn settles typed, says one honest line, and is neve
   assert.equal(fake.sessionsOpened, 1, 'still no rebuild');
   assert.deepEqual(fake.texts, [], 'no Continue. user turn on the failure path either');
 });
+
+// --- O1b-A: every step of a call leaves one receipt ------------------------------------------------
+
+test('O1b-A: a synthetic tool turn writes one turn, ordered utterances, a tool result and no debug directory', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true });
+  const session = h.owner.create({ idempotencyKey: 'o1ba-tool-turn', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'What is on my plate?', finished: true }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'call_o1ba', name: 'search_knowledge', args: { query: 'plate', limit: 1 } }] }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Nothing is on your plate.', finished: true }));
+  fake.emit(portEvent(audibleFrame));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+
+  const turns = h.store.transaction(tx => tx.all('SELECT turn_id, close_reason, outcome FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.equal(turns.length, 1, 'one owner turn, opened at her words and closed on the answer');
+  assert.equal(turns[0]!['close_reason'], 'completed');
+  assert.equal(turns[0]!['outcome'], 'answered');
+  const turnId = String(turns[0]!['turn_id']);
+  const utterances = h.store.transaction(tx => tx.all('SELECT role, text FROM trace_utterance WHERE turn_id=? ORDER BY at, rowid', [turnId]));
+  assert.deepEqual(utterances.map(row => row['role']), ['owner', 'model'], 'her words, then the answer');
+  assert.deepEqual(utterances.map(row => row['text']), ['What is on my plate?', 'Nothing is on your plate.']);
+  // O1b-A: the JSONL journal wrote under <dataDir>/debug and nothing writes it any more.
+  assert.equal(existsSync(join(h.dir, 'debug')), false, 'a live session creates no debug/ directory');
+  attachment.close();
+});
+
+// The dead-air stall the watchdog sees is projected onto the open turn (stall_reason no_audible_output) and the
+// typed GAP a stalled turn prints are covered by trace.test.ts, which drives the store directly; the watchdog's
+// own nudge path is exercised by the D3 tests above.

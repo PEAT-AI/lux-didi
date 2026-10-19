@@ -6,7 +6,6 @@ import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, vali
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
 import { ConfigError, fail, parseJson, readPrivate, safeError, validateRoot } from './files.js';
-import { configureDebugJournal, currentDebugJournal } from '../host/journal.js';
 import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
@@ -55,9 +54,6 @@ export function liveVoiceDescription(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.length > MAX_VOICE_DESCRIPTION_CHARS) throw new LiveConfigError('invalid_voice_description');
   return value;
 }
-// The debug journal is a host setting that lives beside the prompt preferences: owner content
-// stays on this computer, on by default. It is stripped before the prompt preferences validate.
-const journalKey = 'debugJournal';
 const requiredKeys = ['schemaVersion', 'enabled', 'dataClasses', 'preferences'];
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 
@@ -90,7 +86,6 @@ export interface LiveConfiguredProfile {
   /** The pitch-preserving speaking pace the native player applies from the next session start. */
   readonly playbackRate: number;
   /** The private debug journal preference; absent files default to on. */
-  readonly debugJournal: boolean;
 }
 export interface LiveReadyProfile extends LiveConfiguredProfile { readonly profile: LiveProfile }
 
@@ -144,14 +139,6 @@ function classList(value: unknown): readonly DataClass[] {
 }
 
 /**
- * The debug journal is rooted at the host's own --data-dir, which the host entry installs before the live
- * config is read (server/host/runtime.ts), so a host started against another --config-dir still journals
- * into its own state and never into that config's folder. A caller with no installed journal (a unit
- * caller, the CLI) keeps the config dir's parent, which is the data dir when no --config-dir was given.
- */
-function journalDataDir(configDir: string): string { return currentDebugJournal()?.dataDir ?? dirname(configDir); }
-
-/**
  * Strict owner-only live.json in the existing configDir. Works with no text profile.json, never borrows
  * text consent and never reads a secret (the credential is resolved lazily by the adapter).
  *
@@ -162,10 +149,6 @@ function journalDataDir(configDir: string): string { return currentDebugJournal(
 export function loadLiveConfig(options: { configDir: string; ownerId: string; ownerProfile?: OwnerProfileSnapshot }): LiveConfigStatus {
   try {
     if (!options || typeof options !== 'object' || typeof options.configDir !== 'string' || typeof options.ownerId !== 'string') fail('invalid_arguments');
-    // The debug journal is a host setting with its own default, so it is installed before live.json is
-    // read: a host with no live.json, or none this run can reach, still journals; the file can only
-    // turn it off.
-    configureDebugJournal(journalDataDir(options.configDir), true);
     // A load is the one authority on the accent this process composes with, so a file that is gone or
     // unreadable falls back to the default rather than keeping a value a previous fixture left behind.
     currentAccent = LIVE_DEFAULT_ACCENT;
@@ -201,22 +184,13 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const chosenRate = livePlaybackRate(input['playbackRate']);
     currentRate = chosenRate;
     const dataClasses = classList(input['dataClasses']);
-    // One host setting rides beside the prompt preferences, which keep their own exact key set.
     const declared = input['preferences'];
     if (!declared || typeof declared !== 'object' || Array.isArray(declared)) fail('invalid_profile');
-    const declaredKeys = { ...(declared as Record<string, unknown>) };
-    const journalValue = declaredKeys[journalKey];
-    if (journalValue !== undefined && typeof journalValue !== 'boolean') fail('invalid_profile');
-    const debugJournal = journalValue !== false;
-    delete declaredKeys[journalKey];
-    const preferences = validatePreferences({ ...declaredKeys, schemaVersion: 1, ownerId: options.ownerId }, options.ownerId);
+    const preferences = validatePreferences({ ...(declared as Record<string, unknown>), schemaVersion: 1, ownerId: options.ownerId }, options.ownerId);
     const config: LiveConfiguredProfile = Object.freeze({
-      provider, preferences, model, voice: chosenVoice, dataClasses, debugJournal, playbackRate: chosenRate,
+      provider, preferences, model, voice: chosenVoice, dataClasses, playbackRate: chosenRate,
       profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),
     });
-    // The debug journal is rooted at the host data directory, and it is installed here so one owner
-    // preference governs both the live and chat paths.
-    configureDebugJournal(journalDataDir(options.configDir), debugJournal);
     // The optional local overlay lives beside the data directory, outside Git; an invalid file
     // fails closed into a typed status instead of silently falling back to the public base.
     const overlay = loadPersonaOverlay({ dataDir: dirname(options.configDir) });

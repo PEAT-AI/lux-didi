@@ -1,5 +1,6 @@
 import type { FunctionDeclaration, JsonObject } from '../model/types.js';
 import type { Credentials, DataClass } from '../model/types.js';
+import type { LiveTracePort } from '../../trace/record.js';
 import type WebSocket from 'ws';
 import type { ClientOptions } from 'ws';
 export type { Credentials, DataClass } from '../model/types.js';
@@ -82,7 +83,12 @@ export interface LiveVoiceRequest {
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];
 }
-export interface LiveVoiceControl { signal: AbortSignal; deadlineMs: number; limits?: Partial<LiveVoiceLimits>; idleResetMs?: number }
+export interface LiveVoiceControl {
+  signal: AbortSignal; deadlineMs: number; limits?: Partial<LiveVoiceLimits>; idleResetMs?: number;
+  /** O1b-A: the typed receipt door, bound by the host to this session's id, its connection epoch and its open
+   *  turn. An adapter that is handed none records nothing; the Gemini adapter never reads it. */
+  trace?: LiveTracePort;
+}
 export type LiveVoiceErrorCode =
   | 'closed' | 'cancelled' | 'deadline' | 'invalid_settings' | 'invalid_request' | 'route_denied'
   | 'credential_unavailable' | 'not_ready' | 'invalid_audio' | 'transport_error' | 'provider_error'

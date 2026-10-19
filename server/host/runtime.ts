@@ -1,7 +1,6 @@
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
-import { configureDebugJournal } from './journal.js';
 import { supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
@@ -215,9 +214,6 @@ export async function startHost(config: HostConfig) {
   // host may open its folder; every other start gets one loud line and exits before any state is created.
   const refused = installedConfigDirRefusal(effectiveConfigDir, supervisedHost(config));
   if (refused) throw new Error(refused);
-  // The debug journal is rooted at this host's own --data-dir, never beside the --config-dir it was handed;
-  // the live config keeps this root once it is installed here.
-  configureDebugJournal(dataDir, true);
   let endpoints = 0;
   let configKind: 'effective' | 'seeded' = config.configDir === undefined ? 'seeded' : 'effective';
   try {

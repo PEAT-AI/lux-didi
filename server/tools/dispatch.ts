@@ -1,3 +1,4 @@
+import { diagnosticEpochCovers } from '../trace/diagnostic-context.js';
 import { projectDiagnosticInput } from './diagnostic-input.js';
 export { projectDiagnosticInput } from './diagnostic-input.js';
 import { historyForgotten } from '../domain/history-lifecycle.js';
@@ -185,7 +186,7 @@ function gatedDispatch(read: DiagnosticContentRead,row: SQLRow,authority: Diagno
   const access = diagnosticContentAccess(read,String(row.run_id),authority);
   const snapshot = read.get('SELECT snapshot_json,snapshot_sha256 FROM tool_runs WHERE owner_id=? AND run_id=?',[row.owner_id!,row.run_id!]);
   const current = read.get('SELECT policy_sha256,policy_json,generation FROM tool_connections WHERE owner_id=? AND connection_id=?',[row.owner_id!,row.connection_id!]);
-  const allowed = access.state === 'allowed' && !!snapshot && snapshot.snapshot_sha256 === row.run_snapshot_sha256 && typeof snapshot.snapshot_json === 'string' && sha256(snapshot.snapshot_json) === snapshot.snapshot_sha256 && !!current && current.policy_sha256 === row.policy_sha256 && typeof current.policy_json === 'string' && sha256(current.policy_json) === current.policy_sha256 && current.generation === row.generation && row.session_revision === access.revision && row.session_class === access.dataClass && authority.allowedClasses.includes(row.source_class as 'ordinary');
+  const allowed = access.state === 'allowed' && !!snapshot && snapshot.snapshot_sha256 === row.run_snapshot_sha256 && typeof snapshot.snapshot_json === 'string' && sha256(snapshot.snapshot_json) === snapshot.snapshot_sha256 && !!current && current.policy_sha256 === row.policy_sha256 && typeof current.policy_json === 'string' && sha256(current.policy_json) === current.policy_sha256 && current.generation === row.generation && row.session_revision === access.revision && (row.session_class === access.dataClass || diagnosticEpochCovers(read,row)) && authority.allowedClasses.includes(row.source_class as 'ordinary');
   if (!allowed) return {...row,arguments_json:null,source_json:null,read_state:'source_changed'};
   if (row.arguments_json !== null && (typeof row.arguments_json !== 'string' || sha256(row.arguments_json) !== row.arguments_sha256)) return {...row,arguments_json:null,source_json:null,read_state:'stored_input_hash_mismatch'};
   if (row.source_json !== null && (typeof row.source_json !== 'string' || sha256(row.source_json) !== row.source_sha256 || Buffer.byteLength(row.source_json) !== row.source_bytes)) return {...row,source_json:null,read_state:'stored_hash_mismatch'};

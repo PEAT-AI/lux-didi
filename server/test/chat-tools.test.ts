@@ -310,15 +310,26 @@ test('a fence that reached no answer still commits one from the evidence gathere
   }
 });
 
-test('revocation during final synthesis cannot commit its answer', async t => {
+test('conversation consent revocation during final synthesis is unavailable and cannot commit its answer', async t => {
   const f = await fixture(t); const session = f.session(); f.repeatCalls();
   f.setFinalHook(() => { f.chat.revoke(session, f.context); });
   const run = await f.turn(session);
   assert.equal(f.requests.length, 5);
   assert.deepEqual(f.requests[4]!.declarations, []);
   assert.equal(f.executions(), 4);
-  assert.equal(run.outcome, 'cancelled');
+  assert.equal(run.outcome, 'unavailable');
   assert.equal(run.finalEntryId, null);
+});
+
+test('explicit user Stop during final synthesis stays cancelled without a final answer', async t => {
+  const f = await fixture(t); const session = f.session(); f.repeatCalls();
+  f.setFinalHook(() => {
+    const active = f.store.transaction(tx => tx.get("SELECT run_id FROM chat_runs WHERE session_id=? AND state!='terminal'", [session]));
+    assert(active); f.chat.cancel(String(active.run_id), f.context);
+  });
+  const run = await f.turn(session);
+  assert.equal(f.requests.length, 5); assert.equal(f.executions(), 4);
+  assert.equal(run.outcome, 'cancelled'); assert.equal(run.finalEntryId, null);
 });
 
 test('final synthesis retains the monotonic class of gated tool results', async t => {

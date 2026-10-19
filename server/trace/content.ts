@@ -1,3 +1,4 @@
+import { diagnosticContextCurrent, diagnosticOriginCurrent, parseDiagnosticContext } from './diagnostic-context.js';
 import type { DataClass } from '../adapters/model/types.js';
 import type { SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
 import { HISTORY_CLASSES, historySessionEvidence } from '../domain/history-lifecycle.js';
@@ -24,11 +25,11 @@ function chatAccess(read: DiagnosticContentRead, tx: Transaction, row: SQLRow, a
   if (!user || user.session_id !== row.session_id || read.get('SELECT 1 FROM entry_tombstones WHERE entry_id=?', [row.user_entry_id!])) return denied('source_changed');
   const trace: unknown = typeof row.trace === 'string' ? JSON.parse(row.trace) : null;
   if (!record(trace) || !record(trace.diagnostic)) return denied('legacy_unavailable');
-  const marker = trace.diagnostic;
-  if (Object.keys(marker).some(key => !['version', 'dataClasses'].includes(key)) || marker.version !== 1
-      || !Array.isArray(marker.dataClasses) || !marker.dataClasses.length || !marker.dataClasses.every(knownClass)
-      || new Set(marker.dataClasses).size !== marker.dataClasses.length) return denied('source_changed');
-  const capturedClasses = marker.dataClasses as DataClass[];
+  const marker = parseDiagnosticContext(trace.diagnostic);
+  if (!diagnosticContextCurrent(authority.ownerId, String(row.run_id), marker)) return denied('source_changed');
+  const latest = marker.epochs.at(-1)!;
+  const capturedClasses = latest.dataClasses;
+  if (!latest.origins.every(origin => diagnosticOriginCurrent(read, authority.ownerId, String(row.run_id), origin, capturedClasses))) return denied('source_changed');
   const policy = read.get('SELECT selected_labels FROM chat_run_policy WHERE run_id=?', [row.run_id!]);
   const labels: unknown = typeof policy?.selected_labels === 'string' ? JSON.parse(policy.selected_labels) : null;
   if (!Array.isArray(labels) || !labels.length) return denied('source_changed');

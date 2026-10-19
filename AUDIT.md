@@ -10,10 +10,11 @@ Owner conversation content and actual credentials remain root-only. Worker evide
 
 | Claim | Status | Evidence | Verifier | Resolution |
 | --- | --- | --- | --- | --- |
-| Research fails before any source operation in the tested installed session | Observed symptom, root cause unknown | Root-read host log: repeated research_run status failed, stopReason refused, ops0, elapsed0 | Independent lane required | Open |
-| Repeated progress utterances are caused by host commentary scheduling | Candidate only | Owner report; repeated thinking_sent and tool response continuations need correlation with transcript | Independent lane required | Open |
-| Ad-hoc signing causes repeated Accessibility prompts after rebuild | Known build limitation; exact prompt path still needs verification | Canonical build/install warnings and previous release records | Native lane | Open |
-| Microphone prompts have the same cause as Accessibility | Unknown | Owner report only | Native lane | Open |
+| Research fails before any source operation in the tested installed session | Verified validation refusal; exact malformed field unavailable | 15 failed/refused calls with zero operations; this event shape is exclusive to failed validateResearch | Tools lane plus root logs | Fix pending |
+| Advertised research requests can fail runtime validation | Reproduced | Official SDK accepts source-only lookup; actual composed host refuses it. Adding a query dispatches under identical sensitive-source permission | Tools lane, 18 focused cases | Fix pending |
+| Host commentary caused repeated spoken progress in the recorded refusals | Refuted | 15 silent thinking messages, zero host commentary. Two public voice instructions require a pre-call acknowledgement | Progress lane plus root transcript | Prompt repair pending; model behavior not yet tested |
+| Typed routed lookups produce the same progress receipts as selector lookups | Refuted | Slow typed success has no commentary through ten seconds; selector control produces first commentary at six seconds | Progress lane actual Live replay | Fix pending |
+| Ad-hoc signing explains permission recurrence after replacement | Supported mechanism; exact same-build recurrence unproven | Installed ad-hoc signature; Apple TN3127; native mic requests only when undecided | Permission lane | Stable identity setup pending root decision |
 
 ## Evidence
 
@@ -25,7 +26,7 @@ Each diagnosis needs an actual reproduction through the canonical host/Live/Tool
 
 ## Remediation
 
-No fix yet. Bounded code changes follow confirmed causes, affected static checks and actual runtime controls. One focused release PR, local verification, exact merged install and detailed knowledge/handover updates. No full/slow rings or cloud CI.
+No fix yet. Council packet covers precise argument declarations, closed actionable refusal reasons, content-free diagnostics and truthful progress ownership. Preserve all source and provider authorization. Historical malformed arguments cannot be reconstructed; synthetic fixture evidence is not recovered owner input. Progress fixes distinguish silent thinking, verified audible status and model-generated filler. One focused release PR, affected local checks, exact merged install and detailed knowledge/handover updates. No full/slow rings or cloud CI.
 
 ## Closure
 

@@ -619,6 +619,30 @@ export function extractInsightIds(text: string, max = 3): number[] {
   return ids;
 }
 
+/** Only an explicitly complete, nonempty returned body can replace a full-read hop. */
+function completeKnowledgeIds(results: readonly IntentSubResult[]): ReadonlySet<number> {
+  const complete = new Set<number>();
+  for (const result of results) {
+    if (!result.ok || result.name !== INTERNAL.knowledgeSearch || result.omittedCharacters > 0) continue;
+    let id: number | undefined; let body: string[] = [];
+    const flush = (): void => {
+      const flags = body.filter(line => KNOWLEDGE_TRUNCATED.test(line));
+      if (id !== undefined && flags.length === 1 && KNOWLEDGE_TRUNCATED.exec(flags[0]!)?.[1] === 'no'
+          && body.some(line => line.trim() && !KNOWLEDGE_TRUNCATED.test(line) && !OMITTED_NOTE.test(line))
+          && !body.some(line => OMITTED_NOTE.test(line))) complete.add(id);
+      body = [];
+    };
+    for (const raw of result.text.split('\n')) {
+      const line = raw.trim();
+      if (KNOWLEDGE_MD_HEADING.test(line) || KNOWLEDGE_BULLET.test(line)) {
+        flush(); id = extractInsightIds(line, 1)[0];
+      } else body.push(line);
+    }
+    flush();
+  }
+  return complete;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Ledger
 
@@ -1846,7 +1870,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const second: IntentSubCall[] = [];
           const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
           if (kind === 'knowledge_search') {
-            const ids = extractInsightIds(primaryText);
+            const complete = completeKnowledgeIds(results);
+            const ids = extractInsightIds(primaryText, RESEARCH.knowledgeHits).filter(id => !complete.has(id)).slice(0, 3);
             if (ids.length) second.push({ key: 'kz', name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
           }
           if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {

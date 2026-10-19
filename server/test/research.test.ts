@@ -1087,3 +1087,26 @@ test('R6/M2: continue reaches a run that answered ahead of its readers', async (
   controller.abort();
   await reading;
 });
+
+
+test('fluency: complete bounded bodies avoid hydration while unknown and truncated bodies still hydrate', async () => {
+  for (const flag of ['no', 'yes', 'unmarked', 'empty']) {
+    const calls: { name: string; args: unknown }[] = [];
+    const text = Array.from({ length: 6 }, (_, i) => `### Synthetic entry [id ${101 + i}]\n${flag === 'empty' ? '' : `Synthetic body ${i}.`}\n${flag === 'unmarked' ? '' : `truncated: ${flag === 'empty' ? 'no' : flag}`}`).join('\n');
+    const h = harness({ execute: async subs => {
+      calls.push(...subs);
+      return subs.map(call => sub(call.name, call.name === 'search_knowledge' ? text : '### Hydrated [id 101]\nFull synthetic evidence.', true, call.key));
+    } });
+    const reply = await runResearch(h.deps, { action: 'start', question: 'synthetic facts', sources: 'knowledge' }, new AbortController().signal);
+    assert.equal(calls.filter(call => call.name === 'search_knowledge').length, 1);
+    assert.equal(calls.filter(call => call.name === 'get_insight').length, flag === 'no' ? 0 : 1, flag);
+    if (flag === 'no') {
+      const findings = JSON.stringify(reply['findings']);
+      for (let i = 0; i < 6; i++) assert.ok(findings.includes(`Synthetic body ${i}.`), 'all six complete bodies survive');
+    }
+  }
+  const h = harness();
+  await runResearch(h.deps, { action: 'start', question: 'read full insight #412', sources: 'knowledge' }, new AbortController().signal);
+  assert.equal(h.executed.some(call => call.name === 'search_knowledge'), false);
+  assert.equal(h.executed.filter(call => call.name === 'get_insight').length, 1);
+});

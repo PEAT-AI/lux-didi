@@ -611,6 +611,58 @@ private func checkPrimaryChannelConversion() throws {
     print("PASS actual write control, hot-mute PCM fence, unmute tail and stale completion; hardware=false")
 }
 
+@MainActor private func checkPlaybackSilenceState() async throws {
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+    device.playbackDriverForTesting = driver
+    var output: [Bool] = []
+    device.onOutput = { output.append($0) }
+    let quiet = Data(count: 4800)
+    let speech = [Int16](repeating: 5000, count: 2400).withUnsafeBytes { Data($0) }
+    try await device.write(quiet)
+    try audioRequire(driver.scheduled.count == 1 && driver.plays == 1 && !device.isPlayingOutput && !output.contains(true),
+                     "silent fill is scheduled but never claims speaking")
+    try await device.write(speech)
+    try audioRequire(!device.isPlayingOutput, "speech queued behind silence does not claim an early speaking state")
+    driver.completions[0]()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(device.isPlayingOutput && device.outputLevel > 0,
+                     "completion advances the actual queue head to audible speech")
+    try await device.write(quiet)
+    try audioRequire(device.isPlayingOutput && device.outputLevel > 0,
+                     "arriving fill cannot hide speech still at the queue head")
+    driver.completions[1]()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(!device.isPlayingOutput && device.outputLevel == 0,
+                     "completion advances from speech to silent fill without a false speaking claim")
+    driver.completions[2]()
+    for _ in 0..<8 { await Task.yield() }
+    let samples = driver.scheduled.flatMap { Array(UnsafeBufferPointer(start: $0.floatChannelData![0], count: Int($0.frameLength))) }
+    try audioRequire(samples.count == 7200 && samples.prefix(2400).allSatisfy { $0 == 0 }
+        && samples.dropFirst(2400).prefix(2400).allSatisfy { $0 == Float(5000) / 32768 }
+        && samples.suffix(2400).allSatisfy { $0 == 0 }, "actual write preserves every speech and fill sample in order")
+    try audioRequire(!device.hasEngine && !device.isCapturing, "state proof opens no engine or capture")
+    print("PASS actual write silence/speech queue-head state and all timing PCM conserved; hardware=false")
+}
+
+@MainActor private func checkPlaybackOverflowContinuation() async throws {
+    let full = Data(count: NativePlaybackQueue.overflowFrames * 2)
+    for externalMute in [false, true] {
+        let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+        device.playbackDriverForTesting = driver
+        try await device.write(full)
+        var overflows = 0
+        device.onPlaybackOverflow = { _, _ in
+            overflows += 1
+            if externalMute { device.setMuted(true); device.setMuted(false) }
+        }
+        try await device.write(Data(count: 4800))
+        try audioRequire(overflows == 1, "control reaches the unchanged playback memory guard")
+        try audioRequire(driver.scheduled.count == (externalMute ? 1 : 2),
+                         "memory guard keeps its new frame but an external mute invalidates the old in-flight frame")
+    }
+    print("PASS memory guard continuation retains current frame and rejects external mute generation; hardware=false")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -627,6 +679,17 @@ private func checkPrimaryChannelConversion() throws {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--playback-state-only") {
+            do { try await checkPlaybackSilenceState() }
+            catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
+            return
+        }
+        if CommandLine.arguments.dropFirst().contains("--playback-overflow-only") {
+            do { try await checkPlaybackOverflowContinuation() }
+            catch { FileHandle.standardError.write(Data("Playback overflow: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--playback-fences-only") {
             do { try await checkPlaybackMuteFence() }
             catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
@@ -663,6 +726,8 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Format change: \(error)") }
             return
         }
+        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation() }
+        catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }
         catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
         do { try checkPrimaryChannelConversion() }

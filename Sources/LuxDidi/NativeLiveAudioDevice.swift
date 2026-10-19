@@ -157,7 +157,10 @@ struct NativePlaybackQueue {
     private var drainedFrames = 0
     private var burstFrames = 0
     /// One entry per scheduled buffer, in play order: the depth falls as each buffer finishes.
-    private var queuedFrames: [Int] = []
+    private struct Buffer { let frames: Int; let audible: Bool; let level: Float }
+    private var queuedFrames: [Buffer] = []
+    var playingSpeech: Bool { playing && queuedFrames.first?.audible == true }
+    var playingLevel: Float { playing ? queuedFrames.first?.level ?? 0 : 0 }
     private var drainedAtMs: Int?
     private var lastArrivalMs: Int?
 
@@ -165,7 +168,7 @@ struct NativePlaybackQueue {
     /// never only at the drain, so a receipt taken mid-burst states the real backlog.
     var depthMs: Int { Self.ms(scheduledFrames, rate: rate) }
 
-    mutating func arrival(frames: Int, atMs: Int) -> NativePlaybackArrival {
+    mutating func arrival(frames: Int, atMs: Int, audible: Bool = true, level: Float = 0) -> NativePlaybackArrival {
         let sinceLastChunkMs = lastArrivalMs.map { atMs - $0 } ?? 0
         lastArrivalMs = atMs
         let starved = (drainedAtMs.map { atMs - $0 } ?? Int.max) < Self.pauseThresholdMs
@@ -174,7 +177,7 @@ struct NativePlaybackQueue {
         burstFrames += frames
         queuedBuffers += 1
         scheduledFrames += frames
-        queuedFrames.append(frames)
+        queuedFrames.append(Buffer(frames: frames, audible: audible, level: level))
         drainedAtMs = nil
         var start = false
         if !playing, scheduledFrames >= Self.prebufferFrames { playing = true; start = true }
@@ -188,7 +191,7 @@ struct NativePlaybackQueue {
     /// is stopped and the next arrival re-arms the prebuffer, so a pause is not a glitch. The frames
     /// that played leave the depth, so `depthMs` falls while the answer is still playing.
     @discardableResult mutating func playedBack(atMs: Int) -> Bool {
-        if !queuedFrames.isEmpty { scheduledFrames = max(0, scheduledFrames - queuedFrames.removeFirst()) }
+        if !queuedFrames.isEmpty { scheduledFrames = max(0, scheduledFrames - queuedFrames.removeFirst().frames) }
         queuedBuffers = max(0, queuedBuffers - 1)
         guard queuedBuffers == 0 else { return false }
         playing = false
@@ -1193,10 +1196,10 @@ struct NativeLiveInterruptionSample: Sendable {
         if playbackQueue.overflowsMemoryGuard {
             // P2-R1: log the dropped turn before the flush resets the queue.
             await onPlaybackOverflow?(NativePlaybackQueue.ms(playbackQueue.scheduledFrames), playbackQueue.queuedBuffers)
+            guard !muted, turnGeneration == entryTurn, outputGeneration == entryOutput else { playback.lateAfterFlush += 1; return }
             flushOutput()
         }
-        // Barge-in flushed this chunk's turn while it was in flight: never schedule stale audio.
-        guard !muted, turnGeneration == entryTurn, outputGeneration == entryOutput else { playback.lateAfterFlush += 1; return }
+        guard !muted, turnGeneration == entryTurn else { playback.lateAfterFlush += 1; return }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
             throw NativeLiveAudioError.unsupportedFormat
         }
@@ -1214,19 +1217,19 @@ struct NativeLiveInterruptionSample: Sendable {
         let frames = Int(buffer.frameLength)
         // A chunk that lands on a dry queue is the first of a new segment.
         let newSegment = !playbackQueue.playing && playbackQueue.scheduledFrames <= 0
-        let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs())
-        if newSegment { playbackSegment += 1; segmentActive = true; emitReceipt(.received, segment: playbackSegment) }
-        if arrival.underrun { playback.underruns += 1; onUnderrun?(arrival) }
-        onOutput?(true); isPlayingOutput = true
         var sum: Double = 0
         pcm.withUnsafeBytes { bytes in
             for sample in bytes.bindMemory(to: Int16.self) {
                 let value = Double(Int16(littleEndian: sample)) / 32768; sum += value * value
             }
         }
-        outputLevel = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
+        let level = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
+        let audible = level >= 0.00316227766
+        let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs(), audible: audible, level: level)
+        if newSegment { playbackSegment += 1; segmentActive = true; emitReceipt(.received, segment: playbackSegment) }
+        if arrival.underrun { playback.underruns += 1; onUnderrun?(arrival) }
         outputOrb.append(pcm)
-        lastModelAudioAt = now()
+        if audible { lastModelAudioAt = now() }
         let completion: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
                 guard let self, self.outputGeneration == token else { return }
@@ -1239,7 +1242,7 @@ struct NativeLiveInterruptionSample: Sendable {
                     self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
                     self.outputOrb.reset()
                     self.startWaitCue()
-                }
+                } else { self.publishPlaybackState() }
             }
         }
         if let driver = playbackDriverForTesting { driver.schedule(buffer, completion: completion) }
@@ -1250,6 +1253,12 @@ struct NativeLiveInterruptionSample: Sendable {
             if let driver = playbackDriverForTesting { driver.play() } else { player?.play() }
             emitReceipt(.started, segment: playbackSegment); outputOrb.started(atMs: nowMs())
         }
+        publishPlaybackState()
+    }
+    private func publishPlaybackState() {
+        let speaking = playbackQueue.playingSpeech
+        if isPlayingOutput != speaking { isPlayingOutput = speaking; onOutput?(speaking) }
+        outputLevel = playbackQueue.playingLevel
     }
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }

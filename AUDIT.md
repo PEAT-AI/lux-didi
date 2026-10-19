@@ -4,7 +4,7 @@
 
 Baseline main and installed source: 31cc08d54248fe00562e7506dbed7ce28fbaf019, released in PR453. The owner tested the installed application and confirmed improved voice pace but reported unavailable Lux Knowledge, calendar and email, repeated spoken progress, and repeated microphone/accessibility permission requests. This is a focused follow-up release, not a continuation of unrelated feature work.
 
-Owner conversation content and actual credentials remain root-only. Worker evidence uses sanitized operational event metadata and synthetic fixtures. Private source material must never enter this public repository. Keep the selected voice at playback1.00 and preserve private persona/configuration. No audible calls, visible-window automation, TCC bypass, signing-identity creation or paid evaluations are authorized by this audit packet. Root adjudicates any concrete permission setup separately.
+Owner conversation content and actual credentials remain root-only. Worker evidence uses sanitized operational event metadata and synthetic fixtures. Private source material must never enter this public repository. Keep the selected voice at playback1.00 and preserve private persona/configuration. No audible calls, visible-window automation or TCC bypass. Root owns local signing setup and any budgeted provider verification separately; workers use synthetic data only.
 
 ## Claims
 
@@ -31,3 +31,7 @@ No fix yet. Council packet covers precise argument declarations, closed actionab
 ## Closure
 
 Open. Finish the demonstrated tool, chatter and permission failures; record remaining owner/system acceptance explicitly. Prior cleanup remains bounded: release train tree closed, six proof-refused lanes retained under existing emissary888, report payload cleanup receipt owned by the cleanup lane.
+
+## Root permission setup checkpoint
+
+Root ran the canonical create-signing-identity.sh with exit0 and verified that a certificate/private-key identity exists. security find-identity reports CSSMERR_TP_NOT_TRUSTED and0valid identities. No trust command, password or TCC action was performed. Permission issue462 remains unaccepted; identity creation alone does not establish permission persistence. Keepalive instructions remain in force without assuming an old call is still active. These are root-supplied metadata observations; workers did not access owner/private material.

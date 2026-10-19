@@ -121,7 +121,7 @@ struct LiveCaptureDiagnostics: Sendable {
     var outerEntered = 0, outerNotActive = 0, entered = 0
     var mutedDrops = 0, epochDrops = 0, rebuildingDrops = 0
     var lateMutedDrops = 0, lateEpochDrops = 0, lateInactiveDrops = 0
-    var localSocketSendCompleted = 0, sendErrors = 0
+    var localSocketSendCompleted = 0, sendErrors = 0, shedFrames = 0
 }
 struct LiveCaptureDiagnosticSnapshot: Sendable {
     let owner: UInt64?
@@ -475,8 +475,14 @@ public actor LiveSessionCoordinator {
                 if count && captureDiagnosticOwner == owner { captureDiagnostics.lateInactiveDrops += 1 }
                 throw LiveClientError.staleOperation
             }
-            try await connection.sendPCM(pcm)
-            if count && captureDiagnosticOwner == owner { captureDiagnostics.localSocketSendCompleted += 1 }
+            if try await connection.sendPCMReportingShed(pcm) {
+                if count && captureDiagnosticOwner == owner { captureDiagnostics.localSocketSendCompleted += 1 }
+            } else if count && captureDiagnosticOwner == owner {
+                // Z2: a control frame or a playback receipt held the wire. One shed mic frame is a gap of
+                // a few milliseconds, never a reason to end the call.
+                captureDiagnostics.shedFrames += 1
+                return
+            }
             guard generation == token, state == .active else {
                 if count && captureDiagnosticOwner == owner { captureDiagnostics.lateInactiveDrops += 1 }
                 throw LiveClientError.staleOperation

@@ -57,6 +57,8 @@ enum State: String, CaseIterable {
     private var muted = false, speaking = false
     /// One native-live end record per stop cycle; a repeated Stop is a no-op, like the capture summary.
     private var endRecorded = false
+    /// Z2: when the one automatic restart after an unrequested capture interruption last ran.
+    private var lastAutomaticRestartAt: Date?
     private var muteTask: Task<Void, Never>?
     private var captureSummaryTask: Task<Void, Never>?
     private var captureDiagnosticOwner: UInt64?
@@ -101,13 +103,21 @@ enum State: String, CaseIterable {
             self.failure = nil
             self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
         }
-        device.onInterruption = { [weak self] in
+        device.onInterruption = { [weak self] failure in
             guard let self else { return }
+            self.logCaptureInterruption(failure)
+            // A stop cycle already recorded means the owner asked for it: never an automatic restart.
+            let live = !self.endRecorded
             let token = self.generation &+ 1
             await self.stop(reason: .audioInterruption)
             guard self.generation == token else { return }
-            self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
-            self.state = .failed
+            guard live, self.claimAutomaticRestart() else {
+                self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
+                self.state = .failed
+                return
+            }
+            self.appendLocalDiagnostic(["event": "live_restart", "reason": "capture_interruption"])
+            self.start()
         }
         // E1: one native-live.log line per provider barge-in. Metadata only, read from the capture device.
         device.onLiveInterrupted = { [weak self] sample in
@@ -232,18 +242,32 @@ enum State: String, CaseIterable {
             }
         }
     }
+    /// Z2: one automatic restart per 60 s. A second failure inside the window stays `.failed`.
+    private func claimAutomaticRestart(now: Date = Date()) -> Bool {
+        if let last = lastAutomaticRestartAt, now.timeIntervalSince(last) < 60 { return false }
+        lastAutomaticRestartAt = now
+        return true
+    }
+    /// Z2: the class and code of the failure that released capture, never its message content.
+    private func logCaptureInterruption(_ failure: Error?) {
+        let failureClass = failure.map { String(describing: type(of: $0)) } ?? "none"
+        appendLocalDiagnostic(["event": "capture_interruption", "failureClass": failureClass,
+                               "code": failure.map(failureCode) ?? "unknown"])
+    }
+    private func failureCode(_ error: Error) -> String {
+        if error is URLError { return "service_unreachable" }
+        if error is DecodingError { return "unexpected_response" }
+        if let reason = error as? LiveClientError { return reason.rawValue }
+        if let owner = error as? AudioOwnerError { return owner.rawValue }
+        if let audio = error as? NativeLiveAudioError { return audio.rawValue }
+        return "connection_refused"
+    }
     @discardableResult
     func logFailure(_ error: Error, beforeCreate: Bool, diagnosticSession: URLSession? = nil) -> Task<Void, Never>? {
         guard beforeCreate else { return nil }
         let diagnostic = Task { [http] in await http.postPrecreateFailure(error, using: diagnosticSession) }
         guard logsDirectory != nil else { return diagnostic }
-        let code: String
-        if error is URLError { code = "service_unreachable" }
-        else if error is DecodingError { code = "unexpected_response" }
-        else if let reason = error as? LiveClientError { code = reason.rawValue }
-        else if let owner = error as? AudioOwnerError { code = owner.rawValue }
-        else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
-        else { code = "connection_refused" }
+        let code = failureCode(error)
         var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
         if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
         appendLocalDiagnostic(fields)
@@ -283,6 +307,7 @@ enum State: String, CaseIterable {
                     "rebuildingDrops": counts.rebuildingDrops, "lateMutedDrops": counts.lateMutedDrops,
                     "lateEpochDrops": counts.lateEpochDrops, "lateInactiveDrops": counts.lateInactiveDrops,
                     "localSocketSendCompleted": counts.localSocketSendCompleted, "sendErrors": counts.sendErrors,
+                    "shedFrames": counts.shedFrames,
                     "coordinatorCaptureEpoch": transport.epoch, "coordinatorCaptureMuted": transport.muted,
                     "coordinatorState": transport.state, "pendingSendFrames": transport.pendingFrames],
                     uniquingKeysWith: { _, new in new })

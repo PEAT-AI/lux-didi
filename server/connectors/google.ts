@@ -342,7 +342,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       const denied = gate('gmail_read');
       if (denied) return { state: 'refused', reason: denied };
       if (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 4096) return { state: 'refused', reason: 'invalid-message-id' };
-      const format = input.format ?? 'metadata';
+      const format = input.format ?? 'full';
       if (format !== 'metadata' && format !== 'full') return { state: 'refused', reason: 'invalid-format' };
       return dispatch('gmail_read', { id: input.id, format }, signal);
     },

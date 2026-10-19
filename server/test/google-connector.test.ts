@@ -560,3 +560,20 @@ test('the warm calendar digest renders the day in the host time zone', async () 
   const refused = await buildCalendarDigest(digestReader('refused'), { now: digestNow, timeZone: 'UTC' });
   assert.equal(refused, undefined, 'a refused read leaves the slot out rather than failing the start');
 });
+
+test('Gmail precise body read defaults to full and preserves deliberate metadata requests through the actual SDK child', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry(); registry.register(config('local-stdio', 'ok', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_FAMILIES.gmail);
+    const gmail = readerFor(adapter, registry, digest);
+    for (const input of [{ id: 'synthetic-message' }, { id: 'synthetic-message', format: 'metadata' as const }]) {
+      const evidence = completed(await gmail.gmailRead(input)); payloadPorts.set(evidence, adapter);
+      const received = envelopeOf(evidence)['received'] as Record<string, unknown>;
+      assert.equal(received['id'], 'synthetic-message');
+      assert.equal(received['format'], input.format ?? 'full');
+    }
+    assert.equal((await gmail.gmailRead({ id: 'synthetic-message', format: 'invalid' as 'full' })).state, 'refused');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -29,6 +29,7 @@ interface FixtureOptions {
   jsonResponse?: boolean;
   callStatus?: number;
   callStatusWithBody?: boolean;
+  callHtml?: boolean;
   callOutcome?: ((index: number) => Promise<{ status?: number; malformed?: boolean }>) | undefined;
   malformedCall?: boolean;
   callFraming?: 'single' | 'multiline' | 'keepalive' | 'empty';
@@ -77,6 +78,7 @@ async function fixture(options: FixtureOptions = {}) {
         response = new Response(frame, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } });
       }
       if (packet.method === 'tools/call' && (options.callStatus || outcome?.status)) {
+        if (options.callHtml) { void response.body?.cancel().catch(() => {}); res.writeHead(outcome?.status ?? options.callStatus!, { 'content-type': 'text/html' }); res.end('<html>Temporarily unavailable</html>'); return; }
         if (options.callStatusWithBody) { res.writeHead(outcome?.status ?? options.callStatus!, { 'content-type': 'application/json' }); res.end(await response.text()); return; }
         void response.body?.cancel().catch(() => {});
         res.writeHead(outcome?.status ?? options.callStatus!); res.end(); return;
@@ -764,4 +766,32 @@ test('fluency: concurrent availability failures retire once and queued requests 
     assert.equal(f.observed.filter(row => row.method === 'initialize').length, 1);
     assert.ok(f.counter <= 6, 'queued work is refused without a remote dispatch');
   } finally { await adapter.close(); await f.close(); }
+});
+
+
+test('fluency R1: oversized HTTP503 entity remains a hard response-budget failure', async () => {
+  const events: { state: string; recoverable: boolean }[] = [];
+  const f = await fixture({ callStatus: 503, callStatusWithBody: true, call: () => ({ content: [{ type: 'text', text: 'x'.repeat(4096) }] }) });
+  const { adapter, registry } = setup(f.url, { responseBytes: 1024, transportState: event => events.push(event) });
+  try {
+    await approve(adapter, registry);
+    assert.deepEqual(await adapter.call(request), { state: 'unknown', reason: 'response-oversize' });
+    assert.equal(events.some(event => event.recoverable), false);
+    assert.equal(f.counter, 1);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+
+test('fluency R1: ordinary HTML500/502/503 failures remain recoverable availability', async () => {
+  for (const status of [500, 502, 503]) {
+    const events: { state: string; recoverable: boolean }[] = [];
+    const f = await fixture({ callStatus: status, callHtml: true });
+    const { adapter, registry } = setup(f.url, { transportState: event => events.push(event) });
+    try {
+      await approve(adapter, registry);
+      assert.deepEqual(await adapter.call(request), { state: 'unknown', reason: 'transport_unavailable' });
+      assert.equal(events.filter(event => event.state === 'retired' && event.recoverable).length, 1);
+      assert.equal(f.counter, 1);
+    } finally { await adapter.close(); await f.close(); }
+  }
 });

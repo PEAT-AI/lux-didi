@@ -68,8 +68,6 @@ const MAX_RESPAWNS = 2;
  * External cancellation and the local deadline are distinguished before the SDK's own errors.
  */
 function failureStage(error: unknown, operation: Operation, session: Session, cancelled: boolean, timedOut: boolean): string {
-  if (!cancelled && !timedOut && operation.httpStatus !== undefined && [500, 502, 503].includes(operation.httpStatus)
-      && !operation.matchingResponse && !operation.invalidProtocol) return 'transport_unavailable';
   const exited = session.child !== undefined && (session.child.exitCode !== null || session.child.signalCode !== null);
   if (error instanceof PolicyError) {
     if (error.reason !== 'timeout-or-cancelled') return error.reason;
@@ -78,6 +76,8 @@ function failureStage(error: unknown, operation: Operation, session: Session, ca
     if (session.pipeClosed) return 'pipe_closed';
     return 'timeout';
   }
+  if (!cancelled && !timedOut && operation.httpStatus !== undefined && [500, 502, 503].includes(operation.httpStatus)
+      && !operation.matchingResponse && !operation.invalidProtocol) return 'transport_unavailable';
   if (error instanceof SdkError) {
     if (error.code === SdkErrorCode.ConnectionClosed) return exited ? 'child_exited' : 'pipe_closed';
     if (error.code === SdkErrorCode.RequestTimeout) return cancelled ? 'cancelled' : 'timeout';

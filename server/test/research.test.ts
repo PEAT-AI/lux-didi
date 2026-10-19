@@ -8,9 +8,10 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
-import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
+import { shapeGcalList } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import './research-shape.test.js';
+import './research-calendar.test.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
@@ -27,7 +28,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: ResearchDeps['memory'] } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -38,7 +39,9 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     configured: CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
-      return subs.map(call => sub(call.name, opts.executeText ?? 'evidence', true, call.key));
+      return subs.map(call => call.name === 'gcal_list' && opts.executeText === MERGED_CALENDAR
+        ? { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: CALENDAR_RECORDS }) }
+        : sub(call.name, opts.executeText ?? 'evidence', true, call.key));
     }),
     emit: event => progress.push(event),
     log: entry => logs.push(entry),
@@ -48,7 +51,15 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
-    ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+  };
+  const execute = deps.execute;
+  deps.execute = async (calls, signal) => {
+    if (!calls.every(call => call.name === 'conversation_history')) return execute(calls, signal);
+    return calls.map(call => {
+      const found = opts.memory?.(String(call.args['query'] ?? ''));
+      return { key: call.key, name: call.name, ok: !!found, text: '', originalCharacters: 0, omittedCharacters: 0,
+        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
+    });
   };
   return { deps, progress, logs, subcalls, executed, joined };
 }
@@ -226,25 +237,24 @@ test('a continue with no researchId applies to the single pending run (R1-R3)', 
   assert.equal((await second)['researchId'], firstReply['researchId'], 'the takeover keeps the id the host minted');
 });
 
-test('a stop with an unknown researchId applies to the single pending run (R1-R3)', async () => {
+test('an explicit unknown Stop id cannot select the single pending run', async () => {
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const stopped = await scheduler.call({ action: 'stop', researchId: 'unknown-id' }, new AbortController().signal);
-  assert.equal(stopped['status'], 'stopped');
-  assert.match(String(stopped['researchId']), /^[A-Za-z0-9-]{1,64}$/, 'the reply names the minted run, never the invented id');
-  assert.notEqual(String(stopped['researchId']), 'unknown-id');
-  assert.equal((await first)['superseded'], true);
+  assert.equal(stopped['error'], 'unknown_research_run');
+  assert.equal(h.deps.ledger.last()?.stopped, false);
   gate.resolve();
+  assert.equal((await first)['superseded'], undefined);
 });
 
-test('a second start while a run is in flight joins that run instead of starting a second one', async () => {
+test('an identical start while a run is in flight joins that exact intent', async () => {
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
-  const second = scheduler.call({ action: 'start', question: 'b' }, new AbortController().signal);
+  const second = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
   gate.resolve();
   const [a, b] = await Promise.all([first, second]);
   const minted = String(a['researchId']);
@@ -349,19 +359,22 @@ const MERGED_CALENDAR = [
   '- 2026-10-16T11:00:00+05:30, Review | Primary [id e2]',
 ].join('\n');
 
-test('calendar research issues one merged sub-call per question and shapes every event', async () => {
+const CALENDAR_RECORDS = [
+  { id: 'e1', start: '2026-10-16T09:00:00+05:30', summary: 'Standup', location: 'Room 1' },
+  { id: 'e3', start: '2026-10-16T10:00:00+05:30', summary: 'Board deck', location: 'Room 2' },
+  { id: 'e2', start: '2026-10-16T11:00:00+05:30', summary: 'Review' },
+];
+
+test('calendar research issues one primary read and retains every received event', async () => {
   const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   const reads = h.executed.filter(call => call.name === 'gcal_list');
-  assert.equal(reads.length, 1, 'one calendar sub-call per question');
-  assert.equal((reads[0]!.args as Record<string, unknown>)['calendarId'], undefined, 'the connector resolves the selected set');
+  assert.equal(reads.length, 1, 'one calendar sub-call per exact window');
+  assert.equal((reads[0]!.args as Record<string, unknown>)['calendarId'], 'primary');
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
   assert.match(finding.text, /^calendar: 3 of 3 shown/);
-  assert.deepEqual(finding.text.split('\n').slice(1), [
-    '2026-10-16T09:00:00+05:30 | Standup | Room 1 | Primary',
-    '2026-10-16T10:00:00+05:30 | Board deck | Room 2 | Work',
-    '2026-10-16T11:00:00+05:30 | Review | Primary',
-  ]);
+  for (const title of ['Standup', 'Board deck', 'Review']) assert.match(finding.text, new RegExp(title));
+  assert.equal((reply['calendarCoverage'] as Record<string, unknown>)['received'], 3);
 });
 
 test('calendar sub-calls log the resolved window kind only, never a time or title', async () => {
@@ -373,28 +386,21 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
 });
 
-test('a calendar read keeps its own budget and is never starved by the start deadline (probe10)', async () => {
-  // The merged window read fans out one serialized remote call per visible calendar, so the calendar
-  // source needs its budget even when selection and the other reads already spent the start deadline.
+test('calendar research does not start a read after its run deadline', async () => {
   let clock = 0;
   const lateSelector: ResearchSelector = {
     async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
   };
   const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
-  const read = h.subcalls.find(entry => entry.tool === 'gcal_list');
-  assert.ok(read, 'the calendar read still runs');
-  assert.equal(read!.ok, true);
-  assert.ok(read!.items >= 1, 'the read carries real events');
-  // The run's own budget is unchanged: the read finished after the start deadline, so the run says so.
+  assert.equal(h.executed.some(call => call.name === 'gcal_list'), false);
   assert.equal(reply['status'], 'partial');
 });
 
-test('the calendar deadline sits above the connector read budget it must outlive', async () => {
-  // A read cut by the caller's abort is discarded by the result gate, so the two constants are one
-  // invariant across two modules: the batch deadline must outlive the connector's own read budget.
-  assert.ok(RESEARCH.calendarDeadlineMs > GOOGLE_CALENDAR_READ_MS,
-    `${RESEARCH.calendarDeadlineMs} must exceed ${GOOGLE_CALENDAR_READ_MS}`);
+test('the primary research source budget fits inside the unchanged start deadline', () => {
+  assert.equal(RESEARCH.sourceDeadline.calendar, 12_000);
+  assert.equal(RESEARCH.startDeadlineMs, 15_000);
+  assert.ok(RESEARCH.sourceDeadline.calendar < RESEARCH.startDeadlineMs);
 });
 
 test('the calendar budget never extends another source past the start deadline', async () => {
@@ -928,7 +934,7 @@ test('R6: a call answers at 4.5 s with the layers still reading, then hands over
   const reply = await call;
   assert.deepEqual(reply['pending'], ['knowledge'], 'the reply names the layer still reading');
   assert.equal(reply['status'], 'partial');
-  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'memory'), 'the finding in hand is in the reply');
+  assert.match(JSON.stringify(reply['historyPages']), /dentist on Friday/, 'the canonical page in hand is in the reply');
   assert.deepEqual(first.map(entry => [entry.event, entry.ms, entry.settled, entry.pending]), [['research_first_answer', 4_500, ['memory'], ['knowledge']]], 'one receipt names the moment and the two lists');
   assert.equal(late.length, 0, 'nothing is reported while the reader is still working');
   gate.resolve();
@@ -1048,7 +1054,7 @@ test('R6/M2: stop reaches a run that answered ahead of its readers', async () =>
   const stopped = await scheduler.call({ action: 'stop', researchId: id }, controller.signal);
   assert.equal(stopped['researchId'], id, 'stop finds the run the first answer left reading');
   assert.equal(h.deps.ledger.find(id)?.stopped, true, 'and records that run stopped');
-  assert.ok((stopped['findings'] as unknown[]).length > 0, 'with what it already knew');
+  assert.equal(stopped['historyPages'], undefined, 'stop never republishes copied local evidence');
   gate.resolve();
   controller.abort();
   await reading;
@@ -1083,7 +1089,30 @@ test('R6/M2: continue reaches a run that answered ahead of its readers', async (
   gate.resolve();
   const reply = await continuing;
   assert.equal(reply['researchId'], id, 'continue addresses the same run, never a second one beside it');
-  assert.ok((reply['findings'] as unknown[]).length > 0, 'and reuses the ledger the first answer wrote');
+  assert.equal(reply['historyPages'], undefined, 'local continuation requires an explicit canonical reference');
   controller.abort();
   await reading;
+});
+
+
+test('fluency: complete bounded bodies avoid hydration while unknown and truncated bodies still hydrate', async () => {
+  for (const flag of ['no', 'yes', 'unmarked', 'empty']) {
+    const calls: { name: string; args: unknown }[] = [];
+    const text = Array.from({ length: 6 }, (_, i) => `### Synthetic entry [id ${101 + i}]\n${flag === 'empty' ? '' : `Synthetic body ${i}.`}\n${flag === 'unmarked' ? '' : `truncated: ${flag === 'empty' ? 'no' : flag}`}`).join('\n');
+    const h = harness({ execute: async subs => {
+      calls.push(...subs);
+      return subs.map(call => sub(call.name, call.name === 'search_knowledge' ? text : '### Hydrated [id 101]\nFull synthetic evidence.', true, call.key));
+    } });
+    const reply = await runResearch(h.deps, { action: 'start', question: 'synthetic facts', sources: 'knowledge' }, new AbortController().signal);
+    assert.equal(calls.filter(call => call.name === 'search_knowledge').length, 1);
+    assert.equal(calls.filter(call => call.name === 'get_insight').length, flag === 'no' ? 0 : 1, flag);
+    if (flag === 'no') {
+      const findings = JSON.stringify(reply['findings']);
+      for (let i = 0; i < 6; i++) assert.ok(findings.includes(`Synthetic body ${i}.`), 'all six complete bodies survive');
+    }
+  }
+  const h = harness();
+  await runResearch(h.deps, { action: 'start', question: 'read full insight #412', sources: 'knowledge' }, new AbortController().signal);
+  assert.equal(h.executed.some(call => call.name === 'search_knowledge'), false);
+  assert.equal(h.executed.filter(call => call.name === 'get_insight').length, 1);
 });

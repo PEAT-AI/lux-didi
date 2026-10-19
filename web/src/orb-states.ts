@@ -60,15 +60,15 @@ export interface OrbVisual {
  *  palette's amber at full strength, so neither can be read as the listening teal; the two
  *  are told apart by motion, the thinking swirl and the tool's steady orbiting highlight. */
 export const ORB_VISUALS: Readonly<Record<MiniVisualState, OrbVisual>> = {
-  cold: { state: 'cold', hue: 216, glow: 0.1, amplitude: 0.45, opacity: 0.35, grey: 0.95, bright: 0.8, breatheMs: 9000, posture: 'quiet', followsMic: false, followsOutput: false },
+  cold: { state: 'cold', hue: 216, glow: 0.1, amplitude: 0.45, opacity: 0.30, grey: 0.95, bright: 0.8, breatheMs: 9000, posture: 'quiet', followsMic: false, followsOutput: false },
   // M3-R5: the orb renders the connecting moment too, dimmer than listening and with the
   // thinking rotation, so a session coming up is visible on the orb itself.
-  connecting: { state: 'connecting', hue: 216, glow: 0.18, amplitude: 0.6, opacity: 0.6, grey: 0.7, bright: 0.9, breatheMs: 6000, posture: 'thinking', followsMic: false, followsOutput: false },
-  listening: { state: 'listening', hue: 167, glow: 0.4, amplitude: 0.9, opacity: 1, grey: 0, bright: 1, breatheMs: 0, posture: 'listening', followsMic: true, followsOutput: false },
-  thinking: { state: 'thinking', hue: 34, glow: 0.32, amplitude: 0.8, opacity: 1, grey: 0, bright: 1, breatheMs: 0, posture: 'thinking', followsMic: false, followsOutput: false },
-  tool: { state: 'tool', hue: 34, glow: 0.44, amplitude: 0.78, opacity: 1, grey: 0, bright: 1, breatheMs: 0, posture: 'thinking', followsMic: false, followsOutput: false },
-  speaking: { state: 'speaking', hue: 173, glow: 0.45, amplitude: 1, opacity: 1, grey: 0, bright: 1, breatheMs: 0, posture: 'speaking', followsMic: false, followsOutput: true },
-  'hot-muted': { state: 'hot-muted', hue: 216, glow: 0.12, amplitude: 0.5, opacity: 0.5, grey: 1, bright: 0.9, breatheMs: 6000, posture: 'quiet', followsMic: false, followsOutput: false },
+  connecting: { state: 'connecting', hue: 216, glow: 0.18, amplitude: 0.6, opacity: 0.50, grey: 0.7, bright: 0.9, breatheMs: 6000, posture: 'thinking', followsMic: false, followsOutput: false },
+  listening: { state: 'listening', hue: 167, glow: 0.4, amplitude: 0.9, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'listening', followsMic: true, followsOutput: false },
+  thinking: { state: 'thinking', hue: 34, glow: 0.32, amplitude: 0.8, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'thinking', followsMic: false, followsOutput: false },
+  tool: { state: 'tool', hue: 34, glow: 0.44, amplitude: 0.78, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'thinking', followsMic: false, followsOutput: false },
+  speaking: { state: 'speaking', hue: 173, glow: 0.45, amplitude: 1, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'speaking', followsMic: false, followsOutput: true },
+  'hot-muted': { state: 'hot-muted', hue: 216, glow: 0.12, amplitude: 0.5, opacity: 0.42, grey: 1, bright: 0.9, breatheMs: 6000, posture: 'quiet', followsMic: false, followsOutput: false },
 };
 
 /** M3: the mini route's state machine eases the numbers itself and hands them to the one

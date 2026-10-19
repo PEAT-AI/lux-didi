@@ -3,10 +3,9 @@
  *
  * While the presence machine is COLD or HOT_MUTED the host assembles the next
  * session's context locally: persona, memory, the recent conversation summary and
- * today's calendar digest when the connector is configured. The assembly is bounded
- * by the caller's instruction budget and kept for at most ten minutes; a session
- * start either uses the sections as they stand or assembles them from the store,
- * never both. Nothing here talks to a model, so silence stays silent.
+ * today's calendar digest when the connector is configured. CREATE selects current
+ * completed summaries from its own store read; prewarm never renews them. The local
+ * assembly has a ten-minute lifetime. Nothing here talks to a model.
  */
 import { localDayWindow, type CalendarDigestReadResult, type CalendarDigestReadState } from '../connectors/google.js';
 

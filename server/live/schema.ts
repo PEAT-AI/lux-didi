@@ -146,4 +146,22 @@ export const liveMigrations: readonly SchemaMigration[] = [{
   `DROP TABLE live_journal`,
   `ALTER TABLE live_journal_progress RENAME TO live_journal`,
   `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`
+]}, { owner: 'live', version: 8, statements: [
+    `ALTER TABLE live_journal ADD COLUMN connection_epoch TEXT`,
+    `ALTER TABLE live_journal ADD COLUMN provider_event_id TEXT`,
+    `ALTER TABLE live_journal ADD COLUMN provider_start_ms REAL`,
+    `ALTER TABLE live_journal ADD COLUMN provider_end_ms REAL`,
+    `ALTER TABLE live_journal ADD COLUMN received_mono_ms INTEGER`,
+    `ALTER TABLE live_journal ADD COLUMN clock_domain TEXT`,
+    `ALTER TABLE live_journal ADD COLUMN final_origin TEXT`,
+    `ALTER TABLE live_journal ADD COLUMN finalized_at INTEGER`,
+    `ALTER TABLE live_journal ADD COLUMN finalized_mono_ms INTEGER`,
+]}, { owner: 'live', version: 9, statements: [
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_metadata_state TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_content_state TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN native_receipt_state TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_failures INTEGER`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_last_reason TEXT`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_unattributed_transcripts INTEGER`,
+    `ALTER TABLE live_sessions ADD COLUMN diagnostic_clock_domain TEXT`,
 ]}];

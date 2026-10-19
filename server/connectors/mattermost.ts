@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence, type SourceDispatchRef } from '../adapters/mcp/port.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -50,7 +51,7 @@ export interface MattermostConfig {
 export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTION_TOOL;
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
-export interface MattermostEvidence {
+export interface MattermostEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MattermostEvidenceTool;
@@ -123,6 +124,7 @@ export interface MattermostChannel { id?: string; name?: string; displayName?: s
 class ChannelIndexCache {
   #channels: MattermostChannel[] | undefined;
   #at = 0;
+  origin: SourceDispatchRef | undefined;
   constructor(private readonly ttlMs: number = 10 * 60 * 1000, private readonly now: () => number = () => Date.now()) {}
   get(): MattermostChannel[] | undefined {
     if (!this.#channels) return undefined;
@@ -314,6 +316,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       state: result.state,
       tool,
       source: { ...result.source },
+      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       decodedResult: structuredClone(result.decodedResult),
@@ -336,7 +339,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   const channelIndex = new ChannelIndexCache();
   async function loadChannels(signal?: AbortSignal): Promise<MattermostChannel[] | { error: string }> {
     const cached = channelIndex.get();
-    if (cached) return cached;
+    if (cached) { port.recordReuse?.(channelIndex.origin); return cached; }
     const denied = preflight(registry, settings, 'mattermost_list_channels');
     if (denied) return { error: denied };
     const evidence = await dispatch('mattermost_list_channels', limited(undefined)!, signal);
@@ -345,6 +348,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const channels = parseChannelList(evidence.decodedResult);
     if (!channels) return { error: 'channel-list-unreadable' };
     channelIndex.set(channels);
+    channelIndex.origin = evidence[SOURCE_DISPATCH];
     return channels;
   }
   async function resolveChannel(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
@@ -370,7 +374,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   async function ownerIdentity(signal?: AbortSignal): Promise<{ ok: true; owner: Owner; evidence: MattermostEvidence } | { ok: false; result: MattermostResult }> {
-    if (identity) return { ok: true, ...identity };
+    if (identity) { port.recordReuse?.(identity.evidence[SOURCE_DISPATCH]); return { ok: true, ...identity }; }
     const whoami = await read('mattermost_whoami', {}, signal);
     if (!whoami.ok) return whoami;
     const data = contentJson(whoami.evidence.decodedResult);
@@ -408,6 +412,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > settings.maxLimit) return { state: 'refused', reason: 'limit-out-of-budget' };
     const who = await ownerIdentity(signal);
     if (!who.ok) return who.result;
+    const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
+    const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const cutoff = Date.now() - days * DAY_MS;
     const scored: { item: AttentionItem; at: number }[] = [];
     const seen = new Set<string>();
@@ -427,6 +433,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // channel, because a thread nobody mentioned the owner in never reaches the handle search.
     const written = await read('mattermost_search', { query: `from:${who.owner.username}`, limit: settings.maxLimit }, signal);
     if (!written.ok) return written.result;
+    capture(written.evidence);
     for (const raw of postsIn(written.evidence.decodedResult) ?? []) {
       const post = childPost(raw);
       if (post !== undefined && post.at >= cutoff) threadCandidate(post);
@@ -434,6 +441,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // Mentions: the child's own handle search, with the window and the handle itself checked here.
     const mentions = await read('mattermost_search', { query: `@${who.owner.username}`, limit: settings.maxLimit }, signal);
     if (!mentions.ok) return mentions.result;
+    capture(mentions.evidence);
     for (const raw of postsIn(mentions.evidence.decodedResult) ?? []) {
       const post = childPost(raw);
       if (post === undefined || post.at < cutoff) continue;
@@ -445,11 +453,13 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
     const channels = await loadChannels(signal);
     if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
+    if (channelIndex.origin) children.push(channelIndex.origin);
     for (const channel of channels.filter(entry => isDirectChannel(entry, who.owner)).slice(0, MATTERMOST_ATTENTION.maxDmChannels)) {
       const reference = channel.name ?? channel.id;
       if (reference === undefined) continue;
       const history = await read('mattermost_get_channel_history', { channel: reference, limit: MATTERMOST_ATTENTION.historyLimit }, signal);
       if (!history.ok) return history.result;
+    capture(history.evidence);
       for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
         const post = childPost(raw);
         if (post === undefined || post.at < cutoff) continue;
@@ -461,6 +471,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     for (const rootId of [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads)) {
       const thread = await read('mattermost_get_thread', { post_id: rootId }, signal);
       if (!thread.ok) continue;
+      capture(thread.evidence);
       const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(childPost).filter((post): post is ChildPost => post !== undefined);
       const newest = posts.reduce<ChildPost | undefined>((latest, post) => (latest === undefined || post.at > latest.at ? post : latest), undefined);
       if (newest === undefined || newest.at < cutoff || isOwnerPost(who.owner, newest.author)) continue;
@@ -468,7 +479,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     }
     const items = scored.sort((left, right) => right.at - left.at).slice(0, limit).map(entry => entry.item);
     // The digest stands on the identity read: its provenance is what the projection reports.
-    return { ...who.evidence, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items } satisfies MattermostAttention };
+    const composed = {...who.evidence};
+    delete composed[SOURCE_DISPATCH];
+    return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items } satisfies MattermostAttention };
   }
 
   return {

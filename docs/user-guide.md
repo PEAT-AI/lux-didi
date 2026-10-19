@@ -8,27 +8,17 @@ Press **Mute** to pause the microphone, then press it again to resume. Press
 
 Global shortcuts:
 
-- Control Option Space: show or hide the pill. Showing it starts Live when Live is not already running; hiding it stops Live.
+- Control Option Space: switch between the full app and mini orb. Opening the orb starts Live when idle; returning to the full app keeps the session.
 - Control Option Shift Space: show or hide the full Naya window (Live keeps running when the window hides).
 - Control Option Shift L: show Naya and start Live.
 - Control Option Shift M: mute or unmute Live.
 - Escape while the mini orb is focused: hide the orb and stop Live. Escape while the window is focused: hide the window; Live keeps running.
 
-Click the pill to expand to the full window; Live keeps running.
+Click the mini orb to start, mute or unmute Live. Right-click it and choose **Open full interface** to return to the app without changing Live.
 
-Naya has two modes and only one is ever on screen. The second mode is the **pill**:
-a small capsule, about 64 by 26 points, that sits top-center just below the menu bar
-(or below the notch on a notched display). Inside it a tiny orb and a five-bar level
-meter show the state and nothing else, because there is no text in the pill:
-listening breathes and follows the microphone, thinking shimmers slowly, speaking
-pulses, muted dims to one flat bar, and connecting shows a spinner ring. The pill
-never takes focus. Drag it anywhere and Naya remembers where you put it, and a
-display that disappears never strands it off-screen.
-The full window has a **mini** button in its header (its accessible label is
-"Show the mini orb") that moves the app to the pill. Closing the window with Cmd+W
-while Live is running switches to the pill and keeps the session; closing it while
-Live is off just hides the window. A click on the Dock icon always brings the full
-window back, and clicking the pill opens the full window.
+Naya opens in the full app. Its **Mini** buttons in the header and Settings switch to the floating orb without starting or stopping Live. The 220-point orb has transparent edges, no caption and no capsule. Drag it to move it; Naya remembers its position and keeps it inside a connected display. The orb never takes focus. Its state changes ease smoothly, with a dim cold state and a brighter live state.
+
+Closing the full window with Cmd+W during Live switches to the orb and keeps the session. Closing while idle hides the app until an explicit reveal. Clicking the Dock icon or choosing **Open full interface** in the orb's context menu returns to the full app. App/Mini switching preserves the conversation and tool results.
 
 ### The single key
 
@@ -36,7 +26,7 @@ If you prefer one key to the chord, turn on **Right Command tap** in the menu ba
 menu (it is on by default), then use the right Command key the way Superwhisper uses
 Right Option:
 
-- **Tap** it to start, and tap it again to stop. A tap stops Live the same way the
+- **Tap** it to start, and tap it again to stop. From another app it summons the mini orb without taking focus. A tap stops Live the same way the
   **Stop** button does, so nothing waits out the mute grace.
 - **Hold** it to talk. The microphone is open only while you hold the key, and letting
   go closes it: Naya finishes the answer it already started and ends Live after that
@@ -130,8 +120,10 @@ node /path/to/your/install/server/dist/host/index.js --mongoose-login
 ```
 
 Your default browser opens the Mongoose consent page, where you sign in with
-Google. The window closes when the session is saved; no token is ever copied,
-pasted or printed. The session refreshes itself while you use it. If it ever
+Google. To keep the current window focused, add `--no-browser`; the command
+prints a sign-in URL for you to open yourself. The complete attempt expires five
+minutes after it starts. After sign-in, the callback page confirms receipt and
+can be closed; no token is ever copied, pasted or printed. The session refreshes itself while you use it. If it ever
 goes stale, the connector next step says **Mongoose session expired, reconnect
 Mongoose** with the same command.
 

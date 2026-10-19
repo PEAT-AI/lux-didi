@@ -1,5 +1,7 @@
+import { forgetHistorySessions } from './history-lifecycle.js';
 import { notFound, badRequest } from './contract.js';
 import type { Transaction, SQLRow } from './contract.js';
+import { entryAndParentOrdinary } from './labels.js';
 import { assertLimit, assertTimeZone, fold, newId, requireText, tokenize } from './util.js';
 
 export type EntryRole = 'user' | 'assistant' | 'system';
@@ -350,8 +352,10 @@ function snippetFor(text: string, tokens: string[]): string {
   return `${from > 0 ? '\u2026' : ''}${text.slice(from, to)}${to < text.length ? '\u2026' : ''}`;
 }
 
-/** Deterministic keyword + recency recall. Honest about empties and limits. */
-export function recall(tx: Transaction, query: string, limit = 20): RecallResult {
+export interface RecallOptions { readonly eligibility?: 'ordinary-entry-and-parent' }
+
+/** Deterministic keyword + recency recall. Eligibility precedes ranking and the result limit. */
+export function recall(tx: Transaction, query: string, limit = 20, options: RecallOptions = {}): RecallResult {
   assertLimit(limit);
   const tokens = tokenize(typeof query === 'string' ? query : '');
   if (tokens.length === 0) return { hits: [], totalMatches: 0, truncated: false };
@@ -363,7 +367,7 @@ export function recall(tx: Transaction, query: string, limit = 20): RecallResult
     const folded = fold(entry.text);
     let score = 0;
     for (const t of tokens) if (folded.includes(t)) score += 1;
-    if (score > 0) scored.push({ entry, score });
+    if (score > 0 && (options.eligibility === undefined || entryAndParentOrdinary(tx, entry.id, entry.sessionId))) scored.push({ entry, score });
   }
   scored.sort(
     (a, b) =>
@@ -456,6 +460,7 @@ export function deleteEntry(tx: Transaction, id: string, deletedAt: string, acto
   tx.run("DELETE FROM source_references WHERE owner_kind = 'entry' AND owner_id = ?", [id]);
   tx.run('DELETE FROM entries WHERE id = ?', [id]);
   tx.run('INSERT INTO entry_tombstones(entry_id, deleted_at, actor, reason_code, source_kind, source_key) VALUES (?, ?, ?, ?, ?, ?)', [id, deletedAt, actor, 'owner_request', sourceKey ? 'live-voice' : null, sourceKey]);
+  if (sourceKey) forgetHistorySessions(tx, [sourceKey.slice(0, 36)], Date.parse(deletedAt));
   return { entryId: id, deletedAt, actor, reasonCode: 'owner_request' };
 }
 

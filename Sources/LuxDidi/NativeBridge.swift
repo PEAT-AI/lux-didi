@@ -262,12 +262,49 @@ struct LevelBatcher {
     mutating func reset() { inputs = []; outputs = []; lastFlush = nil }
 }
 
+@MainActor
+final class OrbFramePublication {
+    typealias Evaluate = @MainActor (String, @escaping @MainActor () -> Void) -> Void
+    private var recipient: ObjectIdentifier?
+    private var generation: UInt64 = 0
+    private var evaluate: Evaluate?
+    private var latest: String?
+    private var inFlight = false
+    private(set) var submitted = 0
+    var onSelectionChanged: (() -> Void)?
+    var hasRecipient: Bool { evaluate != nil }
+
+    func select(_ recipient: ObjectIdentifier?, generation: UInt64, evaluate: Evaluate?) {
+        guard self.recipient != recipient || self.generation != generation else { return }
+        self.recipient = recipient; self.generation = generation; self.evaluate = evaluate
+        latest = nil
+        onSelectionChanged?()
+    }
+
+    func offer(_ script: String) {
+        guard evaluate != nil else { return }
+        latest = script
+        flush()
+    }
+
+    private func flush() {
+        guard !inFlight, let evaluate, let script = latest else { return }
+        latest = nil; inFlight = true; submitted += 1
+        evaluate(script) { [weak self] in
+            guard let self else { return }
+            self.inFlight = false
+            self.flush()
+        }
+    }
+}
+
 // MARK: - Coordinator
 
 /// Owns the native side of the bridge: decode inbound web messages, hold outbound messages until
 /// the web is ready, throttle levels, and persist consent. It never starts capture by itself.
 @MainActor final class NativeBridge {
     let consent: ConsentStore
+    let orbPublication = OrbFramePublication()
     private var outbox = BridgeOutbox()
     private var batcher = LevelBatcher()
     private(set) var theme: BridgeTheme = .dark
@@ -327,8 +364,7 @@ struct LevelBatcher {
     /// #283: one orb band frame to the renderer. Dropped (not queued) before the web is ready: a
     /// stale level has no value once the page loads.
     func pushOrbFrame(_ frame: BridgeOrbFrame) {
-        guard outbox.ready else { return }
-        sendJS?(frame.script)
+        orbPublication.offer(frame.script)
     }
 
     func pushLiveState(_ state: BridgeLiveState) { send(.liveState(state)) }

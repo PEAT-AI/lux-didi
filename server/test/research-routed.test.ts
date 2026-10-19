@@ -47,7 +47,7 @@ function harness(opts: {
   now?: () => number;
   configured?: readonly SourceKind[];
   execute?: ResearchDeps['execute'];
-  memory?: ResearchDeps['memory'];
+  memory?: (query: string) => { lines: string[]; text: string; total: number };
   schedule?: ResearchDeps['schedule'];
   selected?: () => void;
 } = {}): Harness {
@@ -74,7 +74,15 @@ function harness(opts: {
     // A selector that answers, so "it was not called" is a real observation rather than a refusal.
     selector: { select: async () => { selectorCalls += 1; opts.selected?.(); return { questionClass: 'cross_source' as const, actions: [], pUseful: {} }; } },
     ledger: new ResearchLedger(),
-    ...(opts.memory !== undefined ? { memory: opts.memory } : {}),
+  };
+  const execute = deps.execute;
+  deps.execute = async (calls, signal) => {
+    if (!calls.every(call => call.name === 'conversation_history')) return execute(calls, signal);
+    return calls.map(call => {
+      const found = opts.memory?.(String(call.args['query'] ?? ''));
+      return { key: call.key, name: call.name, ok: !!found, text: '', originalCharacters: 0, omittedCharacters: 0,
+        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
+    });
   };
   return { deps, routed, sources, logs, subcalls, executed, progress, selectorCalls: () => selectorCalls };
 }
@@ -169,10 +177,9 @@ test('her own memory answers a memory lookup, and is reported unavailable withou
     lookups: [{ source: 'memory', query: 'dentist' }],
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { memory: 'ok' });
-  const findings = reply['findings'] as { source: string; text: string }[];
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0]!.source, 'memory');
-  assert.match(findings[0]!.text, /dentist on Friday/);
+  const pages = reply['historyPages'] as { hits: { snippet: string }[] }[];
+  assert.equal(pages.length, 1);
+  assert.match(pages[0]!.hits[0]!.snippet, /dentist on Friday/);
 
   const bare = harness();
   const empty = await runResearch(bare.deps, {

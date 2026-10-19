@@ -5,9 +5,10 @@ import type { DataClass, ToolDefinition } from '../adapters/model/types.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, PromptCompileError,
   type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem } from '../prompt/index.js';
-import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, buildEarlierConversationsSection } from '../prompt/live-persona.js';
 import { listStandingMemory } from '../memory/import.js';
 import * as summaries from '../domain/summaries.js';
+import { historySummaryEvidence, type HistoryEvidence } from '../domain/history-reader.js';
 import { ChatError, type ChatConfig, type ClassificationSubject } from './types.js';
 import { selectedEvidenceId, type RunSelection } from './memorySelection.js';
 
@@ -26,6 +27,8 @@ export function classify(config: ChatConfig, subject: ClassificationSubject, tx:
 const DATA_CLASS_ORDER: Record<DataClass, number> = { ordinary: 0, private: 1, sensitive: 2 };
 function maxDataClass(a: DataClass, b: DataClass): DataClass { return DATA_CLASS_ORDER[a] >= DATA_CLASS_ORDER[b] ? a : b; }
 export interface ContextTrace {
+  summaryEvidence: HistoryEvidence;
+  summaryCoverage: { legacyUnavailable: number; sourceUnavailable: number; classFiltered: number };
   compileInput: CompileInput; manifest: CompiledPrompt['manifest'];
   omittedHistoryCount: number; selectedHistoryIds: string[]; selectedSourceIds: string[];
   historyOmissionReason: 'compiler_budget_or_limit' | null;
@@ -51,8 +54,9 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
   });
   if (read.session.nextCursor !== null || read.recall?.nextCursor || read.today?.nextCursor) throw new ContextFailure('unavailable');
   // Session memory v1: text chat reads the same summaries store voice reads, so one past serves both.
+  const summarySelection = config.store.transaction(tx => summaries.summarySelection(tx, config.route.allowedClasses));
   const earlier = buildEarlierConversationsSection(
-    config.store.transaction(tx => summaries.injectionCandidates(tx)),
+    summarySelection.candidates,
     { now: config.now ? config.now() : Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
   config.store.transaction(tx => classify(config, { kind: 'session', id: sessionId }, tx));
   const history: HistoryItem[] = read.session.entries.map((entry: Entry) => {
@@ -93,7 +97,7 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
   const capabilities = chatCapabilities(registry, [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
     ...(ownerProfile ? { ownerProfile } : {}), preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets,
-    ...(earlier.section ? { earlierConversations: earlier.section } : {}) };
+    ...((earlier.section || Object.values(summarySelection.coverage).some(value => value > 0)) ? { earlierConversations: [earlier.section, Object.values(summarySelection.coverage).some(value => value > 0) ? CONVERSATION_RECALL_COVERAGE_NOTE : ''].filter(Boolean).join('\n') } : {}) };
   let compiled: CompiledPrompt;
   try { compiled = compilePrompt(base); }
   catch (error) {
@@ -119,7 +123,10 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
     }
   }
   const compileInput = { ...base, history: history.slice(start) };
-  const trace: ContextTrace = { compileInput, manifest: compiled.manifest, omittedHistoryCount: start,
+  const selectedSummaryIds = compiled.manifest.sections.some(section => section.id === 'earlier-conversations') ? earlier.selectedIds : [];
+  const summaryEvidence = config.store.transaction(tx => historySummaryEvidence(tx, selectedSummaryIds));
+  compiled.dataClasses = [...new Set([...compiled.dataClasses, ...summaryEvidence.sources.map(source => source.dataClass)])];
+  const trace: ContextTrace = { summaryEvidence, summaryCoverage: summarySelection.coverage, compileInput, manifest: compiled.manifest, omittedHistoryCount: start,
     selectedHistoryIds: compiled.manifest.historyIds, selectedSourceIds: compiled.manifest.selectedIds,
     historyOmissionReason: start ? 'compiler_budget_or_limit' : null };
   const { manifest: _private, ...request } = compiled;

@@ -1,3 +1,4 @@
+import { diagnosticInputFields } from './diagnostic-input.js';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
@@ -56,7 +57,8 @@ function jsonTypeOf(value: unknown): string {
 /** Metadata only: top-level keys and each value's JSON type, never a value. */
 function logArgumentsRejected(name: string, args: unknown): void {
   const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
-  const fields = Object.keys(record).slice(0, 24).map(key => `${key}:${jsonTypeOf(record[key])}`);
+  const declared = diagnosticInputFields(name);
+  const fields = Object.keys(record).slice(0,24).map(key => `${declared.includes(key) ? key : 'unknown'}:${jsonTypeOf(record[key])}`);
   hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields });
 }
 /** For every declared tool: the tool name and its expected argument shape, never the bad values. */
@@ -109,7 +111,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (Date.now() >= ctx.control.deadlineMs) throw new Interrupted('deadline');
           intent = { ...refusal, accountId: tool.accountId, resourceId: tool.resourceId };
           try {
-            journalState = owner.journal.intent(structuredClone(intent));
+            journalState = owner.journal.intent(structuredClone(intent), structuredClone(call.args));
             if (journalState !== 'fresh' && journalState !== 'existing') throw Error('invalid_journal_intent');
           } catch { journalState = 'failed'; return; }
           if (journalState === 'existing') return;

@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
@@ -6,6 +7,7 @@ export const LUX_KNOWLEDGE_TOOLS = ['search_knowledge', 'get_insight'] as const;
 export type LuxKnowledgeTool = (typeof LUX_KNOWLEDGE_TOOLS)[number];
 
 export interface LuxKnowledgeConfig {
+  includeSensitive?: boolean;
   endpointId: string;
   account: string;
   resource: string;
@@ -62,7 +64,7 @@ export interface StdioLuxKnowledgeSource {
 export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSource;
 
 /** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
-export interface LuxKnowledgeEvidence {
+export interface LuxKnowledgeEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   classification: 'unknown';
   capability: 'local-only';
@@ -165,6 +167,7 @@ function readIds(value: unknown, max: number): { ok: true; ids: number[] } | { o
 
 interface Budgets { maxSearchLimit: number; maxGetIds: number; maxQueryChars: number }
 interface Settings extends Budgets {
+  includeSensitive: boolean;
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
 }
 
@@ -222,7 +225,9 @@ function preflight(registry: McpRegistry, settings: Settings, tool: LuxKnowledge
 export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowledgeReader {
   const { port, registry, config } = options;
   // Capture stable settings once; later caller mutation of `config` cannot change behavior.
+  if (config.includeSensitive !== undefined && typeof config.includeSensitive !== 'boolean') throw Error('invalid-connector-config');
   const settings: Settings = {
+    includeSensitive: config.includeSensitive === true,
     endpointId: config.endpointId,
     account: config.account,
     resource: config.resource,
@@ -256,6 +261,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       capability: 'local-only',
       tool,
       source: { ...result.source },
+      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       projection: structuredClone(result.projection),
@@ -274,7 +280,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (denied) return { state: 'refused', reason: denied };
       // Copy the validated primitives into the exact outgoing arguments once. The 3r fields travel
       // only when the caller asked for them, so a snippet search keeps the old wire shape.
-      const args: Record<string, unknown> = { query: validated.args.query, limit: validated.args.limit, include_sensitive: false };
+      const args: Record<string, unknown> = { query: validated.args.query, limit: validated.args.limit, include_sensitive: settings.includeSensitive };
       if (validated.args.detail !== undefined) args['detail'] = validated.args.detail;
       if (validated.args.maxChars !== undefined) args['max_chars'] = validated.args.maxChars;
       if (validated.args.deadlineMs !== undefined) args['deadline_ms'] = validated.args.deadlineMs;

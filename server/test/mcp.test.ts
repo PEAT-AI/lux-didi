@@ -28,6 +28,9 @@ interface FixtureOptions {
   location?: string;
   jsonResponse?: boolean;
   callStatus?: number;
+  callStatusWithBody?: boolean;
+  callHtml?: boolean;
+  callOutcome?: ((index: number) => Promise<{ status?: number; malformed?: boolean }>) | undefined;
   malformedCall?: boolean;
   callFraming?: 'single' | 'multiline' | 'keepalive' | 'empty';
 }
@@ -57,8 +60,10 @@ async function fixture(options: FixtureOptions = {}) {
       const headers = new Headers();
       for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
       const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
+      const callIndex = packet.method === 'tools/call' ? observed.filter(row => row.method === 'tools/call').length : 0;
       let response = await transport.handleRequest(request);
-      if (packet.method === 'tools/call' && options.malformedCall) {
+      const outcome = callIndex > 0 ? await options.callOutcome?.(callIndex) : undefined;
+      if (packet.method === 'tools/call' && (options.malformedCall || outcome?.malformed)) {
         // Deliberately corrupt one genuine SDK response after server execution.
         // This is a negative wire fixture, never a fabricated success response.
         const envelope = await response.json() as Record<string, unknown>;
@@ -72,9 +77,11 @@ async function fixture(options: FixtureOptions = {}) {
           : `${options.callFraming === 'keepalive' ? ': heartbeat\r\n\r\n' : ''}event: message\r\ndata: ${json}\r\n\r\n`;
         response = new Response(frame, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } });
       }
-      if (packet.method === 'tools/call' && options.callStatus) {
+      if (packet.method === 'tools/call' && (options.callStatus || outcome?.status)) {
+        if (options.callHtml) { void response.body?.cancel().catch(() => {}); res.writeHead(outcome?.status ?? options.callStatus!, { 'content-type': 'text/html' }); res.end('<html>Temporarily unavailable</html>'); return; }
+        if (options.callStatusWithBody) { res.writeHead(outcome?.status ?? options.callStatus!, { 'content-type': 'application/json' }); res.end(await response.text()); return; }
         void response.body?.cancel().catch(() => {});
-        res.writeHead(options.callStatus); res.end(); return;
+        res.writeHead(outcome?.status ?? options.callStatus!); res.end(); return;
       }
       res.writeHead(response.status, Object.fromEntries(response.headers));
       res.flushHeaders();
@@ -97,12 +104,12 @@ async function fixture(options: FixtureOptions = {}) {
   const url = `http://127.0.0.1:${address.port}/mcp`;
   return { url, observed, sdk, responseEntities, get counter() { return counter; }, get cancellations() { return cancellations; }, async close() { await sdk.close(); listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); } };
 }
-function setup(url: string, extras: { now?: () => number; maxBytes?: number; ttlMs?: number; maxEntries?: number; timeoutMs?: number; responseBytes?: number; credential?: string } = {}) {
+function setup(url: string, extras: { now?: () => number; maxBytes?: number; ttlMs?: number; maxEntries?: number; timeoutMs?: number; responseBytes?: number; credential?: string; transportState?: (event: { state: string; recoverable: boolean }) => void } = {}) {
   const registry = new McpRegistry();
   registry.register({ id: 'source', url, account: 'account-a', resource: 'resource-a', ...(extras.credential ? { credentialRef: 'token-ref' } : {}) });
   registry.enable('source'); registry.allowEgress('source');
   const store = new MemoryResultStore({ maxBytes: extras.maxBytes ?? 20_000, maxEntries: extras.maxEntries ?? 10, ttlMs: extras.ttlMs ?? 1000, maxSliceBytes: 97, now: extras.now ?? Date.now });
-  const adapter = createMcpAdapter({ registry, store, resolveCredential: async ref => { assert.equal(ref, 'token-ref'); return extras.credential ?? ''; }, budgets: { timeoutMs: extras.timeoutMs ?? 1000, maxResponseBytes: extras.responseBytes ?? 20_000, maxPages: 8, maxTools: 20, projectionChars: 18 } });
+  const adapter = createMcpAdapter({ registry, store, ...(extras.transportState ? { onTransportState: extras.transportState } : {}), resolveCredential: async ref => { assert.equal(ref, 'token-ref'); return extras.credential ?? ''; }, budgets: { timeoutMs: extras.timeoutMs ?? 1000, maxResponseBytes: extras.responseBytes ?? 20_000, maxPages: 8, maxTools: 20, projectionChars: 18 } });
   return { registry, adapter, store };
 }
 const request: CallRequest = { endpointId: 'source', toolName: 'read', arguments: {}, generation: 1, account: 'account-a', resource: 'resource-a' };
@@ -689,4 +696,102 @@ test('F6: a dead stdio session fails every in-flight call once and the next call
     assert.equal(revived.state, 'unknown');
     assert.notEqual(readFileSync(pidFile, 'utf8'), firstPid, 'the next call gets a fresh child session');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('fluency: official SDK 500/502/503 emits one eligible retired-session burst without replay', async () => {
+  for (const status of [500, 502, 503]) {
+    const events: { state: string; recoverable: boolean }[] = [];
+    const f = await fixture({ callStatus: status });
+    const { adapter, registry } = setup(f.url, { transportState: event => events.push(event) });
+    try {
+      await approve(adapter, registry);
+      assert.deepEqual(await adapter.call(request), { state: 'unknown', reason: 'transport_unavailable' });
+      assert.equal(events.filter(event => event.state === 'retired' && event.recoverable).length, 1);
+      assert.equal(registry.visibleTools('source').length, 0);
+      assert.equal(f.counter, 1);
+      assert.equal((await adapter.call(request)).state, 'refused');
+      assert.equal(f.counter, 1, 'failed call never replays');
+    } finally { await adapter.close(); await f.close(); }
+  }
+});
+
+test('fluency: mixed availability and malformed-protocol burst cannot recover or rewrite outcomes', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let arrived!: () => void; const both = new Promise<void>(resolve => { arrived = resolve; });
+  const f = await fixture({ callOutcome: async index => {
+    if (index === 2) { arrived(); await gate; return { malformed: true }; }
+    await both; return { status: 503 };
+  } });
+  const events: { state: string; recoverable: boolean }[] = [];
+  const { adapter, registry } = setup(f.url, { transportState: event => events.push(event) });
+  try {
+    await approve(adapter, registry);
+    const first = adapter.call(request); const second = adapter.call(request);
+    assert.deepEqual(await first, { state: 'unknown', reason: 'transport_unavailable' });
+    assert.equal(events.some(event => event.recoverable), false, 'pending dispatched read must settle first');
+    release();
+    const hard = await second;
+    assert.notEqual(hard.state === 'unknown' ? hard.reason : '', 'transport_unavailable');
+    assert.equal(events.filter(event => event.state === 'retired').length, 1);
+    assert.equal(events.some(event => event.recoverable), false);
+    assert.equal(f.counter, 2);
+  } finally { release(); await adapter.close(); await f.close(); }
+});
+
+
+test('fluency: availability evidence excludes unsupported status and matching protocol bodies', async () => {
+  for (const value of [{ callStatus: 504 }, { callStatus: 429 }, { callStatus: 401 }, { callStatus: 503, callStatusWithBody: true }, { malformedCall: true }]) {
+    const events: { state: string; recoverable: boolean }[] = [];
+    const f = await fixture(value); const { adapter, registry } = setup(f.url, { transportState: event => events.push(event) });
+    try {
+      await approve(adapter, registry);
+      const result = await adapter.call(request);
+      assert.notEqual(result.state === 'unknown' ? result.reason : '', 'transport_unavailable');
+      assert.equal(events.some(event => event.recoverable), false);
+      assert.equal(f.counter, 1);
+    } finally { await adapter.close(); await f.close(); }
+  }
+});
+
+
+test('fluency: concurrent availability failures retire once and queued requests do not create a new session', async () => {
+  const events: { state: string; recoverable: boolean }[] = [];
+  const f = await fixture({ callStatus: 503 }); const { adapter, registry } = setup(f.url, { transportState: event => events.push(event) });
+  try {
+    await approve(adapter, registry);
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => adapter.call(request)));
+    assert.ok(outcomes.every(result => result.state !== 'completed'));
+    assert.equal(events.filter(event => event.state === 'retired' && event.recoverable).length, 1);
+    assert.equal(f.observed.filter(row => row.method === 'initialize').length, 1);
+    assert.ok(f.counter <= 6, 'queued work is refused without a remote dispatch');
+  } finally { await adapter.close(); await f.close(); }
+});
+
+
+test('fluency R1: oversized HTTP503 entity remains a hard response-budget failure', async () => {
+  const events: { state: string; recoverable: boolean }[] = [];
+  const f = await fixture({ callStatus: 503, callStatusWithBody: true, call: () => ({ content: [{ type: 'text', text: 'x'.repeat(4096) }] }) });
+  const { adapter, registry } = setup(f.url, { responseBytes: 1024, transportState: event => events.push(event) });
+  try {
+    await approve(adapter, registry);
+    assert.deepEqual(await adapter.call(request), { state: 'unknown', reason: 'response-oversize' });
+    assert.equal(events.some(event => event.recoverable), false);
+    assert.equal(f.counter, 1);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+
+test('fluency R1: ordinary HTML500/502/503 failures remain recoverable availability', async () => {
+  for (const status of [500, 502, 503]) {
+    const events: { state: string; recoverable: boolean }[] = [];
+    const f = await fixture({ callStatus: status, callHtml: true });
+    const { adapter, registry } = setup(f.url, { transportState: event => events.push(event) });
+    try {
+      await approve(adapter, registry);
+      assert.deepEqual(await adapter.call(request), { state: 'unknown', reason: 'transport_unavailable' });
+      assert.equal(events.filter(event => event.state === 'retired' && event.recoverable).length, 1);
+      assert.equal(f.counter, 1);
+    } finally { await adapter.close(); await f.close(); }
+  }
 });

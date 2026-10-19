@@ -65,6 +65,12 @@ const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): bo
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'tool_diagnostic_capture') {
+    const reasons = ['context_absent','coverage_write_failed','insert_write_failed','seal_write_failed','reuse_context_absent','reuse_write_failed','execution_not_active_or_scope_changed','insert_failed_wire_observed','insert_failed_pre_wire_refused','insert_failed_dispatch_unknown','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent'];
+    const identity = (v: unknown): boolean => v === null || (typeof v === 'string' && /^[a-zA-Z0-9:_-]{1,256}$/.test(v));
+    if (typeof value.reason !== 'string' || !reasons.includes(value.reason) || !identity(value.runId) || !identity(value.executionId)) return;
+    return {event:'tool_diagnostic_capture',reason:value.reason,runId:value.runId,executionId:value.executionId};
+  }
   if (value.event === 'tool_failure') {
     const codes: readonly string[] = TOOL_FAILURE_CODES;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);

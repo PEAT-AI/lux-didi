@@ -26,7 +26,7 @@ export type LiveKind = 'continuity' | 'inputTranscription' | 'outputTranscriptio
 export interface LiveSource { title: string; url?: string }
 export interface LiveTool { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: LiveSource[] }
 export interface ResearchProgressView { researchId: string; phase: 'started' | 'round' | 'done' | 'stopped'; sourcesDone: string[]; sourcesPending: string[]; elapsedMs: number }
-export interface LiveEntry { event?: 'rebuilding' | 'resumed'; reason?: string; seq: number; kind: LiveKind; text?: string; tool?: LiveTool; progress?: ResearchProgressView }
+export interface LiveEntry { event?: 'rebuilding' | 'resumed'; reason?: string; seq: number; kind: LiveKind; text?: string; textJoin?: 'append' | 'words'; finished?: boolean; tool?: LiveTool; progress?: ResearchProgressView }
 export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
 /** One live tool step: which source, what action, on what, and how it ended. */
 export interface LiveToolStepView { callId: string; stepId: string; source: string; action: string; subject?: string; phase: 'start' | 'end'; resultCount?: number; ok?: boolean; ms?: number }

@@ -38,7 +38,15 @@ export const LIVE_RESULT_CHARS = 2000;
 export const LIVE_COMBINED_CHARS = 3000;
 
 export interface ShapedSource { title: string; url?: string; sourceType?: string }
+export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
+export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
+export interface CalendarScope { received: number; partial: boolean }
+export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean }
+export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean }
 export interface ShapedResult {
+  mailPage?: MailPage;
+  calendarPage?: CalendarPage;
+  calendarScope?: CalendarScope;
   text: string;
   partial: boolean;
   originalCharacters: number;
@@ -237,7 +245,7 @@ function attachmentNames(source: Record<string, unknown>): string[] {
   return list.map(entry => isRecord(entry) ? str(entry['filename'] ?? entry['name']) : str(entry)).filter(Boolean);
 }
 
-export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
+function mailHeaders(data: Record<string, unknown>): string[] {
   const subject = header(data, 'Subject') || '(no subject)';
   const head = [`subject: ${subject}`];
   const from = senderName(data); if (from) head.push(`from: ${from}`);
@@ -246,15 +254,33 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const cc = header(data, 'Cc'); if (cc) head.push(`cc: ${cc}`);
   const tags = labels(data); if (tags.length) head.push(`labels: ${tags.join(', ')}`);
   const files = attachmentNames(data); if (files.length) head.push(`attachments: ${files.join(', ')}`);
-  const body = cleanMailBody(str(data['body']));
+  return head;
+}
+
+/** Full received text for host retention; display cleaning must not destroy reply chains. */
+export function receivedGmailBody(data: Record<string, unknown>): string | undefined {
+  if (data['format'] === 'metadata' || typeof data['body'] !== 'string') return undefined;
+  return `${mailHeaders(data).join('\n')}\n\n${data['body'].replace(/\r\n?/gu, '\n')}`;
+}
+
+export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
+  const head = mailHeaders(data);
+  const metadata = data['format'] === 'metadata';
+  const received = metadata ? '' : str(data['body']).replace(/\r\n?/gu, '\n');
+  const body = cleanMailBody(received);
   const cut = cutAtSentence(body, GMAIL_BODY_CHARS);
-  const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters of body; final, a single message has no partial re-read]` : '';
-  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}`, partial: cut.omitted > 0, originalCharacters: body.length + head.join('\n').length, omittedCharacters: cut.omitted });
+  const coverage = isRecord(data['bodyCoverage']) ? data['bodyCoverage'] : {};
+  const unavailable = !metadata && typeof data['body'] !== 'string';
+  const sourceNote = metadata ? '[Metadata-only view requested; body was not acquired.]' : unavailable ? '[Body unavailable in source response; no body bytes acquired.]' : coverage['complete'] === false ? '[Source reports incomplete inline body coverage.]' : coverage['complete'] !== true ? '[Source inline body completeness is unverified.]' : '';
+  const omitted = Math.max(0, received.length - body.length) + cut.omitted;
+  const note = omitted > 0 ? `\n\n[omitted: ${omitted} received characters of body omitted from this display]` : '';
+  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted });
 }
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const messages = Array.isArray(data['messages']) ? data['messages'] : [];
   const sources: ShapedSource[] = [];
+  const normalized: MailMessage[] = [];
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
     const snippet = decodeEntities(str(entry['snippet']));
@@ -273,10 +299,18 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     if (date) segments.push(`date: ${date}${unread}${size}`);
     else if (`${unread}${size}`.trim()) segments.push(`${unread}${size}`.trim());
     if (excerpt) segments.push(excerpt);
-    return `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
+    const full = `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
+    const cut = cutAtSentence(full, 600);
+    if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line: cut.text, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length });
+    return full;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
-  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
+  const upstream = Boolean(data['nextPageToken']) || data['sourceIncomplete'] === true;
+  const note = data['nextPageToken'] ? '\n[upstream continuation available]' : data['sourceIncomplete'] === true ? '\n[upstream coverage incomplete; no continuation token received]' : '';
+  const nextPageToken = str(data['nextPageToken']);
+  const invalid = messages.length - normalized.length;
+  return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length, sources }),
+    mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}) } };
 }
 
 // --- Calendar ------------------------------------------------------------------------------
@@ -289,12 +323,13 @@ export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult 
     const id = str(entry['id']);
     return id ? `- ${name} [${id}]` : `- ${name}`;
   });
-  return capped(shaped(lines.join('\n')));
+  return { ...capped(shaped(lines.join('\n'))), calendarScope: { received: lines.length, partial: Boolean(data['nextPageToken'] || data['partial'] || data['sourceIncomplete']) } };
 }
 
 export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
   const events = Array.isArray(data['events']) ? data['events'] : [];
   const sources: ShapedSource[] = [];
+  const normalized: CalendarEvent[] = [];
   const blocks = events.filter(isRecord).map(entry => {
     const start = isRecord(entry['start']) ? field(entry['start'], 'dateTime', 'date') : str(entry['start']);
     const named = field(entry, 'summary', 'title');
@@ -314,15 +349,19 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const link = field(entry, 'htmlLink');
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
-    if (cut.omitted === 0) return lines.join('\n');
+    if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
     const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
-    return `${recut.text}${note(recut.omitted)}`;
+    const line = `${recut.text}${note(recut.omitted)}`;
+    normalized.push({ id: eventId, start, line, bodyTruncated: true });
+    return line;
   });
   const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
   const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
-  return capped({ text, partial: body.omitted > 0 || unread > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
+  const nextPageToken = str(data['nextPageToken']);
+  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || data['sourceIncomplete'] === true || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length, sources }),
+    calendarPage: { ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - CALENDAR_EVENTS), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
 }
 
 // --- Mattermost ----------------------------------------------------------------------------
@@ -389,7 +428,7 @@ function channelLine(entry: unknown): string {
   const name = field(entry, 'displayName', 'display_name', 'name') || str(entry['id']);
   const posts = channelPosts(entry);
   const last = channelLastActivity(entry);
-  const facts = [posts === undefined ? '' : `${posts} posts`, last ? `last activity ${last}` : ''].filter(Boolean);
+  const facts = [posts === undefined ? '' : `${posts} posts`, last ? `${field(entry, 'lastSyncAt') ? 'archive synced' : 'last activity'} ${last}` : ''].filter(Boolean);
   return facts.length > 0 ? `${name} | ${facts.join(' | ')}` : name;
 }
 /** Epoch milliseconds for a post, whether it carries an ISO stamp or a raw create_at. */

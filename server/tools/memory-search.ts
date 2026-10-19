@@ -1,7 +1,6 @@
 import type { Transaction } from '../contracts/storage.js';
 import { recall } from '../domain/memory.js';
-import { listSummaries } from '../domain/summaries.js';
-import { current as currentLabel } from '../domain/labels.js';
+import { injectionCandidates } from '../domain/summaries.js';
 import { fold, tokenize } from '../domain/util.js';
 
 /**
@@ -57,14 +56,11 @@ export function rankMemory(records: readonly MemoryRecord[], query: string, limi
 /** The bounded lookup: ordinary conversation entries, every summary, and imported memory if given. */
 export function memoryLookup(tx: Transaction, query: string, opts: { imported?: ImportedMemory | undefined; limit?: number | undefined } = {}): MemoryLookup {
   const records: MemoryRecord[] = [];
-  for (const hit of recall(tx, query, MEMORY.pool).hits) {
-    // Only an ordinary label may leave the port, the same rule the summariser follows.
-    if (currentLabel(tx, { kind: 'entry', id: hit.entryId }).dataClass !== 'ordinary') continue;
+  for (const hit of recall(tx, query, MEMORY.pool, { eligibility: 'ordinary-entry-and-parent' }).hits) {
     records.push({ kind: 'entry', text: hit.snippet, at: hit.sourceTimestamp });
   }
-  for (const summary of listSummaries(tx)) {
-    if (summary.status !== 'complete' || summary.summary === null) continue;
-    records.push({ kind: 'summary', text: summary.summary, at: summary.endedAt ?? summary.createdAt });
+  for (const summary of injectionCandidates(tx, ['ordinary'])) {
+    records.push({ kind: 'summary', text: summary.summary, at: summary.endedAt });
   }
   if (opts.imported !== undefined) records.push(...opts.imported(tx, query, MEMORY.pool));
   const lines = rankMemory(records, query, opts.limit ?? MEMORY.lines).map(line);

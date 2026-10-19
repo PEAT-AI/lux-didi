@@ -26,7 +26,7 @@ test('parseSelector reads a per-action query and calendar window, trims and caps
   const long = parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'x'.repeat(500) }], pUseful: {} }));
   assert.equal(long?.actions[0]?.query?.length, RESEARCH.queryLimitChars);
   const bad = parseSelector('{"questionClass":"quick_fact","actions":[{"kind":"calendar_window","window":"whenever"}],"pUseful":{}}');
-  assert.equal(bad?.actions[0]?.window, undefined);
+  assert.equal(bad?.actions[0]?.window, 'whenever', 'unsupported text reaches the resolver and cannot silently become today');
   assert.equal(parseSelector('{"questionClass":"quick_fact","actions":[{"kind":"mail_search","query":"a\\nb"}],"pUseful":{}}')?.actions[0]?.query, 'a b');
 });
 
@@ -75,13 +75,13 @@ test('the fallback mail query carries operators and keywords, chat carries after
   assert.equal(candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map() })[0]?.args['q'], 'in:inbox newer_than:2d');
 });
 
-test('a calendar window is asked for, and one merged event read covers every selected calendar', () => {
+test('a calendar window is asked for with the primary-calendar scope', () => {
   const selection = fallbackSelection('What is on my calendar tomorrow?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   assert.equal(selection.actions.find(action => action.kind === 'calendar_window')?.window, 'tomorrow');
   const subs = candidateSubs('calendar_window', { question: 'q', configured: ['calendar'], evidence: new Map(), window: 'tomorrow', nowMs: Date.parse('2026-10-16T12:00:00Z') });
   assert.equal(subs.length, 1, 'one merged connector call, never one sub-call per calendar');
   assert.equal(subs[0]?.name, 'gcal_list');
-  assert.equal(subs[0]?.args['calendarId'], undefined, 'the connector resolves the selected set itself');
+  assert.equal(subs[0]?.args['calendarId'], 'primary', 'research keeps its primary-calendar scope');
   assert.match(String(subs[0]?.args['timeMin']), /^\d{4}-\d{2}-\d{2}T/);
   assert.match(String(subs[0]?.args['timeMax']), /^\d{4}-\d{2}-\d{2}T/);
 });

@@ -57,19 +57,21 @@ export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
  * and when not to, and how a result is spoken. The lookup procedure for the model that executes the
  * tools is in backend-procedure.ts; NAYA_TOOLS below is the full conduct the non-delegated path keeps.
  */
-export const NAYA_VOICE_TOOLS = `# Tools and how to use them
+export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
-# Delegation policy
-You reach his world through research. You can reach his memory, his knowledge, the company knowledge base, his calendar, his mail, his chat and replies, and you can open a web page, a file in his home folder or an app.
-Delegate when: the answer lives in his world, his past, his commitments or live data, or he asks you to open something.
-Do not delegate when: the fact is already in these instructions or in the conversation, or the question is general explanation, opinion or craft.
-When you open something, say what you are opening, then open it.
+Use research when an answer depends on the owner's world, past conversations, commitments or current source data. The available declarations and returned source status determine what is connected. Do not claim access to a source or computer action merely because this procedure names it. Answer directly when the needed facts are already accepted or the question is general explanation, opinion or imaginative work.
 
-While working: when the result arrives, answer at the depth of the question, not the size of the result. Never describe the steps and never name a tool, channel or inbox. Speak again with the answer. Lead with the point, then give the depth the question deserves; never pad, never summarise what you just said. Give a position, the mechanism and the trade-off that matters, and challenge the weakest assumption; length is not depth. When the owner speaks while a lookup is in flight, answer the new question right away; when the earlier result arrives, mention it in a few words if it still matters, otherwise let it go. There is no background work and no callback: never promise to check later, call back or keep an eye on something.
+Put independent lookups for one question into one research request. Let that request return before starting another for the same question. Use returned identities for dependent detail reads. When missing evidence matters and the result offers continuation, continue the same research automatically within its bounds. Copy its researchId and the relevant typed cursor or record reference exactly. History coordinates belong in the memory lookup's history object; they are not remote source cursors. Stop when the answer is supported, the source is exhausted, the host bound is reached or the owner says stop.
 
-When a search finds nothing, say what you searched and that nothing matched. Never call a source unreachable unless the tool result says it is down. When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.
+When results arrive, lead with the answer and the qualification that changes its meaning. Keep tool names and opaque identifiers out of speech unless the owner asks how something worked. Show useful detailed evidence and links in the interface when the surface supports them. Do not narrate every lookup or invent activity to fill a pause.
 
-Empty or failed: if research finds nothing, say what was checked and that nothing came back. Nothing is ever sent to another person by Naya.`;
+If the owner speaks during a lookup, respond to the new request. Use a late result only if it still matters. Do not promise an unsolicited callback, future monitoring or work after this session. A request that is still running is different from a promised future service.
+
+Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages. State a material gap briefly while giving the useful confirmed result. Never hand ordinary continuation back to the owner as a permission question, and never call a partial search complete.
+
+When remember_note is available and the owner explicitly asks to save a lasting note, call it and confirm only after remembered:true. Automatic summaries are separate and are not verbatim records. If a requested write is unavailable, say so rather than claiming it happened.
+
+For a supported request to open a page, home-folder file or app, use the exact item already returned when it fits. Search again only when needed. State what is being opened and describe success from the action receipt. Do not claim broader computer control. Nothing is sent to another person by Naya.`;
 
 /** The full tool conduct: the voice-side policy, then the delegated backend's lookup procedure. */
 export const NAYA_TOOLS = `${NAYA_VOICE_TOOLS}\n\n${NAYA_BACKEND_PROCEDURE}`;
@@ -443,6 +445,8 @@ export function earlierConversationsBudget(otherSectionsChars: number): number {
   return Math.max(0, LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length);
 }
 
+export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
+
 export interface EarlierConversationCandidate { readonly id: string; readonly endedAt: number; readonly summary: string }
 export interface EarlierConversationsResult {
   readonly section: string;
@@ -498,7 +502,7 @@ export const OPENING_OPTIONS_CHARS = 700;
 /** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
 export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
 export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
-export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string }
+export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string }
 export interface OpeningOptionsInput {
   /** The stored summaries, newest first; the same candidates the earlier-conversations section reads. */
   readonly candidates: readonly EarlierConversationCandidate[];
@@ -564,9 +568,9 @@ function calendarTopic(digest: string | undefined, now: number, timeZone: string
 }
 
 /** Every still-to-do fragment the stored summaries name, newest first and deduplicated as written. */
-function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): string[] {
+function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): { topic: string; sourceId: string }[] {
   const seen = new Set<string>();
-  const loops: string[] = [];
+  const loops: { topic: string; sourceId: string }[] = [];
   for (const candidate of candidates) {
     for (const sentence of sentencesOf(candidate.summary)) {
       if (!OPEN_LOOP_CUE.test(sentence) || CLOSED_OPENER_TOPIC.test(sentence)) continue;
@@ -574,7 +578,7 @@ function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): st
       const key = topic.toLowerCase();
       if (topic.length === 0 || seen.has(key)) continue;
       seen.add(key);
-      loops.push(topic);
+      loops.push({ topic, sourceId: candidate.id });
     }
   }
   return loops;
@@ -606,9 +610,9 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   const calendar = calendarTopic(input.calendar, input.now, input.timeZone);
   if (calendar !== undefined) options.push({ kind: 'calendar', topic: calendar });
   const loops = openLoopTopics(stored);
-  if (loops.length > 0) options.push({ kind: 'open-loop', topic: loops[rotation % loops.length]! });
+  if (loops.length > 0) options.push({ kind: 'open-loop', ...loops[rotation % loops.length]! });
   const thread = recentThreadTopic(stored);
-  if (thread !== undefined) options.push({ kind: 'recent-thread', topic: thread });
+  if (thread !== undefined) options.push({ kind: 'recent-thread', topic: thread, sourceId: stored[0]!.id });
   const kept = [...options];
   const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
     : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD, ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.topic}`), OPENING_OPTIONS_RULE].join('\n');

@@ -12,6 +12,8 @@ import type { DataClass, LiveVoiceProvider } from '../adapters/live-voice/index.
 import type { LiveAccent } from '../prompt/live-persona.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
 import { nativeActions } from '../tools/open.js';
+import type { CalendarDigestSnapshot } from '../live/warm-context.js';
+import type { WarmPrewarmReceipt } from '../live/index.js';
 
 export interface LiveStatusPayload {
   service: 'live';
@@ -42,6 +44,8 @@ export interface LiveService {
   readonly maxIncomingBytes: number;
   readonly maxBufferedBytes: number;
   status(): LiveStatusPayload;
+  prepareCalendar(): Promise<CalendarDigestSnapshot>;
+  prewarm(): Promise<WarmPrewarmReceipt>;
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot;
   snapshot(liveSessionId: string): LiveSessionSnapshot;
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage;

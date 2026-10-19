@@ -1,14 +1,21 @@
+import { diagnosticContentAccess } from '../trace/content.js';
+import { hostLogEvent } from './host-events.js';
+import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
+import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
-import { endpointBinding } from '../adapters/mcp/port.js';
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { redactSecretsWithCount } from './redact.js';
+import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
+import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
+import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
@@ -94,6 +101,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   ownedStores.add(store);
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
   const persistenceFailures = new Set<string>();
+  const historyReader = createHistoryReader();
+  const retained = new Map<string, { runId: string; executionId: string; resultSha256: string; evidence: HostEvidenceRef }>();
+  const bodyPages = new Map<string, ReceivedBodyPage>();
+  const bodyConsumers = new Set<string>();
+  const bodyLeases = new Map<string, { closed: boolean }>();
+  const pruneEvidence = (): void => {
+    for (const [id, value] of retained) if (value.evidence.kind === 'remote-body' && value.evidence.expiresAt <= Date.now()) retained.delete(id);
+    for (const [cursor, page] of bodyPages) if (!retained.has(page.parent.result.id)) bodyPages.delete(cursor);
+  };
+  const chatRun = (tx: Transaction, runId: string): SQLRow | undefined => tx.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_runs'")
+    ? tx.get('SELECT session_id,state,outcome FROM chat_runs WHERE owner_assistant_id=? AND run_id=?', [ownerId, runId]) : undefined;
   const connection = (tx: Transaction, id: string): BoundConnection => {
     const row = tx.get("SELECT c.*,COALESCE(s.binding_mode,'legacy') AS binding_mode FROM tool_connections c LEFT JOIN tool_connection_semantics s ON s.owner_id=c.owner_id AND s.connection_id=c.connection_id WHERE c.owner_id=? AND c.connection_id=?", [ownerId, id]);
     if (!row || typeof row.policy_json !== 'string' || sha256(row.policy_json) !== row.policy_sha256) throw Error('connection_policy_missing_or_corrupt');
@@ -111,7 +129,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
   // A run freezes admission, not a global conjunction of every connector's policy.
   const currentPolicies = (tx: Transaction, snapshot: RunSnapshot, id: string): boolean => {
-    if (id === 'gateway:live-voice') return options.grantMode === 'owner-trusted-reads';
+    if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id);
     if (!bound || !snapshot.acceptance.connectionIds.includes(id)) return false;
     const current = connection(tx, id); const p = current.policy; const c = p.sourcePolicy.unknownClass;
@@ -119,7 +137,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(set => set.includes(c));
   };
   const currentProjection = (snapshot: RunSnapshot, id: string): boolean => {
-    if (id === 'gateway:live-voice') return options.grantMode === 'owner-trusted-reads';
+    if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id); if (!bound) return false;
     const p = bound.policy;
     try {
@@ -142,7 +160,24 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     if (!row || row.execution_id !== call.executionId || row.intent_json !== intentBytes(tx, call)) throw Error('intent_mismatch');
     return row;
   };
-  const target = (snapshot: RunSnapshot, call: ToolCallRefusal): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
+  const originalCall = (tx: Transaction, runId: string, parent: RemoteResultLineage): ToolCallRefusal => {
+    const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, runId, parent.executionId]);
+    if (!row || row.state !== 'completed' || row.result_id !== parent.result.id || row.result_sha256 !== parent.result.sha256 || typeof row.result_json !== 'string' || sha256(row.result_json) !== parent.result.sha256) throw Error('body_parent_unavailable');
+    const call = storedCall(tx, row);
+    if (!RECEIVED_BODY_TOOLS.has(call.toolName) || call.toolName !== parent.name || call.callId !== parent.callId || retained.get(parent.result.id)?.evidence.kind !== 'remote-body') throw Error('body_parent_unavailable');
+    return call;
+  };
+  const pageForCall = (call: ToolCallRefusal): ReceivedBodyPage | undefined => [...bodyPages.values()].find(page => page.runId === call.runId && page.argumentsHash === call.argumentsHash);
+  const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
+    if (call.toolName === RECEIVED_BODY.name && call.accountId === RECEIVED_BODY.accountId && call.resourceId === RECEIVED_BODY.resourceId) {
+      const page = pageForCall(call); if (!page || !bodyConsumers.has(call.runId)) throw Error('body_cursor_unavailable');
+      const resolve = (tx: Transaction) => target(snapshot, originalCall(tx, call.runId, page.parent), tx);
+      return transaction ? resolve(transaction) : store.transaction(resolve);
+    }
+    if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+    }
     if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
@@ -178,31 +213,62 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     }
   });
 
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction): ToolResultRef => {
+  const evidenceCurrent = (tx: Transaction, call: ToolCallRefusal, snapshot: RunSnapshot, evidence: HostEvidenceRef): boolean => {
+    if (evidence.kind === 'remote-page') {
+      if (call.toolName !== RECEIVED_BODY.name) return false;
+      try { originalCall(tx, call.runId, evidence.parent); return authorizedStoredResult(tx, snapshot, evidence.parent) !== undefined; } catch { return false; }
+    }
+    if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
+    const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
+    if (!bound || evidence.expiresAt <= Date.now() || !/^[a-f0-9]{64}$/.test(evidence.entitySha256) || sha256(evidence.body) !== evidence.bodySha256) return false;
+    const p = bound.policy, source = evidence.source;
+    const binding = 'transport' in p.endpoint ? bindingDigestOf(p.endpoint) : p.endpoint.url;
+    return evidence.tool === call.toolName && source.toolName === call.toolName && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
+      && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
+  };
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef, sourceDispatchRefs?: readonly SourceDispatchRef[]): ToolResultRef => {
     const call = callDTO(input);
+    if ((hostEvidence?.kind === 'remote-body' || hostEvidence?.kind === 'remote-page') && !bodyConsumers.has(call.runId)) throw Error('evidence_run_closed');
+    const cursor = hostEvidence?.kind === 'remote-body' && bodyConsumers.has(call.runId) && RECEIVED_BODY_TOOLS.has(call.toolName) && hostEvidence.body.length > 0 ? randomUUID() : undefined;
+    let maxResultBytes = 0;
     try {
       const commit = (tx: Transaction) => {
         const row = exactIntent(tx, call); if (row.state !== 'intent') throw Error('terminal_immutable');
-        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call);
+        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call, tx);
+        maxResultBytes = bound.policy.bounds.maxResultBytes;
         if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('completion_policy_denied');
         classSet(dataClasses); exact(response, [], Object.keys(response));
         if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
-        const value = { response: detached(response), dataClasses: [...dataClasses] };
+        if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
+        if (sourceDispatchRefs?.some(ref => !tx.get("SELECT dispatch_id FROM tool_dispatches WHERE dispatch_id=? AND owner_id=? AND state='completed' AND ((run_id=? AND execution_id=?) OR EXISTS(SELECT 1 FROM tool_dispatch_reuse WHERE owner_id=? AND run_id=? AND execution_id=? AND origin_dispatch_id=? AND state='referenced'))",[ref.id,ownerId,call.runId,call.executionId,ownerId,call.runId,call.executionId,ref.id]))) throw Error('dispatch_reference_denied');
+        if (hostEvidence?.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, hostEvidence.parent)?.dataClasses.some(c => !dataClasses.includes(c))) throw Error('evidence_class_denied');
+        const value = { response: { ...detached(response), ...(cursor && hostEvidence?.kind === 'remote-body' ? { bodyContinuation: { cursor, tool: call.toolName, projection: 'preview', total: hostEvidence.body.length, unit: 'utf16', upstreamComplete: hostEvidence.upstreamComplete, upstreamOmitted: hostEvidence.upstreamOmitted, stage: 'canonical-preparation' } } : {}) }, dataClasses: [...dataClasses], ...(sourceDispatchRefs ? {sourceDispatchRefs:[...new Set(sourceDispatchRefs.map(ref => ref.id))]} : {}), ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
         if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
         return persistTerminal(tx, call, 'completed', value);
       };
-      return transaction ? commit(transaction) : store.transaction(commit);
+      const result = transaction ? commit(transaction) : store.transaction(commit);
+      if (hostEvidence) retained.set(result.id, { runId: call.runId, executionId: call.executionId, resultSha256: result.sha256, evidence: detached(hostEvidence) });
+      if (cursor && hostEvidence?.kind === 'remote-body') {
+        const parent = { executionId: call.executionId, name: call.toolName, ...(call.callId ? { callId: call.callId } : {}), result };
+        const end = receivedBodyEnd(hostEvidence.body, 0, maxResultBytes);
+        bodyPages.set(cursor, { runId: call.runId, maxResultBytes, rootCursor: cursor, parent, offset: 0, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < hostEvidence.body.length ? { nextCursor: randomUUID() } : {}) });
+      }
+      return result;
     } catch (error) { persistenceFailures.add(call.executionId); throw error; }
   };
   const journal: ToolsOwner['journal'] = {
-    intent(input) {
+    intent(input, capture) {
       const call = callDTO(input);
       return store.transaction(tx => {
         const existing = callRow(tx, call);
         if (existing) { if (existing.intent_json !== intentBytes(tx, call) || existing.execution_id !== call.executionId) throw Error('intent_collision'); return 'existing'; }
-        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call);
+        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call, tx);
         if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('intent_policy_denied');
-        tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state) VALUES (?,?,?,?,?,'intent')", [ownerId, call.runId, call.executionId, call.callId ?? null, intentBytes(tx, call)]);
+        let projection = projectDiagnosticInput(call.toolName,capture);
+        const declaration = 'connector' in bound.policy && typeof bound.policy.connector === 'string' ? connectorDescriptor(bound.policy.connector)?.declarations(bound.policy as ConnectionPolicy).find(item => item.name === call.toolName) : undefined;
+        const sourceAccess = diagnosticContentAccess(tx,call.runId,{ownerId,allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))});
+        if (sourceAccess.state !== 'allowed' || projection.sha256 !== call.argumentsHash || (declaration && !declaration.validate(capture))) projection = {json:null,sha256:call.argumentsHash,fidelity:'hash_only_unsupported_v1',keyCount:projection.keyCount};
+        tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state,input_json,input_sha256,input_fidelity,input_key_count) VALUES (?,?,?,?,?,'intent',?,?,?,?)", [ownerId, call.runId, call.executionId, call.callId ?? null, intentBytes(tx, call),projection.json,projection.sha256,projection.fidelity,projection.keyCount]);
         return 'fresh';
       });
     },
@@ -224,36 +290,54 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       });
     },
   };
+  const authorizedStoredResult = (tx: Transaction, snapshot: RunSnapshot, binding: RemoteResultLineage): { response: JsonObject; dataClasses: readonly DataClass[] } | undefined => {
+    const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, snapshot.acceptance.runId, binding.executionId]);
+    if (!row || row.state === 'intent' || row.state === 'unknown' || row.result_id !== binding.result.id || row.result_sha256 !== binding.result.sha256 || typeof row.result_json !== 'string' || sha256(row.result_json) !== binding.result.sha256) return undefined;
+    const call = storedCall(tx, row);
+    const accepted = snapshot.acceptance;
+    if (!hostMatches(accepted, call) || call.executionId !== binding.executionId || call.toolName !== binding.name || call.callId !== binding.callId || row.call_id !== (call.callId ?? null)) return undefined;
+    if (row.state !== 'refused' && call.toolName === RECEIVED_BODY.name) {
+      const page = pageForCall(call); if (!page || !bodyConsumers.has(call.runId)) return undefined;
+      try { originalCall(tx, call.runId, page.parent); } catch { return undefined; }
+    }
+    if (row.state !== 'refused') { const selected = target(snapshot, call, tx); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return undefined; }
+    const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean }; classSet(value.dataClasses);
+    const reference = retained.get(binding.result.id);
+    if (value.hostEvidenceRequired && (!reference || reference.runId !== call.runId || reference.executionId !== call.executionId || reference.resultSha256 !== binding.result.sha256 || !evidenceCurrent(tx, call, snapshot, reference.evidence))) return undefined;
+    if (reference?.evidence.kind === 'remote-page' && authorizedStoredResult(tx, snapshot, reference.evidence.parent)?.dataClasses.some(c => !value.dataClasses.includes(c))) return undefined;
+    if (call.toolName === HISTORY_IDENTITY.name && row.state === 'completed' && !value.hostEvidenceRequired) return undefined;
+    if (value.intentSha256 !== sha256(intentBytes(tx, call)) || value.routeIdentity !== accepted.route.identity) return undefined;
+    if (value.dataClasses.some(c => !accepted.allowedClasses.includes(c) || !accepted.route.allowedClasses.includes(c))) return undefined;
+    if (row.state === 'completed') {
+      const bound = target(snapshot, call, tx);
+      if (value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c)) || Buffer.byteLength(row.result_json) > bound.policy.bounds.maxResultBytes) return undefined;
+    }
+    return { response: detached(value.response), dataClasses: [...value.dataClasses] };
+  };
+  const authorizeDelivery: ToolsOwner['authorizeDelivery'] = (host, bindings, baseClasses, liveInput, signal) => {
+    pruneEvidence();
+    if (signal.aborted) return { state: 'refused', reason: 'cancelled' };
+    if (!liveInput) return { state: 'refused', reason: 'authority_denied' };
+    const live = detached(liveInput); const { acceptedRunHash, ...liveAcceptance } = live;
+    validateAcceptance(liveAcceptance); classSet(baseClasses);
+    // All persisted state is reread synchronously AFTER the awaited authoritative lookup.
+    return store.transaction(tx => {
+      const { snapshot, hash } = readRun(tx, host.runId); const accepted = snapshot.acceptance;
+      const denied = { state: 'refused' as const, reason: 'authority_policy_or_result_denied' };
+      if (live.ownerId !== ownerId || !hostMatches(accepted, host) || hash !== acceptedRunHash || canonicalJSON(liveAcceptance) !== canonicalJSON(accepted) || baseClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
+      const results: { binding: ToolResultBinding; response: JsonObject; dataClasses: readonly DataClass[] }[] = [];
+      for (const binding of bindings) {
+        const result = authorizedStoredResult(tx, snapshot, binding);
+        if (!result) return denied;
+        results.push({ binding: detached(binding), ...result });
+      }
+      return { state: 'allowed' as const, results };
+    });
+  };
   const resultGate: ToolResultGate = {
     async authorize(host, bindings, baseClasses, signal) {
       if (signal.aborted) return { state: 'refused', reason: 'cancelled' };
-      const liveInput = await lookupAuthority(host.runId, signal);
-      if (!liveInput || signal.aborted) return { state: 'refused', reason: 'authority_denied' };
-      const live = detached(liveInput); const { acceptedRunHash, ...liveAcceptance } = live;
-      validateAcceptance(liveAcceptance); classSet(baseClasses);
-      // All persisted state is reread synchronously AFTER the awaited authoritative lookup.
-      return store.transaction(tx => {
-        const { snapshot, hash } = readRun(tx, host.runId); const accepted = snapshot.acceptance;
-        const denied = { state: 'refused' as const, reason: 'authority_policy_or_result_denied' };
-        if (live.ownerId !== ownerId || !hostMatches(accepted, host) || hash !== acceptedRunHash || canonicalJSON(liveAcceptance) !== canonicalJSON(accepted) || baseClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
-        const results: { binding: ToolResultBinding; response: JsonObject; dataClasses: readonly DataClass[] }[] = [];
-        for (const binding of bindings) {
-          const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, host.runId, binding.executionId]);
-          if (!row || row.state === 'intent' || row.state === 'unknown' || row.result_id !== binding.result.id || row.result_sha256 !== binding.result.sha256 || typeof row.result_json !== 'string' || sha256(row.result_json) !== binding.result.sha256) return denied;
-          const call = storedCall(tx, row);
-          if (!hostMatches(accepted, call) || call.executionId !== binding.executionId || call.toolName !== binding.name || call.callId !== binding.callId || row.call_id !== (call.callId ?? null)) return denied;
-          if (row.state !== 'refused') { const selected = target(snapshot, call); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return denied; }
-          const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string }; classSet(value.dataClasses);
-          if (value.intentSha256 !== sha256(intentBytes(tx, call)) || value.routeIdentity !== accepted.route.identity) return denied;
-          if (value.dataClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
-          if (row.state === 'completed') {
-            const bound = target(snapshot, call);
-            if (value.dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c)) || Buffer.byteLength(row.result_json) > bound.policy.bounds.maxResultBytes) return denied;
-          }
-          results.push({ binding: detached(binding), response: detached(value.response), dataClasses: [...value.dataClasses] });
-        }
-        return { state: 'allowed' as const, results };
-      });
+      return authorizeDelivery(host, bindings, baseClasses, await lookupAuthority(host.runId, signal), signal);
     },
   };
   const apply = (input: ConnectionPolicy, expected: string | null | undefined): ConnectionApplyResult => {
@@ -279,8 +363,50 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return endpointBinding(endpoint) === endpointBinding(p.endpoint);
   };
 
+  const dispatch = createDispatchOwner({store,port,ownerId,
+    current(tx,scope) {
+      const snapshot = validateCallRun(tx,scope.call);
+      return sha256(canonicalJSON(snapshot)) === scope.snapshotSha256 && currentPolicies(tx,snapshot,scope.bound.connectionId) && currentProjection(snapshot,scope.bound.connectionId);
+    },
+    failure(reason,scope) {
+      if (!['context_absent','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent','reuse_context_absent'].includes(reason)) options.log?.({event:'tool_failure',code:'connector_error',tool:scope?.call.toolName ?? 'unattributed',connector:scope?.bound.policy.connector ?? 'unknown',errorClass:'Error',messageHead:'connector_error'});
+      hostLogEvent({event:'tool_diagnostic_capture',reason,runId:scope?.call.runId ?? null,executionId:scope?.call.executionId ?? null});
+    },
+  });
   const owner: ToolsOwner = {
-    journal, resultGate, complete,
+    journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
+    releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
+    releaseEvidence(runId, bindings) {
+      pruneEvidence();
+      if (bindings === undefined) {
+        const chat = store.transaction(tx => chatRun(tx, runId));
+        const successful = chat?.state === 'terminal' && chat.outcome === 'complete';
+        if (chat && !successful) historyReader.releaseConversation(String(chat.session_id));
+        historyReader.releaseRun(runId, successful);
+        const lease = bodyLeases.get(runId); if (lease) lease.closed = true; bodyLeases.delete(runId); bodyConsumers.delete(runId);
+      }
+      const releasedIds = bindings ? new Set(bindings.map(binding => binding.result.id)) : undefined;
+      for (const [cursor, page] of bodyPages) if (page.runId === runId && (!releasedIds || releasedIds.has(page.parent.result.id))) bodyPages.delete(cursor);
+      const selected = bindings ? new Set(bindings.map(binding => binding.result.id)) : undefined;
+      for (const [id, reference] of retained) if (reference.runId === runId && (!selected || selected.has(id))) {
+        if (reference.evidence.kind === 'local-history' && selected) {
+          const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND result_id=?', [ownerId, runId, id]));
+          if (typeof row?.result_json === 'string') {
+            const response = (JSON.parse(row.result_json) as ModelSnapshot).response;
+            const tokens = [response['nextCursor'], response['recordRef'], ...(Array.isArray(response['hits']) ? response['hits'].map(hit => hit && typeof hit === 'object' && !Array.isArray(hit) ? hit['recordRef'] : null) : [])].filter((value): value is string => typeof value === 'string');
+            historyReader.releaseReferences(tokens);
+          }
+        }
+        retained.delete(id);
+      }
+    },
+    consumeEvidence(host, binding, authority, signal) {
+      const authorized = authorizeDelivery(host, [binding], [], authority, signal);
+      if (authorized.state !== 'allowed') return authorized;
+      const reference = retained.get(binding.result.id);
+      if (!reference) return { state: 'refused', reason: 'evidence_unavailable' };
+      return { state: 'allowed', evidence: detached(reference.evidence) };
+    },
     applyConnection(input) { apply(input, undefined); },
     applyConnectionIntent(intent) {
       exact(intent, ['expectedPolicySha256', 'policy']);
@@ -354,7 +480,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: REMEMBER_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: REMEMBER_IDENTITY.accountId, resourceId: REMEMBER_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
             if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
             const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const response = rememberNote(tx, runId, args);
             return complete(call as ToolCallIntent, response, ['ordinary'], tx);
@@ -381,7 +507,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: openTool.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
             if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
             const snapshot = validateCallRun(tx, call);
-            assertLiveIdentity(tx, call); target(snapshot, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             return complete(call as ToolCallIntent, { code }, ['ordinary'], tx);
           });
@@ -391,13 +517,40 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       return definitions;
     },
     definitions(runId, tx?: Transaction) {
+      let lease = bodyLeases.get(runId);
+      if (!lease) { lease = { closed: false }; bodyLeases.set(runId, lease); }
+      const evidenceLease = lease;
       const snapshot = tx ? readRun(tx, runId).snapshot : store.transaction(current => readRun(current, runId).snapshot);
       const definitions: ToolDefinition[] = [];
+      if (options.grantMode === 'owner-trusted-reads') definitions.push({ ...HISTORY_IDENTITY, effect: 'read', parameters: HISTORY_PARAMETERS,
+        description: 'Search retained local conversations and notes, or read an exact returned record. Use query/date bounds for search, recordRef alone for detail, or cursor alone to continue. Coverage gaps are explicit.',
+        validate: validateHistory,
+        async execute(args, context) {
+          if (!validateHistory(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId,
+              toolName: HISTORY_IDENTITY.name, accountId: HISTORY_IDENTITY.accountId, resourceId: HISTORY_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)), ...(call.callId ? { callId: call.callId } : {}) };
+            exactIntent(tx, expected);
+            const accepted = validateCallRun(tx, call).acceptance;
+            const conversation = chatRun(tx, call.runId);
+            const read = historyReader.read(tx, { ownerId, runId: call.runId, ...(conversation ? { conversationId: String(conversation.session_id) } : {}), authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
+              routeIdentity: accepted.route.identity, allowedClasses: accepted.allowedClasses.filter(value => accepted.route.allowedClasses.includes(value)) }, args);
+            const response = redactSecretsWithCount(read.response).value;
+            return complete(call as ToolCallIntent, response, read.dataClasses, tx, { kind: 'local-history', ...read.evidence });
+          });
+          return { status: 'completed', result };
+        },
+      });
       for (const bound of snapshot.connections) {
         const p = bound.policy;
         const descriptor = connectorDescriptor(p.connector);
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', p.connectionId, p.connector);
-        const reader = descriptor.createReader({ port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
+        const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
         for (const name of p.toolNames) {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
@@ -433,12 +586,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, accountId: context.accountId, resourceId: context.resourceId, toolName: name, argumentsHash: sha256(JSON.stringify(args)), ...(committed.callId === undefined ? {} : { callId: committed.callId }) };
                 exactIntent(tx, expected); const accepted = validateCallRun(tx, expected);
                 if (!currentPolicies(tx, accepted, bound.connectionId) || !currentProjection(accepted, bound.connectionId)) return null;
-                if (target(accepted, expected).connectionId !== bound.connectionId) throw Error('executor_policy_denied');
+                if (target(accepted, expected, tx).connectionId !== bound.connectionId) throw Error('executor_policy_denied');
                 return expected;
               });
               if (!call) return { status: 'failed' };
               let evidence: Awaited<ReturnType<typeof reader.call>>;
-              try { evidence = await reader.call(name, callArgs, context.signal); } catch (error) {
+              try { evidence = await dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal)); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
@@ -465,8 +618,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);
+              const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
               let value: ModelSnapshot;
-              try { value = descriptor.project(evidence, port, p); } catch (error) {
+              try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
                 const code = error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
                   : error instanceof Error ? 'connector_error' : 'handler_outcome';
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
@@ -488,10 +642,72 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               if (prepared?.notice !== undefined && typeof value.response['text'] === 'string') {
                 value = { ...value, response: { ...value.response, text: `${value.response['text']} ${prepared.notice}` } };
               }
-              return { status: 'completed', result: complete(call, value.response, value.dataClasses) };
+              if (evidenceLease.closed) return { status: 'failed', code: 'cancelled' };
+              const hostEvidence = value[HOST_EVIDENCE];
+              if (hostEvidence?.kind === 'remote-body') {
+                const body = redactSecretsWithCount({ text: hostEvidence.body }).value.text as string;
+                return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, { ...hostEvidence, body, bodySha256: sha256(body) },sourceRefs) };
+              }
+              return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, hostEvidence,sourceRefs) };
             },
           });
         }
+      }
+      if (definitions.some(tool => RECEIVED_BODY_TOOLS.has(tool.name))) {
+        bodyConsumers.add(runId);
+        definitions.push({ ...RECEIVED_BODY, effect: 'read', parameters: RECEIVED_BODY_PARAMETERS,
+          description: 'Continue a received tool body locally using only bodyContinuation.cursor or nextCursor from this run. This makes no source request. Initial source text is a preview; full received-body coordinates start at zero. Coverage distinguishes local remaining bytes from unconfirmed source completeness. A repeated prepared cursor returns a receipt, not duplicate text.',
+          validate: args => {
+            pruneEvidence();
+            if (!receivedBodyArguments(args) || evidenceLease.closed) return false;
+            const page = bodyPages.get(args.cursor), original = page && retained.get(page.parent.result.id);
+            return page?.runId === runId && original?.evidence.kind === 'remote-body' && original.evidence.expiresAt > Date.now();
+          },
+          async execute(args, context) {
+            if (!receivedBodyArguments(args) || context.runId !== runId || context.signal.aborted) return { status: 'failed' };
+            const page = bodyPages.get(args.cursor);
+            if (!page || page.runId !== runId) return { status: 'failed' };
+            const parentBinding = { ...page.parent, contentIndex: 0, partIndex: 0 };
+            const gated = await resultGate.authorize({ ...context, grants: [] }, [parentBinding], [], context.signal);
+            if (gated.state !== 'allowed' || context.signal.aborted || evidenceLease.closed || bodyPages.get(args.cursor) !== page) return { status: 'failed' };
+            const reference = retained.get(page.parent.result.id);
+            if (reference?.evidence.kind !== 'remote-body') return { status: 'failed' };
+            const evidence = reference.evidence;
+            const call = store.transaction(tx => {
+              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, runId, context.executionId]);
+              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+              const committed = storedCall(tx, row);
+              const expected = { runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: RECEIVED_BODY.name, accountId: RECEIVED_BODY.accountId, resourceId: RECEIVED_BODY.resourceId, argumentsHash: sha256(JSON.stringify(args)), ...(committed.callId ? { callId: committed.callId } : {}) };
+              exactIntent(tx, expected); return expected;
+            });
+            const coverage = { rootCursor: page.rootCursor, offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted, stage: 'canonical-preparation' };
+            const response: JsonObject = { status: 'completed', cursor: args.cursor, bodyCoverage: coverage, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor),
+              ...(page.completed ? { alreadyPrepared: true, bodySlices: [] } : { bodySlices: [{ source: evidence.tool === 'gmail_read' ? 'mail' : evidence.tool === 'get_insight' ? 'knowledge' : 'mongoose', tool: evidence.tool, text: evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted }] }) };
+            const provenance = store.transaction(tx => {
+              const { snapshot, hash } = readRun(tx, runId);
+              if (!authorizedStoredResult(tx, snapshot, page.parent)) throw Error('body_parent_unavailable');
+              const parentCall = originalCall(tx, runId, page.parent);
+              const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, parentCall, tx).connectionId);
+              if (!bound) throw Error('body_parent_unavailable');
+              const row = exactIntent(tx, parentCall);
+              const value = JSON.parse(String(row.result_json)) as { sourceDispatchRefs?: unknown };
+              const ids = value.sourceDispatchRefs;
+              if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length)) throw Error('dispatch_reference_denied');
+              return { bound, hash, snapshot, refs: (ids as string[] | undefined)?.map(id => ({ id })) };
+            });
+            dispatch.run({ call, bound: provenance.bound, snapshotSha256: provenance.hash, allowedClasses: provenance.snapshot.acceptance.allowedClasses.filter(c => provenance.snapshot.acceptance.route.allowedClasses.includes(c)) }, () => provenance.refs?.forEach(ref => dispatch.reuse(ref)));
+            const result = complete(call, response, gated.results[0]!.dataClasses, undefined, { kind: 'remote-page', parent: page.parent }, provenance.refs);
+            if (!page.completed) {
+              page.completed = result;
+              if (page.nextCursor) {
+                const cursor = page.nextCursor;
+                const end = receivedBodyEnd(evidence.body, page.end, page.maxResultBytes);
+                bodyPages.set(cursor, { runId, maxResultBytes: page.maxResultBytes, rootCursor: page.rootCursor, parent: page.parent, offset: page.end, end, argumentsHash: sha256(JSON.stringify({ cursor })), ...(end < evidence.body.length ? { nextCursor: randomUUID() } : {}) });
+              }
+            }
+            return { status: 'completed', result };
+          },
+        });
       }
       return definitions;
       },

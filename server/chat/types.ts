@@ -76,6 +76,7 @@ export interface ChatConfig {
   ownerProfile?: OwnerProfileSnapshot;
   store: StorePort & { readonly assistantId: string }; domain: DomainPort; model: ModelPort | null;
   route: { provider: string; model: string; available: boolean; allows(classes: readonly DataClass[]): boolean;
+    credentialBinding?: import('../host/provider-binding.js').ProviderBindingIdentity;
     endpoint: string; apiVersion: string; keyReference: string; allowedClasses: readonly DataClass[] }; 
   preferences: ValidatedPreferences;
   classify(subject: ClassificationSubject, tx: Transaction): { ownerId: string; dataClass: DataClass; revision: number } | null;

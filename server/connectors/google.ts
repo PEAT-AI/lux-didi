@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
@@ -47,7 +48,7 @@ export interface GoogleConfig {
 }
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
-export interface GoogleEvidence {
+export interface GoogleEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: GoogleTool;
@@ -184,6 +185,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       state: result.state,
       tool,
       source: { ...result.source },
+      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       decodedResult: structuredClone(result.decodedResult),
@@ -311,6 +313,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     merged.sort((a, b) => startOf(a).localeCompare(startOf(b)));
     return {
       state: 'completed', tool: 'gcal_list',
+      [SOURCE_CHILD_DISPATCHES]: [listed,...out.filter((entry): entry is GoogleEvidence => entry !== undefined)].flatMap(entry => entry[SOURCE_DISPATCH] ? [entry[SOURCE_DISPATCH]!] : []),
       source: structuredClone(listed.source), observedAt: listed.observedAt, coverage: structuredClone(listed.coverage),
       decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: unread > 0 ? { events: merged, partial: { unread } } : { events: merged } }) }] },
       projection: structuredClone(listed.projection),
@@ -342,7 +345,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       const denied = gate('gmail_read');
       if (denied) return { state: 'refused', reason: denied };
       if (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 4096) return { state: 'refused', reason: 'invalid-message-id' };
-      const format = input.format ?? 'metadata';
+      const format = input.format ?? 'full';
       if (format !== 'metadata' && format !== 'full') return { state: 'refused', reason: 'invalid-format' };
       return dispatch('gmail_read', { id: input.id, format }, signal);
     },

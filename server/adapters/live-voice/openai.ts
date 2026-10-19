@@ -131,12 +131,22 @@ export function pcm16RmsDbfs(pcm: Uint8Array): number {
  *  underruns of session 82ab994a: a 400 ms cushion covers 162 of them (300 ms leaves 6). */
 const HEAD_START_MS = 400;
 const HEAD_START_BYTES = HEAD_START_MS * OUTPUT_PCM_BYTES_PER_MS;
-/** The production clock: the adapter's own windows go through it so a test can drive them without sleeping. */
+/** Epoch-anchored monotonic time keeps local windows independent of wall-clock adjustments. */
 const REAL_CLOCK: LiveVoiceClock = {
-  now: () => Date.now(),
+  now: () => Math.floor(performance.timeOrigin + performance.now()),
   setTimer: (ms, fire) => setTimeout(fire, ms),
   clearTimer: handle => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
 };
+function transcriptMetadata(message: ObjectValue): { providerEventId?: string; providerStartMs?: number; providerEndMs?: number } {
+  const validMs = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const start = message.start_ms, end = message.end_ms;
+  const interval = (!validMs(start) || !validMs(end) || end >= start);
+  return {
+    ...(typeof message.event_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/.test(message.event_id) ? { providerEventId: message.event_id } : {}),
+    ...(interval && validMs(start) ? { providerStartMs: start } : {}),
+    ...(interval && validMs(end) ? { providerEndMs: end } : {}),
+  };
+}
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024, upstreamStallMs: 400,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
@@ -426,6 +436,9 @@ class Session implements LiveVoiceSession {
   private flushed = false;
   private episodeQuiet: unknown;
   private yieldTimer: unknown;
+  private episodeToken = 0;
+  private episodeDeadline = 0;
+  private episodeClosed = false;
   /** What there was to cut when the episode's first word arrived, so a silent episode reports its own reason. */
   private episodeQueuedMs = 0;
   private readonly unknownFrames = new Map<string, number>();
@@ -720,7 +733,10 @@ class Session implements LiveVoiceSession {
     const gap = now - this.lastOutputDeltaAt;
     if (audible) this.lastOutputDeltaAt = now;
     // A delta during an open episode is the server still talking, so the yield is measured again from this frame.
-    if (audible && !this.flushed && this.inputEpisode.length) this.armYield();
+    if (audible && this.inputEpisode.length) {
+      if (now >= this.episodeDeadline) this.clearInputEpisode(true);
+      else if (!this.flushed) this.armYield();
+    }
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
     // Contract invariant: no permanent frame dropping. Output audio of an open session is forwarded, and an input
@@ -825,7 +841,7 @@ class Session implements LiveVoiceSession {
     this.userTranscriptOpen = true;
     this.diagnostic.inputTranscriptionEvents += 1;
     this.diagnostic.inputTranscriptionCharacters += message.delta.length;
-    this.emit({ type: 'inputTranscription', text: message.delta, finished: false });
+    this.emit({ type: 'inputTranscription', text: message.delta, finished: false, ...transcriptMetadata(message) });
     this.touch();
   }
 
@@ -835,23 +851,35 @@ class Session implements LiveVoiceSession {
    * is what makes a split delta of one word still count as one word.
    */
   private noteInput(delta: string): void {
+    const now = this.clock.now();
+    if (this.inputEpisode.length && now >= this.episodeDeadline) this.clearInputEpisode(true);
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
-    this.episodeQuiet = this.clock.setTimer(INPUT_EPISODE_QUIET_MS, () => this.endInputEpisode());
     if (!this.inputEpisode.length) {
-      // The episode's first word: record what audio it has to cut, so an episode that flushes nothing can say why.
-      const now = this.clock.now();
+      this.episodeToken += 1;
       this.episodeQueuedMs = Math.round(Math.max(0, this.playbackUntil - now) + this.heldAudibleBytes / OUTPUT_PCM_BYTES_PER_MS);
     }
+    this.episodeClosed = false;
+    this.episodeDeadline = now + INPUT_EPISODE_QUIET_MS;
+    const token = this.episodeToken, epoch = this.socket;
+    this.episodeQuiet = this.clock.setTimer(INPUT_EPISODE_QUIET_MS, () => {
+      if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
+      this.endInputEpisode();
+    });
     this.inputEpisode += delta;
-    // N1: one word is enough to be worth cutting, but the server decides. The flush is due a gap after the newest
-    // of this word and the last output delta, and every delta that arrives first pushes it out again.
-    if (!this.flushed && this.yieldTimer === undefined) this.armYield();
+    if (!this.flushed) this.armYield();
   }
 
-  /** Arm the yield test for the open episode, replacing any pending one: it fires SERVER_YIELD_GAP_MS from now. */
   private armYield(): void {
+    if (this.episodeClosed || this.clock.now() >= this.episodeDeadline) return;
     if (this.yieldTimer !== undefined) this.clock.clearTimer(this.yieldTimer);
-    this.yieldTimer = this.clock.setTimer(SERVER_YIELD_GAP_MS, () => { this.yieldTimer = undefined; this.yieldCheck(); });
+    const token = this.episodeToken, epoch = this.socket, generation = this.generation;
+    const timer = this.clock.setTimer(SERVER_YIELD_GAP_MS, () => {
+      if (this.terminal || this.yieldTimer !== timer || token !== this.episodeToken || epoch !== this.socket || generation !== this.generation) return;
+      this.yieldTimer = undefined;
+      if (this.clock.now() <= this.episodeDeadline + SERVER_YIELD_GAP_MS) this.yieldCheck();
+      if (this.clock.now() >= this.episodeDeadline) this.clearInputEpisode(true);
+    });
+    this.yieldTimer = timer;
   }
 
   private yieldCheck(): void {
@@ -891,16 +919,21 @@ class Session implements LiveVoiceSession {
 
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
+    this.episodeClosed = true;
+    if (this.yieldTimer === undefined) this.clearInputEpisode(true);
+  }
+
+  private clearInputEpisode(finalize: boolean): void {
+    this.episodeToken += 1;
+    if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
     if (this.yieldTimer !== undefined) { this.clock.clearTimer(this.yieldTimer); this.yieldTimer = undefined; }
-    if (!this.flushed && this.inputEpisode.length) {
-      // Once per episode: the owner's words cut nothing, because the server talked over them or because there was
-      // no audio left to cut.
+    if (finalize && !this.flushed && this.inputEpisode.length) {
       hostLogEvent({ event: 'gptlive_no_flush', reason: this.episodeQueuedMs > 0 ? 'server_continued' : 'queue_empty', words: countWords(this.inputEpisode) });
     }
     this.inputEpisode = '';
+    this.episodeClosed = false;
     this.flushed = false;
-    this.reportPostFlush();
-    this.ownerTurnEnded();
+    if (finalize) { this.reportPostFlush(); this.ownerTurnEnded(); }
   }
 
   /**
@@ -976,7 +1009,7 @@ class Session implements LiveVoiceSession {
     // The semantic end of the turn subsumes the audible-silence receipt: no listening flip after the completion.
     this.silenceSent = true;
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
+    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
     hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true });
     hostLogEvent({ event: 'playback_rearm', count: this.playbackRearms });
@@ -989,7 +1022,7 @@ class Session implements LiveVoiceSession {
     // Transcripts are never dropped: the host journals what was actually spoken.
     if (message.delta.length) {
       this.outputTranscriptOpen = true;
-      this.emit({ type: 'outputTranscription', text: message.delta, finished: false });
+      this.emit({ type: 'outputTranscription', text: message.delta, finished: false, ...transcriptMetadata(message) });
     }
     this.touch();
   }
@@ -1009,7 +1042,8 @@ class Session implements LiveVoiceSession {
         this.receipt('response.created', { responseKey: this.responseKeyOf(responseId) }, {
           createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
         });
-        this.endTurnTranscripts();
+        this.clearInputEpisode(false);
+        this.endTurnTranscripts('app_model_start');
         this.delegatedOutstanding = true;
         this.generation += 1;
         // 3r D10: the completion account belongs to the response that is answering now, so the audible line of the
@@ -1080,17 +1114,17 @@ class Session implements LiveVoiceSession {
       });
     }
     if (message) this.responseDone(message);
-    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
+    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
     // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
     this.settleTurn();
     this.writeAnswered();
     this.resumeContinuation();
   }
 
-  private endTurnTranscripts(): void {
+  private endTurnTranscripts(finalOrigin: 'app_quiet' | 'app_model_start' = 'app_quiet'): void {
     if (!this.userTranscriptOpen) return;
     this.userTranscriptOpen = false;
-    this.emit({ type: 'inputTranscription', text: '', finished: true });
+    this.emit({ type: 'inputTranscription', text: '', finished: true, finalOrigin });
   }
 
   /** A delegated function call: `{call_id, name, arguments}` on the nested output item. */
@@ -1260,6 +1294,7 @@ class Session implements LiveVoiceSession {
       return;
     }
     if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(`${type} ${errorCode}`)) && this.generation !== this.muted) {
+      this.clearInputEpisode(false);
       this.generation += 1;
       this.muted = this.generation;
       // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
@@ -1637,8 +1672,7 @@ class Session implements LiveVoiceSession {
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
-    if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
-    if (this.yieldTimer !== undefined) { this.clock.clearTimer(this.yieldTimer); this.yieldTimer = undefined; }
+    this.clearInputEpisode(false);
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
     // 3r B: a closed session retires its calls and delegations, so a late answer reaches no new one.
     this.retireCalls();

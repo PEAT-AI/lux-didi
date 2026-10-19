@@ -1,9 +1,12 @@
+import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
+import type { HistorySourceRef } from '../domain/history-reader.js';
+import type { ResultScope } from '../adapters/mcp/port.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
-import type { DataClass, JsonObject, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolResultBinding, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 
 export interface HttpConnectionEndpoint { id: string; url: string; account: string; resource: string; credentialRef: string | null }
 /** Explicit operator-approved local executable binding; credentialRef is strictly null. */
@@ -31,7 +34,12 @@ export interface BoundConnection { connectionId: string; generation: number; sha
 export interface RunSnapshot { acceptance: RunAcceptance; connections: BoundConnection[] }
 /** Separate trusted metadata boundary, not parsed from reader markdown or arbitrary MCP fields. */
 export interface TrustedRestrictions { localOnly: boolean; nonDisclosure: boolean; dataClasses: readonly DataClass[] }
-export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[] }
+export const HOST_EVIDENCE: unique symbol = Symbol('host-evidence');
+export type HostEvidenceRef = { kind: 'remote-page'; parent: RemoteResultLineage } | { kind: 'local-history'; sources: HistorySourceRef[] }
+  | { kind: 'remote-body'; source: ResultScope; entitySha256: string; bodySha256: string; expiresAt: number; tool: string; body: string;
+      upstreamComplete: boolean | 'unknown'; upstreamOmitted: boolean | 'unknown' };
+export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; [HOST_EVIDENCE]?: HostEvidenceRef }
+export type EvidenceConsumption = { state: 'allowed'; evidence: HostEvidenceRef } | { state: 'refused'; reason: string };
 export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
@@ -48,7 +56,13 @@ export interface ConnectionIntent { expectedPolicySha256: string | null; policy:
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }
 export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused' | 'unavailable'; reason: string };
 export interface ToolsOwner {
+  readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;
+  /** Trusted synchronous publication boundary; uses the same canonical checks as resultGate. */
+  authorizeDelivery(host: HostContext, bindings: readonly ToolResultBinding[], baseClasses: readonly DataClass[], authority: LiveAuthority | null, signal: AbortSignal): Awaited<ReturnType<ToolResultGate['authorize']>>;
+  releaseHistoryConversation(conversationId?: string): void;
+  releaseEvidence(runId: string, bindings?: readonly ToolResultBinding[]): void;
+  consumeEvidence(host: HostContext, binding: ToolResultBinding, authority: LiveAuthority | null, signal: AbortSignal): EvidenceConsumption;
   applyConnection(policy: ConnectionPolicy): void;
   applyConnectionIntent(intent: ConnectionIntent): ConnectionApplyResult;
   restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;

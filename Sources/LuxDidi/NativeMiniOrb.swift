@@ -23,6 +23,7 @@ struct MiniSurfaceFacts: Equatable {
 enum MiniPresentOutcome: Equatable {
     case shown(MiniSurfaceFacts)
     case failed(String)
+    case deferred
 }
 
 /// Q4-R1: the mini page's service origin. The host connection publishes the descriptor when
@@ -47,7 +48,7 @@ final class MiniOrbToggle {
     private let liveIsRunning: @MainActor () -> Bool
     private let presentPanel: @MainActor (SurfaceTrigger) -> MiniPresentOutcome
     private let dismissPanel: @MainActor () -> Void
-    private let expandToWindow: @MainActor () -> Void
+    private let requestFullWindow: @MainActor () -> Void
     private let present: @MainActor (PresencePosture) -> Void
     private let receipt: @MainActor ([String: Any]) -> Void
     private(set) var isVisible = false
@@ -55,22 +56,22 @@ final class MiniOrbToggle {
     init(startLive: @escaping @MainActor () -> Void, stopLive: @escaping @MainActor () -> Void,
          liveIsRunning: @escaping @MainActor () -> Bool,
          presentPanel: @escaping @MainActor (SurfaceTrigger) -> MiniPresentOutcome,
-         dismissPanel: @escaping @MainActor () -> Void, expandToWindow: @escaping @MainActor () -> Void,
+         dismissPanel: @escaping @MainActor () -> Void, requestFullWindow: @escaping @MainActor () -> Void,
          present: @escaping @MainActor (PresencePosture) -> Void = { _ in },
          receipt: @escaping @MainActor ([String: Any]) -> Void = { _ in }) {
         self.startLive = startLive; self.stopLive = stopLive; self.liveIsRunning = liveIsRunning
-        self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.expandToWindow = expandToWindow
+        self.presentPanel = presentPanel; self.dismissPanel = dismissPanel; self.requestFullWindow = requestFullWindow
         self.present = present; self.receipt = receipt
     }
 
-    /// Presence is the owner of the orb window (council 2026-10-17, option C): the
-    /// orb is there at app start and in every state, grey while Naya is silent, and
-    /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
+    /// Presence updates visual posture; the presentation coordinator owns visibility.
     func applyPresence(_ posture: PresencePosture) {
         present(posture)
     }
 
     func toggle() { isVisible ? hide() : show() }
+
+    func presentationCommitted(visible: Bool) { isVisible = visible }
 
     /// The chord: show the orb and start Live when it is not already running. The chord, an
     /// orb press and Start are the only starts; the menu item only moves the surface (Q4-R2).
@@ -107,14 +108,11 @@ final class MiniOrbToggle {
         receipt(["event": "mini_hidden", "caller": caller])
     }
 
-    /// A click on the orb: expand the full window and keep Live running.
-    func expand() {
+    func openFullInterface() {
         guard isVisible else { return }
-        isVisible = false
-        dismissPanel()
-        receipt(["event": "mini_hidden", "caller": "expand"])
-        expandToWindow()
+        requestFullWindow()
     }
+
 }
 
 /// Q4-R2: the status menu's "Show mini orb" item. Its action is presentation only, so pressing the
@@ -138,54 +136,24 @@ final class MiniOrbMenuCommand: NSObject {
     @objc func press() { show(.menu) }
 }
 
-/// Pill position, remembered like `WindowFrameRestore` but at the pill's fixed
-/// 64x26 and without the 980x760 window minimum, so a compact frame is never
-/// rejected. A frame that is still partly on a screen is clamped into that
-/// screen rather than discarded, so unplugging a display never throws the pill
-/// away. The `screens` are visible frames (`NSScreen.visibleFrame`), so the pill
-/// never lands under the menu bar, and on a notched display, where the menu bar
-/// covers the notch and its `safeAreaInsets.top`, never inside the camera
-/// housing either.
-/// What the presence surface looks like in one state, as plain values so the
-/// mapping is proven without AppKit. M3 owns the visuals themselves; these are the
-/// two facts the native window owns: whether it is there, and how transparent.
+/// Native presentation stays opaque; canvas and glow own state opacity.
 struct PresenceSurfaceState: Equatable {
-    /// Q4-R3: the calm state's floor. At 0.35 the pill read as nothing on a bright screen, so
-    /// a silent orb is dim but never invisible.
-    static let minimumIdleOpacity: CGFloat = 0.6
-    /// Present but not inviting while the session is only hot-muted.
-    static let hotMutedOpacity: CGFloat = 0.55
-    static let liveOpacity: CGFloat = 1
-
     let visible: Bool
     let opacity: CGFloat
-    /// The notch pill is the privacy indicator: live capture only.
     let pill: Bool
-    /// A failed session left the orb in error until the next tap. M3 owns how it looks.
     let error: Bool
 
     static func shown(_ posture: PresencePosture) -> PresenceSurfaceState {
-        let opacity: CGFloat
-        switch posture.state {
-        case .cold, .connecting: opacity = minimumIdleOpacity
-        case .live: opacity = liveOpacity
-        case .hotMuted: opacity = hotMutedOpacity
-        }
-        return PresenceSurfaceState(visible: posture.alwaysShow, opacity: opacity,
+        PresenceSurfaceState(visible: posture.alwaysShow, opacity: 1,
             pill: posture.state == .live, error: posture.failed)
     }
 }
 
 enum MiniOrbFrameRestore {
-    /// MINI2: the pill is 64x26 pt and its corner radius is half its height.
-    static let size = CGSize(width: 64, height: 26)
+    /// The canonical floating orb keeps a 220-point transparent surface.
+    static let size = CGSize(width: 220, height: 220)
     /// The gap between the menu bar and the top of the pill.
     static let topMargin: CGFloat = 6
-    /// Q4-R3: the band below the top edge a first show after an install accepts. A saved frame
-    /// further down is a pre-Q4 remnant (in call e283ef09 the pill sat ~270 pt below the slot),
-    /// so the first show puts it back in the default slot.
-    static let firstShowTopBand: CGFloat = 120
-
     /// The default: top-center, just below the menu bar.
     static func defaultFrame(in visible: CGRect) -> CGRect {
         let width = min(size.width, visible.width), height = min(size.height, visible.height)
@@ -194,24 +162,16 @@ enum MiniOrbFrameRestore {
     }
 
     /// A remembered position wins over the default one; a remembered size never
-    /// does, because the pill is fixed and an older, larger saved frame must not
-    /// reinflate it. The first show after an install keeps a saved frame only while it is on
-    /// a screen and inside the top band (Q4-R3); after that the saved frame is the owner's.
-    static func resolve(_ saved: CGRect?, screens: [CGRect], firstShowAfterInstall: Bool = false) -> CGRect {
+    /// does, because the floating orb has one size. Preserve the saved origin and
+    /// clamp its new rectangle into a visible screen.
+    static func resolve(_ saved: CGRect?, screens: [CGRect]) -> CGRect {
         let fallback = CGRect(x: 0, y: 0, width: 1440, height: 900)
         let primary = screens.first ?? fallback
         guard let saved, saved.width > 0, saved.height > 0 else { return defaultFrame(in: primary) }
-        if firstShowAfterInstall, isStranded(saved, screens: screens) { return defaultFrame(in: primary) }
         let screen = screens.first(where: { $0.contains(CGPoint(x: saved.midX, y: saved.midY)) })
             ?? screens.first(where: { $0.intersects(saved) }) ?? primary
         let width = min(size.width, screen.width), height = min(size.height, screen.height)
         return clamp(CGRect(x: saved.minX, y: saved.minY, width: width, height: height), into: screen)
-    }
-    /// Q4-R3: a saved frame is stranded when it sits on no screen, or further from the top edge
-    /// of the screen it sits on than the top band. Neither is the pill the owner left.
-    static func isStranded(_ saved: CGRect, screens: [CGRect]) -> Bool {
-        guard let screen = screens.first(where: { $0.contains(CGPoint(x: saved.midX, y: saved.midY)) }) else { return true }
-        return screen.maxY - saved.maxY > firstShowTopBand
     }
     /// Shifts a rect inside `screen` without resizing it: the orb never lands
     /// under the menu bar, off an edge, or outside every Space it can join.
@@ -231,8 +191,6 @@ enum MiniOrbPanelPolicy {
     static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     static let becomesKey = false
     static let becomesMain = false
-    /// The capsule radius is half the pill height, so the ends are round.
-    static var cornerRadius: CGFloat { MiniOrbFrameRestore.size.height / 2 }
 }
 
 /// M3-R2: one press on the orb, three steps. The orb click and the Right Command tap
@@ -251,12 +209,14 @@ enum PresenceStep: String, Equatable {
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
+    var onVisibilityChanged: (() -> Void)?
     private let frameKey: String
     private let overlay: MiniOrbHitView
 
     private let onStep: @MainActor (PresenceStep) -> Void
 
-    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onStep: @escaping @MainActor (PresenceStep) -> Void) {
+    init(web: WKWebView, frameKey: String = "DidiMiniOrbFrame", onStep: @escaping @MainActor (PresenceStep) -> Void,
+         onExpand: @escaping @MainActor () -> Void = {}) {
         self.webView = web; self.frameKey = frameKey; self.overlay = MiniOrbHitView(); self.onStep = onStep
         super.init(contentRect: NSRect(origin: .zero, size: MiniOrbFrameRestore.size),
                    styleMask: MiniOrbPanelPolicy.styleMask, backing: .buffered, defer: false)
@@ -266,13 +226,16 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         isMovableByWindowBackground = true
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false
         hidesOnDeactivate = false
         overlay.onClick = { [weak self] in self?.press() }
+        overlay.onExpand = onExpand
+        let contextMenu = NSMenu()
+        contextMenu.addItem(overlay.fullInterfaceItem())
+        overlay.menu = contextMenu
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.cornerRadius = MiniOrbPanelPolicy.cornerRadius
-        container.layer?.masksToBounds = true
+        container.layer?.masksToBounds = false
         for view in [web, overlay] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
@@ -299,12 +262,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     private func restoreFrame() {
         let defaults = UserDefaults.standard
         let saved = defaults.string(forKey: frameKey).map(NSRectFromString)
-        // Q4-R3: the first show after an install puts a stranded frame back in the top-centre
-        // slot. From then on the saved frame is the owner's choice and is kept.
-        let firstShow = !defaults.bool(forKey: frameKey + ".placed")
-        setFrame(MiniOrbFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame),
-                                             firstShowAfterInstall: firstShow), display: false)
-        if firstShow { defaults.set(true, forKey: frameKey + ".placed") }
+        setFrame(MiniOrbFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
     }
     /// A display that appears, sleeps or disappears re-clamps the remembered
     /// frame, so the orb is never stranded on a screen that is gone.
@@ -313,6 +271,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
     @objc private func screenParametersChanged() { restoreFrame(); rememberFrame() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { onVisibilityChanged?() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
     /// Ask the page which of the three steps this press means. A page that is not ready
@@ -336,6 +295,15 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
 @MainActor
 final class MiniOrbHitView: NSView {
     var onClick: (@MainActor () -> Void)?
+    var onExpand: (@MainActor () -> Void)?
+
+    func fullInterfaceItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Open full interface", action: #selector(openFullInterface), keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func openFullInterface() { onExpand?() }
 
     /// M3-R2: first mouse. The pill is a non-activating panel, so its first click
     /// must reach the orb without activating the app or its window.

@@ -183,3 +183,11 @@ explicit provider cancellation path is unchanged.
 ### Live remember finalization
 
 `remember_note` persists only the owner's verbatim transcription, never model output or a model paraphrase. An explicit provider input transcription `finished: true` finalizes the owner turn immediately. When that flag is absent, the provider's tool call or first model output establishes a model-turn boundary; the owner finalizes the latest input journal row only after 300 ms without a newer input transcription. A newer input frame invalidates that boundary and requires a new one. An admitted remember tool waits at most 1500 ms for finalization, journaling exactly one typed `remember_deferred` row with `waitedMs` for the wait. If no finalization occurs within that bound, the existing `owner_transcript_not_final` refusal remains. The 300 ms default is a quiet-window safeguard, not permission to derive text from model words.
+
+## Transcript provenance
+
+The canonical `live_journal` retains original provider text fragments without word edits or text-based deduplication. New rows record connection epoch, observed optional provider event id and approximate start/end milliseconds, host receipt wall time (`arrived_at`), host monotonic receipt time and process clock domain. Missing or invalid optional provider fields remain null. Historical rows are not backfilled. The persisted provider grant determines append versus word-joining semantics.
+
+`finished` groups display text; `final_origin` distinguishes provider, app quiet, app model start, app response end, typed input and unknown provenance. Finalization has its own wall/monotonic observation when applied later. GPT Live does not provide an authoritative conversational transcript-done event or exact per-word timing. These columns establish provenance, not ASR accuracy or proof of playback.
+
+Run `node server/test/journal-provenance.integration.mjs` after compiling server for the actual adapter/Store replay, including missing metadata, invalid intervals and legitimate repeated same-id fragments.

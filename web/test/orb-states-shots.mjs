@@ -104,11 +104,9 @@ try {
       const pill = document.querySelector('.mini-pill');
       const stage = document.querySelector('.mini-stage');
       const canvas = stage.querySelector('canvas');
-      const level = document.querySelector('.mini-level');
       pill.style.cssText = big ? 'width:300px;height:300px;min-height:300px;padding:0;gap:0;border:none;background:transparent;overflow:visible;justify-content:center' : '';
       stage.style.cssText = big ? 'flex:0 0 300px;width:300px;height:300px;min-height:300px;border-radius:150px' : '';
       canvas.style.cssText = big ? 'width:300px;height:300px' : '';
-      level.style.cssText = big ? 'display:none' : '';
     }, on);
     await page.waitForTimeout(180);   // the ResizeObserver has to redraw at the new size
   };
@@ -119,7 +117,7 @@ try {
     // A 300 px orb frame that is an empty box is the defect R5 reported, so the floor is
     // a drawn orb rather than a blank window.
     assert.ok(size.bytes > (pill ? 200 : 5000), `${path} is a real render (${size.bytes} bytes)`);
-    assert.deepEqual({ width: size.width, height: size.height }, pill ? { width: 64, height: 26 } : { width: 300, height: 300 },
+    assert.deepEqual({ width: size.width, height: size.height }, pill ? { width: 220, height: 220 } : { width: 300, height: 300 },
       `${path} is ${pill ? 'the pill' : 'the 300x300 orb'}`);
     written.push(`${name}=${size.width}x${size.height}/${size.bytes}B`);
   };

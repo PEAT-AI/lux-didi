@@ -22,7 +22,8 @@ import WebKit
     @Published var captureStatus: CaptureStatus = .idle
     @Published var notificationStatus: NotificationCapability = .unknown
     @Published var hotkeyStatus = "Registering…"
-    @Published var shell: CompanionWeb?
+    var onShellChanged: (() -> Void)?
+    @Published var shell: CompanionWeb? { didSet { onShellChanged?() } }
     @Published private(set) var liveLimits: NativeLiveLimits?
     @Published private(set) var connections: [NativeLiveConnection] = []
     @Published private(set) var connectionsError: String?
@@ -297,7 +298,7 @@ import WebKit
                     await self.live?.stop()
                     self.live = nil
                 }, start: {
-                    self.startLive(pickupJobID: selected)
+                    self.onPresenceStart?(selected)
                 })
                 if !pickedUp {
                     self.error = "This callback is no longer pending. Your current conversation was not changed."
@@ -311,8 +312,9 @@ import WebKit
             }
         }
     }
-    func startLive(pickupJobID: String? = nil) {
-        guard let client else { error = "Connect the local service before starting Live voice."; return }
+    @discardableResult
+    func startLive(pickupJobID: String? = nil) -> Bool {
+        guard let client else { error = "Connect the local service before starting Live voice."; return false }
         stopTrigger.clear()
         if live?.isCapturing == false { liveAuthorityOwner.clear() }
         micModeReceiptAtLiveStart()
@@ -324,6 +326,7 @@ import WebKit
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
         orbLevels?.start()
+        return true
     }
     /// D12-5: the Stop receipt names what pressed it. A stop the app makes itself stays `other`.
     /// The status menu's item travels through the web state machine and comes back as a bridge
@@ -392,6 +395,12 @@ import WebKit
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
     }
 
+    var shortcutGrantVersion: String {
+        guard let resources = Bundle.main.resourceURL,
+              let runtime = try? InstalledRuntime.load(resources: resources) else { return appVersion }
+        return runtime.releaseCommit
+    }
+
     /// The receipt's one hop to the host, so host.log says what the Mac's Mic Mode was. Names only, best
     /// effort: a diagnostic never changes what the owner hears.
     private func forwardMicModeReceipt(_ reading: MicModeReading) {
@@ -435,14 +444,24 @@ import WebKit
     /// Council 2026-10-17: the app's mic control asks the presence machine, so the
     /// button, Right Command and the orb click can never disagree.
     var onPresenceMute: ((Bool) -> Void)?
+    var onPresenceStart: ((String?) -> Void)?
+    var onPresenceStop: (() -> Void)?
+
+    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void) {
+        onPresenceStart = start
+        onPresenceStop = { [weak presence] in presence?.stop(.app) }
+        onPresenceMute = { [weak presence] muted in
+            if muted { presence?.mute(.app) } else { presence?.unmute(.app) }
+        }
+    }
 
     func handleBridgeCommand(_ message: BridgeInbound) {
         switch message {
         case .mini: onMiniMode?()
-        case .start: startLive()
-        case .stop: stopLive(trigger: .button)
-        case .mute: if live?.isMuted == false { onPresenceMute?(true) }
-        case .unmute: if live?.isMuted == true { onPresenceMute?(false) }
+        case .start: onPresenceStart?(nil)
+        case .stop: onPresenceStop?()
+        case .mute: onPresenceMute?(true)
+        case .unmute: onPresenceMute?(false)
         case .openExternal(let url): shell?.openExternal(url)
         case .showMicrophoneModes: SystemMicMode.showPicker()
         case .ready, .consentGranted, .theme, .unknown: break
@@ -515,9 +534,9 @@ struct RootView: View {
     let liveShortcuts = NativeShortcuts()
     private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
         isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
-        start: { [weak self] in self?.model.startLive() },
+        start: { [weak self] in self?.startPresence() },
         mute: { [weak self] in self?.presence.mute(.app) },
-        stop: { [weak self] in self?.model.stopLive(trigger: .hotkey) })
+        stop: { [weak self] in self?.model.stopTrigger.arm(.hotkey); self?.presence.stop(.hotkey) })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
     /// Q4-R2: the status menu's "Show mini orb" is presentation only.
@@ -525,13 +544,16 @@ struct RootView: View {
     private var miniShell: CompanionWeb?
     private var miniPanel: MiniOrbPanel?
     private var miniCookie: HTTPCookie?
+    private lazy var miniPageObservation = CompanionPageObservation(current: { [weak self] in self?.miniShell },
+        changed: { [weak self] _ in self?.syncPresentedSurface() })
+    private var presentationTask: Task<Void, Never>?
     private lazy var miniOrb = MiniOrbToggle(
-        startLive: { [weak self] in self?.model.startLive() },
-        stopLive: { [weak self] in self?.model.stopLive(trigger: .button) },
+        startLive: { [weak self] in self?.startPresence() },
+        stopLive: { [weak self] in self?.stopPresence() },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
         presentPanel: { [weak self] trigger in self?.presentMiniThroughCoordinator(trigger: trigger) ?? .failed("no_app") },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
-        expandToWindow: { [weak self] in self?.expandThroughCoordinator() },
+        requestFullWindow: { [weak self] in self?.expandThroughCoordinator() },
         present: { [weak self] posture in self?.applyPresenceSurface(PresenceSurfaceState.shown(posture)) },
         receipt: { [weak self] record in self?.model.recordSurfaceReceipt(record) })
     /// Council 2026-10-17 (option C, `council-presence-1017.md`): one state machine
@@ -539,7 +561,7 @@ struct RootView: View {
     /// coordinator's mute fence, the device's playback cancel and the provider's
     /// input mute are effects of the same transitions.
     private lazy var presence = NativePresence(effects: PresenceEffects(
-        openSession: { [weak self] in self?.model.startLive() },
+        openSession: { [weak self] in self?.openPresenceSession() },
         cancelConnecting: { [weak self] in self?.model.stopLive(trigger: .button) },
         closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
@@ -547,6 +569,7 @@ struct RootView: View {
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
         prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
+    private var presencePickupJobID: String?
     private var presenceGraceTimer: Timer?
     private var presenceMenuItem: NSMenuItem?
     /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
@@ -554,10 +577,15 @@ struct RootView: View {
     /// `pushSingleKeyState` writes as `window.didiSingleKey`.
     private lazy var singleKey = SingleKeyTrigger()
     private var singleKeyMenuItem: NSMenuItem?
-    private var pageReadyObservation: AnyCancellable?
-    /// MINI2 review B5: the pill's level meter follows the microphone. The level
-    /// is read from the live device, never written to it.
-    private var pillLevelObservation: AnyCancellable?
+    private lazy var fullPageObservation = CompanionPageObservation(current: { [weak self] in self?.model.shell },
+        changed: { [weak self] shell in
+            guard let self else { return }
+            if shell.state == .ready {
+                pushSingleKeyState()
+                presence.setSurfaces()
+            }
+            syncPresentedSurface()
+        })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -594,7 +622,10 @@ struct RootView: View {
         showMini: { [weak self] _ in self?.presentMiniPanel() ?? .failed("no_app") },
         hideMini: { [weak self] caller in self?.miniOrb.hideSurface(caller: caller) },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
-        log: { [weak self] record in self?.model.recordSurfaceReceipt(record) })
+        log: { [weak self] record in self?.model.recordSurfaceReceipt(record) },
+        prepare: { [weak self] target, generation in self?.preparePresentation(target, generation: generation) },
+        didCommit: { [weak self] _, _ in self?.syncPresentedSurface() },
+        requestChanged: { [weak self] in self?.cancelPresentationPreparation() })
     func applicationDidFinishLaunching(_ notification: Notification) {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
@@ -633,10 +664,8 @@ struct RootView: View {
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
         model.startMicModeWatching()
-           model.onMiniMode = { [weak self] in self?.showMiniOrb() }
-           model.onPresenceMute = { [weak self] muted in
-               if muted { self?.presence.mute(.app) } else { self?.presence.unmute(.app) }
-           }
+        model.onMiniMode = { [weak self] in self?.showMiniOrb() }
+        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
@@ -685,39 +714,24 @@ struct RootView: View {
         // is asked for once per app version (#3p: an ad-hoc install can lose it), on an
         // interactive launch only, and the chord works whether or not the key does.
         // Every launch then leaves a receipt, so a key that never fires is visible.
-        bindRightCommandKey(singleKey, to: presence)
+        bindRightCommandKey(singleKey, to: presence, present: { [weak self] in self?.presentShortcutMini() })
         singleKey.presenceState = { [weak presence] in presence?.state ?? .cold }
         singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
-        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.appVersion)
+        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
         let tapCreated = singleKey.start()
         model.appendPresenceReceipt(SingleKeyTrigger.stateReceipt(
             enabled: SingleKeyTrigger.isEnabled, trusted: SingleKeyTrigger.isGranted,
             tapCreated: tapCreated, signing: SingleKeyTrigger.signing))
-        pageReadyObservation = model.$shell
-            .compactMap { $0 }
-            .flatMap { shell in shell.$state.map { state in (shell: shell, state: state) } }
-            .sink { [weak self] pair in
-                guard pair.state == .ready, self?.model.shell === pair.shell else { return }
-                self?.pushSingleKeyState()
-                // Q4-R1: the launch asked for the surfaces before the host connection existed, so
-                // the mini page had no descriptor to host. The page-ready edge asks again.
-                self?.presence.setSurfaces()
-            }
+        model.onShellChanged = { [weak self] in
+            guard let self else { return }
+            fullPageObservation.bind(model.shell)
+            if model.shell == nil { syncPresentedSurface() }
+        }
+        fullPageObservation.bind(model.shell)
         menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Toggle Naya ⌃ ⌥ ⇧ Space: " + liveShortcuts.windowStatus, action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "Naya pill ⌃ ⌥ Space: " + liveShortcuts.pillStatus, action: nil, keyEquivalent: "")
-        // B5: the pill's five bars follow the live input level, throttled to about
-        // ten pushes a second so the page is not evaluated on the audio cadence.
-        pillLevelObservation = model.$live
-            .flatMap { conversation -> AnyPublisher<Double, Never> in
-                guard let conversation else { return Empty().eraseToAnyPublisher() }
-                return conversation.device.$inputLevel
-                    .map { Double($0) }
-                    .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
-                    .eraseToAnyPublisher()
-            }
-            .sink { [weak self] level in self?.pushPillLevel(level) }
         liveObservation = model.$live.sink { [weak self] conversation in
             guard let self else { return }
             liveStateObservation = conversation?.$state.sink { [weak self] state in
@@ -768,7 +782,7 @@ struct RootView: View {
             }
         }
         Task {
-            if launchKind.presentsWindowAtLaunch { show() }
+            if launchKind.presentsWindowAtLaunch { coordinator.presentFull(activating: launchKind.activates) }
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -835,7 +849,7 @@ struct RootView: View {
     /// The menu, the launch and the Dock all land on the FULL window and never
     /// leave the orb visible beside it.
     @objc func show() {
-        coordinator.presentFull(activating: launchKind.activates)
+        coordinator.presentFull(activating: true)
     }
     /// Presents the window for the current launch kind. Only an interactive launch
     /// makes the window key and activates the app; every other launch orders the
@@ -956,7 +970,7 @@ struct RootView: View {
         guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")
     }
-    func toggle() { coordinator.toggleWindow(activating: launchKind.activates) }
+    func toggle() { coordinator.toggleWindow(activating: true) }
     /// Hiding the window stops dictation but never Live; Live is stopped only by
     /// an explicit action (menu, Ctrl-Opt-Shift-L, or hiding the mini orb).
     func hide() { coordinator.hideAll() }
@@ -966,7 +980,7 @@ struct RootView: View {
     /// Ctrl-Opt-Space: the mini orb and a second press brings the window back. The chord starts Live
     /// when nothing runs, exactly as before; the status menu's item is the presentation-only path.
     @objc func toggleMiniOrb() {
-        if coordinator.mode == .mini { _ = coordinator.presentFull(activating: launchKind.activates) } else { miniOrb.show() }
+        if coordinator.desired == .mini { _ = coordinator.presentFull(activating: true) } else { miniOrb.show() }
     }
     /// MINI2: the single key on or off. Turning it on asks for the grant again,
     /// because the owner just said yes to the key.
@@ -981,13 +995,6 @@ struct RootView: View {
         }
         singleKeyMenuItem?.state = enabled ? .on : .off
         pushSingleKeyState()
-    }
-    /// One level into the pill's own web view. Presentation only: the pill renders
-    /// the number and never opens audio.
-    private func pushPillLevel(_ level: Double) {
-        guard let web = miniPanel?.webView, level.isFinite else { return }
-        web.evaluateJavaScript("window.didiPillLevel && window.didiPillLevel(\(min(max(level, 0), 1)))",
-                               completionHandler: nil)
     }
     /// The settings view reads this at render time: the app owns the state and the
     /// page owns the wording.
@@ -1010,9 +1017,9 @@ struct RootView: View {
     /// not hide it, which is the hide/show cycle call e283ef09 recorded 10 times with no owner
     /// action. The page-ready edge re-asks for the surfaces once the mini page can be hosted.
     private func applyPresenceSurface(_ surface: PresenceSurfaceState) {
-        if !surface.visible { miniOrb.hideSurface(caller: "presence") }
-        else if coordinator.mode != .full { miniOrb.showSurface(trigger: .other) }
-        miniPanel?.alphaValue = surface.opacity
+        if !surface.visible, coordinator.mode != .full { coordinator.hideAll() }
+        else { coordinator.requestPresence() }
+        miniPanel?.alphaValue = 1
         pushPresenceState()
         schedulePresenceGrace()
     }
@@ -1027,6 +1034,7 @@ struct RootView: View {
         }
     }
     @objc func toggleAlwaysShowNaya() {
+        if !presence.alwaysShow { coordinator.allowPresenceReveal() }
         presence.setAlwaysShow(!presence.alwaysShow)
         presenceMenuItem?.state = presence.alwaysShow ? .on : .off
         pushPresenceState()
@@ -1034,6 +1042,26 @@ struct RootView: View {
     /// Council 2026-10-17 (P1-R1): the two facts the presence machine cannot observe for
     /// itself. Provider readiness is the guarded barrier that opens LIVE, and a failed
     /// session is the fail-loud teardown. `.pausedForInput` keeps its existing meaning.
+    private func presentShortcutMini() {
+        if window?.isKeyWindow == true, NSApp.isActive { return }
+        miniOrb.showSurface(trigger: .hotkey)
+    }
+
+    private func stopPresence() { presence.stop(.app) }
+
+    private func startPresence(pickupJobID: String? = nil) {
+        coordinator.allowPresenceReveal()
+        if model.live == nil { presence.sessionEnded() }
+        presencePickupJobID = pickupJobID
+        presence.start(.app)
+    }
+
+    private func openPresenceSession() {
+        let job = presencePickupJobID
+        presencePickupJobID = nil
+        if !model.startLive(pickupJobID: job) { presence.fail() }
+    }
+
     private func presenceTransitioned(_ state: NativeLiveConversation.State) {
         switch state {
         case .listening:
@@ -1043,7 +1071,8 @@ struct RootView: View {
         case .speaking:
             presence.ready()
         case .failed: presence.fail()
-        case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        case .ended: presence.sessionEnded()
+        case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }
     /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and
@@ -1051,12 +1080,12 @@ struct RootView: View {
     /// an orb press and Start open a session (Q4-R2: a presentation command that started a live
     /// microphone was a privacy surprise).
     @objc func showMiniOrb() {
-        miniOrb.showSurface(trigger: .button)
+        if coordinator.desired == .mini { _ = coordinator.presentFull(activating: true) }
+        else { miniOrb.showSurface(trigger: .button) }
     }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.
     private func orderOutFullWindow() {
-        model.stopDictation("Didi hidden")
         window?.orderOut(nil)
     }
     /// M3-R2: the one native toggle behind the orb click and the Right Command tap.
@@ -1080,30 +1109,85 @@ struct RootView: View {
         coordinator.presentMini(trigger: trigger)
     }
     private func expandThroughCoordinator() { _ = coordinator.presentFull(activating: true) }
+    private func cancelPresentationPreparation() {
+        presentationTask?.cancel()
+        presentationTask = nil
+    }
+
+    private func preparePresentation(_ target: PresentationCoordinator.Mode, generation: UInt64) {
+        presentationTask = Task { [weak self] in
+            guard let self else { return }
+            if target == .full, coordinator.mode == .hidden, model.shell?.state != .ready {
+                coordinator.prepared(target, generation: generation)
+                return
+            }
+            do {
+                let shell: CompanionWeb
+                if target == .mini {
+                    guard let mini = miniShellForDisplay(), let cookie = model.pageCookie else {
+                        coordinator.prepared(target, generation: generation, failure: "page_not_ready")
+                        return
+                    }
+                    shell = mini
+                    if miniPanel == nil {
+                        miniPanel = MiniOrbPanel(web: mini.webView, onStep: { [weak self] step in self?.applyPresenceStep(step) },
+                            onExpand: { [weak self] in self?.miniOrb.openFullInterface() })
+                    }
+                    miniPanel?.onVisibilityChanged = { [weak self] in self?.syncPresentedSurface() }
+                    miniPanel?.contentView?.layoutSubtreeIfNeeded()
+                    if shell.state != .ready || miniCookie != cookie {
+                        miniCookie = cookie
+                        await shell.load(cookie: cookie)
+                    }
+                } else {
+                    guard let full = model.shell else { throw CompanionError.unavailable }
+                    shell = full
+                    window?.contentView?.layoutSubtreeIfNeeded()
+                }
+                try await shell.prepareForPresentation(generation: generation)
+                guard !Task.isCancelled else { return }
+                if target == .mini {
+                    guard miniCookie == model.pageCookie, shell.descriptor.origin == model.shell?.descriptor.origin else {
+                        throw CompanionError.unavailable
+                    }
+                } else if model.shell !== shell { throw CompanionError.unavailable }
+                coordinator.prepared(target, generation: generation)
+            } catch is CancellationError { return }
+            catch { coordinator.prepared(target, generation: generation, failure: "paint_unavailable") }
+        }
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) { syncPresentedSurface() }
+    func windowDidMiniaturize(_ notification: Notification) { syncPresentedSurface() }
+    func windowDidDeminiaturize(_ notification: Notification) { syncPresentedSurface() }
+
+    private func syncPresentedSurface() {
+        let mode = coordinator.mode, generation = coordinator.generation
+        let fullVisible = mode == .full && window?.isVisible == true && window?.isMiniaturized == false
+        let miniVisible = mode == .mini && miniPanel?.isVisible == true
+        miniOrb.presentationCommitted(visible: miniVisible)
+        model.shell?.setSurfaceVisible(fullVisible, generation: generation)
+        miniShell?.setSurfaceVisible(miniVisible, generation: generation)
+        let recipient = fullVisible ? model.shell : miniVisible ? miniShell : nil
+        if let recipient, recipient.state == .ready {
+            model.bridge.orbPublication.select(ObjectIdentifier(recipient), generation: generation,
+                evaluate: { [weak recipient] script, completion in
+                    guard let recipient else { completion(); return }
+                    recipient.publishOrb(script, generation: generation, completion: completion)
+                })
+        } else { model.bridge.orbPublication.select(nil, generation: generation, evaluate: nil) }
+    }
+
     @discardableResult
     private func presentMiniPanel() -> MiniPresentOutcome {
-        // Q4-R1: the page is hosted from a descriptor and nothing else. The launch-time surface
-        // request has none yet, so it reports why the show failed instead of opening the FULL
-        // window the owner did not ask for; the page-ready edge asks again.
-        let environment = (try? ServiceDescriptor.configured())?.origin
-        if let failure = MiniOrbSurface.failure(host: model.shell?.descriptor.origin, environment: environment) {
-            return .failed(failure)
+        guard let shell = miniShell, shell.state == .ready, let panel = miniPanel else {
+            return .failed("page_not_ready")
         }
-        guard let shell = miniShellForDisplay() else { return .failed("page_unavailable") }
-        let panel = miniPanel ?? MiniOrbPanel(web: shell.webView) { [weak self] step in self?.applyPresenceStep(step) }
-        miniPanel = panel
-        // Q4-R3: the receipt reads the alpha the surface actually draws at, so a dim pill is on
-        // the record instead of looking like a surface that was never there.
-        panel.alphaValue = PresenceSurfaceState.shown(presence.posture).opacity
+        panel.alphaValue = 1
         panel.orderFrontRegardless()
-        if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {
-            miniCookie = cookie
-            Task { await shell.load(cookie: cookie) }
-        }
         return .shown(MiniSurfaceFacts(frame: NSStringFromRect(panel.frame),
             screen: panel.screen.map { NSStringFromRect($0.frame) } ?? "none",
-            alpha: Double(panel.alphaValue), occluded: !panel.occlusionState.contains(.visible),
-            pageState: String(describing: shell.state)))
+            alpha: Double(panel.alphaValue), occluded: !panel.occlusionState.contains(.visible), pageState: "ready"))
     }
     /// The mini view reuses the one live page session: same service origin, same
     /// page cookie, never a second bootstrap (which would revoke the first view).
@@ -1112,6 +1196,7 @@ struct RootView: View {
         guard let descriptor = model.shell?.descriptor ?? (try? ServiceDescriptor.configured()) else { return nil }
         let shell = CompanionWeb(descriptor: descriptor, route: .mini)
         miniShell = shell
+        miniPageObservation.bind(shell)
         miniPanel = nil
         return shell
     }
@@ -1122,7 +1207,7 @@ struct RootView: View {
     /// A Dock click always presents the FULL window and never leaves the orb
     /// beside it.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        coordinator.presentFull(activating: launchKind.activates)
+        coordinator.presentFull(activating: true)
         return false
     }
     @objc func quit() { NSApp.terminate(nil) }
@@ -1175,7 +1260,7 @@ struct RootView: View {
         // opening the FULL window the owner did not ask for; no surface pretends to be there.
         guard !window.isVisible, coordinator.mode == .hidden, !miniOrb.isVisible,
               model.surfaceReceipts.contains(where: {
-                  $0["event"] as? String == "mini_present_failed" && $0["reason"] as? String == "page_not_ready"
+                  $0["event"] as? String == "mini_present_deferred" && $0["reason"] as? String == "page_not_ready"
               })
         else { failProof("registered hotkey callback must report the mini surface"); return }
         escape()

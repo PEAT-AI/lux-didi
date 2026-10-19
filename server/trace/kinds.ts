@@ -57,7 +57,7 @@ export const EVENT_KINDS = [
   'turn.opened', 'turn.closed', 'turn.summary',
   'delegation.created',
   'response.created', 'response.observed', 'response.terminal',
-  'call.intent', 'call.executed', 'call.output_prepared', 'call.output_written',
+  'call.intent', 'call.executed', 'call.completed', 'call.output_prepared', 'call.output_written',
   'continuation.decided',
   'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
   'playback.drained', 'playback.interrupted', 'playback.terminated',
@@ -66,7 +66,7 @@ export const EVENT_KINDS = [
 ] as const;
 export type TraceEventKind = (typeof EVENT_KINDS)[number];
 
-export const TRACE_SCHEMA_VERSION = 1;
+export const TRACE_SCHEMA_VERSION = 3;
 export const TRACE_RETENTION_DAYS = 30;
 export const TRACE_DAY_MS = 86_400_000;
 

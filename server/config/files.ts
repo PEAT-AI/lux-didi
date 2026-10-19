@@ -1,6 +1,7 @@
+import { join } from 'node:path';
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from 'node:fs';
 
-export type ConfigErrorCode = 'unsupported_platform' | 'directory_type' | 'directory_symlink' | 'directory_owner' | 'directory_mode' | 'file_missing' | 'file_type' | 'file_symlink' | 'file_owner' | 'file_mode' | 'file_links' | 'too_large' | 'invalid_utf8' | 'invalid_json' | 'invalid_profile' | 'invalid_secret' | 'invalid_reference' | 'invalid_source' | 'invalid_arguments' | 'destination_exists' | 'io_error' | 'initialization_failed';
+export type ConfigErrorCode = 'unsupported_platform' | 'directory_type' | 'directory_symlink' | 'directory_owner' | 'directory_mode' | 'file_missing' | 'file_type' | 'file_symlink' | 'file_owner' | 'file_mode' | 'file_links' | 'too_large' | 'invalid_utf8' | 'invalid_json' | 'invalid_profile' | 'invalid_secret' | 'invalid_reference' | 'invalid_source' | 'invalid_arguments' | 'destination_exists' | 'io_error' | 'initialization_failed' | 'configuration_pending' | 'binding_changed' | 'shared_slot_conflict';
 export class ConfigError extends Error {
   constructor(readonly code: ConfigErrorCode) {
     super(`Provider configuration error: ${code}`);
@@ -102,4 +103,11 @@ export function fields(raw: unknown, names: readonly string[], code: ConfigError
   const keys = Object.keys(object);
   if (keys.length !== names.length || keys.some(key => !names.includes(key))) fail(code);
   return object;
+}
+
+/** A multi-file route update is unavailable until its exact pair is published. */
+export function requireSettledConfig(configDir: string): void {
+  try { lstatSync(join(configDir, '.route-classes.pending')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw safeError(error); }
+  fail('configuration_pending');
 }

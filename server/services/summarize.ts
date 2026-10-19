@@ -1,6 +1,7 @@
-import type { ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
+import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
+import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 
 /**
@@ -145,6 +146,7 @@ export interface SummarizerOptions {
   /** Null when no text model is configured: the distiller writes a skipped row naming no_text_model, so the store shows why. */
   readonly model: ModelPort | null;
   readonly modelId: string;
+  readonly modelAllowedClasses?: readonly DataClass[];
   /** The persona name the host already knows, used in the prompt and in the speaker tags; never a literal. */
   readonly assistantName: string;
   readonly timeZone: string;
@@ -170,16 +172,17 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
   const system = distillationPrompt(options.assistantName);
   const serialize = (work: () => Promise<void>): Promise<void> => {
-    chain = chain.then(work, work);
+    const guarded = async () => { try { await work(); } catch (error) { if (!(error instanceof Error && ['history_forgotten', 'history_source_changed'].includes(error.message))) throw error; } };
+    chain = chain.then(guarded, guarded);
     return chain;
   };
 
-  async function callModel(input: string, signal: AbortSignal): Promise<ModelResult> {
+  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal): Promise<ModelResult> {
     const request: ModelRequest = {
       system,
       promptVersion: SUMMARY_PROMPT_VERSION,
       contents: [{ role: 'user', parts: [{ text: input }] }],
-      dataClasses: ['ordinary'],
+      dataClasses: [dataClass],
       context: { items: [], selectedIds: [], maxChars: 0 },
       temperature: SUMMARY_TEMPERATURE,
       responseMimeType: 'application/json',
@@ -189,38 +192,44 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   async function distill(liveSessionId: string, runOptions: { deadHost?: boolean } = {}): Promise<void> {
     const prepared = options.store.transaction(tx => {
+      if (historyForgotten(tx, liveSessionId)) return null;
       const existing = summaries.getBySession(tx, liveSessionId);
       // A row skipped only for a missing text model is not terminal: with a model configured now, the session is
       // distilled again. Every other skip reason and every complete or failed row stays sealed.
       if (existing && !(options.model && summaries.reopenNoModelSkip(tx, liveSessionId))) return null;
       const transcript = readSessionTranscript(tx, liveSessionId);
+      const source = historySessionEvidence(tx, liveSessionId);
       const injectedIds = summaries.injectedSummaryIdsForSession(tx, liveSessionId);
-      const injected = injectedIds
-        .map(id => tx.get("SELECT id, summary FROM conversation_summaries WHERE id=? AND status='complete'", [id]))
-        .filter((row): row is NonNullable<typeof row> => !!row && typeof row['summary'] === 'string')
-        .map(row => ({ id: String(row['id']), summary: String(row['summary']) }));
-      const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [liveSessionId]);
-      const dataClass = grant && typeof grant['chosen_input_class'] === 'string' ? String(grant['chosen_input_class']) : 'ordinary';
-      return { transcript, injected, dataClass };
+      const selected = source ? summaries.injectionCandidates(tx, HISTORY_CLASSES.filter(value => HISTORY_CLASSES.indexOf(value) <= HISTORY_CLASSES.indexOf(source.dataClass))) : [];
+      const injected = injectedIds.flatMap(id => selected.filter(row => row.id === id).map(row => ({ id: row.id, summary: row.summary })));
+      return { transcript, injected, source: injected.length === injectedIds.length ? source : null };
     });
     if (!prepared) return;
-    const { transcript, injected } = prepared;
+    const { transcript, injected, source } = prepared;
     const endedAt = transcript.endedAt ?? options.now();
-    // Privacy: only ordinary-class Live sessions are distilled; anything else is sealed skipped,
-    // mirroring the voice memory source which never lets a non-ordinary label leave the port.
-    if (prepared.dataClass !== 'ordinary') {
-      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'non_ordinary', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
-      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'non_ordinary' });
+    if (!source) {
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'history_provenance_unavailable', endedAt, now: options.now() }));
+      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'history_provenance_unavailable' });
+      return;
+    }
+    const provenance = { dataClass: source.dataClass, sourceRevision: source.revision };
+    const sourceCurrent = () => options.store.transaction(tx => {
+      const current = historySessionEvidence(tx, liveSessionId);
+      return current?.revision === source.revision && current.dataClass === source.dataClass;
+    });
+    if (options.model && !options.modelAllowedClasses?.includes(source.dataClass)) {
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'summary_route_class_denied', endedAt, now: options.now() }));
+      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'summary_route_class_denied' });
       return;
     }
     if (transcript.ownerTurns < SUMMARY_MIN_OWNER_TURNS) {
-      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'too_few_turns', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'too_few_turns', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });
       return;
     }
     // No text model configured: record the row and its reason, so the store shows why nothing was distilled.
     if (!options.model) {
-      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'no_text_model', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'no_text_model', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'no_text_model' });
       return;
     }
@@ -234,23 +243,28 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       let result: ModelResult | null = null;
       try {
         const controller = new AbortController();
-        result = await callModel(input.text, controller.signal);
+        if (!sourceCurrent()) return;
+        if (!options.modelAllowedClasses?.includes(source.dataClass)) {
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'summary_route_class_denied', endedAt, now: options.now() }));
+          return;
+        }
+        result = await callModel(input.text, source.dataClass, controller.signal);
       } catch (error) {
         lastError = error instanceof Error && /^[A-Za-z0-9_]+$/.test(error.message) ? error.message : 'model_error';
       }
       if (result && !RETRYABLE.has(result.status)) {
         const parsed = parseDistillationResult(result.text);
         if (!parsed) {
-          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: 'invalid_output', now: options.now() }));
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: 'invalid_output', now: options.now() }));
           options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: 'invalid_output', retryCount });
           return;
         }
         if (parsed.skip || !parsed.summary) {
-          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'model_skip', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'model_skip', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
           options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'model_skip' });
           return;
         }
-        options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary: parsed.summary, openLoop: parsed.openLoop, promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
+        options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'complete', summary: parsed.summary, openLoop: parsed.openLoop, promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
         options.log({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
         return;
       }
@@ -258,7 +272,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       if (retryCount >= SUMMARY_MAX_RETRIES) break;
       retryCount += 1;
     }
-    options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
+    options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
     options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: lastError, retryCount });
   }
 

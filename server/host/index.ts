@@ -16,6 +16,7 @@ const LOGIN_LINES: Record<MongooseLoginCode, string> = {
   'authorization-refused': 'the browser sign-in did not finish',
   'token-refused': 'the Mongoose server did not return a usable session',
   'browser-unavailable': 'the default browser could not be opened',
+  'timeout': 'the sign-in deadline elapsed, so nothing was saved',
 };
 
 /**
@@ -29,14 +30,15 @@ function writeProtocolFrame(frame: Record<string, unknown>): void {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
-    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--mongoose-login] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--mongoose-login runs the owner sign-in in the default browser once, then writes the private Mongoose session record.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
+    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--mongoose-login [--no-browser]] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--mongoose-login runs the owner sign-in in the default browser once, then writes the private Mongoose session record. Add --no-browser to print the sign-in URL without opening a browser; the complete attempt expires after five minutes.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
     return;
   }
   const pairing = argv[0] === 'pair';
   if (pairing) argv = argv.slice(1);
   const login = argv.includes('--mongoose-login');
-  if (login && pairing) throw new Error('Invalid sign-in configuration');
-  argv = argv.filter(arg => arg !== '--mongoose-login');
+  const noBrowser = argv.includes('--no-browser');
+  if ((login && pairing) || (noBrowser && !login) || argv.filter(arg => arg === '--mongoose-login').length > 1 || argv.filter(arg => arg === '--no-browser').length > 1) throw new Error('Invalid sign-in configuration');
+  argv = argv.filter(arg => arg !== '--mongoose-login' && arg !== '--no-browser');
   const supervised = argv.includes('--supervised');
   if (argv.filter(arg => arg === '--supervised').length > 1 || ((pairing || login) && supervised)) throw new Error('Invalid supervision configuration');
   argv = argv.filter(arg => arg !== '--supervised');
@@ -58,7 +60,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
   if (pairing) { process.stdout.write(`${await pairLocal(config.dataDir, config.descriptor)}\n`); return; }
-  if (login) { await runOwnerLogin(config); return; }
+  if (login) { await runOwnerLogin(config, noBrowser); return; }
   // The supervised protocol writes its ready frame before any connector handshake; the connector
   // round starts from `host.start()` after the frame. Non-supervised starts keep the awaited shape.
   config.deferConnectors = supervised;
@@ -95,7 +97,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
  * The owner sign-in: one browser round, one atomic record write, one owner line. It never starts the
  * host, never opens a browser before the loopback listener is bound and never prints a token.
  */
-async function runOwnerLogin(config: HostConfig): Promise<void> {
+async function runOwnerLogin(config: HostConfig, noBrowser: boolean): Promise<void> {
   const configDir = resolve(config.configDir ?? join(config.dataDir, 'provider-config'));
   const selection = loadMcpEndpoints({ configDir });
   const entry = selection.state === 'configured'
@@ -103,7 +105,9 @@ async function runOwnerLogin(config: HostConfig): Promise<void> {
     : undefined;
   if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) throw new Error('Mongoose sign-in needs a configured mongoose endpoint with a credential reference');
   try {
-    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account, openBrowser: openInDefaultBrowser });
+    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account, ...(noBrowser
+      ? { showAuthorizationUrl: (url: string) => process.stdout.write(`Open this Mongoose sign-in URL. This attempt expires five minutes after it started:\n${url}\n`) }
+      : { openBrowser: openInDefaultBrowser }) });
   } catch (error) {
     const code = error instanceof MongooseLoginError ? error.code : undefined;
     console.error(code ? `Mongoose sign-in failed: ${LOGIN_LINES[code]}.` : 'Mongoose sign-in failed.');

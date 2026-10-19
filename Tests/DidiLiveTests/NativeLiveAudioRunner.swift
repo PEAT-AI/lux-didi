@@ -422,9 +422,9 @@ private func checkFormatChangeRebuild() throws {
     try audioRequire(summary["inputSampleRate"] as? Int == 48000 && summary["inputChannels"] as? Int == 1
         && summary["localSocketSendCompleted"] as? Int == 0 && summary["sendErrors"] as? Int == 0,
         "numeric format and zero local sends after refused authority")
-    try audioRequire(summary["ledgerBalanced"] as? Bool == true && (summary["playbackUnderruns"] as? Int) == 0
+    try audioRequire(summary["ledgerBalanced"] as? Bool == true && (summary["playbackSpeechGaps"] as? Int) == 0
         && (summary["lateAfterFlushChunks"] as? Int) == 0,
-        "byte ledger balances at call end with no playback underruns")
+        "byte ledger balances at call end with no playback speech gaps")
     device.stop(); await conversation.stop()
     try audioRequire(try String(contentsOf: file, encoding: .utf8).split(separator: "\n").count == records.count,
         "duplicate Stop emits no duplicate summary")
@@ -569,6 +569,156 @@ private func checkPrimaryChannelConversion() throws {
                      "actual converter preserves first-channel input and observed uniform seven-channel input")
 }
 
+@MainActor private final class PlaybackDriverFixture: NativePlaybackDriver {
+    var scheduled: [AVAudioPCMBuffer] = []
+    var active: [AVAudioPCMBuffer] = []
+    var completions: [@Sendable () -> Void] = []
+    var plays = 0, stops = 0
+    func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) {
+        scheduled.append(buffer); active.append(buffer); completions.append(completion)
+    }
+    func play() { plays += 1 }
+    func stop() { stops += 1; active.removeAll() }
+}
+
+@MainActor private func checkPlaybackMuteFence() async throws {
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+    device.playbackDriverForTesting = driver
+    var output: [Bool] = []
+    device.onOutput = { output.append($0) }
+    func pcm(_ sample: Int16) -> Data { [Int16](repeating: sample.littleEndian, count: 2400).withUnsafeBytes { Data($0) } }
+    try await device.write(pcm(12000))
+    try audioRequire(driver.scheduled.count == 1 && driver.plays == 1 && output.last == true,
+                     "control: actual write schedules nonzero PCM and starts the fake player")
+    let oldCompletion = driver.completions[0]
+    device.setMuted(true)
+    try audioRequire(driver.active.isEmpty && !device.isPlayingOutput,
+                     "mute clears the actual scheduled tail and speaking state")
+    try await device.write(pcm(12000))
+    try audioRequire(driver.scheduled.count == 1, "muted actual write schedules no arriving PCM")
+    device.setMuted(false)
+    try await device.write(pcm(5000))
+    try audioRequire(driver.scheduled.count == 2 && driver.active.count == 1,
+                     "unmute schedules only new PCM, never the discarded tail")
+    oldCompletion()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(device.isPlayingOutput && driver.active.count == 1,
+                     "a stale pre-mute completion cannot drain post-unmute speech")
+    driver.completions.last?()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(!device.isPlayingOutput && !device.hasEngine && !device.isCapturing,
+                     "completion drains real device state without hardware or capture")
+    print("PASS actual write control, hot-mute PCM fence, unmute tail and stale completion; hardware=false")
+}
+
+@MainActor private func checkPlaybackSilenceState() async throws {
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+    device.playbackDriverForTesting = driver
+    var output: [Bool] = []
+    device.onOutput = { output.append($0) }
+    let quiet = Data(count: 4800)
+    let speech = [Int16](repeating: 5000, count: 2400).withUnsafeBytes { Data($0) }
+    try await device.write(quiet)
+    try audioRequire(driver.scheduled.count == 1 && driver.plays == 1 && !device.isPlayingOutput && !output.contains(true),
+                     "silent fill is scheduled but never claims speaking")
+    try await device.write(speech)
+    try audioRequire(!device.isPlayingOutput, "speech queued behind silence does not claim an early speaking state")
+    driver.completions[0]()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(device.isPlayingOutput && device.outputLevel > 0,
+                     "completion advances the actual queue head to audible speech")
+    try await device.write(quiet)
+    try audioRequire(device.isPlayingOutput && device.outputLevel > 0,
+                     "arriving fill cannot hide speech still at the queue head")
+    driver.completions[1]()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(!device.isPlayingOutput && device.outputLevel == 0,
+                     "completion advances from speech to silent fill without a false speaking claim")
+    driver.completions[2]()
+    for _ in 0..<8 { await Task.yield() }
+    let samples = driver.scheduled.flatMap { Array(UnsafeBufferPointer(start: $0.floatChannelData![0], count: Int($0.frameLength))) }
+    try audioRequire(samples.count == 7200 && samples.prefix(2400).allSatisfy { $0 == 0 }
+        && samples.dropFirst(2400).prefix(2400).allSatisfy { $0 == Float(5000) / 32768 }
+        && samples.suffix(2400).allSatisfy { $0 == 0 }, "actual write preserves every speech and fill sample in order")
+    try audioRequire(!device.hasEngine && !device.isCapturing, "state proof opens no engine or capture")
+    print("PASS actual write silence/speech queue-head state and all timing PCM conserved; hardware=false")
+}
+
+@MainActor private func checkPlaybackOverflowContinuation() async throws {
+    let full = Data(count: NativePlaybackQueue.overflowFrames * 2)
+    for externalMute in [false, true] {
+        let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+        device.playbackDriverForTesting = driver
+        try await device.write(full)
+        var overflows = 0
+        device.onPlaybackOverflow = { _, _ in
+            overflows += 1
+            if externalMute { device.setMuted(true); device.setMuted(false) }
+        }
+        try await device.write(Data(count: 4800))
+        try audioRequire(overflows == 1, "control reaches the unchanged playback memory guard")
+        try audioRequire(driver.scheduled.count == (externalMute ? 1 : 2),
+                         "memory guard keeps its new frame but an external mute invalidates the old in-flight frame")
+    }
+    print("PASS memory guard continuation retains current frame and rejects external mute generation; hardware=false")
+}
+
+@MainActor private func checkPlaybackGapMetrics() async throws {
+    let scenarios: [(Int16, Int16, Int, Int)] = [
+        (0, 0, 0, 0), (5000, 5000, 0, 0), (5000, 5000, 25, 1),
+        (5000, 0, 25, 0), (0, 5000, 25, 0), (5000, 5000, 600, 0)
+    ]
+    for (before, after, delay, expected) in scenarios {
+        var clock = Date(timeIntervalSince1970: 1000)
+        let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice(now: { clock })
+        device.playbackDriverForTesting = driver
+        var gaps: [NativePlaybackArrival] = []
+        device.onSpeechGap = { gaps.append($0) }
+        func pcm(_ value: Int16) -> Data { [Int16](repeating: value, count: 2400).withUnsafeBytes { Data($0) } }
+        try await device.write(pcm(before))
+        clock = clock.addingTimeInterval(0.1)
+        driver.completions[0]()
+        for _ in 0..<8 { await Task.yield() }
+        clock = clock.addingTimeInterval(Double(delay) / 1000)
+        try await device.write(pcm(after))
+        try audioRequire(gaps.count == expected,
+                         "positive speech gaps only: before=\(before), after=\(after), gap=\(delay), expected=\(expected), actual=\(gaps.count)")
+        try audioRequire(device.playbackStatisticsForTesting.queueDrains == 1
+            && device.playbackStatisticsForTesting.speechGaps == expected, "raw drains and positive speech gaps remain separate")
+        if expected > 0 { try audioRequire(gaps[0].dryGapMs == delay, "the gap receipt carries its measured positive duration") }
+    }
+    var clock = Date(timeIntervalSince1970: 1000)
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice(now: { clock })
+    device.playbackDriverForTesting = driver
+    for index in 0..<100 {
+        try await device.write(Data(count: 4800))
+        clock = clock.addingTimeInterval(0.1)
+        driver.completions[index]()
+        for _ in 0..<8 { await Task.yield() }
+    }
+    try audioRequire(device.playbackStatisticsForTesting.queueDrains == 100
+        && device.playbackStatisticsForTesting.speechGaps == 0,
+                     "ten seconds of perfect digital silence reports 100 raw drains and zero speech gaps")
+    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    let sessionDriver = PlaybackDriverFixture()
+    let session = NativeLiveAudioDevice(captureInput: format, defaultInput: { ("synthetic", "Synthetic input") }, now: { clock })
+    session.playbackDriverForTesting = sessionDriver
+    for _ in 0..<2 {
+        try await session.startFenced { _, _ in }
+        try await session.write(Data(count: 4800))
+        clock = clock.addingTimeInterval(0.1)
+        sessionDriver.completions.last?()
+        for _ in 0..<8 { await Task.yield() }
+        clock = clock.addingTimeInterval(0.9)
+        session.stop()
+        let summary = session.takeCaptureSummary()
+        try audioRequire(summary?.playback.queueDrains == 1 && summary?.playback.speechGaps == 0
+            && summary?.playback.sessionMs == 1000 && summary?.playback.rate == 1,
+                         "each synthetic capture lifetime owns fresh playback counters and its full duration at 1.00")
+    }
+    print("PASS actual callback/arrival zero boundaries, silent fill, positive speech gap and long-pause controls; hardware=false")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -585,6 +735,29 @@ private func checkPrimaryChannelConversion() throws {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--playback-metrics-only") {
+            do { try await checkPlaybackGapMetrics() }
+            catch { FileHandle.standardError.write(Data("Playback metrics: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
+        if CommandLine.arguments.dropFirst().contains("--playback-state-only") {
+            do { try await checkPlaybackSilenceState() }
+            catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
+            return
+        }
+        if CommandLine.arguments.dropFirst().contains("--playback-overflow-only") {
+            do { try await checkPlaybackOverflowContinuation() }
+            catch { FileHandle.standardError.write(Data("Playback overflow: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
+        if CommandLine.arguments.dropFirst().contains("--playback-fences-only") {
+            do { try await checkPlaybackMuteFence() }
+            catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--primary-channel-only") {
             do { try checkPrimaryChannelConversion() }
             catch { FileHandle.standardError.write(Data("Primary-channel conversion: \(error)\n".utf8)); exit(1) }
@@ -615,6 +788,10 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Format change: \(error)") }
             return
         }
+        do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
+        catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
+        do { try await checkPlaybackMuteFence() }
+        catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
         do { try checkPrimaryChannelConversion() }
         catch { fatalError("Primary-channel conversion: \(error)") }
         do { try checkFormatChangeRebuild() }

@@ -129,4 +129,16 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `DROP INDEX IF EXISTS trace_event_native`,
     `CREATE UNIQUE INDEX trace_event_native ON trace_event(live_session_id, source_instance_id, source_seq)`,
   ],
+}, {
+  owner: 'trace', version: 3, statements: [
+    `ALTER TABLE trace_event ADD COLUMN clock_domain TEXT`,
+    `ALTER TABLE trace_turn ADD COLUMN clock_domain TEXT`,
+    `ALTER TABLE trace_call ADD COLUMN execution_completed_at INTEGER`,
+    `ALTER TABLE trace_call ADD COLUMN canonical_owner_id TEXT`,
+    `ALTER TABLE trace_call ADD COLUMN canonical_run_id TEXT`,
+    `ALTER TABLE trace_call ADD COLUMN canonical_execution_id TEXT`,
+    `ALTER TABLE trace_call ADD COLUMN canonical_result_id TEXT`,
+    `ALTER TABLE trace_call ADD COLUMN canonical_result_sha256 TEXT`,
+    `ALTER TABLE trace_utterance ADD COLUMN journal_id INTEGER`,
+  ],
 }];

@@ -1,3 +1,4 @@
+import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -150,7 +151,7 @@ export interface MongooseConfig {
 }
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
-export interface MongooseEvidence {
+export interface MongooseEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   /** The remote tool the server answered; every granted read tool, not only the typed seven. */
@@ -166,18 +167,21 @@ export interface MongooseUnknown { state: 'unknown'; reason: string }
 export type MongooseResult = MongooseEvidence | MongooseRefused | MongooseUnknown;
 
 export interface AskInput { question: string; limit?: number }
-export interface SearchInput { query: string; limit?: number }
-export interface IdInput { id: string }
+export interface SearchInput { query: string; limit?: number; scope?: 'all' | 'knowledge'; domain?: string | null; include?: string | string[] | null; include_strong?: boolean; offset?: number }
+export interface KnowledgeItemInput { id?: string; item_id?: string; identifier?: string; detail?: 'summary' | 'full' }
+export interface KnowledgeBodyInput { ref: string; cursor?: string; max_chars?: number }
+export interface CompanyProfileInput { company_name: string; detail?: 'overview' | 'summary' | 'commercial' | 'full'; sections?: string[] | null; flagship_only?: boolean; launch_year?: number | null }
+export interface TicketInput { number: number | string; detail?: 'summary' | 'full'; body_offset?: number; limit?: number; offset?: number }
 export interface ListInput { limit?: number }
 
 export interface MongooseReader {
   ask(input: AskInput, signal?: AbortSignal): Promise<MongooseResult>;
   search(input: SearchInput, signal?: AbortSignal): Promise<MongooseResult>;
-  getKnowledgeItem(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
-  readKnowledgeBody(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
-  companyProfile(signal?: AbortSignal): Promise<MongooseResult>;
+  getKnowledgeItem(input: KnowledgeItemInput, signal?: AbortSignal): Promise<MongooseResult>;
+  readKnowledgeBody(input: KnowledgeBodyInput, signal?: AbortSignal): Promise<MongooseResult>;
+  companyProfile(input: CompanyProfileInput, signal?: AbortSignal): Promise<MongooseResult>;
   listTickets(input: ListInput, signal?: AbortSignal): Promise<MongooseResult>;
-  getTicket(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
+  getTicket(input: TicketInput, signal?: AbortSignal): Promise<MongooseResult>;
   /** Any other granted read tool, with the model's own arguments; the server schema validates them. */
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult>;
 }
@@ -257,6 +261,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       state: result.state,
       tool,
       source: { ...result.source },
+      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       decodedResult: structuredClone(result.decodedResult),
@@ -273,6 +278,14 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     if (value === undefined) return { limit: Math.min(fallback, max) };
     if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) return undefined;
     return { limit: value as number };
+  }
+
+  function typedArgs(input: object, keys: readonly string[], textKeys: readonly string[]): Record<string, unknown> | undefined {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || JSON.stringify(input).length > 4000) return undefined;
+    const args = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+    if (Object.keys(args).some(key => !keys.includes(key))) return undefined;
+    if (textKeys.some(key => args[key] !== undefined && boundedQuestion(args[key]) === undefined)) return undefined;
+    return args;
   }
 
   return {
@@ -292,26 +305,30 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
       const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      return dispatch('search_mongoose', { query, ...bounded }, signal);
+      const args = typedArgs(input, ['query', 'limit', 'scope', 'domain', 'include', 'include_strong', 'offset'], ['query']);
+      if (!args) return { state: 'refused', reason: 'invalid-search-input' };
+      return dispatch('search_mongoose', { ...args, query, ...bounded }, signal);
     },
-    async getKnowledgeItem(input: IdInput, signal?: AbortSignal): Promise<MongooseResult> {
+    async getKnowledgeItem(input: KnowledgeItemInput, signal?: AbortSignal): Promise<MongooseResult> {
       const denied = preflight(registry, settings, 'get_knowledge_item');
       if (denied) return { state: 'refused', reason: denied };
-      const id = boundedQuestion(input.id);
-      if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
-      return dispatch('get_knowledge_item', { id }, signal);
+      const args = typedArgs(input, ['id', 'item_id', 'identifier', 'detail'], ['id', 'item_id', 'identifier']);
+      if (!args || !['id', 'item_id', 'identifier'].some(key => args[key] !== undefined)) return { state: 'refused', reason: 'invalid-id' };
+      return dispatch('get_knowledge_item', args, signal);
     },
-    async readKnowledgeBody(input: IdInput, signal?: AbortSignal): Promise<MongooseResult> {
+    async readKnowledgeBody(input: KnowledgeBodyInput, signal?: AbortSignal): Promise<MongooseResult> {
       const denied = preflight(registry, settings, 'read_knowledge_body');
       if (denied) return { state: 'refused', reason: denied };
-      const id = boundedQuestion(input.id);
-      if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
-      return dispatch('read_knowledge_body', { id }, signal);
+      const args = typedArgs(input, ['ref', 'cursor', 'max_chars'], ['ref']);
+      if (!args || args['ref'] === undefined) return { state: 'refused', reason: 'invalid-ref' };
+      return dispatch('read_knowledge_body', args, signal);
     },
-    async companyProfile(signal?: AbortSignal): Promise<MongooseResult> {
+    async companyProfile(input: CompanyProfileInput, signal?: AbortSignal): Promise<MongooseResult> {
       const denied = preflight(registry, settings, 'get_company_profile');
       if (denied) return { state: 'refused', reason: denied };
-      return dispatch('get_company_profile', {}, signal);
+      const args = typedArgs(input, ['company_name', 'detail', 'sections', 'flagship_only', 'launch_year'], ['company_name']);
+      if (!args || args['company_name'] === undefined) return { state: 'refused', reason: 'invalid-company-name' };
+      return dispatch('get_company_profile', args, signal);
     },
     async listTickets(input: ListInput, signal?: AbortSignal): Promise<MongooseResult> {
       const denied = preflight(registry, settings, 'list_tickets');
@@ -320,12 +337,12 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       return dispatch('list_tickets', bounded, signal);
     },
-    async getTicket(input: IdInput, signal?: AbortSignal): Promise<MongooseResult> {
+    async getTicket(input: TicketInput, signal?: AbortSignal): Promise<MongooseResult> {
       const denied = preflight(registry, settings, 'get_ticket');
       if (denied) return { state: 'refused', reason: denied };
-      const id = boundedQuestion(input.id);
-      if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
-      return dispatch('get_ticket', { id }, signal);
+      const args = typedArgs(input, ['number', 'detail', 'body_offset', 'limit', 'offset'], []);
+      if (!args || (typeof args['number'] !== 'number' && boundedQuestion(args['number']) === undefined)) return { state: 'refused', reason: 'invalid-ticket-number' };
+      return dispatch('get_ticket', args, signal);
     },
     async call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
       // Only a read name the local envelope carries is forwarded; the grant is checked in preflight.

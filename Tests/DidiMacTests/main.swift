@@ -39,7 +39,7 @@ expect(Presentation.canSend("  hello\n") && !Presentation.canSend(" \n"), "text 
 expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "accepted is not read")
 
 // W15 mini orb: show starts Live, the same chord hides and stops it, a click
-// expands to the full window and keeps Live running, and the frame is remembered.
+// opens the full interface from its menu without changing Live or hiding before paint.
 var liveStarted = 0, liveStopped = 0, presented = 0, dismissed = 0, expanded = 0
 var liveRunning = false
 let miniFacts = MiniSurfaceFacts(frame: "{{700, 860}, {64, 26}}", screen: "main", alpha: 1,
@@ -50,7 +50,7 @@ let miniOrb = MiniOrbToggle(
     liveIsRunning: { liveRunning },
     presentPanel: { _ in presented += 1; return .shown(miniFacts) },
     dismissPanel: { dismissed += 1 },
-    expandToWindow: { expanded += 1 })
+    requestFullWindow: { expanded += 1 })
 expect(!miniOrb.isVisible, "mini orb starts hidden")
 miniOrb.toggle()
 expect(miniOrb.isVisible && liveStarted == 1 && presented == 1, "mini orb chord shows and starts Live")
@@ -58,8 +58,8 @@ miniOrb.toggle()
 expect(!miniOrb.isVisible && liveStopped == 1 && dismissed == 1, "mini orb chord hides and stops Live")
 miniOrb.show()
 expect(liveStarted == 2 && presented == 2, "mini orb show starts Live once")
-miniOrb.expand()
-expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible, "mini orb click expands and keeps Live")
+miniOrb.openFullInterface()
+expect(expanded == 1 && dismissed == 1 && liveStopped == 1 && miniOrb.isVisible, "mini orb menu requests full and retains its source")
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
@@ -74,7 +74,7 @@ let surface = MiniOrbToggle(startLive: { miniPresence = "live" }, stopLive: { mi
                             liveIsRunning: { miniPresence == "live" },
                             presentPanel: { _ in gatePresents += 1; return .shown(miniFacts) },
                             dismissPanel: { gateDismissals += 1 },
-                            expandToWindow: {})
+                            requestFullWindow: {})
 surface.showSurface(trigger: .other)
 expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
 miniPresence = "hot-muted"
@@ -503,15 +503,14 @@ SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
 // MINI2: the pill is 64x26, sits top-center just below the menu bar (the screens
 // are visible frames, so on a notched display the menu bar carries the notch).
-expect(MiniOrbFrameRestore.size == CGSize(width: 64, height: 26), "the pill is 64x26 pt")
-expect(MiniOrbPanelPolicy.cornerRadius == 13 && MiniOrbPanelPolicy.cornerRadius == MiniOrbFrameRestore.size.height / 2, "the capsule radius is half the pill height")
-expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 688, y: 868, width: 64, height: 26), "default pill frame is top-center just below the menu bar")
+expect(MiniOrbFrameRestore.size == CGSize(width: 220, height: 220), "the floating orb is 220 square points")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 610, y: 674, width: 220, height: 220), "default pill frame is top-center just below the menu bar")
 let notched = CGRect(x: 0, y: 0, width: 1728, height: 1083)
 let notchedPill = MiniOrbFrameRestore.resolve(nil, screens: [notched])
-expect(notchedPill == CGRect(x: 832, y: 1051, width: 64, height: 26), "default pill frame is top-center on a notched display")
+expect(notchedPill == CGRect(x: 754, y: 857, width: 220, height: 220), "default pill frame is top-center on a notched display")
 expect(notchedPill.maxY == notched.maxY - MiniOrbFrameRestore.topMargin, "the pill keeps one menu-bar margin, never inside the notch")
 let miniSaved = CGRect(x: 100, y: 120, width: 300, height: 300)
-expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == CGRect(x: 100, y: 120, width: 64, height: 26), "a remembered pill position is kept at the pill size")
+expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == CGRect(x: 100, y: 120, width: 220, height: 220), "a remembered pill position is kept at the pill size")
 expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen]) != CGRect(x: 5000, y: 5000, width: 300, height: 300), "an off-screen pill frame is replaced")
 // UI3A-R1: the activation policy per launch kind. The interactive, login-item and
 // install-relaunch kinds are regular apps (Dock tile, Cmd-Tab); the four
@@ -586,7 +585,7 @@ miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
 // Q4-R1: a page that cannot be hosted fails loud; it never answers with the FULL window.
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a mini orb with no page never falls back to the FULL window")
+expect(coordinator.mode == .full && visibleSurfaces == ["full"], "an unready mini retains the usable FULL window")
 miniPageHostable = true
 
 // UI3A: the orb never becomes key or main, floats above normal windows over every
@@ -601,9 +600,9 @@ expect(behavior.contains(.stationary) == false, "the mini panel moves with its S
 // UI3A: a remembered frame is clamped into a visible screen, on restore and after a
 // display disappears, never discarded and never resized.
 let offScreen = MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 300, height: 300), screens: [miniScreen])
-expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 64, height: 26), "an off-screen pill frame is clamped into a visible screen at the pill size")
+expect(miniScreen.contains(offScreen) && offScreen.size == CGSize(width: 220, height: 220), "an off-screen pill frame is clamped into a visible screen at the pill size")
 let halfOff = MiniOrbFrameRestore.resolve(CGRect(x: -120, y: 820, width: 300, height: 300), screens: [miniScreen])
-expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 64, height: 26), "a partly off-screen pill frame is clamped, not resized")
+expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 220, height: 220), "a partly off-screen pill frame is clamped, not resized")
 let goneDisplay = MiniOrbFrameRestore.resolve(CGRect(x: 1600, y: 100, width: 300, height: 300), screens: [miniScreen])
 expect(miniScreen.contains(goneDisplay), "a frame left on a removed display is clamped into the remaining screen")
 
@@ -966,14 +965,14 @@ let q4Facts = MiniSurfaceFacts(frame: "{{100, 800}, {64, 26}}", screen: "main", 
 let q4Orb = MiniOrbToggle(
     startLive: { q4Starts += 1 }, stopLive: { q4Stops += 1 }, liveIsRunning: { false },
     presentPanel: { trigger in q4Triggers.append(trigger); q4Shows += 1; return .shown(q4Facts) },
-    dismissPanel: {}, expandToWindow: {}, receipt: { q4Receipts.append($0) })
+    dismissPanel: {}, requestFullWindow: {}, receipt: { q4Receipts.append($0) })
 // The status menu's own item, pressed through the selector and target it carries (Q4-R1).
 var menuShows: [SurfaceTrigger] = [], menuStarts = 0, menuStops = 0
 var menuReceipts: [[String: Any]] = []
 let menuOrb = MiniOrbToggle(
     startLive: { menuStarts += 1 }, stopLive: { menuStops += 1 }, liveIsRunning: { false },
     presentPanel: { trigger in menuShows.append(trigger); return .shown(q4Facts) },
-    dismissPanel: {}, expandToWindow: {}, receipt: { menuReceipts.append($0) })
+    dismissPanel: {}, requestFullWindow: {}, receipt: { menuReceipts.append($0) })
 let statusMenuCommand = MiniOrbMenuCommand { trigger in menuOrb.showSurface(trigger: trigger) }
 let showMiniOrbItem = statusMenuCommand.item()
 expect(showMiniOrbItem.title == "Show mini orb", "the status menu carries a Show mini orb item")
@@ -1008,9 +1007,9 @@ let q4Failing = PresentationCoordinator(
     hideMini: { _ in }, liveIsRunning: { false }, log: { q4Log.append($0) })
 expect(q4Failing.presentMini(trigger: .menu) == .failed("page_not_ready") && q4MiniShows == 1 && q4FullShows == 0,
        "a mini show with no page never falls back to the FULL window")
-expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_failed"
+expect(q4Failing.mode == .hidden && q4Log.last?["event"] as? String == "mini_present_deferred"
        && q4Log.last?["reason"] as? String == "page_not_ready",
-       "a failed mini show logs mini_present_failed with its reason")
+       "an unready mini show logs a deferral with its reason")
 
 q4Log = []
 let q4Landing = PresentationCoordinator(
@@ -1025,25 +1024,16 @@ expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigg
        && q4Log.last?["pageState"] as? String == "ready",
        "a show logs mini_presented with its frame, screen, alpha, occlusion, page state and trigger")
 
-// Q4-R3: the idle pill is never more transparent than the named floor, and a first show
-// after an install puts a saved frame that sits far below the top band back in the slot.
-expect(PresenceSurfaceState.minimumIdleOpacity == 0.6, "the idle opacity floor is the named 0.6 constant")
-expect(PresenceSurfaceState.shown(PresencePosture(state: .cold, alwaysShow: true, failed: false)).opacity == 0.6,
-       "the cold pill draws at the floor and never reads as nothing")
-expect(PresenceSurfaceState.shown(PresencePosture(state: .connecting, alwaysShow: true, failed: false)).opacity == 0.6,
-       "the connecting pill draws at the floor too")
-let q4LowPill = CGRect(x: 688, y: 600, width: 64, height: 26)
-expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen], firstShowAfterInstall: true)
-       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
-       "a first show after an install resets a saved pill frame that sits below the top band")
-expect(MiniOrbFrameRestore.resolve(q4LowPill, screens: [miniScreen]) == q4LowPill,
-       "a later show honours the saved pill frame the owner chose")
-expect(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 26), screens: [miniScreen], firstShowAfterInstall: true)
-       == MiniOrbFrameRestore.defaultFrame(in: miniScreen),
-       "a first show after an install resets a saved pill frame that is off every screen")
-let q4HighPill = CGRect(x: 688, y: 820, width: 64, height: 26)
-expect(MiniOrbFrameRestore.resolve(q4HighPill, screens: [miniScreen], firstShowAfterInstall: true) == q4HighPill,
-       "a first show after an install keeps a saved pill frame inside the top band")
+// Visual opacity belongs to the renderer; the native panel always has alpha one.
+for state in [PresenceState.cold, .connecting, .hotMuted, .live] {
+    expect(PresenceSurfaceState.shown(PresencePosture(state: state, alwaysShow: true, failed: false)).opacity == 1,
+           "native opacity stays one in every presence state")
+}
+let rememberedOrb = CGRect(x: 400, y: 300, width: 64, height: 26)
+expect(MiniOrbFrameRestore.resolve(rememberedOrb, screens: [miniScreen]) == CGRect(x: 400, y: 300, width: 220, height: 220),
+       "a valid remembered origin survives the larger orb surface")
+expect(miniScreen.contains(MiniOrbFrameRestore.resolve(CGRect(x: 5000, y: 5000, width: 64, height: 26), screens: [miniScreen])),
+       "a stranded orb is clamped into the visible screen")
 
 // 338: a wake prewarms the host's warm context from the idle states only. COLD is exactly one
 // prewarm, HOT_MUTED is one more, and a wake during a live call does nothing at all.

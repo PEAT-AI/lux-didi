@@ -1,3 +1,4 @@
+import { boundTextModel } from './provider-binding.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
@@ -25,7 +26,6 @@ import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
 import { loadProviderConfig } from '../config/index.js';
-import { GeminiAdapter } from '../adapters/model/index.js';
 import { createSummarizer } from '../services/summarize.js';
 import type { LiveAuthority, ToolsOwner } from '../tools/types.js';
 
@@ -35,6 +35,7 @@ export const hostMigrations = [...domainMigrations, ...chatMigrations, ...liveMi
 /** Structural match for W-B's LiveToolsComposition; kept local and additive until its signature lands. */
 export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>;
 export interface LiveToolsComposition {
+  recover?(): Promise<void>;
   owner: ToolsOwner;
   connectionIds(): string[];
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
@@ -251,21 +252,21 @@ export async function startHost(config: HostConfig) {
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });
-    let summaryModel: GeminiAdapter | null = null;
+    let summaryModel: import('../adapters/model/types.js').ModelPort | null = null;
     let summaryModelId: string | null = null;
     if (providerLoaded.status === 'ready') {
       summaryModelId = providerLoaded.profile.modelId;
-      try { summaryModel = new GeminiAdapter({ modelId: providerLoaded.profile.modelId, keyReference: providerLoaded.profile.keyReference,
-        route: providerLoaded.route, credentials: config.modelTesting?.credentials ?? providerLoaded.credentials,
-        ...(config.modelTesting?.transport ? { transport: config.modelTesting.transport } : {}) }); }
+      try { summaryModel = boundTextModel(providerConfigDir, providerLoaded, config.modelTesting).model; }
       catch { summaryModel = null; }
     }
     const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
+      modelAllowedClasses: providerLoaded.status === 'ready' ? providerLoaded.route.dataClasses : [],
       assistantName: owner.snapshot.displayName,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: config.now ?? Date.now, log: event => log.event(event) });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
+      recover: () => mcp.recover(),
       status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
@@ -277,8 +278,6 @@ export async function startHost(config: HostConfig) {
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
     calendarDigest.begin();
-    // The live service carries the owner's prewarm instruction; an unconfigured live keeps the quiet receipt.
-    const warmOwner = live as typeof live & { prewarm?: () => Promise<WarmPrewarmReceipt> };
     // The names a call will use, on the start event: a log alone then proves which provider, model and
     // voice served it. The status projection carries no key, reference or prompt.
     const liveNow = live.status();
@@ -307,7 +306,7 @@ export async function startHost(config: HostConfig) {
         // 338: the owner's wake instruction, the same one POST api/v1/live/prewarm serves. The live
         // owner writes the one closed `warm_prewarm` line, so either route logs it exactly once.
         prewarm: async (): Promise<WarmPrewarmReceipt> =>
-          await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' as const },
+          await live.prewarm(),
         start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
         logExit('ready', 'close');

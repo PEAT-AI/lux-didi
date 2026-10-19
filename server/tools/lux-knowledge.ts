@@ -2,7 +2,7 @@ import type { McpPort } from '../adapters/mcp/port.js';
 import { bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import type { ConnectorResult } from '../connectors/index.js';
 import type { DataClass } from '../adapters/model/types.js';
-import type { ConnectionPolicy, ModelSnapshot, TrustedRestrictions } from './types.js';
+import { HOST_EVIDENCE, type ConnectionPolicy, type ModelSnapshot, type TrustedRestrictions } from './types.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { shapeLuxKnowledge } from './live-shape.js';
 
@@ -39,13 +39,16 @@ export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: re
     if (!isRecord(content) || !onlyKeys(content, ['type', 'text']) || content['type'] !== 'text' || typeof content['text'] !== 'string') throw Error('unsupported_mcp_content');
     texts.push(content['text']);
   }
+  const received = texts.join('\n').replace(/\r\n?/g, '\n');
+  const shaped = shapeLuxKnowledge(evidence.tool, received);
   const response = {
-    status: 'completed', text: shapeLuxKnowledge(evidence.tool, texts.join('\n')).text, source: detached(source), entitySha256: payload.sha256,
+    partial: shaped.partial, originalCharacters: shaped.originalCharacters, omittedCharacters: shaped.omittedCharacters,
+    status: 'completed', text: shaped.text, source: detached(source), entitySha256: payload.sha256,
     sourceVersion: 'unknown', observedAt: evidence.observedAt, coverage: detached(evidence.coverage),
     ...(evidence.requestedIds === undefined ? {} : { requestedIds: [...evidence.requestedIds], requestedIdsVerified: false }),
   };
   if (Buffer.byteLength(canonicalJSON({ response, dataClasses }), 'utf8') > policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
-  return { response, dataClasses };
+  return { response, dataClasses, ...(evidence.tool === 'get_insight' && received.length > 0 ? { [HOST_EVIDENCE]: { kind: 'remote-body' as const, source: detached(source), entitySha256: payload.sha256, bodySha256: sha256(received), expiresAt: payload.expiresAt, tool: evidence.tool, body: received, upstreamComplete: 'unknown' as const, upstreamOmitted: 'unknown' as const } } : {}) };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function onlyKeys(value: Record<string, unknown>, keys: string[]): boolean { return Object.keys(value).every(key => keys.includes(key)); }

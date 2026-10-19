@@ -153,4 +153,24 @@ export const domainMigrations: SchemaMigration[] = [
       `ALTER TABLE conversation_summaries ADD COLUMN skip_reason TEXT`,
     ],
   },
+  {
+    owner: 'domain', version: 7,
+    statements: [
+      `CREATE TABLE history_sessions (live_session_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+        data_class TEXT NOT NULL CHECK(data_class IN ('ordinary','private','sensitive')),
+        revision INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
+      `CREATE TABLE history_exclusions (source_kind TEXT NOT NULL CHECK(source_kind IN ('live','summary')),
+        source_id TEXT NOT NULL, forgotten_at INTEGER NOT NULL, PRIMARY KEY(source_kind,source_id))`,
+      `CREATE TABLE history_dependencies (child_session_id TEXT NOT NULL, parent_session_id TEXT NOT NULL,
+        PRIMARY KEY(child_session_id,parent_session_id))`,
+    ],
+  },
+  {
+    owner: 'domain', version: 8,
+    statements: [
+      `ALTER TABLE conversation_summaries ADD COLUMN data_class TEXT`,
+      `ALTER TABLE conversation_summaries ADD COLUMN source_revision INTEGER`,
+      `ALTER TABLE history_dependencies ADD COLUMN parent_revision INTEGER`,
+    ],
+  },
 ];

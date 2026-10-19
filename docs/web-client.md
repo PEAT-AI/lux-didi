@@ -326,3 +326,9 @@ false and the other fields null.
 The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.
 
 While a Live session is active the Conversation page shows a "Type to Naya" input under the voice card. Its submit posts `POST /api/v1/live/text` with `{text}`; the host forwards the text to the active Live session as a realtime text turn and journals it as a `You` turn in the projection, and Naya answers by voice. With no Live session the same input saves a local note and never sends text to a model.
+
+## Live transcript fragments
+
+Live transcripts display automatic transcription, not a guarantee of the words spoken or heard. The host projects each session's persisted provider grant as `textJoin`: GPT Live deltas append exactly, including spaces and repeated words; Gemini retains word joining. Persisted `finished` markers close the matching speaker's current block. Native dictation remains cumulative and separate.
+
+The focused replay uses actual OpenAI and Gemini adapters, a temporary canonical Store and headless Chromium, with no provider connection or audio device. From the repository root, compile `server` with `server/node_modules/.bin/tsc -p server/tsconfig.json`, then run `node web/test/transcription-replay.mjs`. It checks both speaker roles, punctuation and word fragments, poll deduplication and complete-message boundaries.

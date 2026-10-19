@@ -1,10 +1,15 @@
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import type { CompletedResult, McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { GoogleEvidence, GoogleResult, GoogleTool } from '../connectors/google.js';
+import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import { sha256 } from './canonical.js';
-import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, type ShapedResult, type ShapedSource } from './live-shape.js';
+import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, receivedGmailBody, type ShapedResult, type ShapedSource } from './live-shape.js';
 
 export interface GoogleProjection {
+  mailPage?: ShapedResult['mailPage'];
+  [HOST_EVIDENCE]?: HostEvidenceRef;
+  calendarPage?: ShapedResult['calendarPage'];
+  calendarScope?: ShapedResult['calendarScope'];
   text: string;
   /** True when the raw projection was longer than the bound and the tail was dropped. */
   partial: boolean;
@@ -105,7 +110,22 @@ export function projectGoogleResult(port: McpPort, evidence: ConnectorResult): {
   if (!payload.ok) return { ok: false, reason: payload.reason };
   const decoded = decodeGoogleEnvelope(payload.text);
   if (!decoded.ok) return { ok: false, reason: decoded.reason };
-  return { ok: true, projection: renderGoogleTool(evidence.tool, decoded.envelope['data']) };
+  const data = decoded.envelope['data'];
+  if (!isRecord(data)) return { ok: false, reason: 'unsupported_google_data' };
+  const coverage = decoded.envelope['coverage'];
+  const native = isRecord(coverage) ? coverage : {};
+  const token = native['next_page_token'];
+  if (token !== undefined && token !== null && (typeof token !== 'string' || token.length === 0 || token.length > 4096)) return { ok: false, reason: 'invalid_google_continuation' };
+  if (typeof token === 'string' && data['nextPageToken'] !== undefined && data['nextPageToken'] !== token) return { ok: false, reason: 'conflicting_google_continuation' };
+  if (native['complete'] !== undefined && typeof native['complete'] !== 'boolean') return { ok: false, reason: 'invalid_google_coverage' };
+  const projection = renderGoogleTool(evidence.tool, { ...data, ...(typeof token === 'string' ? { nextPageToken: token } : {}), ...(native['complete'] === false ? { sourceIncomplete: true } : {}) });
+  const body = evidence.tool === 'gmail_read' ? receivedGmailBody(data) : undefined;
+  if (body !== undefined && evidence.response.state === 'available') {
+    const bodyCoverage = isRecord(data['bodyCoverage']) ? data['bodyCoverage'] : {};
+    const complete = typeof bodyCoverage['complete'] === 'boolean' ? bodyCoverage['complete'] : 'unknown';
+    projection[HOST_EVIDENCE] = { kind: 'remote-body', source: structuredClone(evidence.source), entitySha256: evidence.response.sha256, bodySha256: sha256(body), expiresAt: evidence.response.expiresAt, tool: evidence.tool, body, upstreamComplete: complete, upstreamOmitted: complete === 'unknown' ? 'unknown' : !complete };
+  }
+  return { ok: true, projection };
 }
 
 export type { GoogleEvidence, GoogleResult, GoogleTool, CompletedResult };

@@ -1,6 +1,7 @@
 import { sourceCards } from '../tools/source-cards.js';
-import { noEmptyResult } from '../tools/live-shape.js';
+import { noEmptyResult, type CalendarPage, type CalendarScope, type MailPage } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
+import { recordHistorySession, historySessionEvidence, recordHistoryDependency } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -8,17 +9,19 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
-import { memoryLookup } from '../tools/memory-search.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, chooseStartContext, withProvenance, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
+import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
-import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
+import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallResult, recordUtterance, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
+import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { hostLogEvent, LIVE_STATE_CAUSES } from '../host/log.js';
@@ -134,18 +137,24 @@ function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
  */
-function previousOpeners(tx: Transaction, assistantId: string): { readonly text: string; readonly topic?: string }[] {
-  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC LIMIT 3", [assistantId]);
-  return sessions.flatMap(row => {
+function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass }[] {
+  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC", [assistantId]);
+  const previous: ReturnType<typeof previousOpeners> = [];
+  const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
+  for (const row of sessions) {
+    const source = historySessionEvidence(tx, String(row.live_session_id), eligibility);
+    if (!source || !allowedClasses.includes(source.dataClass)) continue;
     const text = openerFromJournal(tx.all("SELECT kind, text, finished FROM live_journal WHERE live_session_id=? AND (kind='outputTranscription' OR kind IN ('generationComplete','turnComplete','interrupted')) ORDER BY journal_id", [String(row['live_session_id'])]).map(entry => ({
       kind: String(entry['kind']),
       text: entry['text'] === null || entry['text'] === undefined ? null : String(entry['text']),
       finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
     })));
-    if (text === '') return [];
+    if (text === '') continue;
     const topic = openerTopicOf(text, recordedOptions(row['accepted_prompt_snapshot']));
-    return [{ text, ...(topic === undefined ? {} : { topic }) }];
-  });
+    previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, ...(topic === undefined ? {} : { topic }) });
+    if (previous.length === 3) break;
+  }
+  return previous;
 }
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
@@ -279,6 +288,7 @@ interface ActiveSession {
   connection: { seq: number; epoch: string; turnId: string | undefined; turnIndex: number };
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
+  connectorRecovery?: Promise<void> | undefined;
   researchLedger: ResearchLedger;
   researchScheduler?: ResearchScheduler;
   registry: readonly ToolDefinition[];
@@ -315,6 +325,7 @@ interface ActiveSession {
   terminal: boolean;
   consumer: OutputChannel;
   consumerState: LiveConsumerState;
+  pendingDiagnosticLoss?: boolean;
   journalEvents: number;
   journalBytes: number;
   /** The sequence the Mac sees, counted once for the whole session: a provider rebuild opens a new adapter
@@ -738,25 +749,12 @@ export class LiveSessionOwner {
     return snapshot;
   }
 
-  /**
-   * The owner's prewarm instruction (issue 338, R7): read today's calendar digest once, then rebuild the
-   * warm assembly from the sections the last start used plus that digest, keeping the summary
-   * provenance that start recorded (F9). A wake before any start (R7) has no such sections, so it
-   * assembles from the sources this owner holds without a store read, the digest included, and the
-   * receipt says which source it used. Nothing talks to a model, and a connector failure leaves the
-   * slot out rather than failing the instruction. Returns the receipt the host logs as `warm_prewarm`.
-   */
+  /** Refresh cached calendar context without renewing previously selected conversation summaries. */
   async prewarm(): Promise<WarmPrewarmReceipt> {
     const ageBeforeMs = this.#warm.ageMs ?? null;
-    // 1015: a wake is the one moment a stale digest is worth refreshing for, so the prewarm asks for a
-    // read and then takes whatever the cache holds when it answers.
-    this.#calendarDigest?.refresh();
     await this.prepareCalendar();
     const previous = this.#sections;
-    // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;
-    // it is not `refresh(true)` because a source collection cannot carry the provenance above.
-    const next = previous ?? sourceSections(this.#profile.prompt.text, this.#calendar);
-    const refreshed = this.#warm.adopt(previous === undefined ? next : withProvenance({ ...next, calendar: this.#calendar }, previous));
+    const refreshed = this.#warm.adopt(sourceSections(this.#profile.prompt.text, this.#calendar));
     if (refreshed !== undefined) this.#sections = refreshed.sections;
     const receipt: WarmPrewarmReceipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined,
       reason: refreshed === undefined ? 'too_large' : previous === undefined ? 'sources' : 'sections' };
@@ -781,6 +779,7 @@ export class LiveSessionOwner {
       for (const row of rows) {
         const outcome: LiveTerminalOutcome = Number(row['dispatch_intent']) === 1 ? { state: 'outcome_unknown' } : { state: 'not_started' };
         this.#terminalInTx(tx, String(row['live_session_id']), outcome, false, now, 'ended', null);
+        tx.run("UPDATE live_sessions SET diagnostic_metadata_state='unknown',diagnostic_content_state='unknown',native_receipt_state=CASE WHEN native_receipt_state='partial' THEN 'partial' ELSE 'unknown' END,diagnostic_last_reason='host_terminated' WHERE live_session_id=?", [String(row['live_session_id'])]);
       }
       return rows.length;
     });
@@ -831,12 +830,14 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const earlierOpeners = previousOpeners(tx, assistantId);
+      const earlierOpeners = previousOpeners(tx, assistantId, this.#profile.route.dataClasses);
       const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
       // owner, so consecutive calls walk the stored open loops even when no summary was written between
       // them; the warm calendar digest supplies the first option when the host built one.
-      const storedSummaries = summaries.injectionCandidates(tx);
+      const summarySelection = summaries.summarySelection(tx, this.#profile.route.dataClasses);
+      const storedSummaries = summarySelection.candidates;
+      const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
@@ -847,39 +848,22 @@ export class LiveSessionOwner {
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(calendar ? { calendar } : {}),
-        ...(earlierSection ? { earlierConversations: earlierSection } : {}),
+        ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}),
         ...(openerPlan.section.length ? { openingOptions: openerPlan.section } : {}) });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
-      // P1-R1: one source of the earlier-conversation section. A warm assembly younger than ten
-      // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
-      // stale or absent one is assembled here, exactly as before, and adopted for the next start.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
-        let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
-        // R7: a wake prewarm assembles the persona and the digest but no conversation summary, so a start
-        // still assembles its own summary; the digest reaches it from #calendar either way.
-        const warm = this.#warm.take();
-        const start = chooseStartContext(warm !== undefined && warm.sections.summary === undefined ? undefined : warm, () => {
-          // The summaries fill what the other sections leave under the target, so measure it once.
-          basis = composeSession(undefined, this.#calendar);
-          earlier = buildEarlierConversationsSection(storedSummaries,
-            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
-          return { persona: configuredPrompt.system, memory: [] as readonly string[],
-            summary: earlier.section.length ? earlier.section : undefined,
-            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
-        });
-        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
-        else this.#warm.adopt(start.sections);
-        // The sections this start used are what a forced prewarm refreshes, so it re-reads no store.
-        this.#sections = start.sections;
-        // R7: one digest per instruction, the warm start's own sections first and never a second read.
-        const calendar = start.sections.calendar ?? this.#calendar;
-        // The measured basis carries the same digest, so it is the result when the summary is absent.
-        if (!earlier.section) return basis !== undefined && start.sections.calendar === this.#calendar ? basis : composeSession(undefined, calendar);
-        return composeSession(earlier.section, calendar);
+        const basis = composeSession(undefined, this.#calendar);
+        earlier = buildEarlierConversationsSection(storedSummaries,
+          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+        this.#sections = { persona: configuredPrompt.system, memory: [],
+          summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
+          summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
+        this.#warm.adopt(this.#sections);
+        return earlier.section ? composeSession(earlier.section, this.#calendar) : basis;
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }
@@ -894,14 +878,21 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'opener_plan', kinds: openerPlan.options.map(option => option.kind), rotation: openerPlan.rotation });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
-      const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
+      const injectedSummaryIds = [...new Set([...(composed.earlierConversationsIncluded ? earlier.selectedIds : []),
+        ...(composed.sections.some(section => section.id === 'opening-options') ? openerPlan.options.flatMap(option => option.sourceId ? [option.sourceId] : []) : [])])];
+      const injectedOpeners = composed.sections.some(section => section.id === 'previous-openers') ? earlierOpeners : [];
+      const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
+      const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
-      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds }), liveSessionId]);
+      tx.run("UPDATE live_sessions SET diagnostic_metadata_state='in_progress',diagnostic_content_state='in_progress',native_receipt_state='unknown',diagnostic_failures=0,diagnostic_unattributed_transcripts=0,diagnostic_clock_domain=? WHERE live_session_id=?", [hostClockDomain,liveSessionId]);
+      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
+      recordHistorySession(tx, liveSessionId, assistantId, this.#profile.route.dataClasses, injectedSummaryIds, now);
+      for (const opener of injectedOpeners) recordHistoryDependency(tx, liveSessionId, opener.sessionId);
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
       if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob, tx); }
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -926,6 +917,7 @@ export class LiveSessionOwner {
 
   /** Additional authority source for a dispatched job only; Live session lookup remains unchanged. */
   lookupJobAuthority(runId: string): LiveAuthority | null {
+    if (this.#invalidated) return null;
     const job = this.#jobs.list().find(job => job.originSessionId === runId && job.state === 'in_progress');
     return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
   }
@@ -955,7 +947,7 @@ export class LiveSessionOwner {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     let handle: ActiveSession | undefined;
     const page: LivePageProjection = this.#store.transaction(tx => {
-      const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance,(SELECT provider FROM live_grants WHERE live_grants.live_session_id=live_sessions.live_session_id LIMIT 1) AS provider FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       // A fresh origin or session restart opens on a blank voice view: an idle page carries no job rows,
       // and a live page carries only the rows of its own session (UI3b).
       const jobs = row ? this.#feedJobs(tx, String(row.live_session_id)) : [];
@@ -965,11 +957,12 @@ export class LiveSessionOwner {
       const pastSession: LivePageProjection['pastSession'] = terminal || !handle
         ? { outcome: terminal?.state ?? 'unknown', endedAt: terminal ? Number(row.terminal_at) : null, lastObservedAt: Number(row.updated_at) } : undefined;
       const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle ? this.#handleState(handle) : 'idle';
-      const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
+      const rows = tx.all('SELECT journal_id,kind,text,tool_json,finished FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
       const entries: LivePageProjection['entries'] = [];
       for (const item of rows) {
         const seq = Number(item.journal_id), kind = String(item.kind);
-        if (kind === 'inputTranscription' || kind === 'outputTranscription') entries.push({ seq, kind, text: String(item.text ?? '') });
+        if (kind === 'inputTranscription' || kind === 'outputTranscription') entries.push({ seq, kind, text: String(item.text ?? ''), textJoin: row.provider === 'openai' ? 'append' : 'words',
+          ...(item.finished === null ? {} : { finished: Number(item.finished) === 1 }) });
         else if (kind === 'toolCall' || kind === 'toolResult') {
           const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
@@ -1198,7 +1191,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
-      researchLedger: new ResearchLedger(),
+      researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -1260,6 +1253,7 @@ export class LiveSessionOwner {
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
+      this.#diagnosticFailure(handle,'native_receipt_rejected');
     }
   }
 
@@ -1558,17 +1552,27 @@ export class LiveSessionOwner {
     return liveTracePort({
       port: this.#store, liveSessionId, connectionEpoch: connection.epoch,
       turnId: () => connection.turnId,
-      onReject: (code, kind) => hostLogEvent({ event: 'live_trace_rejected', kind, code }),
+      onReject: (code, kind) => {
+        hostLogEvent({ event: 'live_trace_rejected', kind, code });
+        const handle = this.#active.get(liveSessionId);
+        if (handle) this.#diagnosticFailure(handle,'trace_write_failed');
+      },
     });
   }
 
   /** O1b-A: one host receipt. A refusal is a typed host.log line, never an exception in the turn that wrote it. */
   #receipt<K extends TraceEventKind>(handle: ActiveSession, kind: K, ids: Omit<TraceEventIds, 'liveSessionId' | 'connectionEpoch'>, detail: TraceDetailMap[K]): void {
     try {
-      record(this.#store, kind, { ...ids, liveSessionId: handle.liveSessionId, connectionEpoch: handle.connection.epoch }, detail);
+      record(this.#store, kind, { ...ids,...(ids.callKey === undefined ? {} : { callKey: scopedTraceKey(handle.liveSessionId,handle.connection.epoch,'call',ids.callKey) }),liveSessionId: handle.liveSessionId,connectionEpoch: handle.connection.epoch }, detail);
     } catch (error) {
       hostLogEvent({ event: 'live_trace_rejected', kind, code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+      this.#diagnosticFailure(handle,'trace_write_failed');
     }
+  }
+
+  #diagnosticFailure(handle: ActiveSession, reason: DiagnosticLoss): void {
+    try { this.#store.transaction(tx => markDiagnosticLoss(tx,handle.liveSessionId,reason)); }
+    catch { handle.pendingDiagnosticLoss = true; }
   }
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
@@ -1578,7 +1582,7 @@ export class LiveSessionOwner {
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
     this.#receipt(handle, 'turn.opened', { turnId }, {
-      origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: this.#now(),
+      origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
       ...(connection.turnIndex > 1 ? { attributionUncertain: true } : {}),
     });
   }
@@ -1761,15 +1765,11 @@ export class LiveSessionOwner {
     const handle = [...this.#active.values()].filter(candidate => !candidate.terminal).at(-1);
     if (!handle) throw new LiveError('not_found', 'No active Live session');
     this.#guardHandle(handle);
-    const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true };
+    const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true, finalOrigin: 'typed' as const };
+    handle.connectorRecovery = this.#tools?.recover?.();
     handle.session.sendText({ text });
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
-    const turnId = handle.connection.turnId;
-    if (turnId !== undefined) {
-      try { recordUtterance(this.#store, { turnId, role: 'owner', at: this.#now(), final: true, text }); }
-      catch { /* a content write never breaks the turn it belongs to */ }
-    }
     this.#armIdle(handle, this.#profile.limits.idleMs);
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
@@ -2056,6 +2056,7 @@ export class LiveSessionOwner {
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
+            handle.connectorRecovery = this.#tools?.recover?.();
             this.#openTurn(handle);
           }
           handle.inputFinalTimer?.cancel();
@@ -2066,17 +2067,6 @@ export class LiveSessionOwner {
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
             }
-          }
-        }
-        // O1b-A: what was actually said, both sides, lands in the two content tables and nowhere else. It is
-        // written after the owner-utterance boundary has opened the turn, so her first words are never dropped.
-        if (event.type === 'outputTranscription' || event.type === 'inputTranscription') {
-          const turnId = handle.connection.turnId;
-          if (turnId !== undefined) {
-            try {
-              recordUtterance(this.#store, { turnId, role: event.type === 'inputTranscription' ? 'owner' : 'model',
-                at: this.#now(), final: event.finished === true, text: event.text });
-            } catch { /* a content write never breaks the turn it belongs to */ }
           }
         }
         const kind = journalKind(event.type);
@@ -2094,6 +2084,7 @@ export class LiveSessionOwner {
       }
     } catch (error) {
       handle.persistFailure = error;
+      this.#diagnosticFailure(handle,'journal_write_failed');
     }
     if (!handle.terminal) {
       // A session-deadline continuation opens a new session from the timer; the ended one is superseded.
@@ -2130,7 +2121,7 @@ export class LiveSessionOwner {
     handle.inputFinalTimer = this.#schedule(() => {
       if (this.#settled(handle) || handle.generation !== generation || handle.inputJournalId !== journalId) return;
       try {
-        this.#store.transaction(tx => tx.run("UPDATE live_journal SET finished=1 WHERE journal_id=? AND live_session_id=? AND kind='inputTranscription'", [journalId, handle.liveSessionId]));
+        this.#store.transaction(tx => tx.run("UPDATE live_journal SET finished=1,final_origin='app_model_start',finalized_at=?,finalized_mono_ms=? WHERE journal_id=? AND live_session_id=? AND kind='inputTranscription'", [this.#now(), hostMonotonicMs(), journalId, handle.liveSessionId]));
       } catch (error) {
         handle.persistFailure = error;
         handle.abort.abort();
@@ -2186,12 +2177,14 @@ export class LiveSessionOwner {
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {
     const names = new Set(handle.registry.map(tool => tool.name));
     const sources: ResearchSourceKind[] = [];
+    if (names.has(HISTORY_IDENTITY.name)) sources.push('memory');
     if (names.has('search_knowledge')) sources.push('knowledge');
     // Outcome 3: detect a source by the tool its read actually uses, never a sibling, so a calendar
     // read is never advertised when the connection only grants the calendar-list sibling.
     if (names.has('gcal_list')) sources.push('calendar');
     if (names.has('gmail_list')) sources.push('mail');
     if (names.has('mattermost_search')) sources.push('chat');
+    if (names.has('search_mongoose')) sources.push('mongoose');
     // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
     // reply can report them unreachable instead of silently narrowing to the sources still up.
     for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
@@ -2217,6 +2210,10 @@ export class LiveSessionOwner {
       const control = { signal, deadlineMs: handle.deadlineMs };
       const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
+      if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
+        this.#tools!.owner.releaseEvidence(host.runId, [...raw.bindings, ...authorized.bindings]);
+        return calls.map(call => ({ key: call.id, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'round_cancelled' }));
+      }
       return calls.map(call => {
         const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
         const record = slot >= 0 ? authorized.tools[slot] : undefined;
@@ -2224,6 +2221,7 @@ export class LiveSessionOwner {
         const response = accepted?.response ?? {};
         const text = typeof response.text === 'string' ? response.text : '';
         const ok = record?.status === 'completed' && accepted !== undefined;
+        const consumed = ok && accepted ? this.#tools!.owner.consumeEvidence(host, accepted.binding, this.lookupAuthority(host.runId) ?? this.lookupJobAuthority(host.runId), signal) : undefined;
         // Q1-R3(d/e): a failed sub-call names its cause for the research_subcall log, never silently.
         // A sub-call that never dispatched reports its real reason (unknown_tool, grant_not_permitted,
         // invalid_arguments, round_deadline), never a bare refused.
@@ -2232,16 +2230,22 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused';
-        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
+        return { key: call.id, name: call.name, ok, text,
+          ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
+          ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
+          ...(ok && call.name === 'gmail_list' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
+          ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
+          ...(ok && call.name === 'gcal_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle),
+      now: () => this.#now(), timeZone: this.#timeZone,
+      authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
+        && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
+      configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(), selector: this.#research, execute,
-      // K6: her own memory is local, so the routed `memory` layer reads it in process and never goes out.
-      memory: query => this.#store.transaction(tx => memoryLookup(tx, query)),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -2329,11 +2333,28 @@ export class LiveSessionOwner {
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
     if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    {
+      if (!handle.researchLedger.evidenceCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
+      try {
+        if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.evidenceBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
+      } catch { return drop('result_denied'); }
+    }
     const think = handle.session.sendThinking;
     // Gemini carries no thinking channel on this path, so the finding is dropped and the receipt says so.
     if (think === undefined) return drop('no_thinking_channel');
     const block = `Later findings from ${event.source} (${event.ms} ms): ${event.items.join('; ')}`.slice(0, LATE_BLOCK_CHARS);
     try { think.call(handle.session, { text: block }); } catch { return drop('send_failed'); }
+    if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => block.includes(event.items[index] ?? '\u0000')));
+    if (event.mailKeys) {
+      let end = `Later findings from ${event.source} (${event.ms} ms): `.length;
+      const keys: string[] = [];
+      for (const [index, item] of event.items.entries()) {
+        end += item.length;
+        if (end <= block.length && event.mailKeys[index]) keys.push(event.mailKeys[index]!);
+        end += 2;
+      }
+      handle.researchLedger.deliveredMail({ researchId: event.researchId, runId: event.runId ?? -1, keys });
+    }
     hostLogEvent({ event: 'thinking_sent', chars: block.length });
     const reason = this.#lateCommentaryReason(handle, event);
     if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
@@ -2398,9 +2419,12 @@ export class LiveSessionOwner {
     };
     for (const call of event.calls) publish('toolCall', { name: call.name, status: 'called', markdown: '', sources: [] });
     if ((this.#settled(handle) || generation !== handle.generation)) return;
+    const cachedDeliveryBindings = new Map<number, ToolResultBinding>();
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
     if (this.#tools && handle.host) {
+      await handle.connectorRecovery;
+      if (this.#settled(handle) || generation !== handle.generation) return;
       const authority = this.lookupAuthority(handle.host.runId);
       if (!authority) return;
       const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);
@@ -2429,13 +2453,18 @@ export class LiveSessionOwner {
         return { index, call, intent: call.name, subs: plan.calls.map((sub, n) => ({ key: `${call.id}~${n}`, name: sub.name, args: sub.args })), plan };
       });
       const cache = handle.toolCache;
-      const cached = new Map<number, { response: JsonObject; projection: LiveToolProjection }>();
+      type CachedRead = { response: JsonObject; projection: LiveToolProjection; binding: ToolResultBinding };
+      const cached = new Map<number, CachedRead>();
       const pending: Unit[] = [];
       for (const unit of units) {
-        const hit = unit.intent === undefined && cache.cacheable(unit.call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(unit.call.name, unit.call.args) : undefined;
+        const hit = unit.intent === undefined && cache.cacheable(unit.call.name) ? cache.get<CachedRead>(unit.call.name, unit.call.args) : undefined;
         if (!hit) { pending.push(unit); continue; }
+        const gate = await this.#tools.owner.resultGate.authorize(host, [hit.binding], [handle.inputClass], handle.abort.signal);
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        if (gate.state !== 'allowed') { pending.push(unit); continue; }
         hostLogEvent({ event: 'live_read_cache', tool: unit.call.name, cached: true });
         cached.set(unit.index, hit);
+        cachedDeliveryBindings.set(unit.index, hit.binding);
       }
       // One AbortController per model call; the batch stays a single dispatch so same-endpoint reads
       // keep their order, and a cancellation aborts exactly its own call. Each intent sub-read also
@@ -2535,7 +2564,7 @@ export class LiveSessionOwner {
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         projections[index] = projection;
-        if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection });
+        if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
       // Per-turn metadata only: the traces the council requires before any playback fence.
@@ -2556,6 +2585,38 @@ export class LiveSessionOwner {
       }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
+    const researchDeliveryBindings = new Map<number, ToolResultBinding[]>();
+    for (const [index, entry] of responses.entries()) if (entry.name === RESEARCH_TOOL_NAME && (entry.response['calendarCoverage'] || entry.response['historyPages'] || handle.researchLedger.evidenceBindings(String(entry.response['researchId'] ?? '')).length > 0)) {
+      const id = String(entry.response['researchId'] ?? '');
+      if (!handle.researchLedger.evidenceCurrent(id)) {
+        responses[index] = { id: entry.id, name: entry.name, response: { error: 'tool_result_denied' } };
+        projections[index] = { name: entry.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
+      } else researchDeliveryBindings.set(index, handle.researchLedger.evidenceBindings(id));
+    }
+    if (researchDeliveryBindings.size > 0 && this.#tools && handle.host) {
+      for (const [index, bindings] of researchDeliveryBindings) {
+        let allowed = false;
+        try { allowed = this.#tools.owner.authorizeDelivery(handle.host, bindings, [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state === 'allowed'; } catch { allowed = false; }
+        if (!allowed) {
+          const entry = responses[index]!;
+          handle.researchLedger.stop(String(entry.response['researchId'] ?? ''));
+          responses[index] = { id: entry.id, name: entry.name, response: { error: 'tool_result_denied' } };
+          projections[index] = { name: entry.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
+        }
+      }
+    }
+    if (cachedDeliveryBindings.size > 0 && this.#tools && handle.host) {
+      let allowed = false;
+      try {
+        allowed = this.#tools.owner.authorizeDelivery(handle.host, [...cachedDeliveryBindings.values()], [handle.inputClass],
+          this.lookupAuthority(handle.host.runId), handle.abort.signal).state === 'allowed';
+      } catch { allowed = false; }
+      if (!allowed) for (const index of cachedDeliveryBindings.keys()) {
+        const call = event.calls[index]!;
+        responses[index] = { id: call.id, name: call.name, response: { error: 'tool_result_denied' } };
+        projections[index] = { name: call.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
+      }
+    }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
       // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
@@ -2589,15 +2650,11 @@ export class LiveSessionOwner {
     // The call stops being pending the moment its output is sent (amendment C); from here the owed answer
     // carries THINKING, so the orb never flashes LISTENING between the tool and her speech (F1, D5).
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
-    // O1b-A: the tool result is content, so it lands in the content table only, keyed by the provider call id.
-    for (const response of responses) {
-      try { recordCallResult(this.#store, { callKey: response.id, text: JSON.stringify(response.response) }); }
-      catch { /* a content write never breaks the answer it belongs to */ }
-    }
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
+          for (const entry of responses) if (entry.name === RESEARCH_TOOL_NAME) markCalendarReply(handle.researchLedger, entry.response);
           this.#armDeadAir(handle);
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
@@ -2617,13 +2674,28 @@ export class LiveSessionOwner {
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     const persist = (tx: Transaction) => {
-      tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
-        [handle.liveSessionId, event.sequence, kind, text, finished, value, toolJSON, bytes, now]);
+      const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
+      const mono = hostMonotonicMs();
+      tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',
+        [handle.liveSessionId,event.sequence,kind,text,finished,value,toolJSON,bytes,now,handle.connection.epoch,
+          transcription?.providerEventId ?? null,transcription?.providerStartMs ?? null,transcription?.providerEndMs ?? null,mono,hostClockDomain,
+          finished === 1 ? transcription?.finalOrigin ?? (this.#profile.provider === 'gemini' ? 'provider' : 'unknown') : null,
+          finished === 1 ? now : null,finished === 1 ? mono : null]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
-      return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
+      const journalId = Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
+      if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
+      if (transcription) {
+        const turnId = handle.connection.turnId;
+        if (turnId !== undefined) {
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,'',journalId]); }
+          catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
+        } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
+      }
+      return journalId;
     };
     const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
+    if (!transaction) handle.pendingDiagnosticLoss = false;
     handle.journalEvents = events;
     handle.journalBytes = total;
     return journalSequence;
@@ -2637,13 +2709,18 @@ export class LiveSessionOwner {
     // boundary the call really had.
     this.#closeTurn(handle, 'session_end');
     handle.terminal = true;
+    handle.researchLedger.close();
+    this.#tools?.owner.releaseEvidence(handle.liveSessionId);
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
     let journalSequence: number;
     try {
-      journalSequence = this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));
+      journalSequence = this.#store.transaction(tx => {
+        if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
+        return this.#terminalInTx(tx,handle.liveSessionId,outcome,complete,this.#now(),consumerState,rejected);
+      });
     } catch (error) {
       // The durable write failed, but the typed terminal fact must still reach the app. Log the failure
       // (bounded fields only) and resolve done with the in-memory outcome so the socket sends the real code.
@@ -2708,6 +2785,7 @@ export class LiveSessionOwner {
       [liveSessionId, 'terminal', JSON.stringify(outcome), rejected?.kind ?? null, rejected?.sequence ?? null, now]);
     tx.run("UPDATE live_sessions SET lifecycle='terminal', journal_complete=?, terminal_outcome=?, terminal_at=?, consumer_state=?, updated_at=? WHERE live_session_id=?",
       [complete ? 1 : 0, JSON.stringify(outcome), now, consumerState, now, liveSessionId]);
+    tx.run("UPDATE live_sessions SET diagnostic_metadata_state=CASE WHEN diagnostic_metadata_state='in_progress' THEN 'complete' ELSE diagnostic_metadata_state END,diagnostic_content_state=CASE WHEN diagnostic_content_state='in_progress' THEN 'complete' ELSE diagnostic_content_state END WHERE live_session_id=?", [liveSessionId]);
     return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [liveSessionId])!['journal_id']);
   }
 

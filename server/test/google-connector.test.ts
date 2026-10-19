@@ -1,3 +1,5 @@
+import { connectorDescriptor } from '../connectors/index.js';
+import { HOST_EVIDENCE } from '../tools/types.js';
 import { projectGoogleResult } from '../tools/google.js';
 import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
@@ -109,7 +111,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const readProjection = renderGoogleTool('gmail_read', (readEnvelope['data'] as Record<string, unknown>));
     assert.equal(readProjection.partial, true);
     assert.match(readProjection.text, /subject: Synthetic subject line/);
-    assert.match(readProjection.text, /body truncated|\[omitted: \d+ characters of body; final/);
+    assert.match(readProjection.text, /body truncated|\[omitted: \d+ received characters of body omitted from this display/);
 
     const events = completed(await calendar.gcalList({ calendarId: 'primary' }));
     payloadPorts.set(events, adapter);
@@ -559,4 +561,67 @@ test('the warm calendar digest renders the day in the host time zone', async () 
   assert.equal(kolkata, '14:30 standup', 'the same instant, the host zone');
   const refused = await buildCalendarDigest(digestReader('refused'), { now: digestNow, timeZone: 'UTC' });
   assert.equal(refused, undefined, 'a refused read leaves the slot out rather than failing the start');
+});
+
+test('Gmail precise body read defaults to full and preserves deliberate metadata requests through the actual SDK child', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry(); registry.register(config('local-stdio', 'ok', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_FAMILIES.gmail);
+    const gmail = readerFor(adapter, registry, digest);
+    for (const input of [{ id: 'synthetic-message' }, { id: 'synthetic-message', format: 'metadata' as const }]) {
+      const evidence = completed(await gmail.gmailRead(input)); payloadPorts.set(evidence, adapter);
+      const received = envelopeOf(evidence)['received'] as Record<string, unknown>;
+      assert.equal(received['id'], 'synthetic-message');
+      assert.equal(received['format'], input.format ?? 'full');
+    }
+    assert.equal((await gmail.gmailRead({ id: 'synthetic-message', format: 'invalid' as 'full' })).state, 'refused');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const family of ['gmail', 'calendar'] as const) test(`Google native envelope: ${family} outer coverage cursor survives the actual SDK projector`, async t => {
+  const name = family === 'gmail' ? 'gmail_list' : 'gcal_list';
+  const sdk = new Server({ name: 'native-google-envelope', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: [{ name, inputSchema: { type: 'object' } }] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family, tool: name, method: name, account: { configured: 'synthetic', provider: null }, data: family === 'gmail' ? { messages: Array.from({ length: 8 }, (_, n) => ({ id: `native-message-${n}`, threadId: 'native-thread', internalDate: String(1792368000000 - n), headers: [{ name: 'Subject', value: `Native page evidence ${n}` }], snippet: `Received native snippet ${n}` })) } : { events: [{ id: 'native-event', summary: 'Native page evidence', start: { dateTime: '2026-10-19T10:00:00Z' } }] }, coverage: { returned: 1, complete: false, next_page_token: 'native-next', ...(family === 'calendar' ? { visibility: 'unverified' } : {}) }, diagnostics: [] }) }] }) as never);
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => { const request = new Request(input, init); return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request); });
+  const registry = new McpRegistry(); registry.register({ id: 'native', url: 'http://127.0.0.1:18769/mcp', account: 'synthetic', resource: 'synthetic' }); registry.enable('native'); registry.allowEgress('native');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() }); t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('native'); assert.equal(discovery.state, 'discovered'); if (discovery.state !== 'discovered') throw Error('discovery failed');
+  registry.approve({ endpointId: 'native', schemaDigest: discovery.schemaDigest, toolNames: [name], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const source = createGoogleReader({ port: adapter, registry, config: { endpointId: 'native', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, family } });
+  const result = family === 'gmail' ? await source.gmailList({ q: 'subject:evidence' }) : await source.gcalList({ calendarId: 'primary' });
+  const projected = projectGoogleResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
+  assert.equal(projected.projection.partial, true);
+  if (family === 'calendar') assert.equal(projected.projection.calendarPage?.nextPageToken, 'native-next');
+  else {
+    assert.match(projected.projection.text, /upstream continuation available/);
+    const page = (projected.projection as unknown as { mailPage?: { messages: { id: string; threadId: string; internalDate: string }[]; nextPageToken?: string } }).mailPage;
+    assert(page, 'received mail page must survive projection'); assert.equal(page.nextPageToken, 'native-next'); assert.equal(page.messages.length, 8, 'presentation cap must not discard received message identities');
+    assert.equal(page.messages[7]!.id, 'native-message-7'); assert.equal(page.messages[0]!.threadId, 'native-thread'); assert.equal(page.messages[0]!.internalDate, '1792368000000');
+  }
+});
+
+test('Gmail retained evidence: actual SDK full received body is host-only and keeps upstream completeness unknown', async () => {
+  const { dir, pidFile } = scratch(); const registry = new McpRegistry(); const endpoint = config('local-stdio', 'quoted', pidFile); registry.register(endpoint);
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_FAMILIES.gmail);
+    const evidence = completed(await readerFor(adapter, registry, digest).gmailRead({ id: 'm1' }));
+    const policy: ConnectionPolicy = { schemaVersion: 1, ownerId: 'synthetic-owner', connectionId: 'local-stdio', generation: 1, enabled: true, connector: 'google', endpoint: { ...endpoint, credentialRef: null } as ConnectionPolicy['endpoint'], toolNames: [...GOOGLE_FAMILIES.gmail], schemaDigest: digest, sourcePolicy: { id: 'source', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] }, bounds: { maxQueryChars: 2048, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 65536, maxResultBytes: 65536 } };
+    const snapshot = connectorDescriptor('google')!.project(evidence, adapter, policy);
+    const retained = snapshot[HOST_EVIDENCE]; assert(retained && retained.kind === 'remote-body');
+    assert.equal(snapshot.response['partial'], true, 'quoted received text omitted by display cleaning remains explicit');
+    assert(Number(snapshot.response['omittedCharacters']) > 20000);
+    assert(retained.body.endsWith('b'.repeat(20000))); assert.match(retained.body, /Synthetic retained historical evidence/); assert.equal(retained.upstreamComplete, 'unknown'); assert.equal(retained.upstreamOmitted, 'unknown');
+    assert.equal(retained.tool, 'gmail_read'); assert.equal(retained.expiresAt, evidence.response.state === 'available' ? evidence.response.expiresAt : 0);
+    assert(!JSON.stringify(snapshot).includes('b'.repeat(1600)), 'full body and private reference never serialize');
+    assert.doesNotMatch(String(snapshot.response['text']), /final, a single message has no partial re-read/);
+    const metadata = completed(await readerFor(adapter, registry, digest).gmailRead({ id: 'm1', format: 'metadata' }));
+    const metadataSnapshot = connectorDescriptor('google')!.project(metadata, adapter, policy);
+    assert.equal(metadataSnapshot[HOST_EVIDENCE], undefined); assert.match(String(metadataSnapshot.response['text']), /Metadata-only view requested/);
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });

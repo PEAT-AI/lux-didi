@@ -2,7 +2,7 @@ import './style.css';
 import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup, type MemoryListItem } from './memory-list';
 import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySummaries, type LiveSelection, type LiveSummary, type MemorySummaryItem, saveLiveSelection } from './api';
 import { ConnectedView } from './connected';
-import { Orb, type VoiceState } from './orb';
+import { Orb, orbSurfaceVisible, type VoiceState } from './orb';
 import { createStateDebounce } from './orb-states';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
 import { activityMarkup, connectingBeforeFirstSpeech, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
@@ -13,7 +13,7 @@ import { connectionsMarkup } from './connector-status';
 import { micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
-import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, type MiniState } from './mini';
+import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, refreshMiniVisuals, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -101,7 +101,7 @@ function orbState(): VoiceState {
   // The machine owns the look while it is stopping, idle or error, so a Stop press changes it at once (3p).
   // Q4: listening before Naya's first audible frame is the connect window, so the orb says
   // Connecting there instead of Listening.
-  if(!machineOwnsOrb(liveMachine.view) && live && live.state!=='idle')return connectingBeforeFirstSpeech(live)?'CONNECTING':liveVoiceState(live.state);
+  if((miniRoute||!machineOwnsOrb(liveMachine.view)) && live && live.state!=='idle')return connectingBeforeFirstSpeech(live)?'CONNECTING':liveVoiceState(live.state);
   if(liveMachine.view.state==='error')return 'ERROR';
   if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';
@@ -208,7 +208,7 @@ function settingsInput() { return { status, statusUnavailable, connections, conn
   ...(micMode ? { micMode: { preferred: micMode.preferred, active: micMode.active } } : {}), summary: liveSummary, summaryUnavailable: liveSummaryUnavailable, ...(liveSaved ? { saved: { provider: liveSaved.provider, voice: liveSaved.voice, appliesAt: liveSaved.appliesAt } } : {}), theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
-  return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
+  return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div>${miniModeButtonMarkup(!!nativeBridge&&!nativeFake,"mini-mode-settings")}</section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
   <section class="panel"><h2>Text chat model</h2><span class="tag">${status?.model.configured ? 'Connected' : 'No model connected'}</span><p>${status?.model.configured ? `${e(status.model.provider ?? '')} ${e(status.model.model ?? '')}` : 'Local Save never sends to a model. You can save thoughts, recall messages, and manage commitments. Replies need a model configured in your service.'}</p></section>
   <section class="panel"><h2>Permissions</h2><dl><dt>Notifications</dt><dd>${e(permissions)}</dd><dt>Delivery</dt><dd>${status?.capabilities.notifications ? 'Available through your service; browser delivery is not set up' : 'Not configured'}</dd><dt>Microphone</dt><dd>Not requested. Voice capture is not part of this browser version.</dd></dl><p class="muted">Nothing here listens in the background. Change denied permissions in your browser settings.</p></section><section class="panel companion"><span class="eyebrow">A HELPING HAND ON YOUR MAC</span><h2>Mac companion</h2><p>The native companion can provide local Mac notifications and device features when you allow them.</p><p class="muted">This browser cannot control your Mac, start its microphone, or grant permissions for it. Open the companion to manage those choices.</p><a class="credits" href="/third-party-notices.txt">Orb dependency notices</a></section></div>`;
 }
@@ -317,13 +317,14 @@ function paintMiniStage() {
   const state = miniState(orbState(), liveActivity(live), live?.muted === true);
   stage.setAttribute('data-mini-state', state);
   stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
+  refreshMiniVisuals();
 }
 function renderMini() {
   if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
   orb?.destroy(); orb = undefined;
   root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live), live?.muted === true), miniCaptionMarkup());
   const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
-  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
+  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState(), true);
 }
 function render() {
   if (miniRoute) { renderMini(); return; }
@@ -331,7 +332,7 @@ function render() {
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
   orb?.destroy();orb=undefined;transcriptPin?.stop();transcriptPin=undefined;
-  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Naya home"><span class="brand-orb" aria-hidden="true"></span><span>naya<span class="brand-dot">.</span></span></a>${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
+  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Naya home"><span class="brand-orb" aria-hidden="true"></span><span>naya<span class="brand-dot">.</span></span></a>${livePillMarkup()}${miniModeButtonMarkup(!!nativeBridge&&!nativeFake)}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   // The accepted CSP is style-src 'self', so the panel widths are applied through the CSSOM after the render
   // instead of through an inline style attribute in the markup (TR-R2, #305).
   const shellElement = root.querySelector<HTMLElement>('.app-shell');
@@ -421,7 +422,7 @@ function bind() {
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
-  document.getElementById('mini-mode')?.addEventListener('click', () => nativeBridge?.send({ type: 'mini' }));
+  root.querySelectorAll<HTMLElement>('[data-mini-mode]').forEach(el=>el.addEventListener('click',()=>nativeBridge?.send({type:'mini'})));
   const appearance = root.querySelector<HTMLSelectElement>('#appearance-theme');
   if(appearance) appearance.onchange=()=>{theme=appearance.value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);nativeBridge?.send({type:'theme',mode:theme});render();};
   bindLiveDisclosure();
@@ -533,16 +534,17 @@ async function connect(background=false) {
     if(!background||populate){await loadTab();assertAuthority(version);await connectedView.refresh(current.assistantId);assertAuthority(version);}
   } catch(err){if(version!==authorityVersion())return;error=failure(err);statusUnavailable=true;if(connection!=='Offline')connection=navigator.onLine?'Disconnected':'Offline';backoff=Math.min(backoff*2,120000);}
   if(version!==authorityVersion())return;
+  if(background&&miniRoute&&document.querySelector('.mini-stage')){paintMiniStage();applyOrbState();schedulePoll();void pollLive();return;}
   if(background&&document.querySelector('.app-shell')){const dot=document.querySelector('.connection-dot');if(dot)dot.classList.toggle('online',connection==='Connected');const state=document.getElementById('connection-state');if(state)state.textContent=connection;paintLive();schedulePoll();void pollLive();void pollConnections();return;}
   render();schedulePoll();void pollLive();void pollConnections();
 }
-function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);pollTimer=undefined;const version=authorityVersion();if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>{if(version===authorityVersion())void connect(true);},backoff);}
+function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);pollTimer=undefined;const version=authorityVersion();if(orbSurfaceVisible()&&!pairingRequired)pollTimer=setTimeout(()=>{if(version===authorityVersion())void connect(true);},backoff);}
 // Live projection poll: 1 Hz while active, 4 s while idle or terminal, paused while hidden. The route is W-B's;
 // a missing or failed route leaves the last honest state and never fabricates one.
 async function pollLive(){
   if(liveTimer)clearTimeout(liveTimer);
   liveTimer=undefined;
-  if(document.hidden||pairingRequired||liveBusy)return;
+  if(!orbSurfaceVisible()||pairingRequired||liveBusy)return;
   const version=authorityVersion();liveBusy=true;
   try{
     const prior=livePoll;
@@ -552,13 +554,19 @@ async function pollLive(){
     // opens blank and the session stays reachable only from the closed panel (spec 1.3 cause 1, UI3b).
     if(prior.live&&next.live&&prior.live.since!==next.live.since){
       const block=earlierSession(prior.live);
-      if(block&&!earlierFeed.some(entry=>entry.at===block.at))earlierFeed=[...earlierFeed,block];
+      archiveSession(block);
     }
     const ended=next.live?.pastSession?earlierSession(next.live):undefined;
-    if(ended&&!earlierFeed.some(entry=>entry.at===ended.at))earlierFeed=[...earlierFeed,ended];
+    archiveSession(ended);
     livePoll={...next,earlier:earlierFeed};live=livePoll.live;paintLive();
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
+}
+function archiveSession(block: EarlierSession | undefined){
+  if(!block)return;
+  const index=earlierFeed.findIndex(entry=>entry.at===block.at);
+  if(index<0)earlierFeed=[...earlierFeed,block];
+  else if(earlierFeed[index]!.html!==block.html)earlierFeed=earlierFeed.map((entry,n)=>n===index?block:entry);
 }
 /** Replace the settings panel in place and re-bind the controls the replacement carries. */
 function repaintLiveSettings(){const panel=document.getElementById('settings-summary');if(!panel)return;panel.outerHTML=settingsMarkup(settingsInput());bindConnectedHistory();bindLiveProviderSwitch();}
@@ -574,7 +582,7 @@ async function pollLiveSummary(){
 }
 async function pollConnections(){
   if(connectionsTimer)clearTimeout(connectionsTimer);connectionsTimer=undefined;
-  if(document.hidden||pairingRequired||connectionsBusy)return;
+  if(!orbSurfaceVisible()||pairingRequired||connectionsBusy)return;
   const version=authorityVersion();connectionsBusy=true;
   try{const current=await request<unknown>('/live/connections',{signal:AbortSignal.timeout(8000)});if(version!==authorityVersion())return;connections=current;connectionsStale=false;}
   catch{if(version===authorityVersion())connectionsStale=true;}
@@ -584,14 +592,14 @@ async function pollConnections(){
       const panel=document.getElementById('connections-panel');if(panel)panel.outerHTML=connectionsMarkup(connections,connectionsStale);
       // The running Live config refreshes on the same tick as the connectors.
       void pollLiveSummary();
-      if(!document.hidden&&!pairingRequired)connectionsTimer=setTimeout(()=>{if(version===authorityVersion())void pollConnections();},10000);
+      if(orbSurfaceVisible()&&!pairingRequired)connectionsTimer=setTimeout(()=>{if(version===authorityVersion())void pollConnections();},10000);
     }
   }
 }
 function bindLiveDisclosure(){document.querySelector<HTMLDetailsElement>('#live-details')?.addEventListener('toggle',event=>{liveDetailsOpen=(event.target as HTMLDetailsElement).open;});}
 function scheduleLive(){
   if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
-  const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
+  const version=authorityVersion();if(orbSurfaceVisible()&&liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
 function paintNotices(){
   // The error and notice banners live at the top of the lane row; patch them in place so a notify
@@ -694,7 +702,30 @@ onAuthorityChanged(reason=>{
 });
 window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';livePoll={...livePoll,stale:true};connectionsStale=true;statusUnavailable=true;if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
 window.addEventListener('online',()=>{if(!pairingRequired)void connect();});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else if(!pairingRequired){void connect(true);}});
+function surfaceVisibilityChanged(){
+  if(!orbSurfaceVisible()){
+    if(connectionsTimer)clearTimeout(connectionsTimer);
+    if(pollTimer)clearTimeout(pollTimer);
+    if(liveTimer)clearTimeout(liveTimer);
+  }else if(!pairingRequired){void connect(true);}
+}
+document.addEventListener('visibilitychange',surfaceVisibilityChanged);
+window.addEventListener('didi-surface-visibility',surfaceVisibilityChanged);
+let surfaceGeneration=0;
+Object.assign(window,{
+  didiSetSurfaceVisible(visible:boolean,generation:number){
+    if(!Number.isSafeInteger(generation)||generation<surfaceGeneration)return;
+    surfaceGeneration=generation;
+    (window as unknown as {didiNativeSurfaceVisible:boolean}).didiNativeSurfaceVisible=visible;
+    window.dispatchEvent(new Event('didi-surface-visibility'));
+  },
+  didiPrepareSurface(generation:number){
+    if(!Number.isSafeInteger(generation)||generation<surfaceGeneration)return{generation,painted:false};
+    surfaceGeneration=generation;
+    if(miniRoute){paintMiniStage();refreshMiniVisuals();}
+    return{generation,painted:orb?.prepareSurface()===true};
+  },
+});
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });
 theme=loadTheme(themeStorage());applyTheme(document.documentElement,theme);
 const installed = installNativeBridge(window as unknown as Record<string, unknown>, (_kind, type) => { console.debug(`didi bridge: ignored unknown ${_kind} type ${type}`); });

@@ -25,6 +25,7 @@ import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { LiveToolJobs, type ToolJob, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
+import { parseSelector, type ResearchSelector } from '../tools/research.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
@@ -100,6 +101,8 @@ function profileInput(limits?: Record<string, number>, model = MODEL, provider: 
 
 interface Harness {
   requests: LiveVoiceRequest[];
+  toolRegistry?: McpRegistry;
+  toolOwner?: ReturnType<typeof createToolsOwner>;
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
   owner: LiveSessionOwner;
@@ -119,9 +122,19 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   provider?: 'gemini' | 'openai';
   tools?: boolean;
+  history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
+  mail?: boolean;
+  research?: ResearchSelector;
+  mailData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  mongoose?: boolean;
+  mongooseData?: unknown;
+  knowledgeSearchLimit?: number;
+  calendarData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   beforeTool?: () => Promise<void>;
+  knowledgeContent?: string;
+  recover?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
   /** R6: the work one Mattermost read does, so a test can hold a chat source open across a clock advance. */
   mattermostWork?: () => Promise<void>;
@@ -167,12 +180,14 @@ async function harness(t: TestContext, overrides: {
   });
   let owner!: LiveSessionOwner;
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
+  let toolRegistry: McpRegistry | undefined;
+  let exposedToolOwner: ReturnType<typeof createToolsOwner> | undefined;
   if (overrides.tools) {
     const schemas = [
-      { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
+      { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
     ];
-    const registry = new McpRegistry();
+    const registry = new McpRegistry(); toolRegistry = registry;
     const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
     registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
     const sdk = new Server({ name: 'live-tools-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -181,7 +196,7 @@ async function harness(t: TestContext, overrides: {
     sdk.setRequestHandler('tools/call', async req => {
       calls.push({ name: req.params.name, args: req.params.arguments });
       await overrides.beforeTool?.();
-      return { content: [{ type: 'text', text: '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
+      return { content: [{ type: 'text', text: overrides.knowledgeContent ?? '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
     });
     await sdk.connect(transport);
     let mattermostEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
@@ -216,23 +231,63 @@ async function harness(t: TestContext, overrides: {
       calendarSdk = new Server({ name: 'live-calendar-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       calendarTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
-      calendarSdk.setRequestHandler('tools/call', req => {
+      calendarSdk.setRequestHandler('tools/call', async req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify({ data: req.params.name === 'gcal_list'
+        const raw = overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'gcal_list'
           ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
-          : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] } }) }] };
+          : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
+        const { nextPageToken, ...data } = raw;
+        return { content: [{ type: 'text', text: JSON.stringify({ family: 'calendar', tool: req.params.name, data, coverage: { complete: !nextPageToken, next_page_token: nextPageToken ?? null } }) }] };
       });
       await calendarSdk.connect(calendarTransport);
+    }
+    let mailSdk: Server | undefined;
+    let mailTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const mailEndpoint = { id: 'mail', url: 'https://fixture.invalid/mail', account: 'synthetic-mail-account', resource: 'synthetic-mailbox' };
+    const mailSchemas = [
+      { name: 'gmail_list', inputSchema: { type: 'object', properties: { q: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
+      { name: 'gmail_read', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id'], additionalProperties: false } },
+    ];
+    if (overrides.mail) {
+      registry.register(mailEndpoint); registry.enable('mail'); registry.allowEgress('mail');
+      mailSdk = new Server({ name: 'live-mail-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      mailTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      mailSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mailSchemas) }) as never);
+      mailSdk.setRequestHandler('tools/call', async req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        const raw = await overrides.mailData!(req.params.name, req.params.arguments ?? {});
+        const { nextPageToken, ...data } = raw;
+        return { content: [{ type: 'text', text: JSON.stringify({ family: 'gmail', tool: req.params.name, data, coverage: { complete: !nextPageToken, next_page_token: nextPageToken ?? null } }) }] };
+      });
+      await mailSdk.connect(mailTransport);
+    }
+    let mongooseSdk: Server | undefined;
+    let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const mongooseEndpoint = { id: 'mongoose', url: 'https://fixture.invalid/mongoose', account: 'account', resource: 'resource' };
+    const mongooseSchemas = [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'], additionalProperties: false } }];
+    if (overrides.mongoose) {
+      registry.register(mongooseEndpoint); registry.enable(mongooseEndpoint.id); registry.allowEgress(mongooseEndpoint.id);
+      mongooseSdk = new Server({ name: 'live-mongoose-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      mongooseTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      mongooseSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mongooseSchemas) }) as never);
+      mongooseSdk.setRequestHandler('tools/call', req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        return { content: [{ type: 'text', text: JSON.stringify(overrides.mongooseData ?? { results: [{ entity_type: 'knowledge', id: 'synthetic-company-item', title: 'Synthetic company evidence', snippet: 'A current source answer.' }] }) }] };
+      });
+      await mongooseSdk.connect(mongooseTransport);
     }
     t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
+      if (mailTransport && request.url === mailEndpoint.url) return mailTransport.handleRequest(request);
+      if (mongooseTransport && request.url === mongooseEndpoint.url) return mongooseTransport.handleRequest(request);
       if (mattermostTransport && mattermostEndpoint && request.url === mattermostEndpoint.url) return mattermostTransport.handleRequest(request);
       if (calendarTransport && calendarEndpoint && request.url === calendarEndpoint.url) return calendarTransport.handleRequest(request);
       return transport.handleRequest(request);
     });
-    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
-    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: (overrides.mail || overrides.knowledgeContent) ? 262144 : 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: (overrides.mail || overrides.knowledgeContent) ? 65536 : 12000, projectionChars: 10, timeoutMs: 1000 } });
+    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, ...(overrides.history ? { grantMode: 'owner-trusted-reads' as const } : {}), lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    exposedToolOwner = toolOwner;
     if (overrides.beforeGate) {
       const authorize = toolOwner.resultGate.authorize.bind(toolOwner.resultGate);
       t.mock.method(toolOwner.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => { await overrides.beforeGate!(); return authorize(...args); });
@@ -241,7 +296,7 @@ async function harness(t: TestContext, overrides: {
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
-      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      bounds: { maxQueryChars: 80, maxSearchLimit: overrides.knowledgeSearchLimit ?? 3, maxGetIds: 3, maxEntityBytes: overrides.knowledgeContent ? 65536 : 4096, maxResultBytes: overrides.knowledgeContent ? 65536 : 4096 } });
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
     if (overrides.mattermost && mattermostEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
@@ -261,10 +316,27 @@ async function harness(t: TestContext, overrides: {
       assert.equal((await port.discover(calendarEndpoint.id)).state, 'discovered');
       toolOwner.projectConnection('calendar');
     }
+    if (overrides.mail) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mail', generation: 1, enabled: true, connector: 'google',
+        endpoint: { ...mailEndpoint, credentialRef: null }, toolNames: ['gmail_list', 'gmail_read'], schemaDigest: canonicalToolDigest(mailSchemas),
+        sourcePolicy: { id: 'live-mail-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 2048, maxSearchLimit: 50, maxGetIds: 3, maxEntityBytes: 65536, maxResultBytes: 65536 } });
+      assert.equal((await port.discover('mail')).state, 'discovered'); toolOwner.projectConnection('mail');
+    }
+    if (overrides.mongoose) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
+        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
+        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      assert.equal((await port.discover('mongoose')).state, 'discovered');
+      toolOwner.projectConnection('mongoose');
+    }
     toolOwner.projectConnection('lux');
-    tools = { owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
+    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : []), ...(overrides.mail ? ['mail'] : []), ...(overrides.mongoose ? ['mongoose'] : [])] };
     if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
-    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); });
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); if (mongooseSdk) await mongooseSdk.close(); if (mailSdk) await mailSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
     memorySelections += 1;
@@ -279,9 +351,9 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(overrides.research ? { research: overrides.research } : {}), ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 /** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
@@ -4053,3 +4125,525 @@ test('O1b-A: a synthetic tool turn writes one turn, ordered utterances, a tool r
 // The dead-air stall the watchdog sees is projected onto the open turn (stall_reason no_audible_output) and the
 // typed GAP a stalled turn prints are covered by trace.test.ts, which drives the store directly; the watchdog's
 // own nudge path is exercised by the D3 tests above.
+
+
+test('fluency: cached Live metadata cannot bypass suspended or revoked connector authority', async t => {
+  for (const revoked of [false, true]) {
+    const h = await harness(t, { tools: true, calendar: true });
+    await attached(h, `cache-authority-${revoked}`);
+    await settleLiveTool(h, 'before', 'gcal_calendars', {});
+    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+    if (revoked) h.toolRegistry!.revoke('calendar'); else h.toolRegistry!.suspend('calendar');
+    await settleLiveTool(h, 'after', 'gcal_calendars', {});
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.ok(frame.toolResponse.functionResponses[0]!.response['error'], 'cached success must not outlive canonical authority');
+    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'denied cache does not dispatch');
+  }
+});
+
+
+test('fluency: demand recovery belongs to new owner input and not repeated model tools', async t => {
+  let demands = 0;
+  const h = await harness(t, { tools: true, calendar: true, recover: async () => { demands++; } });
+  await attached(h, 'distinct-recovery-demand');
+  h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic request', finished: true } } });
+  await settleLiveTool(h, 'first', 'gcal_calendars', {});
+  await settleLiveTool(h, 'model-retry', 'gcal_calendars', {});
+  assert.equal(demands, 1);
+  h.f.send({ serverContent: { inputTranscription: { text: 'A distinct synthetic request', finished: true } } });
+  await settleLiveTool(h, 'new-request', 'gcal_calendars', {});
+  assert.equal(demands, 2);
+});
+
+
+test('fluency R2: cached metadata is denied after revocation during sibling work or its final authorization microtask', async t => {
+  for (const boundary of ['revoke', 'suspend', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>();
+    const h = await harness(t, { tools: true, calendar: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
+    const { session } = await attached(h, `cache-delivery-${boundary}`);
+    await settleLiveTool(h, 'prime-calendar', 'gcal_calendars', {});
+    await settleLiveTool(h, 'prime-calendar-small', 'gcal_calendars', { maxResults: 1 });
+    if (boundary === 'final-microtask') {
+      const gate = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+      t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof gate>) => {
+        const outcome = await gate(...args);
+        if (outcome.state === 'allowed' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
+        return outcome;
+      });
+    }
+    const before = toolResponseCount(h);
+    h.f.send({ toolCall: { functionCalls: [
+      { id: 'cached-calendar', name: 'gcal_calendars', args: {} },
+      { id: 'cached-calendar-small', name: 'gcal_calendars', args: { maxResults: 1 } },
+      { id: 'slow', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
+    ] } });
+    await started.promise;
+    if (boundary === 'revoke') h.toolRegistry!.revoke('calendar');
+    if (boundary === 'suspend') h.toolRegistry!.suspend('calendar');
+    finish.resolve();
+    for (let i = 0; i < 2000 && toolResponseCount(h) === before; i++) await tick();
+    assert.equal(toolResponseCount(h), before + 1);
+    const frame = h.f.frames.filter(value => typeof value === 'object' && value !== null && 'toolResponse' in value).at(-1) as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } };
+    const cached = frame.toolResponse.functionResponses.find(response => response.id === 'cached-calendar')!.response;
+    assert.equal(h.toolRegistry!.currentGrant('calendar'), undefined, boundary);
+    assert.ok(cached['error'], boundary);
+    assert.equal(cached['text'], undefined, 'no metadata body reaches provider');
+    const projections = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 100 }).fragments.filter(fragment => fragment.kind === 'toolResult');
+    assert.equal(projections.at(-3)?.tool?.status, 'error', 'local receipt must deny too');
+    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'neither completed calendar read replays');
+    const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='gcal_calendars'", [session.liveSessionId]));
+    assert.deepEqual(rows.map(row => row.state), ['completed', 'completed'], 'original completed journal is unchanged');
+  }
+});
+
+test('calendar integration: actual Google projector and Live ledger deliver every page and local remainder with original authority', async t => {
+  const events = Array.from({ length: 15 }, (_, n) => ({ id: `calendar-event-${n}`, start: `2023-11-${String(14 + Math.floor(n / 5)).padStart(2, '0')}T10:00:00Z`, summary: `Synthetic event ${n}`, description: n === 0 ? 'Long description. '.repeat(40) : '' }));
+  for (const revoked of [false, true]) {
+    const h = await harness(t, { tools: true, calendar: true, calendarData: (name, args) => name === 'gcal_calendars'
+      ? { calendars: [{ id: 'primary', summary: 'Main' }], nextPageToken: 'more-calendars' }
+      : args['pageToken'] ? { events: events.slice(12) } : { events: events.slice(0, 12), nextPageToken: 'next-events' } });
+    await attached(h, `calendar-complete-${revoked}`);
+    await settleLiveTool(h, 'calendar-start', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
+    const last = (): Record<string, unknown> => {
+      const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+      return frame.toolResponse.functionResponses[0]!.response;
+    };
+    const reply = last();
+    assert.equal(reply['canContinue'], true);
+    const coverage = reply['calendarCoverage'] as Record<string, unknown>;
+    assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 7);
+    assert.equal(coverage['bodyTruncated'], true); assert.equal(coverage['calendarListComplete'], false);
+    const calls = h.calls.filter(call => call.name === 'gcal_list');
+    assert.equal(calls.length, 2);
+    const first = calls[0]!.args as Record<string, unknown>, second = calls[1]!.args as Record<string, unknown>;
+    assert.equal(first['calendarId'], 'primary'); assert.equal(first['timeMin'], '2023-11-12T18:30:00.000Z');
+    assert.equal(second['timeMin'], first['timeMin']); assert.equal(second['timeMax'], first['timeMax']);
+    assert.equal(second['pageToken'], 'next-events');
+    assert.doesNotMatch(JSON.stringify(reply), /next-events|more-calendars/, 'opaque page tokens stay inside the host ledger');
+    if (revoked) h.toolRegistry!.revoke('calendar');
+    await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
+    if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    else { assert.match(JSON.stringify(last()['findings']), /Synthetic event 14/); assert.equal(last()['canContinue'], false); }
+    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 2, 'neither retained delivery nor denial rereads completed pages');
+  }
+});
+
+test('calendar integration: revocation during a sibling await or final microtask denies retained results at publication', async t => {
+  for (const boundary of ['sibling', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>(), calendarAccepted = deferred<void>();
+    const h = await harness(t, { tools: true, calendar: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'exact-retained', start: '2023-11-15T10:00:00Z', summary: 'Calendar publication must be gated' }] } });
+    await attached(h, `calendar-delivery-race-${boundary}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args);
+      if (args[1].some(binding => binding.name === 'gcal_list')) calendarAccepted.resolve();
+      if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
+      return result;
+    });
+    const response = settleLiveTool(h, 'calendar-race', 'research', { action: 'start', question: 'Synthetic calendar and knowledge', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'knowledge', query: 'synthetic' }] });
+    let entered = false, collected = false;
+    void started.promise.then(() => { entered = true; }); void calendarAccepted.promise.then(() => { collected = true; });
+    t.after(() => finish.resolve());
+    for (let n = 0; n < 1000 && !(entered && collected); n++) await tick();
+    assert.ok(entered && collected, `calendar and sibling reached their real gates: ${JSON.stringify(h.calls.map(call => call.name))}`);
+    if (boundary === 'sibling') h.toolRegistry!.revoke('calendar');
+    finish.resolve();
+    await response;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied');
+    assert.doesNotMatch(JSON.stringify(frame), /Calendar publication must be gated/);
+    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+  }
+});
+
+test('Mongoose current contract: approved company research reaches the actual SDK through Live source discovery', async t => {
+  const h = await harness(t, { tools: true, mongoose: true });
+  await attached(h, 'mongoose-configured-research');
+  await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
+  assert.equal(h.calls.filter(call => call.name === 'search_mongoose').length, 1, 'an approved company source must be dispatched');
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
+  assert.match(JSON.stringify(frame), /Synthetic company evidence/);
+});
+
+test('history integration: Live canonical research reads exact sixty-day evidence and stable bounded continuation', async t => {
+  const h = await harness(t, { tools: true, history: true, routeClasses: ['ordinary', 'private', 'sensitive'] });
+  const text = 'Mira decided violet flags. ' + 'Retained synthetic detail. '.repeat(550) + 'Exact final decision.';
+  h.store.transaction(tx => {
+    memory.createSession(tx, { title: 'Synthetic sixty-day discussion', startedAt: NOW - 60 * 86400000, timeZone: 'UTC' }, { now: () => NOW }, 'history-source');
+    memory.appendEntry(tx, { sessionId: 'history-source', text, capturedAt: NOW - 60 * 86400000, timeZone: 'UTC' }, { now: () => NOW }, 'history-entry');
+    for (const subject of [{ kind: 'session' as const, id: 'history-source' }, { kind: 'entry' as const, id: 'history-entry' }]) labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'sensitive' }, NOW);
+  });
+  await attached(h, 'history-research');
+  const reply = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'history-search', 'research', { action: 'start', question: 'What did Mira decide?', lookups: [{ source: 'memory', history: { query: 'Mira', limit: 1 } }, { source: 'knowledge', query: 'synthetic' }] });
+  const search = reply(), pages = search['historyPages'] as Record<string, unknown>[];
+  assert.ok(pages, JSON.stringify(search)); assert.equal(pages.length, 1);
+  const hits = pages[0]!['hits'] as Record<string, unknown>[];
+  assert.equal(hits[0]!['dataClass'], 'sensitive'); assert.match(String(hits[0]!['snippet']), /violet flags/);
+  assert.equal(hits[0]!['date'], new Date(NOW - 60 * 86400000).toISOString());
+  const researchId = String(search['researchId']);
+  await settleLiveTool(h, 'history-detail', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { recordRef: hits[0]!['recordRef'] } }] });
+  let page = (reply()['historyPages'] as Record<string, unknown>[])[0]!;
+  let full = String(page['text']); const firstCursor = page['nextCursor'];
+  assert.equal(full.length, 6000); assert.equal(page['complete'], false);
+  await settleLiveTool(h, 'history-next', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { cursor: firstCursor } }] });
+  const second = (reply()['historyPages'] as Record<string, unknown>[])[0]!;
+  await settleLiveTool(h, 'history-repeat', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { cursor: firstCursor } }] });
+  assert.equal((reply()['historyPages'] as Record<string, unknown>[])[0]!['text'], second['text']);
+  page = second; full += page['text'];
+  while (page['nextCursor']) {
+    await settleLiveTool(h, `history-offset-${full.length}`, 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { cursor: page['nextCursor'] } }] });
+    page = (reply()['historyPages'] as Record<string, unknown>[])[0]!; full += page['text'];
+  }
+  assert.equal(full, text);
+  const rows = h.store.transaction(tx => tx.all("SELECT result_json FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='conversation_history'"));
+  assert.ok(rows.length >= 5); assert.ok(rows.every(row => !String(row['result_json']).includes('fingerprint')));
+  await settleLiveTool(h, 'history-stop', 'research', { action: 'stop', researchId });
+  await settleLiveTool(h, 'history-stopped-read', 'research', { action: 'continue', researchId, lookups: [{ source: 'memory', history: { recordRef: hits[0]!['recordRef'] } }] });
+  assert.doesNotMatch(JSON.stringify(reply()), /violet flags|Retained synthetic detail/);
+});
+
+test('history integration: parallel sibling await cannot publish deleted or relabeled local evidence', async t => {
+  for (const mutation of ['none', 'delete', 'relabel'] as const) {
+    const started = deferred<void>(), release = deferred<void>(), collected = deferred<void>();
+    const h = await harness(t, { tools: true, history: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await release.promise; } });
+    h.store.transaction(tx => {
+      memory.createSession(tx, { title: 'Synthetic', startedAt: NOW, timeZone: 'UTC' }, { now: () => NOW }, 'history-parent');
+      memory.appendEntry(tx, { sessionId: 'history-parent', text: 'Mira private decision', capturedAt: NOW, timeZone: 'UTC' }, { now: () => NOW }, 'history-race');
+      for (const subject of [{ kind: 'session' as const, id: 'history-parent' }, { kind: 'entry' as const, id: 'history-race' }]) labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'ordinary' }, NOW);
+    });
+    await attached(h, `history-race-${mutation}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'conversation_history')) collected.resolve(); return result;
+    });
+    const running = settleLiveTool(h, 'history-race-call', 'research', { action: 'start', question: 'Mira and project', lookups: [{ source: 'memory', query: 'Mira' }, { source: 'knowledge', query: 'synthetic' }] });
+    let local = false, remote = false; void collected.promise.then(() => { local = true; }); void started.promise.then(() => { remote = true; });
+    t.after(() => release.resolve());
+    for (let n = 0; n < 1000 && !(local && remote); n++) await tick();
+    assert.ok(local && remote, JSON.stringify({ local, remote, calls: h.calls.map(call => call.name), states: h.store.transaction(tx => tx.all('SELECT state FROM tool_calls')) }));
+    if (mutation === 'delete') h.store.transaction(tx => memory.deleteEntry(tx, 'history-race', new Date(NOW).toISOString(), 'synthetic'));
+    if (mutation === 'relabel') h.store.transaction(tx => labels.correct(tx, { subject: { kind: 'session', id: 'history-parent' }, expectedRevision: 1, dataClass: 'sensitive' }, NOW));
+    release.resolve(); await running;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1);
+    if (mutation === 'none') assert.match(JSON.stringify(frame), /Mira private decision/);
+    else assert.doesNotMatch(JSON.stringify(frame), /Mira private decision/);
+  }
+
+});
+
+test('Mongoose evidence projection: grouped SDK hits survive actual Live research adaptation', async t => {
+  const h = await harness(t, { tools: true, mongoose: true, mongooseData: { hits: { company: [], offering: [], knowledge: [{ id: 'kb-17', title: 'Synthetic grouped evidence', snippet: 'Synthetic launch delayed to Monday.', status: 'active' }], ticket: [] }, has_more: false, total: 1 } });
+  await attached(h, 'mongoose-grouped-research');
+  await settleLiveTool(h, 'grouped-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
+  assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic launch delayed to Monday/);
+
+});
+
+
+test('mail integration: exact native query pages and retained remainder reach later messages without replay', async t => {
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `mail-id-${n}`, threadId: 'shared-thread', internalDate: String(1700000000000 - n), headers: [{ name: 'Subject', value: `Synthetic mail ${n}` }], snippet: `Snippet ${n}` }));
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'private-native-mail-next' } });
+  await attached(h, 'mail-all-pages');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'mail-start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'from:sender@example.invalid subject:"precise phrase"', maxResults: 8 } }] });
+  const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
+  const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
+  assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
+  const sourceCalls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(sourceCalls.length, 2);
+  assert.equal((sourceCalls[0]!.args as Record<string, unknown>)['q'], 'from:sender@example.invalid subject:"precise phrase"');
+  assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['pageToken'], 'private-native-mail-next');
+  assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['maxResults'], 8);
+  await settleLiveTool(h, 'mail-next', 'research', { action: 'continue', researchId: first['researchId'], cursor: first['nextCursor'] });
+  assert.match(JSON.stringify(last()['findings']), /Synthetic mail 12/); assert.equal(last()['canContinue'], false);
+  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2);
+});
+
+
+test('mail integration: delivered consumer cursors are idempotent and Stop invalidates retained pages', async t => {
+  for (const stop of [false, true]) {
+    const messages = Array.from({ length: 13 }, (_, n) => ({ id: `cursor-message-${n}`, headers: [{ name: 'Subject', value: `Cursor evidence ${n}` }] }));
+    const h = await harness(t, { tools: true, mail: true, mailData: () => ({ messages }) }); await attached(h, `mail-cursor-${stop}`);
+    const last = (): Record<string, unknown> => {
+      const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+      return frame.toolResponse.functionResponses[0]!.response;
+    };
+    await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:cursor', maxResults: 13 } }] });
+    const first = last(), researchId = first['researchId'], cursor = first['nextCursor']; assert.equal(typeof cursor, 'string');
+    await settleLiveTool(h, 'bad-cursor', 'research', { action: 'continue', researchId, cursor: 'not-this-run-cursor' });
+    assert.equal(last()['error'], 'continuation_unavailable');
+    if (stop) await settleLiveTool(h, 'stop', 'research', { action: 'stop', researchId });
+    await settleLiveTool(h, 'next', 'research', { action: 'continue', researchId, cursor });
+    if (stop) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    else {
+      assert.match(JSON.stringify(last()['findings']), /Cursor evidence 12/);
+      await settleLiveTool(h, 'repeat', 'research', { action: 'continue', researchId, cursor });
+      assert.equal(last()['alreadyDelivered'], true); assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false);
+      assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8).map(message => message.id));
+    }
+    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1, 'no source replay for retained, denied or repeated consumer pages');
+  }
+});
+
+test('mail integration: a failed dispatched native page is terminal and truthful', async t => {
+  const messages = Array.from({ length: 8 }, (_, n) => ({ id: `failure-message-${n}`, headers: [{ name: 'Subject', value: `Received before failure ${n}` }] }));
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => {
+    if (args['pageToken']) throw Error('synthetic_source_unavailable');
+    return { messages, nextPageToken: 'failed-native-page' };
+  } }); await attached(h, 'mail-failed-page');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', query: 'synthetic' }] });
+  const reply = last(); assert.equal(reply['status'], 'partial'); assert.equal(reply['canContinue'], false);
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 7/);
+  await settleLiveTool(h, 'continue', 'research', { action: 'continue', researchId: reply['researchId'] });
+  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2, 'the failed native page is not replayed');
+});
+
+
+test('mail integration: actual selector parsing shares the native page collector', async t => {
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `selector-mail-${n}`, headers: [{ name: 'Subject', value: `Selector mail ${n}` }] }));
+  const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6,
+    research: { async select(input) { return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: input.completed.some(entry => entry.kind === 'mail_search') ? [] : [{ kind: 'mail_search', query: 'from:selector@example.invalid' }], pUseful: { mail_search: 0.99 } })); } },
+    mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
+  }); await attached(h, 'mail-selector');
+  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List synthetic mail' }); }
+  catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  const reply = frame.toolResponse.functionResponses[0]!.response;
+  const calls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(calls.length, 2);
+  assert.equal((calls[0]!.args as Record<string, unknown>)['q'], 'from:selector@example.invalid');
+  assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
+});
+
+test('mail integration: revocation during a sibling await or final microtask denies original retained bindings', async t => {
+  for (const boundary of ['sibling', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>(), mailAccepted = deferred<void>();
+    const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, mailData: () => ({ messages: [{ id: 'guarded-mail', headers: [{ name: 'Subject', value: 'Mail publication must be gated' }] }] }) });
+    await attached(h, `mail-race-${boundary}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args);
+      if (args[1].some(binding => binding.name === 'gmail_list')) mailAccepted.resolve();
+      if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
+      return result;
+    });
+    const pending = settleLiveTool(h, 'mail-race', 'research', { action: 'start', question: 'Synthetic mail and notes', lookups: [{ source: 'mail', query: 'synthetic' }, { source: 'knowledge', query: 'synthetic' }] });
+    let entered = false, collected = false; void started.promise.then(() => { entered = true; }); void mailAccepted.promise.then(() => { collected = true; });
+    t.after(() => finish.resolve());
+    for (let n = 0; n < 2000 && !(entered && collected); n++) await tick();
+    assert(entered && collected, 'both actual source gates must be reached');
+    if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Mail publication must be gated/);
+    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+  }
+});
+
+
+test('mail integration: an unused cursor keeps its original message coordinates after another continuation', async t => {
+  const messages = Array.from({ length: 21 }, (_, n) => ({ id: `immutable-mail-${n}`, headers: [{ name: 'Subject', value: `Immutable evidence ${n}` }] }));
+  const h = await harness(t, { tools: true, mail: true, mailData: () => ({ messages }) }); await attached(h, 'immutable-mail-cursor');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:immutable', maxResults: 21 } }] });
+  const first = last(), researchId = first['researchId'], cursor = first['nextCursor'];
+  await settleLiveTool(h, 'advance-without-cursor', 'research', { action: 'continue', researchId }); const nextCursor = last()['nextCursor'];
+  assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(8, 16).map(message => message.id));
+  await settleLiveTool(h, 'original-cursor', 'research', { action: 'continue', researchId, cursor });
+  assert.equal(last()['alreadyDelivered'], true, 'an old cursor must not retarget the latest remainder');
+  assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8, 16).map(message => message.id)); assert.equal(last()['nextCursor'], nextCursor); assert.deepEqual(last()['findings'], []);
+  await settleLiveTool(h, 'final-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor });
+  assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(16).map(message => message.id));
+  assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+});
+
+
+test('mail body integration: full received text continues locally once with exact UTF16 coordinates', async t => {
+  const body = `Latest evidence.\nOn Monday, Synthetic Sender wrote:\n> ${'🍃'.repeat(11000)}\nFinal retained evidence.`;
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic full received body' }, body: args['format'] === 'metadata' ? null : body, bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'mail-full-received-body');
+  let received = '';
+  const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+    const result = await authorize(...args);
+    const binding = args[1].find(binding => binding.name === 'gmail_read');
+    if (binding && result.state === 'allowed') {
+      const consumed = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]);
+      if (consumed.state === 'allowed' && consumed.evidence.kind === 'remote-body') received = consumed.evidence.body;
+    }
+    return result;
+  });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
+  assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
+  const calls = h.calls.filter(call => call.name === 'gmail_read'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
+  const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
+  for (;;) {
+    const slices = last()['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string; source: string }[];
+    assert(Array.isArray(slices) && slices.length > 0, 'the full acquired body must have an authorized local consumer');
+    for (const slice of slices) {
+      assert.equal(slice.unit, 'utf16'); assert.equal(slice.source, 'mail'); assert.equal(slice.offset, joined.length); assert.equal(slice.end - slice.offset, slice.text.length); assert.equal(slice.total, received.length);
+      assert(!/[\uDC00-\uDFFF]/u.test(slice.text.slice(0, 1)), 'slice must not begin inside a surrogate pair'); assert(!/[\uD800-\uDBFF]/u.test(slice.text.slice(-1)), 'slice must not end inside a surrogate pair'); joined += slice.text;
+    }
+    assert.doesNotMatch(JSON.stringify(last()), /bodySha256|entitySha256|hostEvidenceRequired/);
+    if (!last()['canContinue']) break;
+    assert.equal(typeof next, 'string'); assert(++count < 30, 'continuation must make bounded progress');
+    await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, cursor: next }); next = last()['nextCursor'];
+  }
+  assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1, 'local body remainder must not re-fetch the message');
+});
+
+test('mail body integration: completed research Stop releases the canonical host evidence', async t => {
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic stop evidence' }, body: 'retained body '.repeat(1800), bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'mail-stop-releases-body');
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+  let captured: Parameters<typeof original> | undefined;
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'stop-message' } }] });
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  const researchId = frame.toolResponse.functionResponses[0]!.response['researchId']; assert(captured);
+  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'allowed');
+  await settleLiveTool(h, 'body-stop', 'research', { action: 'stop', researchId });
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused', 'Stop must release the actual original source ref, not just a private ledger flag');
+  assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+});
+
+test('mail body integration: immutable receipt, metadata opt-out and new-start cleanup use the real owner', async t => {
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Body identity' }, body: args['format'] === 'metadata' ? null : 'Sentence evidence. '.repeat(1600), bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'mail-body-lifecycle');
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined;
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'first-body', 'research', { action: 'start', question: 'Read full mail', lookups: [{ source: 'mail', mail: { id: 'identity' } }] });
+  const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(captured); const held = captured;
+  await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, cursor }); const nextCursor = last()['nextCursor'];
+  await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
+  assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
+  await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
+  assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 2);
+  assert.equal((h.calls.filter(call => call.name === 'gmail_read')[1]!.args as Record<string, unknown>)['format'], 'metadata');
+  assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  await settleLiveTool(h, 'old-body-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor }); assert.equal(last()['error'], 'continuation_unavailable');
+});
+
+test('mail body integration: revocation during sibling await and final microtask blocks every body slice', async t => {
+  for (const boundary of ['sibling', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>(), mailAccepted = deferred<void>();
+    const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Never publish revoked full body' }, body: 'Revoked body evidence. '.repeat(1400), bodyCoverage: { complete: true } }) });
+    await attached(h, `body-race-${boundary}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'gmail_read')) mailAccepted.resolve();
+      if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
+      return result;
+    });
+    const pending = settleLiveTool(h, 'body-race', 'research', { action: 'start', question: 'Read mail and notes', lookups: [{ source: 'mail', mail: { id: 'revoked-body' } }, { source: 'knowledge', query: 'synthetic' }] });
+    let entered = false, collected = false; void started.promise.then(() => { entered = true; }); void mailAccepted.promise.then(() => { collected = true; }); t.after(() => finish.resolve());
+    for (let n = 0; n < 2000 && !(entered && collected); n++) await tick(); assert(entered && collected);
+    if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Revoked body evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  }
+});
+
+test('mail body integration: a source completion after research Stop cannot resurrect canonical evidence', async t => {
+  const entered = deferred<void>(), release = deferred<void>(); const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'ready-calendar', start: '2023-11-15T10:00:00Z', summary: 'Synthetic ready calendar event' }] }, scheduler, limits: { idleMs: 60000, sessionMs: 600000 }, mailData: async (_name, args) => { entered.resolve(); await release.promise; return { id: args['id'], headers: { Subject: 'Late stopped body' }, body: 'Never retain stopped evidence. '.repeat(1000), bodyCoverage: { complete: true } }; } });
+  const { session } = await attached(h, 'body-stop-pending'); t.after(() => release.resolve());
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined; let siblingReady = false;
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gcal_list') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
+  let dispatched = false; void entered.promise.then(() => { dispatched = true; }); for (let n = 0; n < 2000 && !dispatched; n++) await tick(); assert(dispatched);
+  const progress = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 500 }).fragments.find(fragment => fragment.kind === 'researchProgress'); assert(progress?.text);
+  const researchId = (JSON.parse(progress.text) as { researchId: string }).researchId;
+  for (let n = 0; n < 2000 && !siblingReady; n++) await tick(); assert(siblingReady); for (let n = 0; n < 50; n++) await tick(); h.advance(4_500); scheduler.runDue();
+  for (let n = 0; n < 2000 && toolResponseCount(h) === 0; n++) await tick(); assert.equal(toolResponseCount(h), 1, 'ready calendar releases a first answer while mail remains pending');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-stop', name: 'research', args: { action: 'stop', researchId } }] } });
+  const replies = () => h.f.frames.flatMap(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame ? (frame as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses : []);
+  for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-stop'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-stop'));
+  release.resolve(); for (let n = 0; n < 2000 && (!captured || !replies().some(reply => reply.id === 'pending-body-start')); n++) await tick(); assert(captured); assert(replies().some(reply => reply.id === 'pending-body-start'));
+  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+});
+
+test('mail body integration: actual source expiry denies local continuation without another remote read', async t => {
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Expired full body' }, body: 'Expiring received evidence. '.repeat(1300), bodyCoverage: { complete: true } }) });
+  const { session } = await attached(h, 'body-expiry'); let expiresAt = 0; let captured: Parameters<NonNullable<Harness['toolOwner']>['resultGate']['authorize']> | undefined;
+  const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
+    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'gmail_read');
+    if (binding && result.state === 'allowed') { captured = args; const value = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]); if (value.state === 'allowed' && value.evidence.kind === 'remote-body') expiresAt = value.evidence.expiresAt; }
+    return result;
+  });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
+  const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(expiresAt > Date.now());
+  assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  changedClock.mock.restore();
+  await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, cursor });
+  assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+});
+
+test('mail body integration: body consumption preserves simultaneous calendar evidence and its local remainder', async t => {
+  const events = Array.from({ length: 12 }, (_, n) => ({ id: `body-sibling-${n}`, start: '2023-11-15T10:00:00Z', summary: `Body sibling event ${n}` }));
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Mixed body' }, body: 'Mixed-source body evidence. '.repeat(600), bodyCoverage: { complete: true } }) }); await attached(h, 'mixed-body-calendar');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
+  const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
+  for (;;) {
+    for (const match of JSON.stringify(last()['findings']).matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
+    assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
+    if (!last()['canContinue']) break; assert(++count < 20);
+    await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['nextCursor'] } : {}) });
+  }
+  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1); assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+});
+
+test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
+  const raw = JSON.stringify({ id: 42, title: 'Synthetic Lux body', content: 'Lux received evidence. '.repeat(1400) + 'LUX_LOCAL_TAIL' });
+  const h = await harness(t, { tools: true, knowledgeContent: raw }); await attached(h, 'lux-local-tail');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'lux-start', 'research', { action: 'start', question: 'Read full insight 42', lookups: [{ source: 'knowledge', query: 'Read full insight 42' }] });
+  const researchId = last()['researchId']; let collected = '', count = 0;
+  for (;;) {
+    const slices = last()['bodySlices'] as { source: string; text: string; offset: number; upstreamComplete: unknown; upstreamOmitted: unknown }[]; assert(Array.isArray(slices) && slices.length, JSON.stringify({ count, calls: h.calls, response: last() }).slice(0, 1800));
+    for (const slice of slices) { assert.equal(slice.source, 'knowledge'); assert.equal(slice.offset, collected.length); assert.equal(slice.upstreamComplete, 'unknown'); assert.equal(slice.upstreamOmitted, 'unknown'); collected += slice.text; }
+    assert.equal(last()['bodyProjection'], 'preview'); assert(JSON.stringify(last()).length <= 24000);
+    if (!last()['canContinue']) break; assert(++count < 25);
+    await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
+  }
+  assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
+});

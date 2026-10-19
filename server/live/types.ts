@@ -54,6 +54,7 @@ export interface AcceptedPromptSnapshot {
   readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
 }
 export interface LiveProfile {
+  readonly credentialBinding?: import('../host/provider-binding.js').ProviderBindingIdentity;
   readonly overlay?: import('../prompt/live-persona.js').PersonaOverlay;
   readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: LiveProvider;
@@ -68,6 +69,8 @@ export interface LiveProfile {
 
 export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
+  /** One explicit new owner request may retry unavailable transport, never a model tool retry. */
+  recover?(): Promise<void>;
   /** Configured connector endpoints and their state, for the host-generated runtime context. */
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
@@ -86,7 +89,7 @@ export interface LivePageProjection {
   jobs?: PendingLiveJob[];
   memory?: LiveMemoryProjection;
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
-  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal' | 'researchProgress'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] }; progress?: ResearchProgressView }[];
+  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal' | 'researchProgress'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; textJoin?: 'append' | 'words'; finished?: boolean; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] }; progress?: ResearchProgressView }[];
   cursor: number;
   /** The tool steps of the turn in flight, newest last. In memory only: a settled session keeps none,
    *  so the voice view dims them without a schema change. */

@@ -1,9 +1,12 @@
+import { activateDiagnosticContext, closeDiagnosticContext, captureDiagnosticContext, diagnosticWithheld, initialDiagnosticContext, protectDiagnosticTrace, sealDiagnosticTrace, withholdDiagnostics } from '../trace/diagnostic-context.js';
+import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyCoverage } from '../tools/received-body.js';
+import { historyEvidenceCurrent, type HistoryEvidence, type HistorySourceRef } from '../domain/history-reader.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
+import type { Content, DataClass, HostContext, ToolResultBinding, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
@@ -25,7 +28,9 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 /** Owner-facing evidence text. The model's own functionResponse keeps the model-only bracket notes;
  * this copy strips them, so the strip call site is exercised without a full tool run. */
 export function ownerEvidenceMarkdown(response: Record<string, unknown>): string {
-  const text = typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.';
+  if (response.status === 'ok' && Array.isArray(response.hits)) return response.hits.length ? response.hits.map(hit => hit && typeof hit === 'object' ? String((hit as Record<string, unknown>).snippet ?? '') : '').join('\n').slice(0, 4096) : 'No matching eligible local history. Coverage may be incomplete.';
+  const bodyText = Array.isArray(response.bodySlices) ? response.bodySlices.flatMap(slice => slice && typeof slice === 'object' && typeof slice.text === 'string' ? [slice.text] : []).join('\n') : undefined;
+  const text = bodyText ?? (typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.');
   return stripModelOnlyNotes(text).slice(0, 4096);
 }
 /** Stable capability identity: a description or schema reword never changes it. */
@@ -83,6 +88,7 @@ export class ChatService implements ChatPort {
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
   readonly #toolAuthorities = new Map<string, { context: DomainContext; authority: LiveAuthority; policyMatches: boolean }>();
+  readonly #resultEvidence = new Map<string, { host: HostContext; bindings: ToolResultBinding[] }>();
   readonly #admissionLogged = new Set<string>();
   readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
   readonly #subscribers = new Map<string, Set<Subscription<ChatEvent>>>();
@@ -150,7 +156,8 @@ export class ChatService implements ChatPort {
         policyMatches: !frozen || frozen.policy_identity === policyIdentity });
       if (!frozen) return registry;
       const admitted = JSON.parse(String(frozen.capabilities_json)) as CapabilityIdentity[];
-      return admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
+      const allowed = admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
+      return allowed.some(tool => RECEIVED_BODY_TOOLS.has(tool.name)) ? allowed : allowed.filter(tool => tool.name !== RECEIVED_BODY.name);
     });
   }
 
@@ -171,9 +178,17 @@ export class ChatService implements ChatPort {
     const model = this.#config.model!;
     const tools = this.#config.tools;
     let dataClass: 'private' | 'sensitive' = 'private';
-    const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
+    const observedBodyResponses: JsonObject[] = [];
+    const generate = async (outgoing: ModelRequest, outgoingControl: ModelControl) => {
+      this.#checkPolicy(run.runId, run.sessionId, context);
+      const evidenceClasses = this.#resultClasses(run.runId);
+      if (evidenceClasses === null) throw new ContextFailure('unavailable');
+      outgoing = { ...outgoing, dataClasses: [...new Set([...outgoing.dataClasses, ...evidenceClasses])] };
       if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
-      return model.generate(outgoing, outgoingControl);
+      this.#captureDiagnostics(run.runId, outgoing);
+      const result = await model.generate(outgoing, outgoingControl);
+      if (result.status === 'complete') for (const content of outgoing.contents) for (const part of content.parts) if (part.functionResponse?.response['bodyCoverage']) observedBodyResponses.push({ bodyCoverage: structuredClone(part.functionResponse.response['bodyCoverage']) });
+      return result;
     };
     if (!tools) { const result = await generate(request, control); return { status: result.status, text: result.text, dataClass }; }
     const active = this.#toolAuthorities.get(run.runId)!;
@@ -210,15 +225,9 @@ export class ChatService implements ChatPort {
       // Consent and route currency are checked before EVERY request, including evidence follow-ups.
       this.#checkPolicy(run.runId, run.sessionId, context);
       if (!this.lookupAuthority(run.runId) || next.dataClasses.some(c => !active.authority.allowedClasses.includes(c))) throw new ContextFailure('unavailable');
-      const toolEvidence = this.#toolEvidence(next);
       const seen = next.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [countOf(part.functionResponse.response)] : []));
       release(seen.slice(consumed));
       consumed = seen.length;
-      this.#config.store.transaction(tx => {
-        const row = this.#row(tx, run.runId, context);
-        const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
-        tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
-      });
       // runTools retains originals for validation; the canonical helper alone derives provider schemas.
       const declarations = next.declarations?.length === 0 ? [] : declarationsFor(registry).declarations;
       const roundStarted = this.#now();
@@ -227,7 +236,11 @@ export class ChatService implements ChatPort {
       return answered;
       } }, request, registry: acquire, host, control: { ...control, signal }, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
-      journal: tools.owner.journal, resultGate: tools.owner.resultGate });
+      journal: tools.owner.journal, resultGate: { authorize: async (...args) => {
+        const allowed = await tools.owner.resultGate.authorize(...args);
+        if (allowed.state === 'allowed') this.#rememberResultEvidence(run.runId, host, args[1]);
+        return allowed;
+      } } });
     // A fenced or throwing acquisition still answers from what it gathered.
     let loop: LoopResult | undefined;
     let failure: unknown;
@@ -241,21 +254,45 @@ export class ChatService implements ChatPort {
     release([]);
     // The finite bound can stop after a tool result, before another model request.
     // Read its projection through the SAME canonical gate, never from raw journal JSON.
+    let bodyCoverage: JsonObject[] = [];
+    let bodyResponses: JsonObject[] = [];
+    let bodyAnswerContents: Content[] | undefined;
     if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
       const final = await tools.owner.resultGate.authorize(host, loop?.resultBindings ?? [], request.dataClasses, control.signal);
+      if (final.state === 'allowed') this.#rememberResultEvidence(run.runId, host, loop?.resultBindings ?? []);
+      if (final.state !== 'allowed' || this.#resultClasses(run.runId) === null) throw new ContextFailure('unavailable');
+      bodyResponses = final.results.map(result => result.response);
+      bodyCoverage = receivedBodyCoverage(bodyResponses, observedBodyResponses);
+      if (bodyCoverage.length && loop) {
+        bodyAnswerContents = structuredClone(loop.continuation);
+        for (const result of final.results) {
+          const response = bodyAnswerContents[result.binding.contentIndex]?.parts[result.binding.partIndex]?.functionResponse;
+          if (!response || response.name !== result.binding.name || response.id !== result.binding.callId) throw new ContextFailure('unavailable');
+          response.response = structuredClone(result.response);
+        }
+      }
       // Only journaled bindings are re-gated here; host-answered composed reads keep the evidence the
       // request seam already persisted, so a later empty projection never wipes it.
       const toolEvidence = final.state === 'allowed' && final.results.length ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : null;
-      this.#config.store.transaction(tx => {
+      try { this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
         const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
-        if (toolEvidence) tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
-      });
+        if (toolEvidence) tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify(protectDiagnosticTrace(context.assistantId, run.runId, { ...trace, ...(!diagnosticWithheld(context.assistantId, run.runId) ? { toolEvidence } : {}), receivedBodyCoverage: bodyCoverage })), run.runId]);
+      }); } catch { withholdDiagnostics(this.#config.store, context.assistantId, run.runId); }
     }
+    const withBodyCoverage = (text: string): { text: string; partial?: true; notReached?: readonly string[] } => {
+      bodyCoverage = receivedBodyCoverage(bodyResponses, observedBodyResponses);
+      const bodyGaps = bodyCoverage.filter(coverage => Number(coverage['remaining']) > 0 || coverage['upstreamComplete'] !== true || coverage['upstreamOmitted'] !== false);
+      if (bodyCoverage.length) try { this.#config.store.transaction(tx => { const row = this.#row(tx, run.runId, context); const trace = row.trace ? JSON.parse(String(row.trace)) : {}; tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify(protectDiagnosticTrace(context.assistantId, run.runId, { ...trace, receivedBodyCoverage: bodyCoverage })), run.runId]); }); } catch { withholdDiagnostics(this.#config.store, context.assistantId, run.runId); }
+      if (!bodyGaps.length) return { text };
+      const remaining = bodyGaps.reduce((n, coverage) => n + Number(coverage['remaining']), 0);
+      const note = [remaining > 0 ? `I have not consumed all the received text: ${remaining} characters remain.` : '', bodyGaps.some(coverage => coverage['upstreamOmitted'] === true) ? 'The source omitted content beyond what it returned.' : bodyGaps.some(coverage => coverage['upstreamComplete'] !== true) ? 'The source did not confirm whether its returned content was complete.' : ''].filter(Boolean).join(' ');
+      return { text: `${text}\n\n${note}`, partial: true, notReached: [] };
+    };
     const settled = loop;
     if (settled !== undefined && settled.status === 'complete' && settled.text.trim().length > 0) {
       this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'answered');
-      return { status: 'complete', text: settled.text, dataClass };
+      return { status: 'complete', ...withBodyCoverage(settled.text), dataClass };
     }
     // A gate refusal or a provider error is not a cut run: it keeps its own outcome, never an invented answer.
     if (settled !== undefined && (settled.status === 'denied' || settled.status === 'error')) {
@@ -280,7 +317,7 @@ export class ChatService implements ChatPort {
       const answerTimer = setTimeout(() => answerAbort.abort(), answerMs);
       try {
         const result = await generate({ ...request, declarations: [],
-          contents: [...request.contents, { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
+          contents: [...(bodyAnswerContents ?? request.contents), { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
         { signal: AbortSignal.any([control.signal, answerAbort.signal]), deadlineMs: this.#now() + answerMs });
         answer = result.text.trim();
       } catch (error) {
@@ -289,7 +326,7 @@ export class ChatService implements ChatPort {
       } finally { clearTimeout(answerTimer); }
     }
     this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'fenced');
-    return { status: 'complete', text: answer || deterministicAnswer(evidence, notReached), dataClass, partial: true, notReached };
+    return { status: 'complete', ...withBodyCoverage(answer || deterministicAnswer(evidence, notReached)), dataClass, partial: true, notReached };
   }
 
   /** One bounded receipt per run: model and tool milliseconds and counts only, never text. */
@@ -348,7 +385,7 @@ export class ChatService implements ChatPort {
     const route = this.#config.route;
     return JSON.stringify({ version: 1, provider: route.provider, model: route.model,
       endpoint: route.endpoint, apiVersion: route.apiVersion, keyReference: route.keyReference,
-      allowedClasses: [...route.allowedClasses].sort(), policyVersion: 1 });
+      allowedClasses: [...route.allowedClasses].sort(), ...(route.credentialBinding ? { credentialBinding: route.credentialBinding } : {}), policyVersion: 1 });
   }
   #validConsent(row: SQLRow) {
     const route = this.#config.route;
@@ -389,7 +426,7 @@ export class ChatService implements ChatPort {
     const state = this.#conversation(row).state;
     if (state === 'revoked') throw new ChatError('consent_revoked');
     if (state === 'route_changed') throw new ChatError('route_changed');
-    if (!this.#config.route.available) throw new ChatError('unavailable');
+    if (!this.#config.route.available || !this.#config.route.allows(this.#config.route.allowedClasses)) throw new ChatError('unavailable');
     return row;
   }
   enroll(input: EnrollInput, context: DomainContext): ConversationStatus {
@@ -458,9 +495,45 @@ export class ChatService implements ChatPort {
     if (Buffer.byteLength(JSON.stringify(resolved.records), 'utf8') > MAX_SERIALIZED_SELECTION_BYTES) throw new ChatError('selection_too_large');
     return resolved.records;
   }
+  #rememberResultEvidence(runId: string, host: HostContext, bindings: readonly ToolResultBinding[]): void {
+    const retained = this.#resultEvidence.get(runId)?.bindings ?? [];
+    const merged = [...retained];
+    for (const binding of bindings) {
+      const previous = merged.find(value => value.executionId === binding.executionId);
+      if (previous && canonicalJSON(previous) !== canonicalJSON(binding)) throw new ContextFailure('unavailable');
+      if (!previous) merged.push(structuredClone(binding));
+    }
+    this.#resultEvidence.set(runId, { host, bindings: merged });
+  }
+  #captureDiagnostics(runId: string, request: ModelRequest): void {
+    const owner = this.#config.store.assistantId;
+    try {
+      const evidence = this.#resultEvidence.get(runId);
+      const history = new Map<string, HistorySourceRef[]>();
+      if (evidence) for (const binding of evidence.bindings) {
+        const value = this.#config.tools!.owner.consumeEvidence(evidence.host, binding, this.lookupAuthority(runId), new AbortController().signal);
+        if (value.state === 'allowed' && value.evidence.kind === 'local-history') history.set(binding.executionId, structuredClone(value.evidence.sources));
+      }
+      this.#config.store.transaction(tx => captureDiagnosticContext(tx, owner, runId, request.dataClasses, evidence?.bindings ?? [], history, this.#toolEvidence(request)));
+    } catch { withholdDiagnostics(this.#config.store, owner, runId); }
+  }
+  #resultClasses(runId: string): DataClass[] | null {
+    const evidence = this.#resultEvidence.get(runId);
+    if (!evidence) return [];
+    try {
+      const gate = this.#config.tools!.owner.authorizeDelivery(evidence.host, evidence.bindings, [], this.lookupAuthority(runId), new AbortController().signal);
+      return gate.state === 'allowed' ? [...new Set(gate.results.flatMap(result => result.dataClasses))] : null;
+    } catch { return null; }
+  }
+  #summaryCurrent(tx: Transaction, runId: string): boolean {
+    const row = tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [runId]);
+    const trace = row?.trace ? JSON.parse(String(row.trace)) as { summaryEvidence?: HistoryEvidence } : {};
+    return !trace.summaryEvidence || historyEvidenceCurrent(tx, this.#config.store.assistantId, trace.summaryEvidence);
+  }
   #checkPolicy(runId: string, sessionId: string, context: DomainContext) {
     return this.#config.store.transaction(tx => {
       const consent = this.#liveConsent(tx, sessionId, context);
+      if (!this.#summaryCurrent(tx, runId)) throw new ChatError('unavailable');
       const policy = tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [runId]);
       if (!policy || policy.consent_revision !== consent.revision || policy.route_identity !== this.#identity()) throw new ChatError('unavailable');
       const labels: { kind: 'session' | 'entry'; id: string; revision: number; dataClass: string }[] = JSON.parse(String(policy.selected_labels));
@@ -492,6 +565,7 @@ export class ChatService implements ChatPort {
     const affected = result.scope === 'standing' ? this.#config.store.transaction(tx => new Set(tx.all(
       'SELECT session_id FROM chat_consents WHERE owner_assistant_id=? UNION SELECT session_id FROM chat_consent_enrollments WHERE owner_assistant_id=?',
       [context.assistantId, context.assistantId]).filter(row => !this.#validConsent(this.#consent(tx, String(row.session_id), context))).map(row => String(row.session_id)))) : new Set([sessionId]);
+    for (const id of affected) this.#config.tools?.owner.releaseHistoryConversation(id);
     this.#invalidate(row => affected.has(String(row.session_id)), context);
     return result;
   }
@@ -502,7 +576,16 @@ export class ChatService implements ChatPort {
     return label;
   }
   shutdown() {
-    for (const controller of this.#workers.values()) controller.abort();
+    this.#config.tools?.owner.releaseHistoryConversation();
+    for (const [runId, controller] of this.#workers) {
+      controller.abort();
+      if (diagnosticWithheld(this.#config.store.assistantId, runId)) try {
+        this.#config.store.transaction(tx => {
+          const row = tx.get('SELECT trace FROM chat_runs WHERE owner_assistant_id=? AND run_id=?', [this.#config.store.assistantId, runId]);
+          if (row) tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify(protectDiagnosticTrace(this.#config.store.assistantId, runId, JSON.parse(String(row.trace)))), runId]);
+        });
+      } catch { withholdDiagnostics(this.#config.store, this.#config.store.assistantId, runId); }
+    }
     for (const listeners of this.#subscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
     for (const listeners of this.#conversationSubscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
   }
@@ -587,6 +670,7 @@ export class ChatService implements ChatPort {
   cancel(runId: string, context: DomainContext): RunSnapshot {
     this.#authorize(context);
     const run = this.get(runId, context);
+    this.#config.tools?.owner.releaseHistoryConversation(run.sessionId);
     if (run.state === 'terminal') return run;
     // Durable terminal wins before abort. If write fails, no false cancellation.
     const final = this.#finish(run, context, 'cancelled');
@@ -633,26 +717,37 @@ export class ChatService implements ChatPort {
   #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private',
     extras: { partial?: true; notReached?: readonly string[] } = {}): RunSnapshot {
     this.#authorize(context);
+    const resultCurrent = this.#resultClasses(run.runId) !== null;
+    if (!resultCurrent) { outcome = 'unavailable'; text = ''; }
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
-      if (row.state === 'terminal') return this.#snapshot(tx, row, context);
+      if (row.state === 'terminal') {
+        if (!resultCurrent && row.trace) {
+          row.trace = JSON.stringify(protectDiagnosticTrace(context.assistantId, run.runId, { ...JSON.parse(String(row.trace)), toolEvidence: [], receivedBodyCoverage: [] }));
+          tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [row.trace, run.runId]);
+        }
+        return this.#snapshot(tx, row, context);
+      }
+      const terminalTrace = row.trace ? JSON.stringify(sealDiagnosticTrace(context.assistantId, run.runId, { ...JSON.parse(String(row.trace)), ...(!resultCurrent ? { toolEvidence: [], receivedBodyCoverage: [] } : {}) })) : null;
       let entryId: string | null = null;
       if (outcome === 'complete') {
+        if (!this.#summaryCurrent(tx, run.runId)) throw new ChatError('unavailable');
         const session = this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).session;
         const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone, sourceRef: { id: randomUUID(), label: 'Connected chat', provider: 'chat', externalId: run.sessionId, sourceTimestamp: null, availability: 'present' } }, this.#context(context), { writer: 'model', dataClass });
         entryId = entry.id;
       }
       const max = this.#config.maxPartialChars ?? 100000;
-      const partial = outcome === 'complete' ? '' : text || String(row.partial_text);
+      const partial = outcome === 'complete' || !resultCurrent || !this.#summaryCurrent(tx, run.runId) ? '' : text || String(row.partial_text);
       const changed = tx.run(`UPDATE chat_runs SET state='terminal',outcome=?,final_entry_id=?,terminal_at=?,terminal_epoch=?,
-        partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state=?`,
-        [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), run.runId, context.assistantId, String(row.authority_epoch), String(row.state)]);
+        partial_text=?,partial_truncated=?,trace=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state=?`,
+        [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), terminalTrace, run.runId, context.assistantId, String(row.authority_epoch), String(row.state)]);
       if (changed !== 1) throw new ChatError('epoch_mismatch');
       return this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])!, context);
     });
     this.#emit(final.runId, { type: 'snapshot', sequence: final.sequence, run: final, ...extras }); return final;
   }
   #partial(run: RunSnapshot, context: DomainContext, text: string) {
+    if (this.#resultClasses(run.runId) === null || !this.#config.store.transaction(tx => this.#summaryCurrent(tx, run.runId))) return;
     if (!text) return;
     this.#authorize(context);
     const event = this.#config.store.transaction(tx => {
@@ -737,10 +832,11 @@ export class ChatService implements ChatPort {
       this.#livePolicies.set(accepted.runId, { session_id: accepted.sessionId, selected_labels: JSON.stringify(policy.selectedLabels) });
       const run = this.#config.store.transaction(tx => {
         const changed = tx.run("UPDATE chat_runs SET state='dispatch_intent',intent_at=?,trace=?,manifest_hash=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state='accepted'",
-          [this.#context(context).now, JSON.stringify({ ...trace, policy }), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
+          [this.#context(context).now, JSON.stringify({ ...trace, policy, diagnostic: initialDiagnosticContext(request.dataClasses) }), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
         return changed === 1 ? this.#snapshot(tx, this.#row(tx, accepted.runId, context), context) : null;
       });
       if (!run) return;
+      activateDiagnosticContext(context.assistantId, run.runId);
       this.#publish(run);
       // Let observers consume intent; intent is never proof of provider send.
       await new Promise<void>(resolve => setImmediate(resolve));
@@ -767,6 +863,7 @@ export class ChatService implements ChatPort {
       }
       const outcome = this.#outcome(result);
 
+      if (!this.#config.store.transaction(tx => this.#summaryCurrent(tx, run.runId))) { this.#finish(run, context, 'unavailable'); return; }
       const extras = result.partial === true ? { partial: true as const, notReached: result.notReached ?? [] } : {};
       try { this.#finish(run, context, outcome, result.text, result.dataClass, extras); }
       catch { this.#finish(run, context, 'persistence_failed', result.text); }
@@ -774,7 +871,7 @@ export class ChatService implements ChatPort {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';
       try { this.#finish(accepted, context, outcome); }
       catch { this.#emit(accepted.runId, { type: 'resync_required', sequence: accepted.sequence, reason: 'storage_unavailable' }); }
-    } finally { if (timeout !== undefined) clearTimeout(timeout); this.#workers.delete(accepted.runId); }
+    } finally { if (diagnosticWithheld(context.assistantId, accepted.runId)) withholdDiagnostics(this.#config.store, context.assistantId, accepted.runId); if (timeout !== undefined) clearTimeout(timeout); this.#config.tools?.owner.releaseEvidence(accepted.runId); this.#resultEvidence.delete(accepted.runId); closeDiagnosticContext(context.assistantId, accepted.runId); this.#workers.delete(accepted.runId); }
   }
   #outcome(result: Pick<ModelResult, 'status' | 'text'>): Outcome { return result.status === 'complete' && !result.text.trim() ? 'empty' : result.status; }
 }

@@ -30,7 +30,7 @@ function fixture(t: TestContext) {
   const run = (args: string[]) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', timeout: 10000 });
   // The credential binding exercises the Gemini text slot, which OV1-R2 no longer selects by default.
   const init = (bound = true) => run(['init', '--provider', 'gemini', '--config-dir', dir, '--owner-id', 'owner', '--profile-input', profilePath, '--source-env', sourcePath, ...(bound ? ['--binding-input', bindingPath] : [])]);
-  const migrate = () => run(['migrate-binding', '--config-dir', dir, '--owner-id', 'owner', '--binding-input', bindingPath]);
+  const migrate = () => run(['migrate-binding', '--surface', 'text', '--config-dir', dir, '--owner-id', 'owner', '--binding-input', bindingPath]);
   const secretPath = join(dir, 'gemini-primary.json');
   const replace = (change: Record<string, unknown>) => {
     const current = JSON.parse(readFileSync(secretPath, 'utf8')) as Record<string, unknown>;
@@ -227,7 +227,7 @@ test('A5 real process write limit fails pending output after retention without a
   // Same real-process file limit convention as provider-config.test.ts; no load, privileges or monkeypatch.
   // Legacy copy fits either POSIX block size; pending v2 cannot fit. Disable core dumps for the child.
   const failed = spawnSync('bash', ['-c', 'ulimit -c 0; ulimit -f 1; exec "$@"', 'credential-binding-write-test', process.execPath, cli,
-    'migrate-binding', '--config-dir', f.dir, '--owner-id', 'owner', '--binding-input', f.bindingPath], { encoding: 'utf8', timeout: 10000 });
+    'migrate-binding', '--surface', 'text', '--config-dir', f.dir, '--owner-id', 'owner', '--binding-input', f.bindingPath], { encoding: 'utf8', timeout: 10000 });
   assert.notEqual(failed.status, 0); assert.ok(!JSON.stringify(failed).includes(writeKey));
   const backup = join(f.dir, 'gemini-primary.legacy.json'); const pending = join(f.dir, '.binding.pending');
   assert.deepEqual(readFileSync(backup), original); assert.equal(statSync(backup).mode & 0o7777, 0o600);
@@ -250,7 +250,7 @@ test('A1 binding inputs and CLI reject duplicate/unknown metadata, wrong protect
     (f: ReturnType<typeof fixture>) => f.put(f.bindingPath, ' '.repeat(8193)),
   ]) { const f = fixture(t); mutate(f); const result = f.init(); assert.notEqual(result.status, 0); assert.ok(!JSON.stringify(result).includes(key)); assert.equal(loadProviderConfig({ configDir: f.dir, ownerId: 'owner' }).status, 'unconfigured'); }
   const f = fixture(t); assert.equal(f.run(['--help']).status, 0);
-  for (const args of [['migrate-binding'], ['init', '--binding-input', 'relative'], ['migrate-binding', '--config-dir', f.dir, '--owner-id', 'owner', '--binding-input', f.bindingPath, '--key', key]]) {
+  for (const args of [['migrate-binding'], ['init', '--binding-input', 'relative'], ['migrate-binding', '--surface', 'text', '--config-dir', f.dir, '--owner-id', 'owner', '--binding-input', f.bindingPath, '--key', key]]) {
     const result = f.run(args); assert.notEqual(result.status, 0); assert.ok(!JSON.stringify({ stdout: result.stdout, stderr: result.stderr }).includes(key));
   }
 });

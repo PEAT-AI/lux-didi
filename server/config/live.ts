@@ -3,9 +3,9 @@ import { dirname, join } from 'node:path';
 import { isLiveVoiceProvider, type DataClass, type LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
-import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
+import { liveIdentityOf, validateLiveLimits, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
-import { ConfigError, fail, parseJson, readPrivate, safeError, validateRoot } from './files.js';
+import { ConfigError, fail, parseJson, readPrivate, requireSettledConfig, safeError, validateRoot } from './files.js';
 import { renameSync } from 'node:fs';
 import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
@@ -138,25 +138,7 @@ function classList(value: unknown): readonly DataClass[] {
   return Object.freeze([...value] as DataClass[]);
 }
 
-/**
- * Strict owner-only live.json in the existing configDir. Works with no text profile.json, never borrows
- * text consent and never reads a secret (the credential is resolved lazily by the adapter).
- *
- * R1 (LIVE-GATEWAY-R1, approved): a valid enabled file builds its LiveProfile through
- * `compileVoiceInstruction`, the shared canonical system assembly with no conversation turns; the text
- * path is unchanged and no turn is fabricated. The credential is never read here.
- */
-export function loadLiveConfig(options: { configDir: string; ownerId: string; ownerProfile?: OwnerProfileSnapshot }): LiveConfigStatus {
-  try {
-    if (!options || typeof options !== 'object' || typeof options.configDir !== 'string' || typeof options.ownerId !== 'string') fail('invalid_arguments');
-    // A load is the one authority on the accent this process composes with, so a file that is gone or
-    // unreadable falls back to the default rather than keeping a value a previous fixture left behind.
-    currentAccent = LIVE_DEFAULT_ACCENT;
-    currentRate = PLAYBACK_RATE_MIN;
-    if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
-    let text: string;
-    try { text = readPrivate(join(options.configDir, 'live.json'), liveLimit); }
-    catch (error) { if (error instanceof ConfigError && error.code === 'file_missing') return { status: 'unconfigured' }; throw error; }
+export function liveDocument(text: string, ownerId: string) {
     const raw = parseJson(text);
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('invalid_profile');
     const input = raw as Record<string, unknown>;
@@ -179,14 +161,41 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     // The accent selection is read here and published as the process-current value: the next session start
     // composes its anchors from it, so a later save needs no restart.
     const chosenAccent = liveAccent(input['accent']);
-    currentAccent = chosenAccent;
+
     // P3: the pace is read here, so the rate a session starts with is the rate in this file.
     const chosenRate = livePlaybackRate(input['playbackRate']);
-    currentRate = chosenRate;
+
     const dataClasses = classList(input['dataClasses']);
     const declared = input['preferences'];
     if (!declared || typeof declared !== 'object' || Array.isArray(declared)) fail('invalid_profile');
-    const preferences = validatePreferences({ ...(declared as Record<string, unknown>), schemaVersion: 1, ownerId: options.ownerId }, options.ownerId);
+    const preferences = validatePreferences({ ...(declared as Record<string, unknown>), schemaVersion: 1, ownerId }, ownerId);
+    validateLiveLimits(input['limits']);
+    if (!dataClasses.includes(preferences.dataClass)) throw new LiveConfigError('invalid_prompt');
+    return { input, provider, slot, model, chosenVoice, description, chosenAccent, chosenRate, dataClasses, preferences };
+}
+
+/**
+ * Strict owner-only live.json in the existing configDir. Works with no text profile.json, never borrows
+ * text consent and never reads a secret (the credential is resolved lazily by the adapter).
+ *
+ * R1 (LIVE-GATEWAY-R1, approved): a valid enabled file builds its LiveProfile through
+ * `compileVoiceInstruction`, the shared canonical system assembly with no conversation turns; the text
+ * path is unchanged and no turn is fabricated. The credential is never read here.
+ */
+export function loadLiveConfig(options: { configDir: string; ownerId: string; ownerProfile?: OwnerProfileSnapshot }): LiveConfigStatus {
+  try {
+    if (!options || typeof options !== 'object' || typeof options.configDir !== 'string' || typeof options.ownerId !== 'string') fail('invalid_arguments');
+    requireSettledConfig(options.configDir);
+    // A load is the one authority on the accent this process composes with, so a file that is gone or
+    // unreadable falls back to the default rather than keeping a value a previous fixture left behind.
+    currentAccent = LIVE_DEFAULT_ACCENT;
+    currentRate = PLAYBACK_RATE_MIN;
+    if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
+    let text: string;
+    try { text = readPrivate(join(options.configDir, 'live.json'), liveLimit); }
+    catch (error) { if (error instanceof ConfigError && error.code === 'file_missing') return { status: 'unconfigured' }; throw error; }
+    const { input, provider, slot, model, chosenVoice, description, chosenAccent, chosenRate, dataClasses, preferences } = liveDocument(text, options.ownerId);
+    currentAccent = chosenAccent; currentRate = chosenRate;
     const config: LiveConfiguredProfile = Object.freeze({
       provider, preferences, model, voice: chosenVoice, dataClasses, playbackRate: chosenRate,
       profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference, modelId: model, dataClasses }),

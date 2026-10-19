@@ -709,3 +709,54 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
+
+async function receivedOwnerFixture(t: TestContext) {
+  const raw = JSON.stringify({ id: 42, content: 'Synthetic retained sentence. '.repeat(65) });
+  const f = await fixture(t, { result: { content: [{ type: 'text', text: raw }] } });
+  const definitions = f.definitions(), host = { ...f.host, grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+  let step = 0; const seenIds = new Set<string>();
+  const dispatch = (calls: { name: string; args: JsonObject }[], signal = f.signal) => runToolCalls(f.owner, calls.map(call => ({ ...call, id: randomUUID() })), { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal, deadlineMs: Date.now() + 5000 }, step: ++step, contentIndex: 0, seenIds, authorize: true, baseClasses: ['ordinary'] });
+  const root = await dispatch([{ name: 'get_insight', args: { ids: [42] } }]); assert.equal(root.error, undefined); assert.equal(root.accepted.length, 1);
+  const cursor = (root.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.equal(typeof cursor, 'string');
+  return { ...f, raw, host, dispatch, root, cursor: cursor as string };
+}
+
+test('Text body owner integration: failed canonical completion leaves the immutable local cursor unprepared', async t => {
+  const f = await receivedOwnerFixture(t);
+  f.store.transaction(tx => tx.run("CREATE TRIGGER fail_body_completion BEFORE UPDATE ON tool_calls WHEN NEW.state='completed' AND json_extract(NEW.intent_json,'$.toolName')='read_received_body' BEGIN SELECT RAISE(ABORT,'synthetic body completion'); END"));
+  const failed = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(failed.error?.reason, 'tool_journal_failed');
+  assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM tool_calls WHERE json_extract(intent_json,'$.toolName')='read_received_body'"))!.state, 'intent');
+  f.store.transaction(tx => tx.run('DROP TRIGGER fail_body_completion'));
+  const retry = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(retry.error, undefined);
+  const response = retry.accepted[0]!.response, slice = (response['bodySlices'] as JsonObject[])[0]!;
+  assert.equal(slice['offset'], 0); assert.equal(slice['text'], f.raw.slice(0, Number(slice['end']))); assert.equal(response['alreadyPrepared'], undefined); assert.equal(f.calls.length, 1);
+});
+
+test('Text body owner integration: original policy, generation, source availability and expiry gate consumer-only delivery', async t => {
+  for (const mode of ['suspend', 'generation', 'class', 'expired', 'release'] as const) {
+    const f = await receivedOwnerFixture(t);
+    const body = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }]); assert.equal(body.accepted.length, 1);
+    assert.equal(f.owner.authorizeDelivery(f.host, body.bindings, [], f.getLive(), f.signal).state, 'allowed');
+    const first = f.owner.consumeEvidence(f.host, f.root.bindings[0]!, f.getLive(), f.signal), second = f.owner.consumeEvidence(f.host, f.root.bindings[0]!, f.getLive(), f.signal);
+    assert(first.state === 'allowed' && first.evidence.kind === 'remote-body'); assert.deepEqual(second, first, 'consumeEvidence detaches repeatable evidence, not a destructive single-use read');
+    if (mode === 'suspend') f.registry.suspend('endpoint');
+    if (mode === 'generation') f.owner.applyConnection(policy({ generation: 2 }));
+    if (mode === 'class') f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { id: 'synthetic-policy', revision: 2, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { identity: route.identity, allowedClasses: ['sensitive'] } }));
+    if (mode === 'release') f.owner.releaseEvidence('run');
+    const clock = mode === 'expired' ? t.mock.method(Date, 'now', () => first.evidence.kind === 'remote-body' ? first.evidence.expiresAt + 1 : 0) : undefined;
+    assert.equal(f.owner.authorizeDelivery(f.host, body.bindings, [], f.getLive(), f.signal).state, 'refused', mode);
+    clock?.mock.restore(); assert.equal(f.calls.length, 1);
+  }
+});
+
+test('Text body owner integration: independent parents, unknown and cross-run cursors preserve original identities', async t => {
+  const f = await receivedOwnerFixture(t);
+  const other = await f.dispatch([{ name: 'get_insight', args: { ids: [43] } }]); const otherCursor = (other.accepted[0]!.response['bodyContinuation'] as JsonObject)['cursor']; assert.notEqual(otherCursor, f.cursor);
+  const two = await f.dispatch([{ name: 'read_received_body', args: { cursor: f.cursor } }, { name: 'read_received_body', args: { cursor: otherCursor } }]); assert.equal(two.accepted.length, 2);
+  assert(two.accepted.every(result => (result.response['bodySlices'] as JsonObject[])[0]!['offset'] === 0)); assert.equal(f.calls.length, 2);
+  const unknown = await f.dispatch([{ name: 'read_received_body', args: { cursor: 'unknown-synthetic-cursor' } }]); assert.equal(unknown.tools[0]!.status, 'refused'); assert.equal(unknown.error, undefined);
+  const accepted = { ...f.acceptance, runId: 'second-run' }, hash = f.store.transaction(tx => f.owner.snapshotRun(tx, accepted)); f.setLive({ ...accepted, acceptedRunHash: hash.sha256 });
+  const definitions = f.owner.definitions('second-run'), host = { ...f.host, runId: 'second-run', grants: definitions.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+  const crossed = await runToolCalls(f.owner, [{ id: 'cross-run', name: 'read_received_body', args: { cursor: f.cursor } }], { registry: definitions, host, authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, step: 1, contentIndex: 0, seenIds: new Set(), authorize: true, baseClasses: ['ordinary'] });
+  assert.equal(crossed.tools[0]!.status, 'refused'); assert.equal(crossed.error, undefined); assert.equal(f.calls.length, 2);
+});

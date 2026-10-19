@@ -3,7 +3,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -142,7 +142,7 @@ test('a tool outside the read grant refuses before dispatch', async t => {
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry, MONGOOSE_TOOLS.filter(name => name !== 'get_ticket'));
   try {
-    const result = await reader(adapter, registry, digest).getTicket({ id: 'ticket-1' });
+    const result = await reader(adapter, registry, digest).getTicket({ number: 'ticket-1' });
     assert.equal(result.state, 'refused');
     assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-granted');
   } finally { await adapter.close(); }
@@ -157,7 +157,7 @@ test('input budgets refuse malformed arguments before any wire call', async t =>
     assert.equal((await r.search({ query: '   ' })).state, 'refused');
     assert.equal((await r.search({ query: 'ok', limit: 999 })).state, 'refused');
     assert.equal((await r.listTickets({ limit: 0 })).state, 'refused');
-    assert.equal((await r.getTicket({ id: '' })).state, 'refused');
+    assert.equal((await r.getTicket({ number: '' })).state, 'refused');
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); }
 });
@@ -167,7 +167,7 @@ test('a large Mongoose answer is projected as bounded, partial-marked Markdown',
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry);
   try {
-    const result = await reader(adapter, registry, digest).companyProfile();
+    const result = await reader(adapter, registry, digest).companyProfile({ company_name: 'Synthetic Company' });
     assert.equal(result.state, 'completed');
     const projected = projectMongooseResult(adapter, result);
     assert.equal(projected.ok, true);
@@ -438,4 +438,81 @@ test('one widened read tool call carries the bearer resolved from the OAuth reco
     await f.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('Mongoose current contract: typed detail reads send ref, ticket number and company name through original schema validation', async t => {
+  const schemas = [
+    { name: 'read_knowledge_body', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1, maximum: 9000 } }, required: ['ref'], additionalProperties: false } },
+    { name: 'get_ticket', inputSchema: { type: 'object', properties: { number: { type: ['integer', 'string'] }, body_offset: { type: 'integer' }, detail: { type: 'string', enum: ['summary', 'full'] } }, required: ['number'], additionalProperties: false } },
+    { name: 'get_company_profile', inputSchema: { type: 'object', properties: { company_name: { type: 'string' }, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: 'array', items: { type: 'string' } } }, required: ['company_name'], additionalProperties: false } },
+  ];
+  const f = await fixture({ tools: schemas }); t.after(() => f.close());
+  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+  const digest = await approve(adapter, registry, schemas.map(schema => schema.name));
+  const source = reader(adapter, registry, digest);
+  const body = await source.readKnowledgeBody({ ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 });
+  assert.equal(body.state, 'completed');
+  assert.equal((await source.getTicket({ number: 17, body_offset: 1200, detail: 'full' })).state, 'completed');
+  assert.equal((await source.companyProfile({ company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] })).state, 'completed');
+  assert.deepEqual(f.calls, [
+    { name: 'read_knowledge_body', arguments: { ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 } },
+    { name: 'get_ticket', arguments: { number: 17, body_offset: 1200, detail: 'full' } },
+    { name: 'get_company_profile', arguments: { company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] } },
+  ]);
+  const before = f.calls.length;
+  assert.equal((await source.call('read_knowledge_body', { id: 'synthetic-ref' })).state, 'refused', 'old id arguments remain refused by the original schema');
+  assert.equal(f.calls.length, before);
+});
+
+for (const [label, tool, data] of [
+  ['flat', 'search_mongoose', { results: [{ entity_type: 'knowledge', id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active', url: 'https://example.invalid/kb/17' }], has_more: true, next_cursor: 1, total_estimate: 2 }],
+  ['grouped', 'search_mongoose', { hits: { company: [{ company_name: 'Synthetic Company', name: 'Synthetic Company', snippet: 'Company evidence.' }], knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }], offering: [], ticket: [{ number: 17, title: 'Synthetic ticket', snippet: 'Ticket evidence.' }] }, has_more: true, next_cursor: 1, total: 4 }],
+  ['ask', 'ask_mongoose', { found: false, has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
+] as const) {
+  test(`Mongoose evidence projection: ${label} preserves entity identity, snippets and answerability through the actual SDK`, async t => {
+    const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
+    const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+    const digest = await approve(adapter, registry);
+    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic launch' } : { query: 'synthetic launch' });
+    const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
+    assert.match(projected.projection.text, /kb-17/); assert.match(projected.projection.text, /Launch delayed to Monday/); assert.match(projected.projection.text, /active/);
+    if (label !== 'ask') { assert.equal(projected.projection.partial, true); assert.match(projected.projection.text, /next_cursor: 1/); }
+    else { assert.match(projected.projection.text, /answerable: false/); assert.equal(projected.projection.partial, false, 'bounded ask with no source or local omissions remains complete'); }
+    if (label === 'grouped') { assert.match(projected.projection.text, /company_name: Synthetic Company/); assert.match(projected.projection.text, /number: 17/); }
+  });
+}
+test('Mongoose evidence projection: a complete chunk is not a whole body and preserves its source cursor', async t => {
+  const f = await fixture({ text: JSON.stringify({ body: 'First received piece.', complete: true, whole_body: false, next_cursor: '17', body_char_count: 9000 }) }); t.after(() => f.close());
+  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+  const digest = await approve(adapter, registry);
+  const result = await reader(adapter, registry, digest).readKnowledgeBody({ ref: 'synthetic-ref' });
+  const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
+  assert.equal(projected.projection.partial, true); assert.equal(projected.projection.omittedCharacters, 0);
+  assert.match(projected.projection.text, /whole_body: false/); assert.match(projected.projection.text, /next_cursor: 17/);
+});
+
+test('Mongoose literal projection: knowledge subtype is not an entity type and ask trimming retains its answerability contract', async t => {
+  const literal = JSON.parse(readFileSync(new URL('../../test/fixtures/mongoose-literal-sanitized.json', import.meta.url), 'utf8')) as Record<string, unknown>;
+  const ask = { found: true, answer_state: 'answered', has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', name: 'Synthetic evidence', snippet: 'A received citation.', snippet_truncated: true }] }, hits_total: 12, hits_truncated: true }, answerability: { decision: 'read_evidence', next_tool: { name: 'read_knowledge_body', arguments: { ref: 'engineering/synthetic' } } } };
+  for (const [label, tool, data] of [['flat', 'search_mongoose', literal['flat']], ['grouped', 'search_mongoose', literal['grouped']], ['body', 'read_knowledge_body', literal['bodyChunk']], ['ask', 'ask_mongoose', ask]] as const) {
+    const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
+    const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+    const digest = await approve(adapter, registry);
+    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic' } : tool === 'read_knowledge_body' ? { ref: 'engineering/synthetic' } : { query: 'synthetic' });
+    const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) continue;
+    assert.equal(projected.projection.partial, true);
+    assert.doesNotMatch(projected.projection.text, /fixture@example.invalid|system_role/);
+    if (label === 'flat') { assert.match(projected.projection.text, /entity: knowledge/); assert.doesNotMatch(projected.projection.text, /entity: reference/); }
+    if (label === 'ask') { assert.match(projected.projection.text, /hits_truncated: true/); assert.match(projected.projection.text, /answerability.decision: read_evidence/); assert.match(projected.projection.text, /read_knowledge_body/); assert.match(projected.projection.text, /snippet_truncated: true/); assert.equal(projected.projection.omittedCharacters, 0); }
+  }
+});
+
+test('Mongoose literal projection: local coverage clipping remains bounded and character accounting is exact', async t => {
+  const f = await fixture({ text: JSON.stringify({ found: false, has_more: false, results: { hits: { knowledge: [{ id: 'synthetic', name: 'Synthetic evidence', snippet: 'A received citation.' }] } }, answerability: { decision: 'requires_tool', next_tool: { name: 'search_mongoose', arguments: { query: 'q'.repeat(6000) } } } }) }); t.after(() => f.close());
+  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+  const digest = await approve(adapter, registry);
+  const projected = projectMongooseResult(adapter, await reader(adapter, registry, digest).ask({ question: 'synthetic' })); assert.equal(projected.ok, true); if (!projected.ok) return;
+  assert(projected.projection.text.length <= 4000); assert.equal(projected.projection.partial, true);
+  assert.equal(projected.projection.text.length + projected.projection.omittedCharacters, projected.projection.originalCharacters);
+  assert.equal(f.calls.length, 1, 'source next-tool advice is never executed by projection');
 });

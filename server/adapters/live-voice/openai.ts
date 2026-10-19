@@ -61,12 +61,13 @@ export function openAiBackendInstructions(procedure?: string): string {
   const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`;
   return typeof procedure === 'string' && procedure.length ? `${base}\n\n${procedure}` : base;
 }
+export const OPENAI_TOOLS_SECTION = 'Tools: before a lookup, say one short natural line that you are checking; never go silent for more than a few seconds.';
 export const OPENAI_DELIVERY_SECTION = 'Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.';
 /** OpenAI's live prompting guide, verbatim: the server owns turn taking, so a stray sound is not a new turn. */
 const OPENAI_LISTENING_SECTION = 'Do not treat a cough, music, or nearby conversation as a new request.\nKeep listening while the owner pauses to think.';
 /** The shared persona is sent unchanged; the wrapper only appends the provider sections. */
 export function openAiInstructions(persona: string): string {
-  return `${persona}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
+  return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
 const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */

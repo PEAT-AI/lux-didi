@@ -4,7 +4,7 @@ import { OpenAiLiveVoiceAdapter } from './openai.js';
 
 export * from './types.js';
 export { GeminiLiveVoiceAdapter } from './gemini.js';
-export { OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, openAiInstructions } from './openai.js';
+export { OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from './openai.js';
 export { LIVE_INPUT_RATE, LIVE_PROVIDER_RATE, Pcm16Upsampler } from './resample.js';
 
 /**

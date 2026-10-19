@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
-import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
+import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
 import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
@@ -276,7 +276,7 @@ describe('openai gpt-live adapter', () => {
     const instructions = start.session['instructions'] as string;
     assert.equal(instructions, openAiInstructions('Synthetic persona'));
     assert.ok(instructions.startsWith('Synthetic persona'), 'the shared persona is sent unchanged first');
-    for (const section of [OPENAI_DELIVERY_SECTION]) assert.ok(instructions.includes(section), section);
+    for (const section of [OPENAI_TOOLS_SECTION, OPENAI_DELIVERY_SECTION]) assert.ok(instructions.includes(section), section);
     // PV1: the wrapper names no language, because the host's accent block carries the accent now.
     assert.ok(!/^Language:/m.test(instructions), 'no Language line');
     assert.ok(!instructions.includes('Language: speak English'), 'no language instruction line');

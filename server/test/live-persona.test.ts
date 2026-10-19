@@ -654,7 +654,7 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 const WRAPPER_3O_CHARS = 6603;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Start a lookup without a spoken preamble.',
+    'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
     'Vary how you start replies; never open two replies in a row with the same word.',
@@ -917,7 +917,7 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
 });
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
-  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough\. Start a lookup without a spoken preamble\./);
+  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough\. Never fill the silence while a lookup runs\./);
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the earlier thread only if it still matters; otherwise let it go\./);
 });
 

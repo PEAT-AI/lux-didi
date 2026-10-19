@@ -46,6 +46,12 @@ const LATE_OUTCOMES = ['completed', 'failed'];
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
+/**
+ * Z1: a research line whose id fails SAFE_ID used to be dropped whole, so a run that really happened left
+ * no receipt and read as a run that never happened. The replacement names the event and the field only,
+ * never the value.
+ */
+const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 /** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
@@ -523,7 +529,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_progress') {
     // 241: run phase and source kinds only, never question text, evidence or item ids.
     if (Object.keys(value).sort().join(',') !== ['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'].sort().join(',')) return;
-    if (!isSafeId(value.researchId) || !isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_progress');
+    if (!isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
     if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
     return { event: 'research_progress', researchId: value.researchId, phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
   }
@@ -537,7 +544,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
     if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
     if (Object.keys(value).sort().join(',') !== (hasDriver ? [...keys, 'driver'] : keys).sort().join(',')) return;
-    if (!isSafeId(value.researchId) || !isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
+    if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
     if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
     if (typeof value.fallbackUsed !== 'boolean') return;
     if (!isSafeCount(value.rounds) || !isSafeCount(value.ops) || !isSafeCount(value.elapsedMs) || !isSafeCount(value.deadAirMs) || !isSafeCount(value.selectorMs) || !isSafeCount(value.replyBytes)) return;
@@ -578,7 +586,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
     const keys = ['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
-    if (!isSafeId(value.researchId) || !isSafeCount(value.lookups)) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
+    if (!isSafeCount(value.lookups)) return;
     if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
@@ -593,7 +602,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
     const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
     if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : [])].sort().join(',')) return;
-    if (!isSafeId(value.researchId) || typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
+    if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
     if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs) || !isSafeCount(value.coalesced)) return;
     let knowledge: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } | undefined;
@@ -610,7 +620,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
     // reply and the ones it named as pending. Never a query, never a finding.
     if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending'])) return;
-    if (!isSafeId(value.researchId) || typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_first_answer');
+    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
     if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
     return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending };
   }
@@ -618,7 +629,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // R6: one line per source that settled after the first answer: how long it took, how many items it
     // really returned, and how the host delivered them. Never the text of one.
     if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'delivered', 'reason'])) return;
-    if (!isSafeId(value.researchId) || !isSafeMember(value.source, RESEARCH_SOURCES)) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_late_findings');
+    if (!isSafeMember(value.source, RESEARCH_SOURCES)) return;
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
     if (typeof value.items !== 'number' || !Number.isInteger(value.items) || value.items < 0 || value.items > 16) return;
     if (!isSafeMember(value.delivered, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
@@ -633,7 +645,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasUnread = Object.prototype.hasOwnProperty.call(value, 'unread');
     const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : []), ...(hasUnread ? ['unread'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
-    if (!isSafeId(value.researchId) || !isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_subcall');
+    if (!isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
     if (typeof value.ok !== 'boolean') return;
     if (hasError && !isSafeToken(value.errorCode)) return;
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
@@ -720,7 +733,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_joined') {
     // Metadata only: the run id a second start joined. No question, no result text.
     if (Object.keys(value).sort().join(',') !== ['event', 'researchId'].sort().join(',')) return;
-    if (!isSafeId(value.researchId)) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_joined');
     return { event: 'research_joined', researchId: value.researchId };
   }
   if (value.event === 'warm_prewarm') {

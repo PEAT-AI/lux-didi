@@ -192,14 +192,14 @@ test('a new research call while one is pending answers the old call at once and 
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = scheduler.call({ action: 'start', question: 'q', researchId: 'r1' }, new AbortController().signal);
-  const second = scheduler.call({ action: 'continue', researchId: 'r1' }, new AbortController().signal);
+  const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
+  const second = scheduler.call({ action: 'continue' }, new AbortController().signal);
   const firstReply = await first;
   assert.equal(firstReply['superseded'], true);
   assert.deepEqual(firstReply['findings'], []);
   gate.resolve();
   const secondReply = await second;
-  assert.equal(secondReply['researchId'], 'r1');
+  assert.equal(secondReply['researchId'], firstReply['researchId'], 'the takeover keeps the id the host minted');
   assert.equal(secondReply['superseded'], undefined);
 });
 
@@ -207,8 +207,8 @@ test('a stop call while one is pending returns what is known now', async () => {
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = scheduler.call({ action: 'start', question: 'q', researchId: 'r2' }, new AbortController().signal);
-  const stopped = await scheduler.call({ action: 'stop', researchId: 'r2' }, new AbortController().signal);
+  const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
+  const stopped = await scheduler.call({ action: 'stop' }, new AbortController().signal);
   assert.equal(stopped['status'], 'stopped');
   assert.equal((await first)['superseded'], true);
   gate.resolve();
@@ -218,21 +218,23 @@ test('a continue with no researchId applies to the single pending run (R1-R3)', 
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = scheduler.call({ action: 'start', question: 'q', researchId: 'r3' }, new AbortController().signal);
+  const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const second = scheduler.call({ action: 'continue' }, new AbortController().signal);
-  assert.equal((await first)['superseded'], true);
+  const firstReply = await first;
+  assert.equal(firstReply['superseded'], true);
   gate.resolve();
-  assert.equal((await second)['researchId'], 'r3');
+  assert.equal((await second)['researchId'], firstReply['researchId'], 'the takeover keeps the id the host minted');
 });
 
 test('a stop with an unknown researchId applies to the single pending run (R1-R3)', async () => {
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = scheduler.call({ action: 'start', question: 'q', researchId: 'r4' }, new AbortController().signal);
+  const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const stopped = await scheduler.call({ action: 'stop', researchId: 'unknown-id' }, new AbortController().signal);
   assert.equal(stopped['status'], 'stopped');
-  assert.equal(String(stopped['researchId']), 'r4');
+  assert.match(String(stopped['researchId']), /^[A-Za-z0-9-]{1,64}$/, 'the reply names the minted run, never the invented id');
+  assert.notEqual(String(stopped['researchId']), 'unknown-id');
   assert.equal((await first)['superseded'], true);
   gate.resolve();
 });
@@ -241,13 +243,43 @@ test('a second start while a run is in flight joins that run instead of starting
   const gate = deferred<void>();
   const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = scheduler.call({ action: 'start', question: 'a', researchId: 'p1' }, new AbortController().signal);
-  const second = scheduler.call({ action: 'start', question: 'b', researchId: 'p2' }, new AbortController().signal);
+  const first = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
+  const second = scheduler.call({ action: 'start', question: 'b' }, new AbortController().signal);
   gate.resolve();
   const [a, b] = await Promise.all([first, second]);
-  assert.equal(String(a['researchId']), 'p1');
-  assert.equal(String(b['researchId']), 'p1', 'the second start joins the in-flight run');
-  assert.deepEqual(h.joined, ['p1'], 'the join is logged as research_joined');
+  const minted = String(a['researchId']);
+  assert.match(minted, /^[A-Za-z0-9-]{1,64}$/, 'the first start names the id the host minted');
+  assert.equal(String(b['researchId']), minted, 'the second start joins the in-flight run');
+  assert.deepEqual(h.joined, [minted], 'the join is logged as research_joined');
+});
+
+test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {
+  const h = harness({ selector: knowledge });
+  const scheduler = new ResearchScheduler(h.deps);
+  const reply = await scheduler.call({ action: 'start', question: 'q', researchId: '\u2014' }, new AbortController().signal);
+  const id = String(reply['researchId']);
+  assert.match(id, /^[A-Za-z0-9-]{1,64}$/, 'the run id passes the host log id rule');
+  assert.equal(h.logs[0]!.researchId, id, 'the run receipt names the minted id');
+  assert.equal(safeEvent(h.logs[0]!)?.event, 'research_run', 'so the receipt survives the host log whitelist');
+});
+
+test('Z1: a start ignores even a safe-looking model researchId and mints its own', async () => {
+  const h = harness({ selector: knowledge });
+  const scheduler = new ResearchScheduler(h.deps);
+  const reply = await scheduler.call({ action: 'start', question: 'q', researchId: 'x' }, new AbortController().signal);
+  const id = String(reply['researchId']);
+  assert.notEqual(id, 'x', 'the model id is ignored, never an error');
+  assert.match(id, /^[A-Za-z0-9-]{1,64}$/);
+  assert.equal(h.logs[0]!.researchId, id, 'the receipt names the minted run');
+});
+
+test('Z1: a continue with an unknown researchId is a typed error, never a silent second run', async () => {
+  const h = harness({ selector: knowledge });
+  const scheduler = new ResearchScheduler(h.deps);
+  const reply = await scheduler.call({ action: 'continue', researchId: '\u2014' }, new AbortController().signal);
+  assert.deepEqual(reply, { error: 'unknown_research_run' });
+  assert.deepEqual(h.logs, [], 'no run line is written for a run the host never minted');
+  assert.equal(h.deps.ledger.last(), undefined, 'and no run is created behind the error');
 });
 
 test('the word stop in a question never stops a run: stop is only a tool action', async () => {
@@ -1005,20 +1037,22 @@ test('R6/M2: stop reaches a run that answered ahead of its readers', async () =>
   const scheduler = new ResearchScheduler(h.deps);
   const controller = new AbortController();
   const first = scheduler.call({
-    action: 'start', question: 'what did he ask me to remember', researchId: 'r6stop',
+    action: 'start', question: 'what did he ask me to remember',
     lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
   }, controller.signal);
   await tick();
   clock.advance(RESEARCH.firstAnswerMs);
-  assert.deepEqual((await first)['pending'], ['knowledge'], 'the call has answered with a reader still running');
-  const stopped = await scheduler.call({ action: 'stop', researchId: 'r6stop' }, controller.signal);
-  assert.equal(stopped['researchId'], 'r6stop', 'stop finds the run the first answer left reading');
-  assert.equal(h.deps.ledger.find('r6stop')?.stopped, true, 'and records that run stopped');
+  const startReply = await first;
+  assert.deepEqual(startReply['pending'], ['knowledge'], 'the call has answered with a reader still running');
+  const id = String(startReply['researchId']);
+  const stopped = await scheduler.call({ action: 'stop', researchId: id }, controller.signal);
+  assert.equal(stopped['researchId'], id, 'stop finds the run the first answer left reading');
+  assert.equal(h.deps.ledger.find(id)?.stopped, true, 'and records that run stopped');
   assert.ok((stopped['findings'] as unknown[]).length > 0, 'with what it already knew');
   gate.resolve();
   controller.abort();
   await reading;
-  assert.equal(h.deps.ledger.find('r6stop')?.ended, true, 'the run line is the run\'s own end');
+  assert.equal(h.deps.ledger.find(id)?.ended, true, 'the run line is the run\'s own end');
 });
 
 test('R6/M2: continue reaches a run that answered ahead of its readers', async () => {
@@ -1037,16 +1071,18 @@ test('R6/M2: continue reaches a run that answered ahead of its readers', async (
   const scheduler = new ResearchScheduler(h.deps);
   const controller = new AbortController();
   const first = scheduler.call({
-    action: 'start', question: 'what did he ask me to remember', researchId: 'r6cont',
+    action: 'start', question: 'what did he ask me to remember',
     lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
   }, controller.signal);
   await tick();
   clock.advance(RESEARCH.firstAnswerMs);
-  assert.deepEqual((await first)['pending'], ['knowledge']);
-  const continuing = scheduler.call({ action: 'continue', researchId: 'r6cont' }, controller.signal);
+  const startReply = await first;
+  assert.deepEqual(startReply['pending'], ['knowledge']);
+  const id = String(startReply['researchId']);
+  const continuing = scheduler.call({ action: 'continue', researchId: id }, controller.signal);
   gate.resolve();
   const reply = await continuing;
-  assert.equal(reply['researchId'], 'r6cont', 'continue addresses the same run, never a second one beside it');
+  assert.equal(reply['researchId'], id, 'continue addresses the same run, never a second one beside it');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'and reuses the ledger the first answer wrote');
   controller.abort();
   await reading;

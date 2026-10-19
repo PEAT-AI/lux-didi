@@ -330,7 +330,7 @@ test('a forwarded receipt sequence records native events and the playback row', 
     assert.deepEqual(events.map(row => row['source_seq']), [1, 2, 3, 4]);
     assert.equal(events[3]!['at'], T0 + 204, 'the producer wall ms is stored as sent, never replaced by the host clock');
     assert.equal(events[3]!['mono_ms'], 1_004);
-    const row = store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${INSTANCE}:1`]))!;
+    const row = store.transaction(tx => tx.get('SELECT * FROM trace_playback WHERE playback_key=?', [`${SESSION}:${INSTANCE}:1`]))!;
     assert.equal(row['received_at'], T0 + 201);
     assert.equal(row['enqueued_at'], T0 + 202);
     assert.equal(row['started_at'], T0 + 203);

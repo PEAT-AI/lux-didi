@@ -121,12 +121,22 @@ type OutputSocket = Pick<WebSocket, 'readyState' | 'bufferedAmount' | 'send' | '
 export async function pumpOutput(ws: OutputSocket, attachment: LiveAttachment, detach: () => void, maxBufferedBytes: number): Promise<void> {
   try {
     for await (const chunk of attachment.output) {
+      // A socket the app already gave up on is a consumer that is gone: detach at once, never write into it.
       if (ws.readyState !== WebSocket.OPEN) { detach(); return; }
-      if (chunk.kind === 'audio') ws.send(chunk.pcm, { binary: true });
-      else if (chunk.marker.kind !== 'terminal') ws.send(JSON.stringify(markerFrame(chunk.marker)), { binary: false });
+      try {
+        if (chunk.kind === 'audio') ws.send(chunk.pcm, { binary: true });
+        else if (chunk.marker.kind !== 'terminal') ws.send(JSON.stringify(markerFrame(chunk.marker)), { binary: false });
+      } catch {
+        // A send that throws is the same fact as a closed socket, and the session must end, not wait out the net.
+        detach();
+        return;
+      }
       if (ws.bufferedAmount > maxBufferedBytes) { attachment.overflow(); ws.close(1013, 'consumer_backpressure'); return; }
     }
-  } catch { /* transport failure never invents a delivered terminal or heard audio */ }
+  } catch {
+    // The output itself failed: the app is told no terminal it never earned, but nobody is listening any more.
+    detach();
+  }
   let snapshot: LiveSessionSnapshot | null = null;
   try { snapshot = await attachment.done; } catch { snapshot = null; }
   if (ws.readyState !== WebSocket.OPEN) return;

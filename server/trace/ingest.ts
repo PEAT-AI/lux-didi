@@ -58,9 +58,10 @@ export function parsePlaybackReceipt(raw: string): NativePlaybackReceipt {
   };
 }
 
-/** One playback segment is one key: the instance that played it and its own segment number. */
-export function playbackKeyOf(sourceInstanceId: string, segmentSeq: number): string {
-  return `${sourceInstanceId}:${segmentSeq}`;
+/** One playback segment is one key: the session that heard it, the instance that played it, its segment
+ *  number. The native player restarts segments with every session, so the session has to be in the key. */
+export function playbackKeyOf(liveSessionId: string, sourceInstanceId: string, segmentSeq: number): string {
+  return `${liveSessionId}:${sourceInstanceId}:${segmentSeq}`;
 }
 
 /** What the host knows about a segment. Never guessed: an unknown field stays null in the row. */
@@ -75,7 +76,7 @@ export function recordPlaybackReceipt(port: TraceWritePort, liveSessionId: strin
   attribution: PlaybackAttribution = {}): RecordResult {
   const ids = {
     liveSessionId, source: 'native' as const, sourceInstanceId: receipt.sourceInstanceId, sourceSeq: receipt.sourceSeq,
-    at: receipt.wallMs, monoMs: receipt.monoMs, playbackKey: playbackKeyOf(receipt.sourceInstanceId, receipt.segmentSeq),
+    at: receipt.wallMs, monoMs: receipt.monoMs, playbackKey: playbackKeyOf(liveSessionId, receipt.sourceInstanceId, receipt.segmentSeq),
     ...attribution,
   };
   switch (receipt.receipt) {

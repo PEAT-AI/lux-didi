@@ -11,7 +11,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, chooseStartContext, withProvenance, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
+import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
@@ -738,25 +738,12 @@ export class LiveSessionOwner {
     return snapshot;
   }
 
-  /**
-   * The owner's prewarm instruction (issue 338, R7): read today's calendar digest once, then rebuild the
-   * warm assembly from the sections the last start used plus that digest, keeping the summary
-   * provenance that start recorded (F9). A wake before any start (R7) has no such sections, so it
-   * assembles from the sources this owner holds without a store read, the digest included, and the
-   * receipt says which source it used. Nothing talks to a model, and a connector failure leaves the
-   * slot out rather than failing the instruction. Returns the receipt the host logs as `warm_prewarm`.
-   */
+  /** Refresh cached calendar context without renewing previously selected conversation summaries. */
   async prewarm(): Promise<WarmPrewarmReceipt> {
     const ageBeforeMs = this.#warm.ageMs ?? null;
-    // 1015: a wake is the one moment a stale digest is worth refreshing for, so the prewarm asks for a
-    // read and then takes whatever the cache holds when it answers.
-    this.#calendarDigest?.refresh();
     await this.prepareCalendar();
     const previous = this.#sections;
-    // `adopt` is the cache's own "keep these sections now", which is what a forced refresh assembles;
-    // it is not `refresh(true)` because a source collection cannot carry the provenance above.
-    const next = previous ?? sourceSections(this.#profile.prompt.text, this.#calendar);
-    const refreshed = this.#warm.adopt(previous === undefined ? next : withProvenance({ ...next, calendar: this.#calendar }, previous));
+    const refreshed = this.#warm.adopt(sourceSections(this.#profile.prompt.text, this.#calendar));
     if (refreshed !== undefined) this.#sections = refreshed.sections;
     const receipt: WarmPrewarmReceipt = { ageBeforeMs, ageAfterMs: this.#warm.ageMs ?? null, assembled: refreshed !== undefined,
       reason: refreshed === undefined ? 'too_large' : previous === undefined ? 'sources' : 'sections' };
@@ -854,32 +841,15 @@ export class LiveSessionOwner {
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
-      // P1-R1: one source of the earlier-conversation section. A warm assembly younger than ten
-      // minutes supplies it as it stands, so the summary scan and its selection do not run twice; a
-      // stale or absent one is assembled here, exactly as before, and adopted for the next start.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
-        let basis: ReturnType<typeof composeLiveSessionInstruction> | undefined;
-        // R7: a wake prewarm assembles the persona and the digest but no conversation summary, so a start
-        // still assembles its own summary; the digest reaches it from #calendar either way.
-        const warm = this.#warm.take();
-        const start = chooseStartContext(warm !== undefined && warm.sections.summary === undefined ? undefined : warm, () => {
-          // The summaries fill what the other sections leave under the target, so measure it once.
-          basis = composeSession(undefined, this.#calendar);
-          earlier = buildEarlierConversationsSection(storedSummaries,
-            { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
-          return { persona: configuredPrompt.system, memory: [] as readonly string[],
-            summary: earlier.section.length ? earlier.section : undefined,
-            summaryIds: [...earlier.selectedIds], summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
-        });
-        if (start.warm) earlier = { section: start.sections.summary ?? '', selectedIds: [...start.sections.summaryIds], omitted: [...start.sections.summaryOmitted] };
-        else this.#warm.adopt(start.sections);
-        // The sections this start used are what a forced prewarm refreshes, so it re-reads no store.
-        this.#sections = start.sections;
-        // R7: one digest per instruction, the warm start's own sections first and never a second read.
-        const calendar = start.sections.calendar ?? this.#calendar;
-        // The measured basis carries the same digest, so it is the result when the summary is absent.
-        if (!earlier.section) return basis !== undefined && start.sections.calendar === this.#calendar ? basis : composeSession(undefined, calendar);
-        return composeSession(earlier.section, calendar);
+        const basis = composeSession(undefined, this.#calendar);
+        earlier = buildEarlierConversationsSection(storedSummaries,
+          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+        this.#sections = { persona: configuredPrompt.system, memory: [],
+          summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
+          summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
+        this.#warm.adopt(this.#sections);
+        return earlier.section ? composeSession(earlier.section, this.#calendar) : basis;
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }

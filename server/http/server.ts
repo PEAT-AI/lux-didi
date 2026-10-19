@@ -121,8 +121,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           // body names no field, which the route's second pass is what refuses.
           const resolved = resolveRoute(method, url, await readBody(req));
           if (resolved.kind !== 'live' || resolved.action !== 'prewarm') throw new ServiceError('BAD_REQUEST', 'Invalid Live request');
-          const warm = live as typeof live & { prewarm?: () => Promise<unknown> };
-          const receipt = await warm.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false };
+          const receipt = await live.prewarm();
           send(res, 200, success(receipt));
           return;
         }
@@ -136,8 +135,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           // R3-R5, 1015: the start uses the digest the host's background owner already read; with no
           // fresh cache it waits at most 1,500 ms for a read in flight, never a whole read. It cannot
           // fail the start: an absent, failed or stale read leaves the slot out.
-          const warmStart = live as typeof live & { prepareCalendar?: () => Promise<unknown> };
-          await warmStart.prepareCalendar?.();
+          await live.prepareCalendar();
+          if (res.destroyed) return;
           send(res, 200, success(jobs.createWithPending ? jobs.createWithPending(String(resolved.input['inputClass']) as DataClass, key, context, resolved.input['pickupJobId'] as string | undefined) : live.create(String(resolved.input['inputClass']) as DataClass, key, context))); return;
         }
         if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }

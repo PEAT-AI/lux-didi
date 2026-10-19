@@ -14,6 +14,8 @@ import type { Store } from '../runtime/store.js';
 import type { LiveSelectionResult, LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 import { hostLogEvent } from './log.js';
 import { createGeminiSelector, type ResearchSelector } from '../tools/research.js';
+import type { CalendarDigestSnapshot } from '../live/warm-context.js';
+import type { WarmPrewarmReceipt } from '../live/index.js';
 
 const maxIncomingBytes = 64 * 1024;
 
@@ -62,6 +64,8 @@ class HostLiveService implements LiveService {
     this.profileIdentity = liveProfileIdentity(profile);
   }
   current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
+  prepareCalendar(): Promise<CalendarDigestSnapshot> { return this.owner.prepareCalendar(); }
+  prewarm(): Promise<WarmPrewarmReceipt> { return this.owner.prewarm(); }
   lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return { ...statusFromProfile(this.profile), ...{ memory: this.owner.profileProjection().memory } }; }
   /** Owner choice persisted into live.json; the loaded profile here keeps the call in flight untouched. */
@@ -113,6 +117,12 @@ class UnconfiguredLive implements LiveService {
   constructor(private readonly payload: LiveStatusPayload) {}
   current(cursor = 0): LivePageProjection { return { state: 'idle', since: null, entries: [], cursor }; }
   lookupAuthority(_runId: string) { return null; }
+  async prepareCalendar(): Promise<CalendarDigestSnapshot> {
+    return { state: 'unconfigured', text: undefined, items: 0, fetchedAt: Date.now() };
+  }
+  async prewarm(): Promise<WarmPrewarmReceipt> {
+    return { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' };
+  }
   status(): LiveStatusPayload { return this.payload; }
   create(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   snapshot(): never { return unavailable('LIVE_NOT_CONFIGURED'); }

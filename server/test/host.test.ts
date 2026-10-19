@@ -1,3 +1,4 @@
+import './memory-startup-integration.js';
 // The declared host check also exercises the real installer's isolated seed block (R5).
 import './install-template.test.js';
 import assert from 'node:assert/strict';
@@ -888,7 +889,7 @@ function digestPort(now: () => number, onRead: () => void) {
 
 // F4 and R3-R5 at the owner: the digest is read once for each assembly, the prewarm assembles the
 // sections a start prepared, and the receipt carries the real ages instead of the degenerate nulls.
-test('the owner prewarm assembles after a start and reads the digest once per assembly', async () => {
+test('the owner prewarm assembles after a start without forcing a cached digest read', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-owner-prewarm-'));
   const store = new Store(dir, hostMigrations);
   const configDir = join(dir, 'provider-config');
@@ -913,7 +914,7 @@ test('the owner prewarm assembles after a start and reads the digest once per as
     owner.create({ idempotencyKey: 'k1', inputClass: 'ordinary' }, context);
     clock += 60_000;
     const receipt = await owner.prewarm();
-    assert.equal(reads, 1, 'the wake asks the background owner for one fresh read');
+    assert.equal(reads, 0, 'the wake uses the existing digest freshness owner');
     assert.deepEqual(receipt, { ageBeforeMs: 60_000, ageAfterMs: 0, assembled: true, reason: 'sections' }, 'the receipt carries the real ages');
     await owner.shutdown();
   } finally { await cleanup(); }
@@ -1010,7 +1011,7 @@ test('R7: a prewarm before the first start assembles from sources', async () => 
       calendarDigest: digestPort(() => 1_760_000_000_000, () => { reads += 1; }),
     } as unknown as Parameters<typeof createLiveSessionOwner>[0]);
     const receipt = await owner.prewarm();
-    assert.equal(reads, 1, 'one bounded read for the wake');
+    assert.equal(reads, 0, 'a cached first wake forces no reader call');
     assert.deepEqual(receipt, { ageBeforeMs: null, ageAfterMs: 0, assembled: true, reason: 'sources' },
       'the first prewarm assembles from sources and says so');
     const second = await owner.prewarm();

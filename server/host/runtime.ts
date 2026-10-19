@@ -277,8 +277,6 @@ export async function startHost(config: HostConfig) {
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
     calendarDigest.begin();
-    // The live service carries the owner's prewarm instruction; an unconfigured live keeps the quiet receipt.
-    const warmOwner = live as typeof live & { prewarm?: () => Promise<WarmPrewarmReceipt> };
     // The names a call will use, on the start event: a log alone then proves which provider, model and
     // voice served it. The status projection carries no key, reference or prompt.
     const liveNow = live.status();
@@ -307,7 +305,7 @@ export async function startHost(config: HostConfig) {
         // 338: the owner's wake instruction, the same one POST api/v1/live/prewarm serves. The live
         // owner writes the one closed `warm_prewarm` line, so either route logs it exactly once.
         prewarm: async (): Promise<WarmPrewarmReceipt> =>
-          await warmOwner.prewarm?.() ?? { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' as const },
+          await live.prewarm(),
         start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
         logExit('ready', 'close');

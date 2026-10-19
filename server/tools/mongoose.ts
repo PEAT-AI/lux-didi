@@ -70,23 +70,63 @@ export function mongooseToolStatus(evidence: ConnectorEvidence): ConnectorStatus
     : { state: 'error', reason: 'tool call failed' };
 }
 
-function itemLine(item: Record<string, unknown>): string[] {
-  const title = typeof item['title'] === 'string' ? item['title'] : (typeof item['name'] === 'string' ? item['name'] : (typeof item['id'] === 'string' ? item['id'] : 'item'));
-  const url = typeof item['url'] === 'string' ? item['url'] : (typeof item['item_url'] === 'string' ? item['item_url'] : undefined);
-  const status = typeof item['status'] === 'string' ? `, ${item['status']}` : '';
-  const line = `- ${title}${status}`;
-  return url ? [line, `  source: ${url}`] : [line];
+function scalar(value: unknown): string | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
 }
 
-/** Pure Markdown projection of one Mongoose tool's decoded data, with the hit URL as its source. */
+function itemLine(item: Record<string, unknown>, group?: string): string[] {
+  const title = scalar(item['title']) ?? scalar(item['name']) ?? scalar(item['company_name']) ?? scalar(item['id']) ?? 'item';
+  const entity = scalar(item['entity_type']) ?? scalar(item['type']) ?? group;
+  const fields: string[] = [];
+  if (entity) fields.push(`entity: ${entity}`);
+  for (const key of ['id', 'ref', 'number', 'company_name', 'slug', 'domain', 'status', 'assurance']) {
+    const value = scalar(item[key]); if (value !== undefined) fields.push(`${key}: ${value}`);
+  }
+  const snippet = scalar(item['snippet']) ?? scalar(item['excerpt']) ?? scalar(item['summary']);
+  if (snippet) fields.push(snippet.replace(/\s+/gu, ' ').trim());
+  const url = scalar(item['url']) ?? scalar(item['item_url']);
+  return [`- ${title}${fields.length ? ` | ${fields.join(' | ')}` : ''}`, ...(url ? [`  source: ${url}`] : [])];
+}
+
+function hitLines(data: Record<string, unknown>): string[] | undefined {
+  for (const key of ['items', 'results', 'hits']) {
+    const value = data[key];
+    if (Array.isArray(value)) return value.flatMap(entry => isRecord(entry) ? itemLine(entry) : [`- ${String(entry)}`]);
+    if (isRecord(value)) {
+      if (key === 'results') { const nested = hitLines(value); if (nested !== undefined) return nested; }
+      if (key === 'hits') {
+        const groups = Object.entries(value);
+        if (groups.every(([, entries]) => Array.isArray(entries))) return groups.flatMap(([group, entries]) => (entries as unknown[]).flatMap(entry => isRecord(entry) ? itemLine(entry, group) : []));
+      }
+    }
+  }
+  return undefined;
+}
+
+function coverageLines(data: Record<string, unknown>): { lines: string[]; partial: boolean } {
+  const lines: string[] = [];
+  for (const key of ['found', 'has_more', 'total', 'total_estimate', 'next_cursor', 'complete', 'whole_body', 'body_complete', 'body_char_count', 'body_offset', 'next_body_offset']) {
+    const value = data[key];
+    if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') lines.push(`${key === 'found' ? 'answerable' : key}: ${String(value).length <= 200 ? String(value) : '[oversized metadata omitted]'}`);
+  }
+  const cursor = data['next_cursor'];
+  return { lines, partial: data['has_more'] === true || data['complete'] === false || data['whole_body'] === false || data['body_complete'] === false || (cursor !== undefined && cursor !== null && cursor !== '') || data['next_body_offset'] !== undefined };
+}
+
+/** Preserves source identity and coverage while bounding only the displayed projection. */
 export function renderMongooseTool(tool: string, data: unknown): MongooseProjection {
   if (typeof data === 'string') return boundedProjection(data);
   if (!isRecord(data)) return boundedProjection(JSON.stringify(data));
-  const items = Array.isArray(data['items']) ? data['items'] : (Array.isArray(data['results']) ? data['results'] : (Array.isArray(data['hits']) ? data['hits'] : undefined));
-  if (items) return boundedProjection(items.flatMap(entry => (isRecord(entry) ? itemLine(entry) : [`- ${String(entry)}`])).join('\n'));
-  if (tool === 'read_knowledge_body' && typeof data['body'] === 'string') return boundedProjection(data['body']);
-  if (tool === 'get_company_profile' && typeof data['profile'] === 'string') return boundedProjection(data['profile']);
-  return boundedProjection(JSON.stringify(data));
+  const items = hitLines(data);
+  const coverage = coverageLines(data);
+  let text: string;
+  if (items !== undefined) text = items.join('\n');
+  else if (tool === 'read_knowledge_body' && typeof data['body'] === 'string') text = data['body'];
+  else if (tool === 'get_company_profile' && typeof data['profile'] === 'string') text = data['profile'];
+  else text = JSON.stringify(data);
+  const trailer = coverage.lines.length ? `\ncoverage: ${coverage.lines.join(' | ')}` : '';
+  const projected = boundedProjection(text, MONGOOSE_PROJECTION_CHARS - trailer.length);
+  return { ...projected, text: `${projected.text}${trailer}`, partial: projected.partial || coverage.partial };
 }
 
 /** Full projection of a completed Mongoose read: decode, render, report partial. Never throws on a bad envelope. */

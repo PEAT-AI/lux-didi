@@ -463,3 +463,30 @@ test('Mongoose current contract: typed detail reads send ref, ticket number and 
   assert.equal((await source.call('read_knowledge_body', { id: 'synthetic-ref' })).state, 'refused', 'old id arguments remain refused by the original schema');
   assert.equal(f.calls.length, before);
 });
+
+for (const [label, tool, data] of [
+  ['flat', 'search_mongoose', { results: [{ entity_type: 'knowledge', id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active', url: 'https://example.invalid/kb/17' }], has_more: true, next_cursor: 1, total_estimate: 2 }],
+  ['grouped', 'search_mongoose', { hits: { company: [{ company_name: 'Synthetic Company', name: 'Synthetic Company', snippet: 'Company evidence.' }], knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }], offering: [], ticket: [{ number: 17, title: 'Synthetic ticket', snippet: 'Ticket evidence.' }] }, has_more: true, next_cursor: 1, total: 4 }],
+  ['ask', 'ask_mongoose', { found: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
+] as const) {
+  test(`Mongoose evidence projection: ${label} preserves entity identity, snippets and answerability through the actual SDK`, async t => {
+    const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
+    const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+    const digest = await approve(adapter, registry);
+    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic launch' } : { query: 'synthetic launch' });
+    const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
+    assert.match(projected.projection.text, /kb-17/); assert.match(projected.projection.text, /Launch delayed to Monday/); assert.match(projected.projection.text, /active/);
+    if (label !== 'ask') { assert.equal(projected.projection.partial, true); assert.match(projected.projection.text, /next_cursor: 1/); }
+    else assert.match(projected.projection.text, /answerable: false/);
+    if (label === 'grouped') { assert.match(projected.projection.text, /company_name: Synthetic Company/); assert.match(projected.projection.text, /number: 17/); }
+  });
+}
+test('Mongoose evidence projection: a complete chunk is not a whole body and preserves its source cursor', async t => {
+  const f = await fixture({ text: JSON.stringify({ body: 'First received piece.', complete: true, whole_body: false, next_cursor: '17', body_char_count: 9000 }) }); t.after(() => f.close());
+  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
+  const digest = await approve(adapter, registry);
+  const result = await reader(adapter, registry, digest).readKnowledgeBody({ ref: 'synthetic-ref' });
+  const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
+  assert.equal(projected.projection.partial, true); assert.equal(projected.projection.omittedCharacters, 0);
+  assert.match(projected.projection.text, /whole_body: false/); assert.match(projected.projection.text, /next_cursor: 17/);
+});

@@ -125,6 +125,7 @@ async function harness(t: TestContext, overrides: {
   mattermost?: boolean;
   calendar?: boolean;
   mongoose?: boolean;
+  mongooseData?: unknown;
   knowledgeSearchLimit?: number;
   calendarData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   beforeTool?: () => Promise<void>;
@@ -246,7 +247,7 @@ async function harness(t: TestContext, overrides: {
       mongooseSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mongooseSchemas) }) as never);
       mongooseSdk.setRequestHandler('tools/call', req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify({ results: [{ entity_type: 'knowledge', id: 'synthetic-company-item', title: 'Synthetic company evidence', snippet: 'A current source answer.' }] }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(overrides.mongooseData ?? { results: [{ entity_type: 'knowledge', id: 'synthetic-company-item', title: 'Synthetic company evidence', snippet: 'A current source answer.' }] }) }] };
       });
       await mongooseSdk.connect(mongooseTransport);
     }
@@ -4298,5 +4299,15 @@ test('history integration: parallel sibling await cannot publish deleted or rela
     if (mutation === 'none') assert.match(JSON.stringify(frame), /Mira private decision/);
     else assert.doesNotMatch(JSON.stringify(frame), /Mira private decision/);
   }
+
+});
+
+test('Mongoose evidence projection: grouped SDK hits survive actual Live research adaptation', async t => {
+  const h = await harness(t, { tools: true, mongoose: true, mongooseData: { hits: { company: [], offering: [], knowledge: [{ id: 'kb-17', title: 'Synthetic grouped evidence', snippet: 'Synthetic launch delayed to Monday.', status: 'active' }], ticket: [] }, has_more: false, total: 1 } });
+  await attached(h, 'mongoose-grouped-research');
+  await settleLiveTool(h, 'grouped-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
+  assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic launch delayed to Monday/);
 
 });

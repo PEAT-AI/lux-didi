@@ -44,12 +44,6 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'stop_insufficient', source: null },
 ]);
 
-/** The voice view's action word per candidate: what the source is being asked to do. */
-const STEP_ACTION: Record<CandidateKind, string> = {
-  knowledge_search: 'search', calendar_window: 'read', mail_search: 'search', mail_open: 'read',
-  chat_search: 'search', chat_thread: 'read', brief: 'search', stop_answer: 'search', stop_insufficient: 'search',
-};
-
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
   tool: RESEARCH_TOOL_NAME,
@@ -661,6 +655,7 @@ export interface RunState {
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
+  progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
   evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
   /** Read signatures already issued this run, so an identical duplicate read is never executed twice. */
@@ -693,7 +688,7 @@ export class ResearchLedger {
     const run: RunState = {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
-      cancelled: false, ended: false, stopped: false,
+      progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
       calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(),
@@ -711,7 +706,7 @@ export class ResearchLedger {
     const run: RunState = {
       ...existing, bodies: new Map([...existing.bodies].map(([key, body]) => [key, { ...body }])), bodyCursors: new Map([...existing.bodyCursors].map(([key, page]) => [key, { ...page }])), runId: ++this.#counter, direction: input.direction ?? existing.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
-      rounds: 0, ops: 0, cancelled: false, ended: false, stopped: false,
+      rounds: 0, ops: 0, progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       mail: new Map([...existing.mail].map(([key, read]) => [key, { ...read, messages: new Map(read.messages), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), mailDelivered: new Set(existing.mailDelivered), mailCursors: new Map([...existing.mailCursors].map(([key, cursor]) => [key, { ...cursor, ids: [...cursor.ids] }])),
       historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens),
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
@@ -720,7 +715,7 @@ export class ResearchLedger {
       unavailableReasons: new Map(existing.unavailableReasons),
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
-    existing.cancelled = true;
+    existing.cancelled = true; existing.progressAbort.abort();
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
     this.#last = run;
@@ -732,14 +727,14 @@ export class ResearchLedger {
   /** A new `start` cancels the previous active run. */
   cancelActive(): void {
     const active = this.#activeId ? this.#runs.get(this.#activeId) : undefined;
-    if (active) { this.releaseEvidence?.(this.evidenceBindings(active.researchId)); active.cancelled = true; invalidateEvidence(active); }
+    if (active) { this.releaseEvidence?.(this.evidenceBindings(active.researchId)); active.cancelled = true; active.progressAbort.abort(); invalidateEvidence(active); }
   }
   stop(researchId?: string): RunState | undefined {
     const run = researchId === undefined ? this.#last : this.#runs.get(researchId);
-    if (run) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.stopped = true; run.ended = true; invalidateEvidence(run); }
+    if (run) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.stopped = true; run.ended = true; run.progressAbort.abort(); invalidateEvidence(run); }
     return run;
   }
-  close(): void { for (const run of this.#runs.values()) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.cancelled = true; invalidateEvidence(run); } }
+  close(): void { for (const run of this.#runs.values()) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.cancelled = true; run.progressAbort.abort(); invalidateEvidence(run); } }
   evidenceBindings(researchId: string): ToolResultBinding[] {
     const run = this.#runs.get(researchId);
     return run && !run.cancelled && !run.stopped ? [...[...run.bodies.values()].map(body => body.binding), ...run.historyBindings, ...[...run.mail.values()].flatMap(read => read.bindings), ...[...run.calendar.values()].flatMap(read => read.bindings)] : [];
@@ -1327,7 +1322,10 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.calendarList: return 'calendar';
     case INTERNAL.mailList:
     case INTERNAL.mailRead: return 'mail';
+    case HISTORY_IDENTITY.name: return 'memory';
+    case INTERNAL.mongooseSearch: return 'mongoose';
     case INTERNAL.chatSearch:
+    case INTERNAL.chatAttention:
     case 'mattermost_get_thread': return 'chat';
     default: return null;
   }
@@ -2043,7 +2041,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (call.action === 'stop') {
     const run = deps.ledger.stop(call.researchId);
     if (!run) return { researchId: call.researchId ?? '', status: 'stopped', findings: [], unchecked: configured, canContinue: false };
-    deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: Math.max(0, now() - run.startedAt) });
+    deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
     const reply = buildReply(run, 'stopped', configured, false, limit);
     deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound: [], stopReason: 'stop', status: 'stopped', ops: run.ops, sources: [], elapsedMs: Math.max(0, now() - run.startedAt), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply).length, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: false, findingChars: [] });
     return reply;
@@ -2076,12 +2074,53 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   }
   run.direction = call.direction ?? run.direction;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
-  const executeSource = deps.execute;
-  deps = { ...deps, execute: async (subs, sourceSignal) => {
+  const executeSource = deps.execute, emitProgress = deps.emit;
+  const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);
+  const current = (): boolean => !run.cancelled && !run.stopped && deps.ledger.find(run.researchId) === run;
+  const emit = (event: ResearchProgress): void => {
+    if (current()) emitProgress({ ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
+  };
+  const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
+  let invocation = 0;
+  deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
     const dispatchSignal = mailOnly ? AbortSignal.any([sourceSignal, AbortSignal.timeout(Math.max(1, (run.mailDeadlineAt ?? now()) - now()))]) : sourceSignal;
-    const results = await executeSource(subs, dispatchSignal);
+    if (!current() || dispatchSignal.aborted) return subs.map(sub => ({ key: sub.key, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'round_cancelled' }));
+    const at = now(), batch = ++invocation;
+    const sources = [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
+    const steps = sources.map(source => {
+      const sub = subs.find(sub => sourceKindOfKindName(sub.name) === source)!;
+      const subject = stepSubject(sub.args);
+      const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
+      return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
+    });
+    for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); }
+    update();
+    let ended = false;
+    const finish = (results: readonly IntentSubResult[], errorCode?: 'failed' | 'timeout' | 'cancelled'): void => {
+      if (ended) return;
+      ended = true;
+      for (const step of steps) {
+        const own = subs.flatMap((sub, index) => sourceKindOfKindName(sub.name) === step.source ? [results[index]] : []);
+        const ok = errorCode === undefined && own.length > 0 && own.every(result => result?.ok);
+        const code = errorCode ?? (own.some(result => result?.code === 'timeout' || result?.code === 'deadline') ? 'timeout' : ok ? undefined : 'failed');
+        const count = (running.get(step.source) ?? 1) - 1;
+        if (count > 0) running.set(step.source, count); else running.delete(step.source);
+        if (ok) completed.add(step.source);
+        const resultCount = own.reduce((count, result) => count + (result?.ok ? result.mailPage?.messages.length ?? result.calendarPage?.events.length ?? (Array.isArray(result.historyPage?.['hits']) ? result.historyPage['hits'].length : shapeBlock(shapeKindOf(step.source, 'knowledge_search'), [result]).total) : 0), 0);
+        publishStep({ ...step, phase: 'end', ok, ...(ok ? { resultCount } : {}), ...(code ? { errorCode: code } : {}), ms: Math.max(0, now() - at) });
+      }
+      update();
+    };
+    const progressSignal = AbortSignal.any([dispatchSignal, run.progressAbort.signal]);
+    const aborted = (): void => finish([], dispatchSignal.aborted && dispatchSignal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled');
+    progressSignal.addEventListener('abort', aborted, { once: true });
+    if (progressSignal.aborted) aborted();
+    let results: IntentSubResult[];
+    try { results = await executeSource(subs, dispatchSignal); finish(results, current() ? undefined : 'cancelled'); }
+    catch (error) { finish([], 'failed'); throw error; }
+    finally { progressSignal.removeEventListener('abort', aborted); }
     const fresh = results.flatMap(result => result.binding ? [result.binding] : []);
     if (run.stopped || run.cancelled || dispatchSignal.aborted || deps.ledger.find(run.researchId) !== run) {
       deps.ledger.discardEvidence(fresh);
@@ -2297,17 +2336,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           if (subs.length === 0) return;
           widenFor(subs);
           readStarted.add(kind);
-          // The voice view sees each source start now and end where its part is credited below. One
-          // step id per source of this read, so the end line replaces its own start line in place.
-          const stepIds = new Map<SourceKind, string>();
-          const stepOf = (source: SourceKind): string => {
-            const known = stepIds.get(source);
-            if (known !== undefined) return known;
-            const id = `${stepCallId}:${kind}:${source}:${stepIds.size}`;
-            stepIds.set(source, id);
-            return id;
-          };
-          const subjectOfRead = stepSubject({ query: action?.query, window: action?.window });
           const named = sourceKindOf(kind);
           const allSources = named !== null ? [named]
             : [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
@@ -2319,7 +2347,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
           for (const source of startSources) {
             first.reading.add(source);
-            publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
           }
           for (const source of deadSources) {
             run.unavailableReasons.set(source, unavailableReason(source));
@@ -2337,7 +2364,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const readSignal = AbortSignal.any([roundSignal, cut.signal]);
           // P5: the cut follows this source's own deadline from the table, never one number for every source.
           const readDeadlineMs = sourceDeadlineMs(startSources);
-          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
+          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
           const issued = served.filter(call => !run.calls.has(callSignature(call)));
@@ -2429,7 +2456,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
             if (part.source === null) continue;
-            publishStep({ callId: stepCallId, stepId: stepOf(part.source), source: part.source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'end', resultCount: block.total, ok: part.results.some(result => result.ok), ms: Math.max(0, now() - at) });
             if (part.results.some(result => result.ok && result.text.trim())) {
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
             } else if (part.results.some(result => result.ok)) {
@@ -2490,7 +2516,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
       }
       run.rounds = round;
-      notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
+      notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: now() - started });
       if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'answered') break;
       // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
       if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
@@ -2601,7 +2627,7 @@ export class ResearchScheduler {
       if (call.action === 'stop') {
         this.#deps.ledger.stop(target.id);
         this.#active.delete(target.id);
-        this.#deps.emit({ researchId: target.id, phase: 'stopped', sourcesDone: [], sourcesPending: [...this.#deps.configured], elapsedMs: 0 });
+        this.#deps.emit({ researchId: target.id, phase: 'stopped', sourcesDone: [], sourcesPending: [], elapsedMs: 0 });
         return Promise.resolve(knownReply(this.#deps.ledger, target.id, this.#deps.configured));
       }
       // continue: stop the old loop, run on with a fresh budget reusing the ledger.

@@ -4647,3 +4647,112 @@ test('Lux body integration: exact received opaque content reaches its retained t
   }
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
+
+for (const route of ['typed', 'selector'] as const) test(`progress recovery: ${route} research speaks only verified work at six seconds`, async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => receipts.push(raw as Record<string, unknown>) }); t.after(detach);
+  let selectCalls = 0;
+  const scheduler = new DeadlineClock(), fake = progressPort();
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); t.after(release);
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits, ...(route === 'selector' ? { research: { async select() { selectCalls++; return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'Synthetic progress lookup' }], pUseful: { chat_search: 0.99 } })); } } } : {}) });
+  const { session } = await openPort(h, `progress-${route}`);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'typed-read', name: 'research', args: { action: 'start', question: 'Synthetic progress lookup', ...(route === 'typed' ? { lookups: [{ source: 'chat', query: 'Synthetic progress lookup' }] } : {}) } }] });
+  for (let n = 0; n < 50 && !h.calls.length; n++) await settlePort();
+  assert.equal(h.calls.filter(call => call.name.startsWith('mattermost_')).length, 1, 'one actual SDK chat read');
+  assert.equal(h.calls.length, route === 'typed' ? 1 : 2, 'selector also reads its canonical prime knowledge source');
+  if (route === 'selector') assert.ok(selectCalls > 0, 'actual selector path ran');
+  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, []);
+  h.advance(1); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1); assert.match(fake.commentary[0]!, /Still reading the chat/);
+  const progress = receipts.filter(entry => entry['event'] === 'research_progress');
+  assert.ok(progress.some(entry => (entry['sourcesPending'] as string[]).includes('chat')));
+  assert.ok(progress.every(entry => !(entry['sourcesPending'] as string[]).includes('calendar')), 'configured but undispatched calendar is never pending');
+  release(); for (let n = 0; n < 50 && !fake.toolResponses.length; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, 1); assert.equal(fake.toolResponses[0]![0]!.response['error'], undefined);
+  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the eight-second speech interval');
+  h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a result cannot cause a six-second repeat');
+  h.advance(1_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1);
+  h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 2, 'the existing eight-second beat is preserved');
+  assert.match(fake.commentary[1]!, /lookup is done/);
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('progress recovery: a new owner question retires pending research speech and late steps', async t => {
+  const scheduler = new DeadlineClock(), fake = progressPort();
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); t.after(release);
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
+  const { session } = await openPort(h, 'progress-new-question');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'old-read', name: 'research', args: { action: 'start', question: 'Old synthetic question', lookups: [{ source: 'chat', query: 'Old synthetic question' }] } }] });
+  for (let n = 0; n < 50 && !h.calls.length; n++) await settlePort(); assert.equal(h.calls.length, 1);
+  h.advance(5_000); scheduler.runDue();
+  fake.emit({ type: 'inputTranscription', text: 'A different synthetic question', finished: true }); await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  h.advance(8_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, [], 'old research does not narrate after the owner asks something else');
+  release(); for (let n = 0; n < 50 && !fake.toolResponses.length; n++) await settlePort();
+  assert.ok(!(h.owner.current().steps ?? []).some(step => step.callId === 'old-read'), 'late source end cannot resurrect the previous question step');
+  h.owner.revoke(session.liveSessionId);
+});
+
+for (const source of ['mail', 'calendar'] as const) test(`progress recovery: actual ${source} pages publish steps and retained continuation does not`, async t => {
+  const scheduler = new DeadlineClock(), fake = progressPort();
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `progress-mail-${n}`, headers: [{ name: 'Subject', value: `Synthetic progress mail ${n}` }] }));
+  const events = Array.from({ length: 13 }, (_, n) => ({ id: `progress-event-${n}`, start: '2023-11-15T10:00:00Z', summary: `Synthetic progress event ${n}` }));
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits,
+    ...(source === 'mail' ? { mail: true, mailData: (_name: string, args: Record<string, unknown>) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'next' } }
+      : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
+  });
+  const { session } = await openPort(h, `progress-pages-${source}`);
+  const args = { action: 'start', question: 'Synthetic pages', lookups: [{ source, query: source === 'calendar' ? 'week' : 'subject:synthetic' }] };
+  fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
+  for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, 1); const first = fake.toolResponses[0]![0]!.response;
+  assert.equal(first['canContinue'], true, JSON.stringify(first));
+  const steps = h.owner.current().steps ?? [];
+  assert.equal(steps.length, 2, 'one retained terminal step for each actual upstream page');
+  assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));
+  assert.equal(new Set(steps.map(step => step.stepId)).size, 2);
+  const calls = h.calls.length;
+  fake.emit({ type: 'toolCall', calls: [{ id: 'retained', name: 'research', args: { action: 'continue', researchId: first['researchId'], ...(first['nextCursor'] ? { cursor: first['nextCursor'] } : {}) } }] });
+  for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, 2); assert.match(JSON.stringify(fake.toolResponses[1]![0]!.response['findings']), /Synthetic progress/);
+  assert.equal(h.calls.length, calls); assert.deepEqual(h.owner.current().steps ?? [], []);
+  assert.deepEqual(fake.commentary, [], 'fast pages and retained delivery need no waiting speech');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('progress recovery: actual local history is represented and fast work stays quiet', async t => {
+  const scheduler = new DeadlineClock(), fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, scheduler, limits: openaiLimits });
+  h.store.transaction(tx => {
+    memory.createSession(tx, { title: 'Synthetic progress history', startedAt: NOW, timeZone: 'UTC' }, { now: () => NOW }, 'progress-history-parent');
+    memory.appendEntry(tx, { sessionId: 'progress-history-parent', text: 'Synthetic violet flags decision', capturedAt: NOW, timeZone: 'UTC' }, { now: () => NOW }, 'progress-history-entry');
+    for (const subject of [{ kind: 'session' as const, id: 'progress-history-parent' }, { kind: 'entry' as const, id: 'progress-history-entry' }]) labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'ordinary' }, NOW);
+  });
+  const { session } = await openPort(h, 'progress-history');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'history', name: 'research', args: { action: 'start', question: 'Synthetic history', lookups: [{ source: 'memory', query: 'violet flags' }] } }] });
+  for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, 1); assert.match(JSON.stringify(fake.toolResponses[0]![0]!.response), /violet flags/);
+  assert.deepEqual((h.owner.current().steps ?? []).map(step => [step.source, step.phase, step.ok]), [['memory', 'end', true]]);
+  assert.deepEqual(fake.commentary, []); h.owner.revoke(session.liveSessionId);
+});
+
+test('progress recovery: a slow next mail page is running rather than simultaneously done', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => receipts.push(raw as Record<string, unknown>) }); t.after(detach);
+  const scheduler = new DeadlineClock(), fake = progressPort();
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); t.after(release);
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mail: true, scheduler, limits: openaiLimits,
+    mailData: async (_name, args) => { if (args['pageToken']) await held; return { messages: [{ id: args['pageToken'] ? 'second-mail' : 'first-mail', headers: { Subject: 'Synthetic progress evidence' } }], ...(!args['pageToken'] ? { nextPageToken: 'second' } : {}) }; },
+  });
+  const { session } = await openPort(h, 'progress-next-mail-page');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'mail-pages', name: 'research', args: { action: 'start', question: 'Synthetic mail pages', lookups: [{ source: 'mail', query: 'synthetic' }] } }] });
+  for (let n = 0; n < 100 && h.calls.length < 2; n++) await settlePort(); assert.equal(h.calls.length, 2);
+  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, []);
+  h.advance(1); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, ['Still reading the mail.']);
+  const progress = receipts.filter(entry => entry['event'] === 'research_progress');
+  assert.ok(progress.every(entry => !(entry['sourcesPending'] as string[]).some(source => (entry['sourcesDone'] as string[]).includes(source))), 'a source cannot be both pending and done');
+  release(); for (let n = 0; n < 50 && (h.owner.current().steps ?? []).some(step => step.phase === 'start'); n++) await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});

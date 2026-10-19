@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { attachHostLogSink, stepSubject, STEP_SUBJECT_CAP, type LiveToolStep } from '../tools/host-events.js';
 import { ResearchLedger, runResearch, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { shapeGmailList } from '../tools/live-shape.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'mail', 'chat'];
@@ -37,28 +38,31 @@ function deps(selector: ResearchSelector, execute: ResearchDeps['execute']): Res
   return { now: () => 0, configured: CONFIGURED, execute, emit: () => {}, log: () => {}, logSubcall: () => {}, ledger: new ResearchLedger(), selector };
 }
 
-test('research publishes one live step per source, in order, start then end', async () => {
+test('research publishes one live step per actual source read, including mail body follow-up', async () => {
   const collector = stepCollector();
   try {
     const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> =>
-      subs.map(call => sub(call.name, 'release freeze decided on Friday', true, call.key));
+      subs.map(call => call.name === 'gmail_list'
+        ? { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: [{ id: 'synthetic-mail', headers: { Subject: 'release freeze decided on Friday' } }] }) }
+        : sub(call.name, 'release freeze decided on Friday', true, call.key));
     const reply = await runResearch(deps(selectorOf(['knowledge_search', 'mail_search', 'chat_search'], 'release freeze', 'week'), execute),
       { action: 'start', question: 'what did the team decide about the release freeze', callId: CALL_ID }, new AbortController().signal);
 
     assert.equal(reply['status'], 'answered');
-    assert.equal(collector.steps.length, 6, 'three sources, one start and one end each');
+    assert.equal(collector.steps.length, 8, 'three searches and the actual mail body follow-up each start and end');
     const starts = collector.steps.filter(step => step.phase === 'start');
     const ends = collector.steps.filter(step => step.phase === 'end');
-    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'mail', 'chat']);
-    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'mail', 'chat']);
+    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
+    assert.deepEqual(starts.map(step => step.action), ['search', 'search', 'search', 'read']);
+    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
+    assert.deepEqual(ends.map(step => step.action), ['search', 'search', 'search', 'read']);
     for (const step of collector.steps) {
       assert.equal(step.callId, CALL_ID, 'every step names the research call it belongs to');
-      assert.equal(step.action, 'search');
       assert.ok(step.stepId, 'a step carries its own id');
     }
-    // The start line is what the owner reads while it runs: the query words, plus the window.
+    // A step describes actual dispatched arguments, not an unused selector window.
     assert.equal(starts[1]!.subject, 'release freeze');
-    assert.equal(starts[2]!.subject, 'release freeze, last 7 days');
+    assert.equal(starts[2]!.subject, 'release freeze');
     // The end step replaces its own start line, so both share one id.
     for (const [index, start] of starts.entries()) assert.equal(ends[index]!.stepId, start.stepId);
     for (const step of ends) {

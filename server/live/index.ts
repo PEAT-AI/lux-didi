@@ -2210,6 +2210,10 @@ export class LiveSessionOwner {
       const control = { signal, deadlineMs: handle.deadlineMs };
       const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
+      if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
+        this.#tools!.owner.releaseEvidence(host.runId, [...raw.bindings, ...authorized.bindings]);
+        return calls.map(call => ({ key: call.id, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'round_cancelled' }));
+      }
       return calls.map(call => {
         const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
         const record = slot >= 0 ? authorized.tools[slot] : undefined;
@@ -2339,6 +2343,16 @@ export class LiveSessionOwner {
     const block = `Later findings from ${event.source} (${event.ms} ms): ${event.items.join('; ')}`.slice(0, LATE_BLOCK_CHARS);
     try { think.call(handle.session, { text: block }); } catch { return drop('send_failed'); }
     if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => block.includes(event.items[index] ?? '\u0000')));
+    if (event.mailKeys) {
+      let end = `Later findings from ${event.source} (${event.ms} ms): `.length;
+      const keys: string[] = [];
+      for (const [index, item] of event.items.entries()) {
+        end += item.length;
+        if (end <= block.length && event.mailKeys[index]) keys.push(event.mailKeys[index]!);
+        end += 2;
+      }
+      handle.researchLedger.deliveredMail({ researchId: event.researchId, runId: event.runId ?? -1, keys });
+    }
     hostLogEvent({ event: 'thinking_sent', chars: block.length });
     const reason = this.#lateCommentaryReason(handle, event);
     if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });

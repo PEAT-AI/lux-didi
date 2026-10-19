@@ -25,6 +25,7 @@ import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { LiveToolJobs, type ToolJob, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
+import { parseSelector, type ResearchSelector } from '../tools/research.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
@@ -124,6 +125,9 @@ async function harness(t: TestContext, overrides: {
   history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
+  mail?: boolean;
+  research?: ResearchSelector;
+  mailData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   mongoose?: boolean;
   mongooseData?: unknown;
   knowledgeSearchLimit?: number;
@@ -236,6 +240,26 @@ async function harness(t: TestContext, overrides: {
       });
       await calendarSdk.connect(calendarTransport);
     }
+    let mailSdk: Server | undefined;
+    let mailTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const mailEndpoint = { id: 'mail', url: 'https://fixture.invalid/mail', account: 'synthetic-mail-account', resource: 'synthetic-mailbox' };
+    const mailSchemas = [
+      { name: 'gmail_list', inputSchema: { type: 'object', properties: { q: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
+      { name: 'gmail_read', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id'], additionalProperties: false } },
+    ];
+    if (overrides.mail) {
+      registry.register(mailEndpoint); registry.enable('mail'); registry.allowEgress('mail');
+      mailSdk = new Server({ name: 'live-mail-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      mailTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      mailSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mailSchemas) }) as never);
+      mailSdk.setRequestHandler('tools/call', async req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        const raw = await overrides.mailData!(req.params.name, req.params.arguments ?? {});
+        const { nextPageToken, ...data } = raw;
+        return { content: [{ type: 'text', text: JSON.stringify({ family: 'gmail', tool: req.params.name, data, coverage: { complete: !nextPageToken, next_page_token: nextPageToken ?? null } }) }] };
+      });
+      await mailSdk.connect(mailTransport);
+    }
     let mongooseSdk: Server | undefined;
     let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
     const mongooseEndpoint = { id: 'mongoose', url: 'https://fixture.invalid/mongoose', account: 'account', resource: 'resource' };
@@ -254,12 +278,13 @@ async function harness(t: TestContext, overrides: {
     t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
+      if (mailTransport && request.url === mailEndpoint.url) return mailTransport.handleRequest(request);
       if (mongooseTransport && request.url === mongooseEndpoint.url) return mongooseTransport.handleRequest(request);
       if (mattermostTransport && mattermostEndpoint && request.url === mattermostEndpoint.url) return mattermostTransport.handleRequest(request);
       if (calendarTransport && calendarEndpoint && request.url === calendarEndpoint.url) return calendarTransport.handleRequest(request);
       return transport.handleRequest(request);
     });
-    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: overrides.mail ? 262144 : 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: overrides.mail ? 65536 : 12000, projectionChars: 10, timeoutMs: 1000 } });
     const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, ...(overrides.history ? { grantMode: 'owner-trusted-reads' as const } : {}), lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
     exposedToolOwner = toolOwner;
     if (overrides.beforeGate) {
@@ -290,6 +315,14 @@ async function harness(t: TestContext, overrides: {
       assert.equal((await port.discover(calendarEndpoint.id)).state, 'discovered');
       toolOwner.projectConnection('calendar');
     }
+    if (overrides.mail) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mail', generation: 1, enabled: true, connector: 'google',
+        endpoint: { ...mailEndpoint, credentialRef: null }, toolNames: ['gmail_list', 'gmail_read'], schemaDigest: canonicalToolDigest(mailSchemas),
+        sourcePolicy: { id: 'live-mail-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 2048, maxSearchLimit: 50, maxGetIds: 3, maxEntityBytes: 65536, maxResultBytes: 65536 } });
+      assert.equal((await port.discover('mail')).state, 'discovered'); toolOwner.projectConnection('mail');
+    }
     if (overrides.mongoose) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
         endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
@@ -300,9 +333,9 @@ async function harness(t: TestContext, overrides: {
       toolOwner.projectConnection('mongoose');
     }
     toolOwner.projectConnection('lux');
-    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : []), ...(overrides.mongoose ? ['mongoose'] : [])] };
+    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : []), ...(overrides.mail ? ['mail'] : []), ...(overrides.mongoose ? ['mongoose'] : [])] };
     if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
-    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); if (mongooseSdk) await mongooseSdk.close(); });
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); if (mongooseSdk) await mongooseSdk.close(); if (mailSdk) await mailSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
     memorySelections += 1;
@@ -317,7 +350,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(overrides.research ? { research: overrides.research } : {}), ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -4310,4 +4343,130 @@ test('Mongoose evidence projection: grouped SDK hits survive actual Live researc
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
   assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic launch delayed to Monday/);
 
+});
+
+
+test('mail integration: exact native query pages and retained remainder reach later messages without replay', async t => {
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `mail-id-${n}`, threadId: 'shared-thread', internalDate: String(1700000000000 - n), headers: [{ name: 'Subject', value: `Synthetic mail ${n}` }], snippet: `Snippet ${n}` }));
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'private-native-mail-next' } });
+  await attached(h, 'mail-all-pages');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'mail-start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'from:sender@example.invalid subject:"precise phrase"', maxResults: 8 } }] });
+  const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
+  const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
+  assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
+  const sourceCalls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(sourceCalls.length, 2);
+  assert.equal((sourceCalls[0]!.args as Record<string, unknown>)['q'], 'from:sender@example.invalid subject:"precise phrase"');
+  assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['pageToken'], 'private-native-mail-next');
+  assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['maxResults'], 8);
+  await settleLiveTool(h, 'mail-next', 'research', { action: 'continue', researchId: first['researchId'], cursor: first['nextCursor'] });
+  assert.match(JSON.stringify(last()['findings']), /Synthetic mail 12/); assert.equal(last()['canContinue'], false);
+  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2);
+});
+
+
+test('mail integration: delivered consumer cursors are idempotent and Stop invalidates retained pages', async t => {
+  for (const stop of [false, true]) {
+    const messages = Array.from({ length: 13 }, (_, n) => ({ id: `cursor-message-${n}`, headers: [{ name: 'Subject', value: `Cursor evidence ${n}` }] }));
+    const h = await harness(t, { tools: true, mail: true, mailData: () => ({ messages }) }); await attached(h, `mail-cursor-${stop}`);
+    const last = (): Record<string, unknown> => {
+      const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+      return frame.toolResponse.functionResponses[0]!.response;
+    };
+    await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:cursor', maxResults: 13 } }] });
+    const first = last(), researchId = first['researchId'], cursor = first['nextCursor']; assert.equal(typeof cursor, 'string');
+    await settleLiveTool(h, 'bad-cursor', 'research', { action: 'continue', researchId, cursor: 'not-this-run-cursor' });
+    assert.equal(last()['error'], 'continuation_unavailable');
+    if (stop) await settleLiveTool(h, 'stop', 'research', { action: 'stop', researchId });
+    await settleLiveTool(h, 'next', 'research', { action: 'continue', researchId, cursor });
+    if (stop) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    else {
+      assert.match(JSON.stringify(last()['findings']), /Cursor evidence 12/);
+      await settleLiveTool(h, 'repeat', 'research', { action: 'continue', researchId, cursor });
+      assert.equal(last()['alreadyDelivered'], true); assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false);
+      assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8).map(message => message.id));
+    }
+    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1, 'no source replay for retained, denied or repeated consumer pages');
+  }
+});
+
+test('mail integration: a failed dispatched native page is terminal and truthful', async t => {
+  const messages = Array.from({ length: 8 }, (_, n) => ({ id: `failure-message-${n}`, headers: [{ name: 'Subject', value: `Received before failure ${n}` }] }));
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => {
+    if (args['pageToken']) throw Error('synthetic_source_unavailable');
+    return { messages, nextPageToken: 'failed-native-page' };
+  } }); await attached(h, 'mail-failed-page');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', query: 'synthetic' }] });
+  const reply = last(); assert.equal(reply['status'], 'partial'); assert.equal(reply['canContinue'], false);
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 7/);
+  await settleLiveTool(h, 'continue', 'research', { action: 'continue', researchId: reply['researchId'] });
+  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2, 'the failed native page is not replayed');
+});
+
+
+test('mail integration: actual selector parsing shares the native page collector', async t => {
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `selector-mail-${n}`, headers: [{ name: 'Subject', value: `Selector mail ${n}` }] }));
+  const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6,
+    research: { async select(input) { return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: input.completed.some(entry => entry.kind === 'mail_search') ? [] : [{ kind: 'mail_search', query: 'from:selector@example.invalid' }], pUseful: { mail_search: 0.99 } })); } },
+    mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
+  }); await attached(h, 'mail-selector');
+  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List synthetic mail' }); }
+  catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
+  const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+  const reply = frame.toolResponse.functionResponses[0]!.response;
+  const calls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(calls.length, 2);
+  assert.equal((calls[0]!.args as Record<string, unknown>)['q'], 'from:selector@example.invalid');
+  assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
+});
+
+test('mail integration: revocation during a sibling await or final microtask denies original retained bindings', async t => {
+  for (const boundary of ['sibling', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>(), mailAccepted = deferred<void>();
+    const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, mailData: () => ({ messages: [{ id: 'guarded-mail', headers: [{ name: 'Subject', value: 'Mail publication must be gated' }] }] }) });
+    await attached(h, `mail-race-${boundary}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args);
+      if (args[1].some(binding => binding.name === 'gmail_list')) mailAccepted.resolve();
+      if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
+      return result;
+    });
+    const pending = settleLiveTool(h, 'mail-race', 'research', { action: 'start', question: 'Synthetic mail and notes', lookups: [{ source: 'mail', query: 'synthetic' }, { source: 'knowledge', query: 'synthetic' }] });
+    let entered = false, collected = false; void started.promise.then(() => { entered = true; }); void mailAccepted.promise.then(() => { collected = true; });
+    t.after(() => finish.resolve());
+    for (let n = 0; n < 2000 && !(entered && collected); n++) await tick();
+    assert(entered && collected, 'both actual source gates must be reached');
+    if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Mail publication must be gated/);
+    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+  }
+});
+
+
+test('mail integration: an unused cursor keeps its original message coordinates after another continuation', async t => {
+  const messages = Array.from({ length: 21 }, (_, n) => ({ id: `immutable-mail-${n}`, headers: [{ name: 'Subject', value: `Immutable evidence ${n}` }] }));
+  const h = await harness(t, { tools: true, mail: true, mailData: () => ({ messages }) }); await attached(h, 'immutable-mail-cursor');
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:immutable', maxResults: 21 } }] });
+  const first = last(), researchId = first['researchId'], cursor = first['nextCursor'];
+  await settleLiveTool(h, 'advance-without-cursor', 'research', { action: 'continue', researchId }); const nextCursor = last()['nextCursor'];
+  assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(8, 16).map(message => message.id));
+  await settleLiveTool(h, 'original-cursor', 'research', { action: 'continue', researchId, cursor });
+  assert.equal(last()['alreadyDelivered'], true, 'an old cursor must not retarget the latest remainder');
+  assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8, 16).map(message => message.id)); assert.equal(last()['nextCursor'], nextCursor); assert.deepEqual(last()['findings'], []);
+  await settleLiveTool(h, 'final-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor });
+  assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(16).map(message => message.id));
+  assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
 });

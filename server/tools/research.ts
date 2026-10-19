@@ -860,14 +860,14 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `The owner's ${sourceListText(sources)}, in one lookup. Use it for every question about his day, schedule, meetings, mail, messages, notes or past work. The host decides per question which sources are worth reading and whether one more read is worth the wait. Call start with the question: its result carries the researchId the host minted, and continue and stop copy that id.`;
+  return `The owner's ${sourceListText(sources)}, in one lookup. Use it for every question about his day, schedule, meetings, mail, messages, notes or past work. The host decides per question which sources are worth reading and whether one more read is worth the wait. Call start with the question; call continue with the researchId to keep looking; call stop with the researchId to stop.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
   return {
     name: RESEARCH_TOOL_NAME,
     description: researchDescription(configured),
-    guidance: 'start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
+    guidance: 'start needs {"action":"start","question":"the question"}; continue needs {"action":"continue","researchId":"..."}. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
       properties: {
@@ -2018,15 +2018,8 @@ export class ResearchScheduler {
         this.#deps.logJoined?.(inflight.id);
         return inflight.entry.awaiter.promise;
       }
-      // Z1: the host mints every run id. A researchId the model supplies on a start is ignored, because
-      // a model-chosen id that fails the host log's closed id rule takes the run's receipts with it.
-      const id = newResearchId();
+      const id = call.researchId ?? newResearchId();
       return this.#drive({ ...call, researchId: id }, signal, id);
-    }
-    // Z1: a continue that names a run the host never minted is a typed error, never a silent second run.
-    if (call.action === 'continue' && call.researchId !== undefined
-      && !this.#active.has(call.researchId) && this.#deps.ledger.find(call.researchId) === undefined) {
-      return Promise.resolve({ error: 'unknown_research_run' });
     }
     // R1-R3: a continue or stop with a missing or unknown id applies to the single pending run.
     const target = this.#resolveTarget(call.researchId);

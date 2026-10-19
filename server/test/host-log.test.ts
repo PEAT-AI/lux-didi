@@ -110,7 +110,7 @@ test('connector_failure admits bounded reason, exception, endpoint and attempt, 
 test('research_joined carries the run id only', () => {
   assert.deepEqual(safeEvent({ event: 'research_joined', researchId: 'r1' }), { event: 'research_joined', researchId: 'r1' });
   assert.equal(safeEvent({ event: 'research_joined', researchId: 'r1', question: 'SECRET' }), undefined);
-  assert.equal(safeEvent({ event: 'research_joined', researchId: 'has space' }), undefined);
+  assert.deepEqual(safeEvent({ event: 'research_joined', researchId: 'has space' }), { event: 'research_id_rejected', kind: 'research_joined', field: 'researchId' }, 'Z1: the rejected id is reported, never silent');
 });
 
 test('research_subcall keeps a real error code but drops a free-text one', () => {
@@ -178,4 +178,12 @@ test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried
   assert.equal(safeEvent({ ...receipt, ageAfterMs: -1 }), undefined, 'a negative age is refused');
   assert.equal(safeEvent({ ...receipt, assembled: 'yes' }), undefined, 'the flag is a boolean');
   assert.equal(safeEvent({ event: 'warm_prewarm', assembled: true }), undefined, 'both ages are always present');
+});
+
+test('Z1: a research line with an unsafe id reports the rejection instead of vanishing', () => {
+  const progress = { event: 'research_progress', researchId: '\u2014', phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: 3 };
+  assert.deepEqual(safeEvent(progress), { event: 'research_id_rejected', kind: 'research_progress', field: 'researchId' });
+  assert.equal(safeEvent({ event: 'research_joined', researchId: 'a.b' })?.event, 'research_id_rejected', 'every research line reports its own rejection');
+  assert.equal(JSON.stringify(safeEvent(progress)).includes('\u2014'), false, 'the line never carries the value');
+  assert.deepEqual(safeEvent({ ...progress, researchId: 'ok-id' }), { ...progress, researchId: 'ok-id' }, 'a safe id still writes its own line');
 });

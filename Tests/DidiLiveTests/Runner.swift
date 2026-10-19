@@ -369,6 +369,24 @@ actor YieldingSocket: LiveSocket {
     func sendReceipt(_ frame: String) async { await Task.yield(); receipts += 1 }
     func cancel() async { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
 }
+/// Z2: one ready marker per connection, then the receive loop suspends, so a second begin reattaches cleanly.
+actor RestartSocket: LiveSocket, LiveSocketConnecting {
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private var readySent = false
+    func connect(_ binding: LiveSocketBinding) -> any LiveSocket { readySent = false; return self }
+    func receive() async throws -> LiveFrame {
+        if !readySent {
+            readySent = true
+            return .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))
+        }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) -> Bool { true }
+    func sendControl(_ command: LiveControl) {}
+    func sendReceipt(_ frame: String) {}
+    func cancel() async { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
+}
+
 struct YieldingSockets: LiveSocketConnecting {
     let socket: YieldingSocket
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
@@ -1082,10 +1100,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             record("receipt-audio-soak")
 
             // Z2: the automatic restart is a new call, a new idempotency key, the same persona and voice.
-            let keyHTTP = TestHTTP(fixture), keyGate = Gate()
-            let ready = LiveFrame.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))
-            let keySocket = StopProbeSocket([ready, ready], keyGate)
-            let restartCall = LiveSessionCoordinator(http: keyHTTP, sockets: ProbeSockets(socket: keySocket), sink: SilentSink())
+            let keyHTTP = TestHTTP(fixture)
+            let keySocket = RestartSocket()
+            let restartCall = LiveSessionCoordinator(http: keyHTTP, sockets: keySocket, sink: SilentSink())
             await restartCall.begin(frozen); try await until { await restartCall.state == .active }
             let firstCall = try await restartCall.readSnapshot()
             await restartCall.begin(frozen); try await until { await restartCall.state == .active }

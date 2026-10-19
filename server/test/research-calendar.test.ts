@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, runResearch, windowRange, type ResearchDeps } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -202,4 +202,40 @@ test('calendar in-flight continuation retains received events and never replays 
   assert.equal((next['calendarCoverage'] as Record<string, unknown>)['failed'], true, 'the superseded pending page cannot be replayed');
   release(); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(h.calls.filter(call => call['name'] === 'gcal_list').length, 2);
+});
+
+test('calendar R4: real selector JSON parsing preserves named windows and refuses invalid or missing windows', async () => {
+  for (const window of ['Wednesday this week', 'next Wednesday', 'this week', 'whenever', 42, undefined]) {
+    const h = fixture([event(21), event(28)]);
+    h.deps.timeZone = 'UTC';
+    h.deps.selector = createGeminiSelector({ generate: async () => ({
+      status: 'complete', text: JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 1 } }),
+      providerContent: { role: 'model', parts: [] }, reason: 'synthetic', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null },
+    }) });
+    const reply = await runResearch(h.deps, { action: 'start', question: 'Synthetic named calendar window' }, signal());
+    const calls = h.calls.filter(call => call['name'] === 'gcal_list');
+    if (typeof window === 'string' && window !== 'whenever') {
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]!['timeMin'], windowRange(window, fixedNow, 'UTC').timeMin, String(window));
+    } else {
+      assert.equal(calls.length, 0, String(window));
+      assert.match(String(reply['note']), /could not resolve/);
+    }
+  }
+});
+
+test('calendar R5: scheduler Stop invalidates a completed retained run before later Continue', async () => {
+  const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'Synthetic week', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+  const id = String(first['researchId']);
+  const calls = h.calls.length;
+  const stopped = await scheduler.call({ action: 'stop', researchId: id }, signal());
+  assert.equal(h.deps.ledger.find(id)?.stopped, true);
+  assert.equal(stopped['canContinue'], false);
+  assert.deepEqual(stopped['findings'], []);
+  const after = await scheduler.call({ action: 'continue', researchId: id }, signal());
+  assert.deepEqual(after['findings'], []);
+  assert.equal(after['canContinue'], false);
+  assert.equal(h.calls.length, calls);
 });

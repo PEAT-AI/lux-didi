@@ -330,13 +330,11 @@ export function normalizeQuery(value: unknown): string | undefined {
   return collapsed ? collapsed.slice(0, RESEARCH.queryLimitChars) : undefined;
 }
 
-const WINDOW_NAMES = new Set(['today', 'tomorrow', 'week']);
-const WINDOW_DATE = /^\d{4}-\d{2}-\d{2}$/;
-/** A calendar window: today, tomorrow, week or an ISO date, else undefined. */
+/** Preserve bounded selector text for the canonical calendar resolver; unknown text is unresolved. */
 export function normalizeWindow(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const token = value.trim().toLowerCase();
-  return WINDOW_NAMES.has(token) || WINDOW_DATE.test(token) ? token : undefined;
+  const token = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return token && token.length <= RESEARCH.queryLimitChars ? token : undefined;
 }
 
 /** Parse selector JSON defensively: any invalid output is `null`, which falls back to the recipe. */
@@ -364,7 +362,8 @@ export function parseSelector(text: string): SelectorOutput | null {
       const query = normalizeQuery(cell['query']);
       if (query !== undefined) action.query = query;
       const window = normalizeWindow(cell['window']);
-      if (window !== undefined) action.window = window;
+      if (kind === 'calendar_window') action.window = window ?? 'unresolved';
+      else if (window !== undefined) action.window = window;
       actions.push(action);
     }
   }
@@ -2211,7 +2210,12 @@ export class ResearchScheduler {
       return this.#drive({ ...call, action: 'continue', researchId: target.id }, signal, target.id);
     }
     // Zero or several pending runs: current behaviour.
-    if (call.action === 'stop') return Promise.resolve(knownReply(this.#deps.ledger, call.researchId ?? '', this.#deps.configured));
+    if (call.action === 'stop') {
+      const id = call.researchId ?? '';
+      const run = this.#deps.ledger.stop(id);
+      if (run) this.#deps.emit({ researchId: id, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, this.#deps.now() - run.startedAt) });
+      return Promise.resolve(knownReply(this.#deps.ledger, id, this.#deps.configured));
+    }
     const id = call.researchId ?? newResearchId();
     return this.#drive({ ...call, researchId: id }, signal, id);
   }

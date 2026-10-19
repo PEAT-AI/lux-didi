@@ -26,7 +26,7 @@ test('parseSelector reads a per-action query and calendar window, trims and caps
   const long = parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'x'.repeat(500) }], pUseful: {} }));
   assert.equal(long?.actions[0]?.query?.length, RESEARCH.queryLimitChars);
   const bad = parseSelector('{"questionClass":"quick_fact","actions":[{"kind":"calendar_window","window":"whenever"}],"pUseful":{}}');
-  assert.equal(bad?.actions[0]?.window, undefined);
+  assert.equal(bad?.actions[0]?.window, 'whenever', 'unsupported text reaches the resolver and cannot silently become today');
   assert.equal(parseSelector('{"questionClass":"quick_fact","actions":[{"kind":"mail_search","query":"a\\nb"}],"pUseful":{}}')?.actions[0]?.query, 'a b');
 });
 

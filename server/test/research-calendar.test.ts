@@ -1,0 +1,205 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { ResearchLedger, ResearchScheduler, runResearch, windowRange, type ResearchDeps } from '../tools/research.js';
+import { shapeGcalList } from '../tools/live-shape.js';
+import type { IntentSubResult } from '../tools/intent.js';
+
+const signal = (): AbortSignal => new AbortController().signal;
+const fixedNow = Date.parse('2026-10-19T12:00:00Z');
+function fixture(events: Record<string, unknown>[], opts: { token?: string; pageSize?: number } = {}) {
+  const calls: Record<string, unknown>[] = [];
+  const deps: ResearchDeps = {
+    now: () => fixedNow, configured: ['calendar'], ledger: new ResearchLedger(),
+    emit() {}, log() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {},
+    execute: async subs => subs.map(call => {
+      calls.push({ name: call.name, ...call.args });
+      if (call.name === 'gcal_calendars') return { key: call.key, name: call.name, ok: true, text: '- Main [primary]', originalCharacters: 16, omittedCharacters: 0 };
+      const start = Date.parse(String(call.args['timeMin']));
+      const end = Date.parse(String(call.args['timeMax']));
+      const all = events.filter(event => Date.parse(String(event['start'])) >= start && Date.parse(String(event['start'])) < end);
+      const offset = call.args['pageToken'] === 'second' ? (opts.pageSize ?? 12) : 0;
+      const received = all.slice(offset, offset + (opts.pageSize ?? 50));
+      const page = shapeGcalList({ events: received, ...(offset === 0 && opts.token ? { nextPageToken: opts.token } : {}) });
+      return { key: call.key, name: call.name, ok: true, ...page } as IntentSubResult;
+    }),
+  };
+  return { deps, calls };
+}
+const event = (day: number, n = 0): Record<string, unknown> => ({ id: `d${day}n${n}`, start: `2026-10-${day}T10:${String(n).padStart(2, '0')}:00Z`, summary: `Day ${day} item ${n}` });
+
+test('calendar exact windows use the session zone and resolve both DST midnights', () => {
+  const range = windowRange as (window: string, now: number, zone?: string) => { timeMin: string; timeMax: string };
+  assert.deepEqual(range('Wednesday this week', fixedNow, 'Asia/Kolkata'), { timeMin: '2026-10-20T18:30:00.000Z', timeMax: '2026-10-21T18:30:00.000Z' });
+  assert.deepEqual(range('next Wednesday', fixedNow, 'UTC'), { timeMin: '2026-10-28T00:00:00.000Z', timeMax: '2026-10-29T00:00:00.000Z' });
+  const dst = range('2026-11-01', fixedNow, 'America/New_York');
+  assert.equal(Date.parse(dst.timeMax) - Date.parse(dst.timeMin), 25 * 60 * 60 * 1000);
+  const spring = range('2026-03-08', fixedNow, 'America/New_York');
+  assert.equal(Date.parse(spring.timeMax) - Date.parse(spring.timeMin), 23 * 60 * 60 * 1000);
+  assert.deepEqual(range('week', Date.parse('2026-10-21T12:00:00Z'), 'UTC'), { timeMin: '2026-10-21T00:00:00.000Z', timeMax: '2026-10-28T00:00:00.000Z' });
+  assert.equal(range('this week', Date.parse('2026-10-25T12:00:00Z'), 'UTC').timeMin, '2026-10-19T00:00:00.000Z');
+  assert.equal(range('Wednesday', Date.parse('2026-10-21T12:00:00Z'), 'UTC').timeMin, '2026-10-21T00:00:00.000Z');
+  assert.equal(range('Wednesday this week', Date.parse('2026-10-23T12:00:00Z'), 'UTC').timeMin, '2026-10-21T00:00:00.000Z');
+  assert.throws(() => range('today', fixedNow, 'Invalid/Zone'), /unresolved/);
+  assert.throws(() => range('2026-02-30', fixedNow, 'UTC'), /unresolved/);
+  assert.throws(() => range('Wednesday tomorrow', fixedNow, 'UTC'), /unresolved/);
+});
+
+test('calendar dense week preserves later weekdays and unique evidence with retained remainder', async () => {
+  const events = [...Array.from({ length: 8 }, (_, n) => event(19, n)), ...Array.from({ length: 4 }, (_, n) => event(20, n)), event(21), event(22), event(23)];
+  const h = fixture(events, { token: 'second', pageSize: 12 });
+  const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'calendar', query: 'calendar this week' }] }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'gcal_list').length, 2, 'both upstream pages, exact duplicate window once');
+  assert.equal(first['canContinue'], true);
+  const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'gcal_list').length, 2, 'retained events are not reread');
+  const text = JSON.stringify(second['findings']);
+  assert.match(text, /Day 21/); assert.match(text, /Day 22/); assert.match(text, /Day 23/);
+  assert.doesNotMatch(text, /27 of 24/);
+});
+
+test('calendar exact weekday intents read distinct days and unsupported dates dispatch nothing', async () => {
+  const h = fixture([event(21), event(22), event(23)]);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: ['Wednesday', 'Thursday', 'Friday'].map(day => ({ source: 'calendar', query: `${day} this week` })) }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'gcal_list').length, 3);
+  assert.equal(new Set(h.calls.filter(call => call['name'] === 'gcal_list').map(call => call['timeMin'])).size, 3);
+  for (const day of [21, 22, 23]) assert.match(JSON.stringify(reply['findings']), new RegExp(`Day ${day}`));
+  for (const query of ['release plans', '2026-02-30', 'Wednesday tomorrow', '2026-10-21 or 2026-10-22']) {
+    const bad = fixture([]);
+    const response = await runResearch(bad.deps, { action: 'start', lookups: [{ source: 'calendar', query }] }, signal());
+    assert.equal(bad.calls.length, 0, query);
+    assert.match(String(response['note']), /could not resolve/);
+    assert.equal(response['canContinue'], false);
+  }
+});
+
+test('calendar page coverage distinguishes exhausted, empty progress, repeated tokens and failed reads', async () => {
+  for (const mode of ['full', 'empty-progress', 'repeat', 'failure'] as const) {
+    const h = fixture([]);
+    let pageCalls = 0;
+    h.deps.execute = async subs => subs.map(call => {
+      if (call.name !== 'gcal_list') return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, calendarScope: { received: 20, partial: true } };
+      pageCalls++;
+      if (mode === 'failure' && pageCalls === 2) return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'transport_unavailable' };
+      const events = mode === 'empty-progress' && pageCalls === 1 ? [] : mode === 'full' ? Array.from({ length: 12 }, (_, n) => event(19, n)) : [event(19, pageCalls)];
+      const nextPageToken = mode === 'full' || (mode === 'empty-progress' && pageCalls === 2) ? undefined : 'cursor';
+      return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events, ...(nextPageToken ? { nextPageToken } : {}) }) };
+    });
+    const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+    assert.equal(pageCalls, mode === 'full' ? 1 : 2, mode);
+    const coverage = reply['calendarCoverage'] as Record<string, unknown>;
+    assert.equal(coverage['calendarListComplete'], false);
+    assert.equal(coverage['upstreamRemaining'], false);
+    assert.equal(coverage['failed'], mode === 'repeat' || mode === 'failure');
+    assert.ok(Number(coverage['shown']) <= Number(coverage['received']));
+    await runResearch(h.deps, { action: 'continue', researchId: String(reply['researchId']) }, signal());
+    assert.equal(pageCalls, mode === 'full' ? 1 : 2, 'failed reads never replay on continuation');
+  }
+});
+
+test('calendar retained remainder is invalidated by a new start, cancellation, close and authority loss', async () => {
+  for (const mode of ['new-start', 'cancel', 'close', 'stop', 'authority'] as const) {
+    const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
+    let allowed = true;
+    // The actual Live integration below proves original journal bindings. This seam isolates lifecycle invalidation.
+    if (mode === 'authority') {
+      const execute = h.deps.execute;
+      h.deps.execute = async (calls, abort) => (await execute(calls, abort)).map(result => ({ ...result, binding: { executionId: result.key } as NonNullable<IntentSubResult['binding']> }));
+      h.deps.authorizeCalendar = () => allowed;
+    }
+    const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+    const previous = h.calls.length;
+    if (mode === 'new-start') await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'unsupported' }] }, signal());
+    if (mode === 'cancel') h.deps.ledger.cancelActive();
+    if (mode === 'close') h.deps.ledger.close();
+    if (mode === 'stop') await runResearch(h.deps, { action: 'stop', researchId: String(reply['researchId']) }, signal());
+    if (mode === 'authority') allowed = false;
+    const after = await runResearch(h.deps, { action: 'continue', researchId: String(reply['researchId']) }, signal());
+    assert.equal(h.calls.length, previous);
+    assert.deepEqual(after['findings'], []);
+    assert.equal(after['canContinue'], false);
+  }
+});
+
+test('calendar selector uses the shared primary collector and never retries a failed page', async () => {
+  for (const fail of [false, true]) {
+    const h = fixture(Array.from({ length: 15 }, (_, n) => event(19, n)), { token: 'second', pageSize: 12 });
+    h.deps.selector = { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'this week' }], pUseful: { calendar_window: 1 } }) };
+    const execute = h.deps.execute;
+    let calls = 0;
+    h.deps.execute = async (subs, abort) => {
+      calls += subs.filter(call => call.name === 'gcal_list').length;
+      if (fail) return subs.map(call => ({ key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'transport_unavailable' }));
+      return execute(subs, abort);
+    };
+    const reply = await runResearch(h.deps, { action: 'start', question: 'calendar this week', sources: 'calendar' }, signal());
+    assert.equal(calls, fail ? 1 : 2);
+    assert.ok(h.calls.filter(call => call['name'] === 'gcal_list').every(call => call['calendarId'] === 'primary'));
+    if (!fail) {
+      assert.equal(reply['canContinue'], true);
+      const second = await runResearch(h.deps, { action: 'continue', researchId: String(reply['researchId']) }, signal());
+      assert.match(JSON.stringify(second['findings']), /item 14/);
+      assert.equal(calls, 2);
+    }
+  }
+});
+
+test('calendar collection keeps one source deadline across pages and resumes an undispatched exact cursor', async () => {
+  for (const deadline of [false, true]) {
+    const h = fixture([]);
+    let clock = fixedNow;
+    h.deps.now = () => clock;
+    const tokens: (string | undefined)[] = [];
+    h.deps.execute = async subs => subs.map(call => {
+      if (call.name !== 'gcal_list') return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 };
+      const token = call.args['pageToken'] as string | undefined;
+      tokens.push(token);
+      const n = token ? Number(token) : 0;
+      if (deadline) clock += 5000;
+      return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19, n)], ...(n < 9 ? { nextPageToken: String(n + 1) } : {}) }) };
+    });
+    const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+    assert.equal(tokens.length, deadline ? 3 : 7, 'source deadline is shared; maxOps also includes the scope read');
+    if (deadline) {
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the third page missed the one source deadline');
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], true);
+    } else assert.equal(first['canContinue'], true);
+    await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
+    assert.equal(tokens.length, deadline ? 3 : 10);
+    assert.equal(new Set(tokens).size, tokens.length, 'each exact page dispatched once, failed pages never retried');
+  }
+});
+
+test('calendar delivery advances exact event identities even when bounded text is identical', async () => {
+  const h = fixture(Array.from({ length: 10 }, (_, n) => ({ id: `event-${n}`, start: '2026-10-19T10:00:00Z', summary: 'Identical long title '.repeat(30) })));
+  const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+  assert.equal((first['calendarCoverage'] as Record<string, unknown>)['shown'], 8);
+  const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
+  assert.equal((second['calendarCoverage'] as Record<string, unknown>)['shown'], 2);
+  assert.equal(second['canContinue'], false);
+  assert.equal(h.calls.filter(call => call['name'] === 'gcal_list').length, 1);
+});
+
+test('calendar in-flight continuation retains received events and never replays the already dispatched pending page', async () => {
+  const h = fixture(Array.from({ length: 15 }, (_, n) => event(19, n)), { token: 'second', pageSize: 12 });
+  let due: (() => void) | undefined;
+  h.deps.schedule = (callback, delay) => { if (delay === 4500) due = callback; return { unref() {}, cancel() {} }; };
+  let pageStarted!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { pageStarted = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const execute = h.deps.execute;
+  h.deps.execute = async (calls, abort) => {
+    if (calls.some(call => call.args['pageToken'])) { pageStarted(); await held; }
+    return execute(calls, abort);
+  };
+  const scheduler = new ResearchScheduler(h.deps);
+  const firstPromise = scheduler.call({ action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+  await started;
+  assert.ok(due); due();
+  const first = await firstPromise;
+  assert.equal((first['calendarCoverage'] as Record<string, unknown>)['shown'], 8);
+  const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());
+  assert.equal((next['calendarCoverage'] as Record<string, unknown>)['shown'], 4);
+  assert.equal((next['calendarCoverage'] as Record<string, unknown>)['failed'], true, 'the superseded pending page cannot be replayed');
+  release(); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(h.calls.filter(call => call['name'] === 'gcal_list').length, 2);
+});

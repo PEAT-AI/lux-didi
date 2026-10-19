@@ -8,9 +8,10 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
-import { GOOGLE_CALENDAR_READ_MS } from '../connectors/google.js';
+import { shapeGcalList } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import './research-shape.test.js';
+import './research-calendar.test.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
@@ -38,7 +39,9 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     configured: CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
-      return subs.map(call => sub(call.name, opts.executeText ?? 'evidence', true, call.key));
+      return subs.map(call => call.name === 'gcal_list' && opts.executeText === MERGED_CALENDAR
+        ? { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: CALENDAR_RECORDS }) }
+        : sub(call.name, opts.executeText ?? 'evidence', true, call.key));
     }),
     emit: event => progress.push(event),
     log: entry => logs.push(entry),
@@ -349,19 +352,22 @@ const MERGED_CALENDAR = [
   '- 2026-10-16T11:00:00+05:30, Review | Primary [id e2]',
 ].join('\n');
 
-test('calendar research issues one merged sub-call per question and shapes every event', async () => {
+const CALENDAR_RECORDS = [
+  { id: 'e1', start: '2026-10-16T09:00:00+05:30', summary: 'Standup', location: 'Room 1' },
+  { id: 'e3', start: '2026-10-16T10:00:00+05:30', summary: 'Board deck', location: 'Room 2' },
+  { id: 'e2', start: '2026-10-16T11:00:00+05:30', summary: 'Review' },
+];
+
+test('calendar research issues one primary read and retains every received event', async () => {
   const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   const reads = h.executed.filter(call => call.name === 'gcal_list');
-  assert.equal(reads.length, 1, 'one calendar sub-call per question');
-  assert.equal((reads[0]!.args as Record<string, unknown>)['calendarId'], undefined, 'the connector resolves the selected set');
+  assert.equal(reads.length, 1, 'one calendar sub-call per exact window');
+  assert.equal((reads[0]!.args as Record<string, unknown>)['calendarId'], 'primary');
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
   assert.match(finding.text, /^calendar: 3 of 3 shown/);
-  assert.deepEqual(finding.text.split('\n').slice(1), [
-    '2026-10-16T09:00:00+05:30 | Standup | Room 1 | Primary',
-    '2026-10-16T10:00:00+05:30 | Board deck | Room 2 | Work',
-    '2026-10-16T11:00:00+05:30 | Review | Primary',
-  ]);
+  for (const title of ['Standup', 'Board deck', 'Review']) assert.match(finding.text, new RegExp(title));
+  assert.equal((reply['calendarCoverage'] as Record<string, unknown>)['received'], 3);
 });
 
 test('calendar sub-calls log the resolved window kind only, never a time or title', async () => {
@@ -373,28 +379,21 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
 });
 
-test('a calendar read keeps its own budget and is never starved by the start deadline (probe10)', async () => {
-  // The merged window read fans out one serialized remote call per visible calendar, so the calendar
-  // source needs its budget even when selection and the other reads already spent the start deadline.
+test('calendar research does not start a read after its run deadline', async () => {
   let clock = 0;
   const lateSelector: ResearchSelector = {
     async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
   };
   const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
-  const read = h.subcalls.find(entry => entry.tool === 'gcal_list');
-  assert.ok(read, 'the calendar read still runs');
-  assert.equal(read!.ok, true);
-  assert.ok(read!.items >= 1, 'the read carries real events');
-  // The run's own budget is unchanged: the read finished after the start deadline, so the run says so.
+  assert.equal(h.executed.some(call => call.name === 'gcal_list'), false);
   assert.equal(reply['status'], 'partial');
 });
 
-test('the calendar deadline sits above the connector read budget it must outlive', async () => {
-  // A read cut by the caller's abort is discarded by the result gate, so the two constants are one
-  // invariant across two modules: the batch deadline must outlive the connector's own read budget.
-  assert.ok(RESEARCH.calendarDeadlineMs > GOOGLE_CALENDAR_READ_MS,
-    `${RESEARCH.calendarDeadlineMs} must exceed ${GOOGLE_CALENDAR_READ_MS}`);
+test('the primary research source budget fits inside the unchanged start deadline', () => {
+  assert.equal(RESEARCH.sourceDeadline.calendar, 12_000);
+  assert.equal(RESEARCH.startDeadlineMs, 15_000);
+  assert.ok(RESEARCH.sourceDeadline.calendar < RESEARCH.startDeadlineMs);
 });
 
 test('the calendar budget never extends another source past the start deadline', async () => {

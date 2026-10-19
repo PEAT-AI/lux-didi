@@ -239,6 +239,8 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
   return {
     response: {
       tool: evidence.tool,
+      ...(projection.projection.calendarPage ? { calendarPage: projection.projection.calendarPage } : {}),
+      ...(projection.projection.calendarScope ? { calendarScope: projection.projection.calendarScope } : {}),
       text: projection.projection.text,
       partial: projection.projection.partial,
       originalCharacters: projection.projection.originalCharacters,

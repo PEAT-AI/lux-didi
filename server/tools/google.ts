@@ -5,6 +5,8 @@ import { sha256 } from './canonical.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, type ShapedResult, type ShapedSource } from './live-shape.js';
 
 export interface GoogleProjection {
+  calendarPage?: ShapedResult['calendarPage'];
+  calendarScope?: ShapedResult['calendarScope'];
   text: string;
   /** True when the raw projection was longer than the bound and the tail was dropped. */
   partial: boolean;

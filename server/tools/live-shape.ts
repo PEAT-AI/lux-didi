@@ -38,7 +38,12 @@ export const LIVE_RESULT_CHARS = 2000;
 export const LIVE_COMBINED_CHARS = 3000;
 
 export interface ShapedSource { title: string; url?: string; sourceType?: string }
+export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
+export interface CalendarPage { events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
+export interface CalendarScope { received: number; partial: boolean }
 export interface ShapedResult {
+  calendarPage?: CalendarPage;
+  calendarScope?: CalendarScope;
   text: string;
   partial: boolean;
   originalCharacters: number;
@@ -289,12 +294,13 @@ export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult 
     const id = str(entry['id']);
     return id ? `- ${name} [${id}]` : `- ${name}`;
   });
-  return capped(shaped(lines.join('\n')));
+  return { ...capped(shaped(lines.join('\n'))), calendarScope: { received: lines.length, partial: Boolean(data['nextPageToken'] || data['partial']) } };
 }
 
 export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
   const events = Array.isArray(data['events']) ? data['events'] : [];
   const sources: ShapedSource[] = [];
+  const normalized: CalendarEvent[] = [];
   const blocks = events.filter(isRecord).map(entry => {
     const start = isRecord(entry['start']) ? field(entry['start'], 'dateTime', 'date') : str(entry['start']);
     const named = field(entry, 'summary', 'title');
@@ -314,15 +320,19 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const link = field(entry, 'htmlLink');
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
-    if (cut.omitted === 0) return lines.join('\n');
+    if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
     const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
-    return `${recut.text}${note(recut.omitted)}`;
+    const line = `${recut.text}${note(recut.omitted)}`;
+    normalized.push({ id: eventId, start, line, bodyTruncated: true });
+    return line;
   });
   const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
   const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
-  return capped({ text, partial: body.omitted > 0 || unread > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
+  const nextPageToken = str(data['nextPageToken']);
+  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length, sources }),
+    calendarPage: { events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - CALENDAR_EVENTS), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
 }
 
 // --- Mattermost ----------------------------------------------------------------------------

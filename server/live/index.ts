@@ -1,5 +1,5 @@
 import { sourceCards } from '../tools/source-cards.js';
-import { noEmptyResult } from '../tools/live-shape.js';
+import { noEmptyResult, type CalendarPage, type CalendarScope } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
@@ -8,7 +8,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, newResearchId, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { memoryLookup } from '../tools/memory-search.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2205,11 +2205,16 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused';
-        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
+        return { key: call.id, name: call.name, ok, text, ...(ok && accepted ? { binding: accepted.binding } : {}),
+          ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
+          ...(ok && call.name === 'gcal_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle),
+      now: () => this.#now(), timeZone: this.#timeZone,
+      authorizeCalendar: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
+        && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
+      configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(), selector: this.#research, execute,
@@ -2302,11 +2307,18 @@ export class LiveSessionOwner {
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
     if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    if (event.source === 'calendar') {
+      if (!handle.researchLedger.calendarCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
+      try {
+        if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.calendarBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
+      } catch { return drop('result_denied'); }
+    }
     const think = handle.session.sendThinking;
     // Gemini carries no thinking channel on this path, so the finding is dropped and the receipt says so.
     if (think === undefined) return drop('no_thinking_channel');
     const block = `Later findings from ${event.source} (${event.ms} ms): ${event.items.join('; ')}`.slice(0, LATE_BLOCK_CHARS);
     try { think.call(handle.session, { text: block }); } catch { return drop('send_failed'); }
+    if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => block.includes(event.items[index] ?? '\u0000')));
     hostLogEvent({ event: 'thinking_sent', chars: block.length });
     const reason = this.#lateCommentaryReason(handle, event);
     if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
@@ -2537,6 +2549,26 @@ export class LiveSessionOwner {
       }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
+    const researchDeliveryBindings = new Map<number, ToolResultBinding[]>();
+    for (const [index, entry] of responses.entries()) if (entry.name === RESEARCH_TOOL_NAME && entry.response['calendarCoverage']) {
+      const id = String(entry.response['researchId'] ?? '');
+      if (!handle.researchLedger.calendarCurrent(id)) {
+        responses[index] = { id: entry.id, name: entry.name, response: { error: 'tool_result_denied' } };
+        projections[index] = { name: entry.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
+      } else researchDeliveryBindings.set(index, handle.researchLedger.calendarBindings(id));
+    }
+    if (researchDeliveryBindings.size > 0 && this.#tools && handle.host) {
+      for (const [index, bindings] of researchDeliveryBindings) {
+        let allowed = false;
+        try { allowed = this.#tools.owner.authorizeDelivery(handle.host, bindings, [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state === 'allowed'; } catch { allowed = false; }
+        if (!allowed) {
+          const entry = responses[index]!;
+          handle.researchLedger.stop(String(entry.response['researchId'] ?? ''));
+          responses[index] = { id: entry.id, name: entry.name, response: { error: 'tool_result_denied' } };
+          projections[index] = { name: entry.name, status: 'error', markdown: 'tool_result_denied', sources: [] };
+        }
+      }
+    }
     if (cachedDeliveryBindings.size > 0 && this.#tools && handle.host) {
       let allowed = false;
       try {
@@ -2591,6 +2623,7 @@ export class LiveSessionOwner {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
+          for (const entry of responses) if (entry.name === RESEARCH_TOOL_NAME) markCalendarReply(handle.researchLedger, entry.response);
           this.#armDeadAir(handle);
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
@@ -2630,6 +2663,7 @@ export class LiveSessionOwner {
     // boundary the call really had.
     this.#closeTurn(handle, 'session_end');
     handle.terminal = true;
+    handle.researchLedger.close();
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();

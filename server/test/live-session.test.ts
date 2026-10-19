@@ -123,6 +123,8 @@ async function harness(t: TestContext, overrides: {
   tools?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
+  knowledgeSearchLimit?: number;
+  calendarData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   beforeTool?: () => Promise<void>;
   recover?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
@@ -174,7 +176,7 @@ async function harness(t: TestContext, overrides: {
   let exposedToolOwner: ReturnType<typeof createToolsOwner> | undefined;
   if (overrides.tools) {
     const schemas = [
-      { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
+      { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
     ];
     const registry = new McpRegistry(); toolRegistry = registry;
@@ -221,9 +223,9 @@ async function harness(t: TestContext, overrides: {
       calendarSdk = new Server({ name: 'live-calendar-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       calendarTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
-      calendarSdk.setRequestHandler('tools/call', req => {
+      calendarSdk.setRequestHandler('tools/call', async req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify({ data: req.params.name === 'gcal_list'
+        return { content: [{ type: 'text', text: JSON.stringify({ data: overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'gcal_list'
           ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
           : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] } }) }] };
       });
@@ -247,7 +249,7 @@ async function harness(t: TestContext, overrides: {
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
-      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      bounds: { maxQueryChars: 80, maxSearchLimit: overrides.knowledgeSearchLimit ?? 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
     if (overrides.mattermost && mattermostEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
@@ -4127,5 +4129,65 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'neither completed calendar read replays');
     const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='gcal_calendars'", [session.liveSessionId]));
     assert.deepEqual(rows.map(row => row.state), ['completed', 'completed'], 'original completed journal is unchanged');
+  }
+});
+
+test('calendar integration: actual Google projector and Live ledger deliver every page and local remainder with original authority', async t => {
+  const events = Array.from({ length: 15 }, (_, n) => ({ id: `calendar-event-${n}`, start: `2023-11-${String(14 + Math.floor(n / 5)).padStart(2, '0')}T10:00:00Z`, summary: `Synthetic event ${n}`, description: n === 0 ? 'Long description. '.repeat(40) : '' }));
+  for (const revoked of [false, true]) {
+    const h = await harness(t, { tools: true, calendar: true, calendarData: (name, args) => name === 'gcal_calendars'
+      ? { calendars: [{ id: 'primary', summary: 'Main' }], nextPageToken: 'more-calendars' }
+      : args['pageToken'] ? { events: events.slice(12) } : { events: events.slice(0, 12), nextPageToken: 'next-events' } });
+    await attached(h, `calendar-complete-${revoked}`);
+    await settleLiveTool(h, 'calendar-start', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
+    const last = (): Record<string, unknown> => {
+      const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+      return frame.toolResponse.functionResponses[0]!.response;
+    };
+    const reply = last();
+    assert.equal(reply['canContinue'], true);
+    const coverage = reply['calendarCoverage'] as Record<string, unknown>;
+    assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 7);
+    assert.equal(coverage['bodyTruncated'], true); assert.equal(coverage['calendarListComplete'], false);
+    const calls = h.calls.filter(call => call.name === 'gcal_list');
+    assert.equal(calls.length, 2);
+    const first = calls[0]!.args as Record<string, unknown>, second = calls[1]!.args as Record<string, unknown>;
+    assert.equal(first['calendarId'], 'primary'); assert.equal(first['timeMin'], '2023-11-12T18:30:00.000Z');
+    assert.equal(second['timeMin'], first['timeMin']); assert.equal(second['timeMax'], first['timeMax']);
+    assert.equal(second['pageToken'], 'next-events');
+    assert.doesNotMatch(JSON.stringify(reply), /next-events|more-calendars/, 'opaque page tokens stay inside the host ledger');
+    if (revoked) h.toolRegistry!.revoke('calendar');
+    await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
+    if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    else { assert.match(JSON.stringify(last()['findings']), /Synthetic event 14/); assert.equal(last()['canContinue'], false); }
+    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 2, 'neither retained delivery nor denial rereads completed pages');
+  }
+});
+
+test('calendar integration: revocation during a sibling await or final microtask denies retained results at publication', async t => {
+  for (const boundary of ['sibling', 'final-microtask'] as const) {
+    const started = deferred<void>(), finish = deferred<void>(), calendarAccepted = deferred<void>();
+    const h = await harness(t, { tools: true, calendar: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'exact-retained', start: '2023-11-15T10:00:00Z', summary: 'Calendar publication must be gated' }] } });
+    await attached(h, `calendar-delivery-race-${boundary}`);
+    const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
+    t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
+      const result = await authorize(...args);
+      if (args[1].some(binding => binding.name === 'gcal_list')) calendarAccepted.resolve();
+      if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
+      return result;
+    });
+    const response = settleLiveTool(h, 'calendar-race', 'research', { action: 'start', question: 'Synthetic calendar and knowledge', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'knowledge', query: 'synthetic' }] });
+    let entered = false, collected = false;
+    void started.promise.then(() => { entered = true; }); void calendarAccepted.promise.then(() => { collected = true; });
+    t.after(() => finish.resolve());
+    for (let n = 0; n < 1000 && !(entered && collected); n++) await tick();
+    assert.ok(entered && collected, `calendar and sibling reached their real gates: ${JSON.stringify(h.calls.map(call => call.name))}`);
+    if (boundary === 'sibling') h.toolRegistry!.revoke('calendar');
+    finish.resolve();
+    await response;
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied');
+    assert.doesNotMatch(JSON.stringify(frame), /Calendar publication must be gated/);
+    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
   }
 });

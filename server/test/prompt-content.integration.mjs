@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import * as prompt from '../dist/prompt/index.js';
 import * as backend from '../dist/prompt/backend-procedure.js';
+import {openAiInstructions} from '../dist/adapters/live-voice/openai.js';
 import {HISTORY_IDENTITY,HISTORY_PARAMETERS,validateHistory} from '../dist/tools/history.js';
 const approved=JSON.parse(readFileSync(new URL('./fixtures/prompt-final.json',import.meta.url)));
 assert.equal(prompt.NAYA_CHARACTER,approved.NAYA_CHARACTER);
@@ -22,3 +23,13 @@ const delegated=compose(true),direct=compose(false),none=prompt.composeLiveSessi
 assert(delegated.text.includes(prompt.NAYA_VOICE_TOOLS));assert(!delegated.text.includes(backend.EVIDENCE_SOURCES_GUIDE));assert(direct.text.includes(backend.NAYA_BACKEND_PROCEDURE));assert(!none.text.includes(prompt.NAYA_VOICE_TOOLS));
 assert.equal(text.manifest.systemHash,createHash('sha256').update(text.system).digest('hex'));
 console.log(JSON.stringify({case:'compiled_public_prompt_contract',exactApprovedBlocks:5,textReadOnly:true,delegatedVoiceSeparated:true,directVoiceIncludesProcedure:true,unavailableSourcePreserved:true,noToolsNoProcedure:true,textChars:text.system.length,delegatedChars:delegated.text.length,directChars:direct.text.length,behaviorObserved:false}));
+
+const unknownRule="Unavailable access or a partial search does not prove that something did not happen. Say what the evidence establishes and what remains unknown.";
+const ownerProfile={schemaVersion:1,kind:'profile',ownerId,profileVersion:'synthetic',displayName:'Synthetic owner',style:{text:'',dataClass:'ordinary'},lore:{text:'',dataClass:'ordinary'}};
+const ownerText=prompt.compilePrompt({...input,ownerProfile});
+const frozen=prompt.composeLiveInstruction({base:prompt.NAYA_LIVE_BASE,language:'en'});
+const fullLive=openAiInstructions(prompt.composeLiveSessionInstruction({text:frozen.text,tools:['research'],delegatedBackend:true,records:[],trustedChars:60000}).text);
+for(const system of [ownerText.system,fullLive,openAiInstructions(none.text)])assert.equal(system.split(unknownRule).length-1,1);
+assert(fullLive.includes(prompt.NAYA_VOICE_TOOLS));
+assert(text.system.includes('Missing coverage is not proof that an event did not happen.'));
+console.log(JSON.stringify({case:'unavailable_is_not_negative_evidence',ownerText:true,fullPublicOpenAiLive:true,noToolsVoice:true,defaultTextExistingRule:true,behaviorObserved:false}));

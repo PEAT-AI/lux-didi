@@ -772,7 +772,7 @@ export class ChatService implements ChatPort {
       this.#livePolicies.set(accepted.runId, { session_id: accepted.sessionId, selected_labels: JSON.stringify(policy.selectedLabels) });
       const run = this.#config.store.transaction(tx => {
         const changed = tx.run("UPDATE chat_runs SET state='dispatch_intent',intent_at=?,trace=?,manifest_hash=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state='accepted'",
-          [this.#context(context).now, JSON.stringify({ ...trace, policy }), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
+          [this.#context(context).now, JSON.stringify({ ...trace, policy, diagnostic: { version: 1, dataClasses: request.dataClasses } }), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
         return changed === 1 ? this.#snapshot(tx, this.#row(tx, accepted.runId, context), context) : null;
       });
       if (!run) return;

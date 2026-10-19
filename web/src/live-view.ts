@@ -188,9 +188,9 @@ export interface LiveLine { role: 'user' | 'naya'; text: string }
 /** One rendered transcript block with the key that keeps it stable across polls: a growing line keeps
  * its key and is updated in place, a new line only ever appends (V3 item 2). */
 export interface LiveSegment { key: string; html: string }
-// Every chunk boundary is a word boundary: the fragments are words, and two consecutive owner turns
-// used to glue together with no space when the first lacked final punctuation (P7 item 3).
-export function joinChunk(previous: string, next: string): string {
+// GPT-Live deltas append exactly; the Gemini word-joining path keeps its existing convention.
+export function joinChunk(previous: string, next: string, textJoin: 'append' | 'words' = 'words'): string {
+  if (textJoin === 'append') return previous + next;
   const left = previous.replace(/\s+$/, ''), right = next.replace(/^\s+/, '');
   return left && right ? `${left} ${right}` : left + right;
 }
@@ -200,8 +200,8 @@ function entryRole(entry: LiveEntry): 'user' | 'naya' | undefined {
   return entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
 }
 /** A provider turn marker, or the session's end, closes the run it follows. */
-function closesRun(entry: LiveEntry): boolean {
-  return entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal';
+function closesRun(entry: LiveEntry, role?: LiveLine['role']): boolean {
+  return (entry.finished === true && entryRole(entry) === role) || entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal';
 }
 
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
@@ -214,9 +214,9 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
     const role = entryRole(entry);
     if (role && entry.text) {
       if (run && run.role !== role) flush();
-      run = run ? { role: run.role, text: joinChunk(run.text, entry.text) } : { role, text: entry.text };
+      run = run ? { role: run.role, text: joinChunk(run.text, entry.text, entry.textJoin) } : { role, text: entry.text };
     }
-    if (closesRun(entry)) flush();
+    if (closesRun(entry, run?.role)) flush();
   }
   flush();
   return lines;
@@ -391,9 +391,9 @@ export function sessionItems(live: LiveCurrent | undefined): LiveSegment[] {
     const role = entryRole(entry);
     if (role && entry.text) {
       if (run && run.role !== role) flush();
-      run = run ? { role: run.role, text: joinChunk(run.text, entry.text), seq: run.seq } : { role, text: entry.text, seq: entry.seq };
+      run = run ? { role: run.role, text: joinChunk(run.text, entry.text, entry.textJoin), seq: run.seq } : { role, text: entry.text, seq: entry.seq };
     }
-    if (closesRun(entry)) flush();
+    if (closesRun(entry, run?.role)) flush();
     else if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); items.push({ key: `remember:${entry.seq}`, html: rememberCardMarkup(entry) }); }
     else if (entry.kind === 'toolResult') { flush(); items.push({ key: `tool:${entry.seq}`, html: toolChipMarkup(entry) }); }
   }

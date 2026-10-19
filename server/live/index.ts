@@ -926,7 +926,7 @@ export class LiveSessionOwner {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     let handle: ActiveSession | undefined;
     const page: LivePageProjection = this.#store.transaction(tx => {
-      const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance,(SELECT provider FROM live_grants WHERE live_grants.live_session_id=live_sessions.live_session_id LIMIT 1) AS provider FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       // A fresh origin or session restart opens on a blank voice view: an idle page carries no job rows,
       // and a live page carries only the rows of its own session (UI3b).
       const jobs = row ? this.#feedJobs(tx, String(row.live_session_id)) : [];
@@ -936,11 +936,12 @@ export class LiveSessionOwner {
       const pastSession: LivePageProjection['pastSession'] = terminal || !handle
         ? { outcome: terminal?.state ?? 'unknown', endedAt: terminal ? Number(row.terminal_at) : null, lastObservedAt: Number(row.updated_at) } : undefined;
       const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle ? this.#handleState(handle) : 'idle';
-      const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
+      const rows = tx.all('SELECT journal_id,kind,text,tool_json,finished FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
       const entries: LivePageProjection['entries'] = [];
       for (const item of rows) {
         const seq = Number(item.journal_id), kind = String(item.kind);
-        if (kind === 'inputTranscription' || kind === 'outputTranscription') entries.push({ seq, kind, text: String(item.text ?? '') });
+        if (kind === 'inputTranscription' || kind === 'outputTranscription') entries.push({ seq, kind, text: String(item.text ?? ''), textJoin: row.provider === 'openai' ? 'append' : 'words',
+          ...(item.finished === null ? {} : { finished: Number(item.finished) === 1 }) });
         else if (kind === 'toolCall' || kind === 'toolResult') {
           const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });

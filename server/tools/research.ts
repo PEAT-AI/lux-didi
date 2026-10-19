@@ -1658,301 +1658,317 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let knowledgeStartedAt = 0;
   let knowledgePromise: Promise<IntentSubResult[]> | undefined;
   let knowledgeConsumed = false;
-  for (let round = 1; round <= run.maxRounds; round++) {
-    if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
-    if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
-    const elapsed = now() - started;
-    if (elapsed >= run.deadlineMs) { stopReason = 'deadline'; break; }
-
-    // Start the prime-source read right before source selection, so it runs in parallel with the
-    // selector rather than behind it.
-    if (round === 1 && knowledgeWanted && knowledgePromise === undefined) {
-      const remainingMs = deadlineAt - now();
-      if (remainingMs > 0) {
-        knowledgeStartedAt = now();
-        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch(() => [] as IntentSubResult[]);
-      }
-    }
-
-    const completedKinds = [...run.readKinds];
-    const offerable = offerableCandidates(configured, completedKinds);
-    let selection: SelectorOutput;
-    let usedFallbackThisRound = false;
-    let narrowed: CandidateKind[] | undefined;
-    // A single-source hint pins the whole run to that one source, so the selector is never called,
-    // in any round: once the source is read there is nothing left to select.
-    if (hint.length === 1) {
-      const source = hint[0]!;
-      narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
-      if (driver === undefined) driver = 'single-source-hint';
-    }
-    const candidatesForSelector = narrowed ?? offerable;
-    if (narrowed !== undefined) {
-      // Outcome 6: one certain source is deterministic; skip the selector call entirely.
-      selection = fallbackSelection(question || run.direction || '', configured, now());
-    } else if (deps.selector === undefined) {
-      fallbackUsed = true;
-      usedFallbackThisRound = true;
-      selection = fallbackSelection(question || run.direction || '', configured, now());
-      if (driver === undefined) driver = 'fallback';
-    } else {
-      const selStart = now();
-      let output: SelectorOutput | null = null;
-      try {
-        output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
-      } catch { output = null; }
-      selectorMs += now() - selStart;
-      if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
-      else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
-    }
-
-    // A single-source hint must always run that source, even when the question carried no terms
-    // the fallback could match (an empty or terse spoken question): seed the hinted searches.
-    if (narrowed !== undefined) {
-      const text = question || run.direction || '';
-      for (const kind of narrowed) {
-        if (selection.actions.some(action => action.kind === kind)) continue;
-        selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
-        selection.pUseful[kind] = 0.6;
-      }
-    }
-
-    if (run.ledger.size === 0 && question) run.questionClass = selection.questionClass;
-    run.questionClass = selection.questionClass;
-
-    // One round reads each candidate once: a selector that repeats an action is deduplicated here.
-    const chosen = [...new Set(selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind)))];
-    // Outcome 5: the pre-started knowledge read is included even when the selector did not pick it,
-    // so the prime source is always read once and its findings can rank first.
-    if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
-    perRound.push({ candidates: offerable.map(kind => ({ kind, pUseful: selection.pUseful[kind] ?? 0 })), chosen: [...chosen] });
-
-    if (chosen.length === 0) { stopReason = selection.actions.some(a => a.kind === 'stop_insufficient') ? 'insufficient' : 'answered'; run.rounds = round; break; }
-
-    // Run this round's chosen actions in parallel, bounded by maxConcurrent and maxOps.
-    const toRun: CandidateKind[] = [];
-    for (const kind of chosen) {
-      if (run.ops >= RESEARCH.maxOps) { stopReason = 'ops_exhausted'; break; }
-      toRun.push(kind);
-      run.ops += Math.max(1, candidateSubs(kind, { question, configured, evidence: run.evidence }).length);
-    }
-    const batches: CandidateKind[][] = [];
-    for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
-    for (const batch of batches) {
-      // The calendar source carries its own budget: its merged window read fans out one serialized
-      // remote call per visible calendar, so the run deadline sized for a single read would abort it
-      // mid-fan-out and report a refused, empty read. Only this batch is widened; every other source and
-      // every later round keeps the run deadline, and the run's own budget is never rewritten.
-      const batchDeadline = batch.includes('calendar_window')
-        ? Math.max(deadlineAt, started + RESEARCH.calendarDeadlineMs)
-        : deadlineAt;
-      // P5: the call's own budget follows the slowest source this batch reads, and only that far.
-      const batchSources = batch.flatMap(kind => {
-        const named = sourceKindOf(kind);
-        return named !== null ? [named] : kind === 'brief' ? [...configured] : [];
-      });
-      allowAnswer(batchSources);
-      const remainingMs = batchDeadline - now();
-      if (remainingMs <= 0) { stopReason = 'deadline'; break; }
-      // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on
-      // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
-      const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal]);
-      const latencies = new Map<CandidateKind, number>();
-      const readStarted = new Set<CandidateKind>();
-      const cutKinds = new Set<CandidateKind>();
-      // RD: the round hands the model an answer as soon as one source has something to say. R6: it no
-      // longer cuts the readers still working, because the call answers on its own clock (runResearch) and
-      // every reader lands on its own deadline. A cut here is always the source's own budget running out.
-      let answeredRound = false;
-      const reads = batch.map(async kind => {
-        const action = selection.actions.find(entry => entry.kind === kind);
-        const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
-        if (subs.length === 0) return;
-        widenFor(subs);
-        readStarted.add(kind);
-        // The voice view sees each source start now and end where its part is credited below. One
-        // step id per source of this read, so the end line replaces its own start line in place.
-        const stepIds = new Map<SourceKind, string>();
-        const stepOf = (source: SourceKind): string => {
-          const known = stepIds.get(source);
-          if (known !== undefined) return known;
-          const id = `${stepCallId}:${kind}:${source}:${stepIds.size}`;
-          stepIds.set(source, id);
-          return id;
-        };
-        const subjectOfRead = stepSubject({ query: action?.query, window: action?.window });
-        const named = sourceKindOf(kind);
-        const allSources = named !== null ? [named]
-          : [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
-        // P5 outcome 3 and P5-R5 (F2): a source that cannot serve a read right now never spends this
-        // read's deadline, and it is dropped source by source, so a multi-source read still serves the
-        // healthy ones while the reply carries the dead one's reason.
-        const startSources = allSources.filter(source => !unavailable.includes(source));
-        const deadSources = allSources.filter(source => unavailable.includes(source));
-        const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
-        for (const source of startSources) {
-          first.reading.add(source);
-          publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
-        }
-        for (const source of deadSources) {
-          run.unavailableReasons.set(source, unavailableReason(source));
-          run.sourcesFailed.add(source);
-          logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
-        }
-        if (startSources.length === 0) return;
-        // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
-        const served = deadSources.length === 0 ? subs : subs.filter(sub => {
-          const source = sourceKindOfKindName(sub.name) ?? named;
-          return source === null || !deadSources.includes(source);
-        });
-        // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
-        const cut = new AbortController();
-        const readSignal = AbortSignal.any([roundSignal, cut.signal]);
-        // P5: the cut follows this source's own deadline from the table, never one number for every source.
-        const readDeadlineMs = sourceDeadlineMs(startSources);
-        const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
-        // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
-        // sent twice, so the connector is asked one question once.
-        const issued = served.filter(call => !run.calls.has(callSignature(call)));
-        if (issued.length === 0) return;
-        for (const call of issued) run.calls.add(callSignature(call));
-        const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
-        const at = consumeKnowledge ? knowledgeStartedAt : now();
-        // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
-        const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
-          let out: IntentSubResult[] = [];
-          try { out = await deps.execute(list, readSignal); } catch { out = []; }
-          const failed = list.map((_, index) => index).filter(index => !(out[index]?.ok));
-          if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
-            try {
-              const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
-              failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
-            } catch { /* keep the first attempt's result */ }
-          }
-          return out;
-        };
-        const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(issued);
-        // R6: a source with real text is its own credit; the rest of the round still finishes.
-        if (!answeredRound && !cut.signal.aborted && results.some(result => result.ok && result.text.trim())) answeredRound = true;
-        // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
-        // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
-        const second: IntentSubCall[] = [];
-        const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
-        if (kind === 'knowledge_search') {
-          const ids = extractInsightIds(primaryText);
-          if (ids.length) second.push({ key: 'kz', name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
-        }
-        if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
-          const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
-          ids.forEach((id, index) => second.push({ key: `mo${index}`, name: INTERNAL.mailRead, args: { id } }));
-        }
-        if (kind === 'chat_search') {
-          const id = extractId('chat_search', primaryText);
-          if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { post_id: id } });
-        }
-        const freshSecond = second.filter(call => !run.calls.has(callSignature(call)));
-        for (const call of freshSecond) run.calls.add(callSignature(call));
-        if (freshSecond.length) {
-          const extra = await executeWithRetry(freshSecond);
-          results.push(...extra);
-        }
-        latencies.set(kind, now() - at);
-        cutTimer.cancel();
-        const key = `${kind}:${served.map(sub => JSON.stringify(sub.args)).join(',')}`;
-        // Outcome 2: the read is credited per source. `brief` fans out over several sources, so each
-        // one is credited and delivered on its own instead of the whole batch going uncredited.
-        const parts = creditableSources(kind, results);
-        for (const [index, part] of parts.entries()) {
-          const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
-          run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total });
-          if (part.source === null) continue;
-          publishStep({ callId: stepCallId, stepId: stepOf(part.source), source: part.source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'end', resultCount: block.total, ok: part.results.some(result => result.ok), ms: Math.max(0, now() - at) });
-          if (part.results.some(result => result.ok && result.text.trim())) {
-            run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
-          } else if (part.results.some(result => result.ok)) {
-            // The connector answered and matched nothing: that is a search, not an outage.
-            run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
-            run.emptySearches.set(part.source, queryShapeOf(served));
-          } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
-          // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
-          logSource({
-            event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
-            outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
-            ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
-            ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
-          });
-          // R6: this source settled after the call had already answered, so what it found is handed over
-          // once, and only if the first reply did not already say it.
-          first.reading.delete(part.source);
-          lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok));
-        }
-        // A source that answered counts as read, so an empty result is never re-offered as pending.
-        if (results.some(result => result.ok)) run.readKinds.add(kind);
-        const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
-        if (id) run.evidence.set(kind, id);
-        const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
-        // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
-        // `results` is `[...issued, ...freshSecond]`, so position is the stable key.
-        for (const [index, sub] of [...issued, ...freshSecond].entries()) {
-          const result = results[index];
-          const raw = sub.args['query'] ?? sub.args['q'];
-          const calText = result?.text ?? '';
-          const partial = /\[calendar read incomplete: (\d+) calendars? not read\]/.exec(calText);
-          logSubcall({
-            event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,
-            ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
-            items: result ? itemLines(result.text).length : 0,
-            rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
-            queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
-            ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
-            ...(partial ? { unread: Number(partial[1]) } : {}),
-          });
-        }
-      });
-
-      // RD: the round ends when the first sufficient source answers, and the readers still working are cut.
-      // R6: no reader is cut because another answered. The call's first answer point is its own race, and
-      // every reader here finishes or reaches its own deadline, so a late block has something true to say.
-      await Promise.all(reads);
-      if (answeredRound) stopReason = 'answered';
-      // The answer bound is a cut like any other: the read it stopped is named, and the turn ends partial.
-      if (answerCut.signal.aborted) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
-      if (cutKinds.size > 0) sawCut = true;
-
-      for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) || !latencies.has(kind) ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0 });
-      // A source that ran out of its own deadline ends the turn as an honest partial: it is named
-      // unchecked, and the model can ask to continue instead of another round silently spending time.
-      if (cutKinds.size > 0 && !answeredRound) { stopReason = 'deadline'; break; }
+  // R9: the terminal run line is written once, from the finally below, so a throw inside the selector loop
+  // still leaves a receipt with a closed stop code, a cut keeps its line, and a good run is never written twice.
+  let status: ResearchRunLog['status'] = 'partial';
+  let reply: JsonObject | undefined;
+  let elapsedMs = 0;
+  let runFailed = false;
+  try {
+    for (let round = 1; round <= run.maxRounds; round++) {
       if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
       if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
+      const elapsed = now() - started;
+      if (elapsed >= run.deadlineMs) { stopReason = 'deadline'; break; }
+
+      // Start the prime-source read right before source selection, so it runs in parallel with the
+      // selector rather than behind it.
+      if (round === 1 && knowledgeWanted && knowledgePromise === undefined) {
+        const remainingMs = deadlineAt - now();
+        if (remainingMs > 0) {
+          knowledgeStartedAt = now();
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch(() => [] as IntentSubResult[]);
+        }
+      }
+
+      const completedKinds = [...run.readKinds];
+      const offerable = offerableCandidates(configured, completedKinds);
+      let selection: SelectorOutput;
+      let usedFallbackThisRound = false;
+      let narrowed: CandidateKind[] | undefined;
+      // A single-source hint pins the whole run to that one source, so the selector is never called,
+      // in any round: once the source is read there is nothing left to select.
+      if (hint.length === 1) {
+        const source = hint[0]!;
+        narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
+        if (driver === undefined) driver = 'single-source-hint';
+      }
+      const candidatesForSelector = narrowed ?? offerable;
+      if (narrowed !== undefined) {
+        // Outcome 6: one certain source is deterministic; skip the selector call entirely.
+        selection = fallbackSelection(question || run.direction || '', configured, now());
+      } else if (deps.selector === undefined) {
+        fallbackUsed = true;
+        usedFallbackThisRound = true;
+        selection = fallbackSelection(question || run.direction || '', configured, now());
+        if (driver === undefined) driver = 'fallback';
+      } else {
+        const selStart = now();
+        let output: SelectorOutput | null = null;
+        try {
+          output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
+        } catch { output = null; }
+        selectorMs += now() - selStart;
+        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
+        else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
+      }
+
+      // A single-source hint must always run that source, even when the question carried no terms
+      // the fallback could match (an empty or terse spoken question): seed the hinted searches.
+      if (narrowed !== undefined) {
+        const text = question || run.direction || '';
+        for (const kind of narrowed) {
+          if (selection.actions.some(action => action.kind === kind)) continue;
+          selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
+          selection.pUseful[kind] = 0.6;
+        }
+      }
+
+      if (run.ledger.size === 0 && question) run.questionClass = selection.questionClass;
+      run.questionClass = selection.questionClass;
+
+      // One round reads each candidate once: a selector that repeats an action is deduplicated here.
+      const chosen = [...new Set(selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind)))];
+      // Outcome 5: the pre-started knowledge read is included even when the selector did not pick it,
+      // so the prime source is always read once and its findings can rank first.
+      if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
+      perRound.push({ candidates: offerable.map(kind => ({ kind, pUseful: selection.pUseful[kind] ?? 0 })), chosen: [...chosen] });
+
+      if (chosen.length === 0) { stopReason = selection.actions.some(a => a.kind === 'stop_insufficient') ? 'insufficient' : 'answered'; run.rounds = round; break; }
+
+      // Run this round's chosen actions in parallel, bounded by maxConcurrent and maxOps.
+      const toRun: CandidateKind[] = [];
+      for (const kind of chosen) {
+        if (run.ops >= RESEARCH.maxOps) { stopReason = 'ops_exhausted'; break; }
+        toRun.push(kind);
+        run.ops += Math.max(1, candidateSubs(kind, { question, configured, evidence: run.evidence }).length);
+      }
+      const batches: CandidateKind[][] = [];
+      for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
+      for (const batch of batches) {
+        // The calendar source carries its own budget: its merged window read fans out one serialized
+        // remote call per visible calendar, so the run deadline sized for a single read would abort it
+        // mid-fan-out and report a refused, empty read. Only this batch is widened; every other source and
+        // every later round keeps the run deadline, and the run's own budget is never rewritten.
+        const batchDeadline = batch.includes('calendar_window')
+          ? Math.max(deadlineAt, started + RESEARCH.calendarDeadlineMs)
+          : deadlineAt;
+        // P5: the call's own budget follows the slowest source this batch reads, and only that far.
+        const batchSources = batch.flatMap(kind => {
+          const named = sourceKindOf(kind);
+          return named !== null ? [named] : kind === 'brief' ? [...configured] : [];
+        });
+        allowAnswer(batchSources);
+        const remainingMs = batchDeadline - now();
+        if (remainingMs <= 0) { stopReason = 'deadline'; break; }
+        // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on
+        // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
+        const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal]);
+        const latencies = new Map<CandidateKind, number>();
+        const readStarted = new Set<CandidateKind>();
+        const cutKinds = new Set<CandidateKind>();
+        // RD: the round hands the model an answer as soon as one source has something to say. R6: it no
+        // longer cuts the readers still working, because the call answers on its own clock (runResearch) and
+        // every reader lands on its own deadline. A cut here is always the source's own budget running out.
+        let answeredRound = false;
+        const reads = batch.map(async kind => {
+          const action = selection.actions.find(entry => entry.kind === kind);
+          const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
+          if (subs.length === 0) return;
+          widenFor(subs);
+          readStarted.add(kind);
+          // The voice view sees each source start now and end where its part is credited below. One
+          // step id per source of this read, so the end line replaces its own start line in place.
+          const stepIds = new Map<SourceKind, string>();
+          const stepOf = (source: SourceKind): string => {
+            const known = stepIds.get(source);
+            if (known !== undefined) return known;
+            const id = `${stepCallId}:${kind}:${source}:${stepIds.size}`;
+            stepIds.set(source, id);
+            return id;
+          };
+          const subjectOfRead = stepSubject({ query: action?.query, window: action?.window });
+          const named = sourceKindOf(kind);
+          const allSources = named !== null ? [named]
+            : [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
+          // P5 outcome 3 and P5-R5 (F2): a source that cannot serve a read right now never spends this
+          // read's deadline, and it is dropped source by source, so a multi-source read still serves the
+          // healthy ones while the reply carries the dead one's reason.
+          const startSources = allSources.filter(source => !unavailable.includes(source));
+          const deadSources = allSources.filter(source => unavailable.includes(source));
+          const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
+          for (const source of startSources) {
+            first.reading.add(source);
+            publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
+          }
+          for (const source of deadSources) {
+            run.unavailableReasons.set(source, unavailableReason(source));
+            run.sourcesFailed.add(source);
+            logSource({ event: 'research_source', researchId: run.researchId, source: lookupSourceOf(source), outcome: 'unavailable', ms: 0, deadlineMs: sourceDeadlineMsOfRead, coalesced: 1 });
+          }
+          if (startSources.length === 0) return;
+          // Only the served sub-calls are asked: a dead source's question is never dispatched to it.
+          const served = deadSources.length === 0 ? subs : subs.filter(sub => {
+            const source = sourceKindOfKindName(sub.name) ?? named;
+            return source === null || !deadSources.includes(source);
+          });
+          // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
+          const cut = new AbortController();
+          const readSignal = AbortSignal.any([roundSignal, cut.signal]);
+          // P5: the cut follows this source's own deadline from the table, never one number for every source.
+          const readDeadlineMs = sourceDeadlineMs(startSources);
+          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
+          // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
+          // sent twice, so the connector is asked one question once.
+          const issued = served.filter(call => !run.calls.has(callSignature(call)));
+          if (issued.length === 0) return;
+          for (const call of issued) run.calls.add(callSignature(call));
+          const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
+          const at = consumeKnowledge ? knowledgeStartedAt : now();
+          // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
+          const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
+            let out: IntentSubResult[] = [];
+            try { out = await deps.execute(list, readSignal); } catch { out = []; }
+            const failed = list.map((_, index) => index).filter(index => !(out[index]?.ok));
+            if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
+              try {
+                const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
+                failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
+              } catch { /* keep the first attempt's result */ }
+            }
+            return out;
+          };
+          const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(issued);
+          // R6: a source with real text is its own credit; the rest of the round still finishes.
+          if (!answeredRound && !cut.signal.aborted && results.some(result => result.ok && result.text.trim())) answeredRound = true;
+          // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
+          // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
+          const second: IntentSubCall[] = [];
+          const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
+          if (kind === 'knowledge_search') {
+            const ids = extractInsightIds(primaryText);
+            if (ids.length) second.push({ key: 'kz', name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
+          }
+          if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
+            const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
+            ids.forEach((id, index) => second.push({ key: `mo${index}`, name: INTERNAL.mailRead, args: { id } }));
+          }
+          if (kind === 'chat_search') {
+            const id = extractId('chat_search', primaryText);
+            if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { post_id: id } });
+          }
+          const freshSecond = second.filter(call => !run.calls.has(callSignature(call)));
+          for (const call of freshSecond) run.calls.add(callSignature(call));
+          if (freshSecond.length) {
+            const extra = await executeWithRetry(freshSecond);
+            results.push(...extra);
+          }
+          latencies.set(kind, now() - at);
+          cutTimer.cancel();
+          const key = `${kind}:${served.map(sub => JSON.stringify(sub.args)).join(',')}`;
+          // Outcome 2: the read is credited per source. `brief` fans out over several sources, so each
+          // one is credited and delivered on its own instead of the whole batch going uncredited.
+          const parts = creditableSources(kind, results);
+          for (const [index, part] of parts.entries()) {
+            const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
+            run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total });
+            if (part.source === null) continue;
+            publishStep({ callId: stepCallId, stepId: stepOf(part.source), source: part.source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'end', resultCount: block.total, ok: part.results.some(result => result.ok), ms: Math.max(0, now() - at) });
+            if (part.results.some(result => result.ok && result.text.trim())) {
+              run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
+            } else if (part.results.some(result => result.ok)) {
+              // The connector answered and matched nothing: that is a search, not an outage.
+              run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
+              run.emptySearches.set(part.source, queryShapeOf(served));
+            } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
+            // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
+            logSource({
+              event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
+              outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
+              ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
+              ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
+            });
+            // R6: this source settled after the call had already answered, so what it found is handed over
+            // once, and only if the first reply did not already say it.
+            first.reading.delete(part.source);
+            lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok));
+          }
+          // A source that answered counts as read, so an empty result is never re-offered as pending.
+          if (results.some(result => result.ok)) run.readKinds.add(kind);
+          const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
+          if (id) run.evidence.set(kind, id);
+          const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
+          // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
+          // `results` is `[...issued, ...freshSecond]`, so position is the stable key.
+          for (const [index, sub] of [...issued, ...freshSecond].entries()) {
+            const result = results[index];
+            const raw = sub.args['query'] ?? sub.args['q'];
+            const calText = result?.text ?? '';
+            const partial = /\[calendar read incomplete: (\d+) calendars? not read\]/.exec(calText);
+            logSubcall({
+              event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,
+              ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
+              items: result ? itemLines(result.text).length : 0,
+              rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
+              queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
+              ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
+              ...(partial ? { unread: Number(partial[1]) } : {}),
+            });
+          }
+        });
+
+        // RD: the round ends when the first sufficient source answers, and the readers still working are cut.
+        // R6: no reader is cut because another answered. The call's first answer point is its own race, and
+        // every reader here finishes or reaches its own deadline, so a late block has something true to say.
+        await Promise.all(reads);
+        if (answeredRound) stopReason = 'answered';
+        // The answer bound is a cut like any other: the read it stopped is named, and the turn ends partial.
+        if (answerCut.signal.aborted) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
+        if (cutKinds.size > 0) sawCut = true;
+
+        for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) || !latencies.has(kind) ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0 });
+        // A source that ran out of its own deadline ends the turn as an honest partial: it is named
+        // unchecked, and the model can ask to continue instead of another round silently spending time.
+        if (cutKinds.size > 0 && !answeredRound) { stopReason = 'deadline'; break; }
+        if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
+        if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
+      }
+      run.rounds = round;
+      notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
+      if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'answered') break;
+      // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
+      if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
+
+      // Value-of-information: run one more round only when it is worth the wait.
+      if (round >= run.maxRounds) { stopReason = 'rounds_exhausted'; break; }
+      const nextKinds = offerableCandidates(configured, [...run.readKinds]).filter(kind => !chosen.includes(kind));
+      if (nextKinds.length === 0) { stopReason = 'no_candidates'; break; }
+      const pUseful = pUsefulOf(nextKinds.map(kind => selection.pUseful[kind] ?? 0.3));
+      const subsetP50Ms = Math.max(...nextKinds.map(kind => p50SecondsOf(sourceKindOf(kind) ?? 'knowledge'))) * 1_000;
+      if (!worthContinuing({ pUseful, questionClass: run.questionClass, elapsedMs: now() - started, subsetP50Ms, deadlineMs: run.deadlineMs })) { stopReason = 'voi_stop'; break; }
     }
-    run.rounds = round;
-    notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
-    if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'answered') break;
-    // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
-    if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
 
-    // Value-of-information: run one more round only when it is worth the wait.
-    if (round >= run.maxRounds) { stopReason = 'rounds_exhausted'; break; }
-    const nextKinds = offerableCandidates(configured, [...run.readKinds]).filter(kind => !chosen.includes(kind));
-    if (nextKinds.length === 0) { stopReason = 'no_candidates'; break; }
-    const pUseful = pUsefulOf(nextKinds.map(kind => selection.pUseful[kind] ?? 0.3));
-    const subsetP50Ms = Math.max(...nextKinds.map(kind => p50SecondsOf(sourceKindOf(kind) ?? 'knowledge'))) * 1_000;
-    if (!worthContinuing({ pUseful, questionClass: run.questionClass, elapsedMs: now() - started, subsetP50Ms, deadlineMs: run.deadlineMs })) { stopReason = 'voi_stop'; break; }
+    run.ended = true;
+    elapsedMs = now() - started;
+    status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sawCut ? 'partial' : 'answered') : 'partial');
+    const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+    notify({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
+    reply = buildReply(run, status, configured, canContinue, limit);
+    driver ??= 'single-source-hint';
+    return reply;
+  } catch (error) {
+    // A throw inside the loop is a failed run, and the closed code keeps the exception text out.
+    runFailed = true;
+    throw error;
+  } finally {
+    heartbeat.cancel();
+    answerTimer.cancel();
+    if (runFailed) elapsedMs = Math.max(0, now() - started);
+    const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
+    // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
+    // because the host log refuses a line whose driver is not one of the four.
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
   }
-
-  run.ended = true;
-  const elapsedMs = now() - started;
-  const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sawCut ? 'partial' : 'answered') : 'partial');
-  const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
-  heartbeat.cancel();
-  answerTimer.cancel();
-  notify({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
-  const reply = buildReply(run, status, configured, canContinue, limit);
-  driver ??= 'single-source-hint';
-  const replyFindings = Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [];
-  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply).length, driver, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply['canContinue'] === true, findingChars: replyFindings.map(finding => (finding.text ?? '').length) });
-  return reply;
 }
 
 export function newResearchId(): string { return randomUUID(); }

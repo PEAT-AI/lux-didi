@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fsyncSync, lstatSync, openSync, renameSync, unlinkSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { bindingFrom, boundSecret, profileFrom, requireAbsolutePath, secretRecordFrom, seedScope, writePrivateFile, type ConfigOptions } from './index.js';
 import { liveDocument } from './live.js';
-import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
+import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateFile, validateRoot } from './files.js';
 
-const markerName = '.route-classes.pending', lockName = '.route-classes.lock', limit = 64 * 1024;
+const markerName = '.route-classes.pending', lockName = '.route-classes.lock.sqlite', limit = 64 * 1024;
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
 interface Replacement { name: string; before: string; after: string; text: string }
 interface Plan { version: 1; ownerId: string; surface: 'text' | 'live'; expectedGeneration: string; inputHash: string; files: Replacement[] }
@@ -65,17 +66,28 @@ function resumed(text: string, options: RouteClassOptions, input: string): Plan 
   if (JSON.stringify(binding) !== JSON.stringify(stored.receipt) || binding.bindingGeneration === options.expectedGeneration) fail('configuration_pending');
   return selected;
 }
-/** Only this invocation's validated lock is removed; a live concurrent owner is refused. */
+/** The stable inode is never unlinked; SQLite releases cross-process ownership on close or death. */
 function lock(dir: string): () => void {
-  const path = join(dir, lockName), prior = optional(path, 256);
-  if (prior !== undefined) {
-    const pid = Number(prior); if (!Number.isSafeInteger(pid) || pid < 1) fail('configuration_pending');
-    try { process.kill(pid, 0); fail('configuration_pending'); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-    unlinkSync(path);
-  }
-  writePrivateFile(path, String(process.pid), 256); const inode = lstatSync(path).ino;
-  return () => { if (lstatSync(path).ino !== inode) fail('configuration_pending'); unlinkSync(path); syncDir(dir); };
+  const path = join(dir, lockName);
+  let fd: number | undefined, database: DatabaseSync | undefined;
+  try {
+    try { fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    const initial = lstatSync(path);
+    if (initial.isSymbolicLink()) fail('file_symlink');
+    fd ??= openSync(path, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(fd); validateFile(stat, limit);
+    if (stat.ino !== initial.ino || stat.dev !== initial.dev) fail('file_type');
+    closeSync(fd); fd = undefined;
+    database = new DatabaseSync(path, { timeout: 0 });
+    database.exec('CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER PRIMARY KEY); BEGIN EXCLUSIVE');
+    const owned = database;
+    return () => owned.close();
+  } catch (error) {
+    database?.close();
+    if ((error as { errcode?: number }).errcode === 5 || /locked|busy/i.test(String(error))) fail('configuration_pending');
+    throw safeError(error);
+  } finally { if (fd !== undefined) closeSync(fd); }
 }
 /** Checkpoint is an in-process synthetic fault seam, never a CLI or environment option. */
 export function setRouteClasses(options: RouteClassOptions, checkpoint?: (stage: string) => void): { surface: string; generation: string; dryRun: boolean } {

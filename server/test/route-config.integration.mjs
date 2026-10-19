@@ -20,5 +20,5 @@ try{seed();const before=readFileSync(join(dir,'gemini-primary.json'),'utf8');let
  put('binding.json',{...binding,routeScope:{...liveScope,allowedClasses:binding.routeScope.allowedClasses}});
  result=cli([],'live');assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(readFileSync(join(dir,'live.json'),'utf8')),{...live,dataClasses:binding.routeScope.allowedClasses});assert.deepEqual(JSON.parse(readFileSync(join(dir,'profile.json'),'utf8')),profile);assert.equal(JSON.parse(readFileSync(join(dir,'openai-primary.json'),'utf8')).key,key);
  seed();put('live.json',{...live,limits:{idleMs:0}});assert.equal(cli().status,1);
- assert(!readdirSync(dir).some(name=>name.startsWith('.route-classes')));console.log(JSON.stringify({case:'canonical_route_class_cli',dryRun:true,textAndLive:true,invalidLiveLimitsRefused:true,exactFieldsRefused:7,keyPreserved:true,unrelatedPreserved:true,reusedGenerationRefused:true}));
+ assert(!readdirSync(dir).some(name=>name.startsWith('.route-classes') && name !== '.route-classes.lock.sqlite'));console.log(JSON.stringify({case:'canonical_route_class_cli',dryRun:true,textAndLive:true,invalidLiveLimitsRefused:true,exactFieldsRefused:7,keyPreserved:true,unrelatedPreserved:true,reusedGenerationRefused:true}));
 }finally{rmSync(dir,{recursive:true,force:true});}

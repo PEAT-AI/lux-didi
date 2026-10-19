@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../runtime/store.js';
+import { traceMigrations } from '../trace/schema.js';
 import { Outbox } from '../runtime/outbox.js';
 import type { OutboxEvent } from '../runtime/outbox.js';
 import type { Transaction } from '../contracts/storage.js';
@@ -108,7 +109,7 @@ test('host startup surfaces the typed credential admission failure and leaves no
     try {
       const applied = db.prepare('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner')
         .all().map(row => [String(row['owner']), Number(row['version'])]);
-      assert.deepEqual(applied, [['trace', 1]], 'the host committed no migration set, only the always-applied trace owner');
+      assert.deepEqual(applied, [['trace', Math.max(...traceMigrations.map(migration => migration.version))]], 'the host committed no migration set, only the always-applied trace owner');
     }
     finally { db.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(web, { recursive: true, force: true }); }

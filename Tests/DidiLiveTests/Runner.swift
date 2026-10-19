@@ -313,6 +313,89 @@ struct ProbeSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
 }
 
+/// Z2: a socket whose playback receipt send is held on a gate while the microphone keeps arriving.
+actor BusyWireSocket: LiveSocket {
+    private var frames: [LiveFrame]
+    private let gate: Gate
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private(set) var inputs: [Data] = []
+    private(set) var receipts: [String] = []
+    private(set) var receiptEntered = 0
+    private var closed = false
+    /// The single send lane, exactly as FoundationLiveSocket holds it: a receipt owns the wire while it sends.
+    private var busy = false
+    init(_ frames: [LiveFrame], _ gate: Gate) { self.frames = frames; self.gate = gate }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) throws {
+        guard !closed else { throw LiveClientError.unavailable }
+        guard !busy else { return }
+        inputs.append(data)
+    }
+    func sendPCMReportingShed(_ data: Data) throws -> Bool {
+        guard !closed else { throw LiveClientError.unavailable }
+        guard !busy else { return false }
+        inputs.append(data); return true
+    }
+    func sendControl(_ command: LiveControl) {}
+    func sendReceipt(_ frame: String) async {
+        receiptEntered += 1
+        busy = true
+        await gate.wait()
+        busy = false
+        receipts.append(frame)
+    }
+    func cancel() async {
+        closed = true
+        waiter?.resume(throwing: LiveClientError.transport); waiter = nil
+        await gate.release()
+    }
+}
+struct BusyWireSockets: LiveSocketConnecting {
+    let socket: BusyWireSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
+
+/// Z2: every send yields once, so a receipt and a mic frame genuinely interleave, and none is held.
+actor YieldingSocket: LiveSocket {
+    private var frames: [LiveFrame]
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private(set) var inputs = 0, receipts = 0, controls = 0
+    init(_ frames: [LiveFrame]) { self.frames = frames }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) async { await Task.yield(); inputs += 1 }
+    func sendControl(_ command: LiveControl) async { await Task.yield(); controls += 1 }
+    func sendReceipt(_ frame: String) async { await Task.yield(); receipts += 1 }
+    func cancel() async { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
+}
+/// Z2: one ready marker per connection, then the receive loop suspends, so a second begin reattaches cleanly.
+actor RestartSocket: LiveSocket, LiveSocketConnecting {
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private var readySent = false
+    func connect(_ binding: LiveSocketBinding) -> any LiveSocket { readySent = false; return self }
+    func receive() async throws -> LiveFrame {
+        if !readySent {
+            readySent = true
+            return .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))
+        }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) {}
+    func sendControl(_ command: LiveControl) {}
+    func sendReceipt(_ frame: String) {}
+    func cancel() async { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
+}
+
+struct YieldingSockets: LiveSocketConnecting {
+    let socket: YieldingSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
+
 actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
     private var frames: [LiveFrame] = []
     private var waiter: CheckedContinuation<LiveFrame, Error>?
@@ -974,6 +1057,73 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await stopHTTP.finish()
             print("PASS stop control survives a busy send queue and its receipt names the press")
             record("stop-control")
+
+            // Z2: a playback receipt holds the wire; the microphone sheds one frame and the call lives on.
+            let shedHTTP = TestHTTP(fixture), receiptGate = Gate()
+            let shedSocket = BusyWireSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], receiptGate)
+            let shed = LiveSessionCoordinator(http: shedHTTP, sockets: BusyWireSockets(socket: shedSocket), sink: SilentSink())
+            await shed.begin(frozen); try await until { await shed.state == .active }
+            await shed.setCaptureMuted(false, epoch: 0, diagnosticOwner: 41)
+            let heldReceipt = Task { await shed.sendPlaybackReceipt("{\"type\":\"playbackReceipt\"}") }
+            try await until { await shedSocket.receiptEntered == 1 }
+            try await shed.sendPCM(Data(repeating: 1, count: 640), captureEpoch: 0, diagnosticOwner: 41)
+            try require(await shed.state == .active, "a busy wire never ends the call")
+            let shedCounters = (await shed.captureSummary(owner: 41))!.counters
+            try require(shedCounters.shedFrames == 1 && shedCounters.sendErrors == 0
+                && shedCounters.localSocketSendCompleted == 0, "one shed mic frame, no send error, no completion")
+            await receiptGate.release()
+            await heldReceipt.value
+            try await shed.sendPCM(Data(repeating: 1, count: 640), captureEpoch: 0, diagnosticOwner: 41)
+            let afterShed = (await shed.captureSummary(owner: 41))!.counters
+            try require(await shedSocket.inputs.count == 1 && afterShed.localSocketSendCompleted == 1
+                && afterShed.entered == 2 && afterShed.shedFrames == 1, "the frame after the shed is sent")
+            await shed.stop(); await shedHTTP.finish()
+            print("PASS a receipt holding the wire sheds one mic frame and the next frame is sent")
+            record("shed-frame")
+
+            // Z2 soak: 10,000 alternating playback receipts and mic frames, no shed frame, no interruption.
+            let soakHTTP = TestHTTP(fixture)
+            let soakSocket = YieldingSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))])
+            let soak = LiveSessionCoordinator(http: soakHTTP, sockets: YieldingSockets(socket: soakSocket), sink: SilentSink())
+            await soak.begin(frozen); try await until { await soak.state == .active }
+            await soak.setCaptureMuted(false, epoch: 0, diagnosticOwner: 42)
+            for index in 0..<10_000 {
+                await soak.sendPlaybackReceipt("{\"type\":\"playbackReceipt\",\"index\":" + String(index) + "}")
+                try await soak.sendPCM(Data(repeating: 1, count: 640), captureEpoch: 0, diagnosticOwner: 42)
+            }
+            let soakCounters = (await soak.captureSummary(owner: 42))!.counters
+            try require(soakCounters.shedFrames == 0 && soakCounters.sendErrors == 0
+                && soakCounters.localSocketSendCompleted == 10_000,
+                "10,000 interleaved receipts never shed a mic frame and never end the call")
+            let soakState = await soak.state
+            let soakInputs = await soakSocket.inputs, soakReceipts = await soakSocket.receipts
+            try require(soakState == .active && soakInputs == 10_000 && soakReceipts == 10_000,
+                "every receipt and every mic frame reached the wire")
+            await soak.stop(); await soakHTTP.finish()
+            print("PASS 10,000 interleaved playback receipts and mic frames with zero shed frames and no interruption")
+            record("receipt-audio-soak")
+
+            // Z2: the automatic restart is a new call, a new idempotency key, the same persona and voice.
+            let keyHTTP = TestHTTP(fixture)
+            let keySocket = RestartSocket()
+            let restartCall = LiveSessionCoordinator(http: keyHTTP, sockets: keySocket, sink: SilentSink())
+            await restartCall.begin(frozen); try await until { await restartCall.state == .active }
+            let firstCall = try await restartCall.readSnapshot()
+            await restartCall.begin(frozen); try await until { await restartCall.state == .active }
+            let restartedCall = try await restartCall.readSnapshot()
+            let createKeys = await keyHTTP.keys
+            try require(createKeys.count == 2 && createKeys[0] != createKeys[1],
+                "the restart carries a new idempotency key")
+            try require(firstCall.idempotencyKey == createKeys[0], "the first call carries the first key")
+            try require(restartedCall.idempotencyKey == createKeys[1], "the restarted call carries the second key")
+            try require(firstCall.liveSessionId != restartedCall.liveSessionId, "a new call, never the old one")
+            let sameVoice = firstCall.grant.voice == restartedCall.grant.voice && firstCall.grant.model == restartedCall.grant.model
+            let samePersona = firstCall.assistantId == restartedCall.assistantId
+                && firstCall.profileIdentity == restartedCall.profileIdentity
+            try require(sameVoice && samePersona, "same persona and voice on the restarted call")
+            await restartCall.stop(); await keyHTTP.finish()
+            print("PASS restart begins a new call with a new idempotency key and the same persona and voice")
+            record("restart-key")
             if CommandLine.arguments.contains("--durations=10") {
                 for (name, duration) in durations.sorted(by: { $0.1 > $1.1 }).prefix(10) {
                     let parts = duration.components

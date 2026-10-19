@@ -118,4 +118,15 @@ export const traceMigrations: readonly SchemaMigration[] = [{
        text_truncated INTEGER NOT NULL CHECK (text_truncated IN (0,1))
      )`,
   ],
+}, {
+  owner: 'trace',
+  // Release 3x / call 1019: the native player restarts its source sequence with every session, so a
+  // replay is the same sequence in the same session, never the same sequence on one instance for ever.
+  // The old index read a later session's receipts as replays and dropped them, which the timeline
+  // reported as a false NATIVE-GAP on the session that lost them.
+  version: 2,
+  statements: [
+    `DROP INDEX IF EXISTS trace_event_native`,
+    `CREATE UNIQUE INDEX trace_event_native ON trace_event(live_session_id, source_instance_id, source_seq)`,
+  ],
 }];

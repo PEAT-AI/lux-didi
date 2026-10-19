@@ -1849,14 +1849,17 @@ export class LiveSessionOwner {
   }
 
   #detach(handle: ActiveSession): void {
+    // One host line per call, before the guard: call 1019 could not tell a detach that landed from one that
+    // found the handle already past 'attached', and an open response is exactly what a late detach must not lose.
+    hostLogEvent({ event: 'consumer_detach', consumerState: handle.consumerState, awaitingAnswer: handle.awaitingAnswer, openCalls: handle.pendingCallIds.size });
     if (handle.consumerState !== 'attached') return;
     handle.consumerState = 'ended';
     handle.consumer?.discard();
     try { this.#store.transaction(tx => tx.run("UPDATE live_sessions SET consumer_state='ended', updated_at=? WHERE live_session_id=?", [this.#now(), handle.liveSessionId])); }
     catch (error) {
-      // A failed detach write is logged, never swallowed; #snapshot reconciles the row against this handle.
-      console.error(JSON.stringify({ event: 'live_detach_write_failed', liveSessionId: handle.liveSessionId,
-        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
+      // A failed detach write is logged to the host log, never swallowed; #snapshot reconciles the row against this handle.
+      hostLogEvent({ event: 'live_detach_write_failed', liveSessionId: handle.liveSessionId,
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' });
     }
     // A session whose consumer stayed away is ended cleanly: the journal is kept, only the spend of talking to
     // nobody stops. A re-attach inside the window flips consumerState back and cancels this by its guard.

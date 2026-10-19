@@ -231,7 +231,7 @@ function stepSourceOf(name: string): string {
 }
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary a progress line names. */
-type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout';
+type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
 /** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
 function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
 
@@ -277,6 +277,7 @@ interface ActiveSession {
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
   /** S4a-R2 (e): one execution receipt per call of this turn, the only source a progress line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
+  progressCallIds: Set<string>;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
@@ -1192,7 +1193,7 @@ export class LiveSessionOwner {
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1284,7 +1285,6 @@ export class LiveSessionOwner {
     this.#armIdle(handle, this.#profile.limits.idleMs);
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
-    handle.progressSentAt = undefined;
     this.#armProgress(handle);
     this.#armDelegationDeadline(handle);
     this.#armWatchdog(handle);
@@ -1299,7 +1299,13 @@ export class LiveSessionOwner {
   #progressLine(handle: ActiveSession): string | undefined {
     // S4a-R2 (e): what the host can prove, from the execution receipts of this turn's calls: a source that was
     // only requested is never described as being read.
-    const byStatus = (status: ExecStatus): string[] => [...handle.exec.values()].filter(entry => entry.status === status).map(entry => entry.source);
+    const priority: readonly ExecStatus[] = ['running', 'queued', 'timeout', 'failed', 'cancelled', 'done'];
+    const sources = new Map<string, ExecStatus>();
+    for (const { source, status } of handle.exec.values()) {
+      const previous = sources.get(source);
+      if (previous === undefined || priority.indexOf(status) < priority.indexOf(previous)) sources.set(source, status);
+    }
+    const byStatus = (status: ExecStatus): string[] => [...sources].filter(([, value]) => value === status).map(([source]) => source);
     const parts: string[] = [];
     const running = byStatus('running');
     const queued = byStatus('queued');
@@ -1374,8 +1380,7 @@ export class LiveSessionOwner {
   }
 
   #armProgress(handle: ActiveSession): void {
-    handle.progressTimer?.cancel();
-    handle.progressTimer = undefined;
+    if (handle.progressTimer !== undefined) return;
     if (!this.#progressPath(handle)) return;
     handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_FIRST_MS);
     handle.progressTimer.unref?.();
@@ -1577,6 +1582,12 @@ export class LiveSessionOwner {
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
+    this.#cancelProgress(handle);
+    handle.progressSentAt = undefined;
+    handle.progressCallIds.clear();
+    handle.exec.clear();
+    handle.liveSteps = [];
+    handle.liveStepItems.clear();
     const connection = handle.connection;
     connection.turnIndex += 1;
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
@@ -2260,11 +2271,11 @@ export class LiveSessionOwner {
       schedule: this.#schedule,
       // U-k3: each source's read opens and closes one line in the voice view while it runs.
       step: step => {
-        if (this.#settled(handle) || generation !== handle.generation) return;
+        if (this.#settled(handle) || generation !== handle.generation || !handle.progressCallIds.has(step.callId)) return;
         this.#recordStep(handle, step);
         // Review F1 (S4A-R2 (e)): the research fan-out is the lookup the model actually makes, so each source's
         // start and end is an execution receipt too, and a progress line can name what is really running.
-        handle.exec.set(step.stepId, { source: step.source, status: step.phase === 'end' ? (step.ok === false ? 'failed' : 'done') : 'running' });
+        handle.exec.set(step.stepId, { source: step.source, status: step.phase === 'end' ? (step.errorCode === 'timeout' ? 'timeout' : step.errorCode === 'cancelled' ? 'cancelled' : step.ok === false ? 'failed' : 'done') : 'running' });
       },
       // R6: a source that settles after the first answer. The host owns the block and the delivery rule.
       late: event => this.#lateFindings(handle, generation, event),
@@ -2386,10 +2397,12 @@ export class LiveSessionOwner {
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
    *  A `research` call opens one line per source from inside the run instead. */
   #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
-    handle.liveSteps = [];
+    const running = new Set([...handle.exec].filter(([, entry]) => entry.status === 'running').map(([id]) => id));
+    handle.liveSteps = handle.liveSteps.filter(step => running.has(step.stepId) || running.has(step.callId));
     handle.liveStepItems = new Map();
-    handle.exec = new Map();
+    handle.exec = new Map([...handle.exec].filter(([id]) => running.has(id)));
     for (const call of calls) {
+      handle.progressCallIds.add(call.id);
       // S4a-R2 (e): queued is the only status a call has until the tool owner is handed it.
       if (call.name === RESEARCH_TOOL_NAME) continue;
       handle.exec.set(call.id, { source: stepSourceOf(call.name), status: 'queued' });
@@ -2402,7 +2415,7 @@ export class LiveSessionOwner {
 
   /** Keep one line per step: an end step replaces its own start line in place. */
   #recordStep(handle: ActiveSession, step: LiveToolStepBody): void {
-    if (this.#settled(handle)) return;
+    if (this.#settled(handle) || !handle.progressCallIds.has(step.callId)) return;
     const index = handle.liveSteps.findIndex(entry => entry.stepId === step.stepId);
     if (index >= 0) { handle.liveSteps[index] = step; return; }
     handle.liveSteps.push(step);
@@ -2478,7 +2491,7 @@ export class LiveSessionOwner {
       for (const unit of pending) {
         handle.callAborts.set(unit.call.id, new AbortController());
         handle.callStartedAt.set(unit.call.id, this.#now());
-        handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'running' });
+        if (handle.progressCallIds.has(unit.call.id)) handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'running' });
         registerSignals(unit, unit.subs);
       }
       const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
@@ -2515,7 +2528,7 @@ export class LiveSessionOwner {
           // it is owed no answer), so the ceiling settles a read as a timeout and a write as uncertain.
           const outcome = isReadOnlyTool(unit.call.name) ? 'timeout' : 'uncertain';
           hostLogEvent({ event: 'tool_ceiling_hit', tool: unit.call.name, ms: TOOL_CEILING_MS, outcome });
-          handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
+          if (handle.progressCallIds.has(unit.call.id)) handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'timeout' });
         }
         // The ceiling settles the call locally: this abort asks the tool owner to stop, and proves nothing about
         // the remote side, so a write settles as uncertain unless its cancellation came from somewhere else.
@@ -2622,7 +2635,7 @@ export class LiveSessionOwner {
       // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
       // the ceiling settled keeps that status, because "timed out" is what happened and "failed" would hide it.
       if (handle.exec.has(id) && handle.exec.get(id)?.status !== 'timeout') {
-        handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
+        if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
       }
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
       const call = event.calls[index]!;

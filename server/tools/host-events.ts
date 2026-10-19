@@ -33,6 +33,7 @@ export interface LiveToolStep {
   phase: 'start' | 'end';
   resultCount?: number;
   ok?: boolean;
+  errorCode?: 'failed' | 'timeout' | 'cancelled';
   ms?: number;
 }
 

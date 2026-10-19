@@ -323,7 +323,6 @@ enum State: String, CaseIterable {
         guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
         guard value != muted, muteTask == nil else { return }
         muted = value; device.setMuted(muted)
-        if muted { device.cancelPlayback() }
         let epoch = device.captureEpoch, requestedMute = muted, token = generation
         muteTask = Task { [weak self, coordinator] in
             await coordinator.setCaptureMuted(requestedMute, epoch: epoch)

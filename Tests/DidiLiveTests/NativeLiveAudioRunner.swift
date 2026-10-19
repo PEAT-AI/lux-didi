@@ -569,6 +569,48 @@ private func checkPrimaryChannelConversion() throws {
                      "actual converter preserves first-channel input and observed uniform seven-channel input")
 }
 
+@MainActor private final class PlaybackDriverFixture: NativePlaybackDriver {
+    var scheduled: [AVAudioPCMBuffer] = []
+    var active: [AVAudioPCMBuffer] = []
+    var completions: [@Sendable () -> Void] = []
+    var plays = 0, stops = 0
+    func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void) {
+        scheduled.append(buffer); active.append(buffer); completions.append(completion)
+    }
+    func play() { plays += 1 }
+    func stop() { stops += 1; active.removeAll() }
+}
+
+@MainActor private func checkPlaybackMuteFence() async throws {
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+    device.playbackDriverForTesting = driver
+    var output: [Bool] = []
+    device.onOutput = { output.append($0) }
+    func pcm(_ sample: Int16) -> Data { [Int16](repeating: sample.littleEndian, count: 2400).withUnsafeBytes { Data($0) } }
+    try await device.write(pcm(12000))
+    try audioRequire(driver.scheduled.count == 1 && driver.plays == 1 && output.last == true,
+                     "control: actual write schedules nonzero PCM and starts the fake player")
+    let oldCompletion = driver.completions[0]
+    device.setMuted(true)
+    try audioRequire(driver.active.isEmpty && !device.isPlayingOutput,
+                     "mute clears the actual scheduled tail and speaking state")
+    try await device.write(pcm(12000))
+    try audioRequire(driver.scheduled.count == 1, "muted actual write schedules no arriving PCM")
+    device.setMuted(false)
+    try await device.write(pcm(5000))
+    try audioRequire(driver.scheduled.count == 2 && driver.active.count == 1,
+                     "unmute schedules only new PCM, never the discarded tail")
+    oldCompletion()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(device.isPlayingOutput && driver.active.count == 1,
+                     "a stale pre-mute completion cannot drain post-unmute speech")
+    driver.completions.last?()
+    for _ in 0..<8 { await Task.yield() }
+    try audioRequire(!device.isPlayingOutput && !device.hasEngine && !device.isCapturing,
+                     "completion drains real device state without hardware or capture")
+    print("PASS actual write control, hot-mute PCM fence, unmute tail and stale completion; hardware=false")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -585,6 +627,12 @@ private func checkPrimaryChannelConversion() throws {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--playback-fences-only") {
+            do { try await checkPlaybackMuteFence() }
+            catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--primary-channel-only") {
             do { try checkPrimaryChannelConversion() }
             catch { FileHandle.standardError.write(Data("Primary-channel conversion: \(error)\n".utf8)); exit(1) }
@@ -615,6 +663,8 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Format change: \(error)") }
             return
         }
+        do { try await checkPlaybackMuteFence() }
+        catch { FileHandle.standardError.write(Data("Playback fence: \(error)\n".utf8)); exit(1) }
         do { try checkPrimaryChannelConversion() }
         catch { fatalError("Primary-channel conversion: \(error)") }
         do { try checkFormatChangeRebuild() }

@@ -556,6 +556,12 @@ struct NativeLiveInterruptionSample: Sendable {
     let at: Date
 }
 
+@MainActor protocol NativePlaybackDriver: AnyObject {
+    func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping @Sendable () -> Void)
+    func play()
+    func stop()
+}
+
 @MainActor final class NativeLiveAudioDevice: ObservableObject, LiveAudioSink {
     @Published private(set) var inputLevel: Float = 0
     @Published private(set) var outputLevel: Float = 0
@@ -613,6 +619,7 @@ struct NativeLiveInterruptionSample: Sendable {
     /// Test seams: an engine/player/format factory and a start hook stand in for real hardware.
     var engineFactoryForTesting: (() -> (AVAudioEngine, AVAudioPlayerNode, AVAudioFormat))?
     var startForTesting: ((AVAudioEngine) throws -> Void)?
+    var playbackDriverForTesting: (any NativePlaybackDriver)?
     var sessionFailedForTesting: Bool { sessionFailed }
     var isVoiceProcessingEnabledForTesting: Bool { engine?.inputNode.isVoiceProcessingEnabled ?? false }
     private var tapInstalled = false
@@ -1059,7 +1066,11 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         onCapturePrepared?(capture)
     }
-    func setMuted(_ muted: Bool) { if self.muted != muted { captureEpoch &+= 1 }; self.muted = muted; capture?.setMuted(muted); inputLevel = 0; inputBands = .silent; if muted { cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true) } }
+    func setMuted(_ muted: Bool) {
+        if self.muted != muted { captureEpoch &+= 1 }
+        self.muted = muted; capture?.setMuted(muted); inputLevel = 0; inputBands = .silent
+        if muted { turnGeneration &+= 1; flushOutput() }
+    }
     /// #283: the orb frame for this instant: the owner's latest capture window (silent once older than
     /// 200 ms or while muted) and the model output window at the playback position.
     func orbBands() -> (input: NativeOrbBands, output: NativeOrbBands) {
@@ -1155,7 +1166,7 @@ struct NativeLiveInterruptionSample: Sendable {
         guard cueTask != nil else { return }
         cueGeneration &+= 1
         cueTask?.cancel(); cueTask = nil
-        if stopPlayer { player?.stop() }
+        if stopPlayer { stopPlaybackNode() }
     }
     private func nowMs() -> Int { Int(now().timeIntervalSince1970 * 1000) }
     /// One playback receipt for a segment, stamped with the process clock and the launch identity.
@@ -1167,21 +1178,25 @@ struct NativeLiveInterruptionSample: Sendable {
             sourceInstanceID: clock.sourceInstanceID, sourceSeq: clock.nextSequence("receipt"),
             monoMs: clock.monoMs(), wallMs: NativeLogClock.wallMs(Date()), reason: reason))
     }
+    private func stopPlaybackNode() {
+        if let driver = playbackDriverForTesting { driver.stop() } else { player?.stop() }
+    }
     func write(_ pcm: Data) async throws {
+        guard !muted else { return }
         // Contract C1: model audio has arrived, so stop any waiting or playing cue. It stops the cue
         // only; the answer is scheduled normally below, delayed by nothing.
         cancelWaitCue(.modelAudio(atMs: nowMs()), stopPlayer: true)
         // Paused/rebuilding output is discarded, never buffered or replayed on Resume.
         if recovery.awaitingResume || recovery.pending != nil { return }
-        guard let player, let engine, engine.isRunning, pcm.count.isMultiple(of: 2) else { throw LiveClientError.unavailable }
-        let entryTurn = turnGeneration
+        guard pcm.count.isMultiple(of: 2), playbackDriverForTesting != nil || (player != nil && engine?.isRunning == true) else { throw LiveClientError.unavailable }
+        let entryTurn = turnGeneration, entryOutput = outputGeneration
         if playbackQueue.overflowsMemoryGuard {
             // P2-R1: log the dropped turn before the flush resets the queue.
             await onPlaybackOverflow?(NativePlaybackQueue.ms(playbackQueue.scheduledFrames), playbackQueue.queuedBuffers)
             flushOutput()
         }
         // Barge-in flushed this chunk's turn while it was in flight: never schedule stale audio.
-        guard turnGeneration == entryTurn else { playback.lateAfterFlush += 1; return }
+        guard !muted, turnGeneration == entryTurn, outputGeneration == entryOutput else { playback.lateAfterFlush += 1; return }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
             throw NativeLiveAudioError.unsupportedFormat
         }
@@ -1212,7 +1227,7 @@ struct NativeLiveInterruptionSample: Sendable {
         outputLevel = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
         outputOrb.append(pcm)
         lastModelAudioAt = now()
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        let completion: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
                 guard let self, self.outputGeneration == token else { return }
                 if self.playbackQueue.playedBack(atMs: self.nowMs()) {
@@ -1220,15 +1235,21 @@ struct NativeLiveInterruptionSample: Sendable {
                     // node so the next burst re-fills the prebuffer before playback restarts.
                     self.emitReceipt(.drained, segment: self.playbackSegment)
                     self.segmentActive = false
-                    self.player?.stop()
+                    self.stopPlaybackNode()
                     self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
                     self.outputOrb.reset()
                     self.startWaitCue()
                 }
             }
         }
+        if let driver = playbackDriverForTesting { driver.schedule(buffer, completion: completion) }
+        else if let player { player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() } }
+        else { throw LiveClientError.unavailable }
         if newSegment { emitReceipt(.enqueued, segment: playbackSegment) }
-        if arrival.start { player.play(); emitReceipt(.started, segment: playbackSegment); outputOrb.started(atMs: nowMs()) }
+        if arrival.start {
+            if let driver = playbackDriverForTesting { driver.play() } else { player?.play() }
+            emitReceipt(.started, segment: playbackSegment); outputOrb.started(atMs: nowMs())
+        }
     }
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }
@@ -1243,7 +1264,7 @@ struct NativeLiveInterruptionSample: Sendable {
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         // A barge-in closes the segment it interrupts; the flush below drops exactly that audio.
         if segmentActive { emitReceipt(.interrupted, segment: playbackSegment, reason: "interrupted"); segmentActive = false }
-        outputGeneration &+= 1; player?.stop(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
+        outputGeneration &+= 1; stopPlaybackNode(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
         // P3: stopping the player empties only the player. The stretcher holds its own tail, so reset
         // the unit: no syllable of a flushed turn may play after the flush.
         if let timePitch { timePitch.auAudioUnit.reset(); timePitchTailFlushes += 1 }

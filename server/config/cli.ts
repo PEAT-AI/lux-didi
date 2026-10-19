@@ -5,7 +5,7 @@ import { LiveConfigError } from '../live/types.js';
 import { saveLiveSelection } from './live.js';
 import { readFileSync, statSync } from 'node:fs';
 
-const help = 'Usage: node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-id <current-store-owner> --profile-input <private-profile-json> --source-env <authorized-private-env-file> [--binding-input <private-binding-json>]\n       node <compiled-root>/config/cli.js migrate-binding --config-dir <existing-private-dir> --owner-id <current-store-owner> --binding-input <private-binding-json>\n       node <compiled-root>/config/cli.js select --config-dir <existing-private-dir> --provider <openai|gemini> [--voice <name|voice_id>] [--voice-description-file <absolute-path>] [--accent <selection>] [--playback-rate <1.0-1.2>]\n       node <compiled-root>/config/cli.js set-route-classes --config-dir <private-dir> --owner-id <owner> --surface <text|live> --binding-input <private-json> --expected-generation <previous> [--dry-run]\nAll paths must be explicit absolute paths. Fixed source variable: GEMINI_API_KEY. Binding is an operator assertion, not provider identity verification.\n';
+const help = 'Usage: node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-id <current-store-owner> --profile-input <private-profile-json> --source-env <authorized-private-env-file> [--binding-input <private-binding-json>]\n       node <compiled-root>/config/cli.js migrate-binding --config-dir <existing-private-dir> --owner-id <current-store-owner> --surface <text|live> --binding-input <private-binding-json>\n       node <compiled-root>/config/cli.js select --config-dir <existing-private-dir> --provider <openai|gemini> [--voice <name|voice_id>] [--voice-description-file <absolute-path>] [--accent <selection>] [--playback-rate <1.0-1.2>]\n       node <compiled-root>/config/cli.js set-route-classes --config-dir <private-dir> --owner-id <owner> --surface <text|live> --binding-input <private-json> --expected-generation <previous> [--dry-run]\nAll paths must be explicit absolute paths. Fixed source variable: GEMINI_API_KEY. Binding is an operator assertion, not provider identity verification.\n';
 type SelectOptions = { configDir: string; provider: LiveVoiceProvider; voice?: string; accent?: string; voiceDescription?: string; playbackRate?: number };
 /** A voice description is at most 1,500 characters, so any file past this is not one. */
 const maxDescriptionBytes = 8 * 1024;
@@ -33,8 +33,9 @@ function argumentsFrom(args: string[]): Command {
   }
   if ((command !== 'init' && command !== 'migrate-binding' && command !== 'select') ||
       (command === 'init' ? ![9, 11, 13].includes(args.length)
-        : command === 'select' ? ![5, 7, 9, 11, 13].includes(args.length) : args.length !== 7)) throw new ConfigError('invalid_arguments');
+        : command === 'select' ? ![5, 7, 9, 11, 13].includes(args.length) : args.length !== 9)) throw new ConfigError('invalid_arguments');
   const names: Record<string, string> = { '--config-dir': 'configDir', '--owner-id': 'ownerId', '--binding-input': 'bindingInputPath',
+    ...(command === 'migrate-binding' ? { '--surface': 'surface' } : {}),
     ...(command === 'init' ? { '--profile-input': 'profileInputPath', '--source-env': 'sourceEnvPath', '--provider': 'provider' }
       : command === 'select' ? { '--provider': 'provider', '--voice': 'voice', '--accent': 'accent', '--playback-rate': 'playbackRate', '--voice-description-file': 'voiceDescriptionPath' } : {}) };
   const values: Record<string, string> = {};
@@ -57,8 +58,8 @@ function argumentsFrom(args: string[]): Command {
   if (!values['configDir'] || !values['ownerId']) throw new ConfigError('invalid_arguments');
   const common = { configDir: values['configDir'], ownerId: values['ownerId'] };
   if (command === 'migrate-binding') {
-    if (!values['bindingInputPath']) throw new ConfigError('invalid_arguments');
-    return { command, options: { ...common, bindingInputPath: values['bindingInputPath'] } };
+    if (!values['bindingInputPath'] || !['text', 'live'].includes(values['surface']!)) throw new ConfigError('invalid_arguments');
+    return { command, options: { ...common, bindingInputPath: values['bindingInputPath'], surface: values['surface']! as 'text' | 'live' } };
   }
   if (!values['profileInputPath'] || !values['sourceEnvPath']) throw new ConfigError('invalid_arguments');
   const provider = values['provider'];
@@ -76,7 +77,7 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--help') {
       const result = setRouteClasses(parsed.options); process.stdout.write(JSON.stringify(result) + '\n');
     } else if (parsed.command === 'init') initializeProviderConfig(parsed.options);
     else if (parsed.command === 'select') saveLiveSelection(parsed.options);
-    else migrateProviderBinding(parsed.options);
+    else await migrateProviderBinding(parsed.options);
     if (parsed.command !== 'set-route-classes') process.stdout.write(parsed.command === 'init' ? 'Provider configuration initialized.\n'
       : parsed.command === 'select' ? 'Live provider selection saved; it applies when the service next starts.\n'
       : 'Provider binding migrated. Sensitive legacy backup retained; profile and preferences unchanged.\n');

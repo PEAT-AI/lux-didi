@@ -64,7 +64,7 @@ export interface InitializeOptions extends ConfigOptions {
   /** Which credential slot to seed. Defaults to the OpenAI voice slot; Gemini needs `--provider gemini`. */
   provider?: LiveVoiceProvider;
 }
-export interface MigrateBindingOptions extends ConfigOptions { bindingInputPath: string }
+export interface MigrateBindingOptions extends ConfigOptions { bindingInputPath: string; surface: 'text' | 'live' }
 /** Exact provider route. Configured account is an operator assertion, never provider verification. */
 export interface CredentialRouteScope {
   readonly provider: LiveVoiceProvider; readonly modelId: string;
@@ -310,27 +310,31 @@ function syncPrivate(path: string): void {
   finally { closeSync(fd); }
 }
 /** Explicit retained migration only; loading never upgrades legacy records. */
-export function migrateProviderBinding(options: MigrateBindingOptions): void {
+export async function migrateProviderBinding(options: MigrateBindingOptions): Promise<void> {
+  const live = options.surface === 'live' ? await import('./live.js') : undefined;
   const pending = join(options.configDir, '.binding.pending');
   let ownPending = false;
   try {
     optionsValid(options); requireSettledConfig(options.configDir); pathArgument(options.bindingInputPath);
     if (!validateRoot(options.configDir)) fail('file_missing');
-    const profile = profileFrom(readPrivate(join(options.configDir, 'profile.json'), profileLimit), options.ownerId);
-    const active = slotFile(options.configDir, textSlot);
-    const legacy = secretRecordFrom(readPrivate(active, secretLimit), textSlot.keyReference);
+    if (!['text', 'live'].includes(options.surface)) fail('invalid_arguments');
+    const selected = options.surface === 'text'
+      ? profileFrom(readPrivate(join(options.configDir, 'profile.json'), profileLimit), options.ownerId)
+      : live!.liveDocument(readPrivate(join(options.configDir, 'live.json'), profileLimit), options.ownerId);
+    const slot = slotFor(selected.provider);
+    const scope = seedScope(selected.provider, 'modelId' in selected ? selected.modelId : selected.model, selected.dataClasses);
+    const active = slotFile(options.configDir, slot);
+    const legacy = secretRecordFrom(readPrivate(active, secretLimit), slot.keyReference);
     if (legacy.receipt) fail('invalid_secret'); // Never reinterpret/rebind a v2 record as a legacy migration.
-    // Retained migration is the Gemini text slot only: its reference, endpoint and api-version are fixed.
-    const binding = bindingFrom(readPrivate(options.bindingInputPath, secretLimit),
-      seedScope('gemini', profile.modelId, profile.dataClasses));
+    const binding = bindingFrom(readPrivate(options.bindingInputPath, secretLimit), scope);
     const replacement = boundSecret(legacy.key, binding);
-    secretRecordFrom(replacement);
-    const backup = join(options.configDir, `${textSlot.keyReference}.legacy.json`);
+    secretRecordFrom(replacement, slot.keyReference);
+    const backup = join(options.configDir, `${slot.keyReference}.legacy.json`);
     // Copy exact bytes (including a possible UTF-8 BOM), never a decoded/normalized serialization.
     // Paths were privately validated above; same-UID malicious replacement remains out of boundary.
     try { copyFileSync(active, backup, constants.COPYFILE_EXCL); }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') fail('destination_exists'); throw e; }
-    const retained = secretRecordFrom(readPrivate(backup, secretLimit));
+    const retained = secretRecordFrom(readPrivate(backup, secretLimit), slot.keyReference);
     if (retained.receipt || retained.key !== legacy.key) fail('invalid_secret'); // Concurrent key/version change: do not activate a mismatched snapshot.
     syncPrivate(backup); // Retained bytes are durable before activation. Never unlink this backup.
     createPrivate(pending, replacement, secretLimit);

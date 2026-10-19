@@ -298,18 +298,18 @@ not another active database or a separately read receipt source.
 For an already valid v1 configuration, run the compiled CLI explicitly:
 
 ```sh
-node /absolute/compiled-root/config/cli.js migrate-binding \
+node /absolute/compiled-root/config/cli.js migrate-binding --surface text \
   --config-dir /absolute/private/didi-config \
   --owner-id current-store-owner \
   --binding-input /absolute/private/binding.json
 ```
 
-`init` without binding input retains v1 behavior. `migrate-binding` requires all
-three flags exactly once and rejects v2 active records; it is not a rebind API.
+`init` without binding input retains v1 behavior. `migrate-binding` requires an explicit `--surface text` or `--surface live`. The selected validated document pins the exact provider, model, endpoint, API version, key reference and classes. Live enrollment reads no persona content. Each slot retains its own exact legacy backup. `migrate-binding` requires all
+four flags exactly once and rejects v2 active records; it is not a rebind API.
 It validates existing profile/secret and independently supplied binding before
 activation. Existing profile, preferences and key are retained. The original
 secret's **exact bytes**, including whitespace/BOM, are copied into newly created
-0600 `gemini-primary.legacy.json` under the existing 0700 root. Copy is exclusive:
+0600 `<selected-key-reference>.legacy.json` under the existing 0700 root. Copy is exclusive:
 a collision is a visible failure, never an overwrite. This backup is sensitive
 and remains there; never place it in a report, UI, browser, model content or
 SQLite. Loading does not migrate or delete it.

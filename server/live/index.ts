@@ -20,6 +20,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallResult, recordUtterance, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { hostLogEvent, LIVE_STATE_CAUSES } from '../host/log.js';
@@ -1565,7 +1566,7 @@ export class LiveSessionOwner {
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
     this.#receipt(handle, 'turn.opened', { turnId }, {
-      origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: this.#now(),
+      origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
       ...(connection.turnIndex > 1 ? { attributionUncertain: true } : {}),
     });
   }
@@ -1748,7 +1749,7 @@ export class LiveSessionOwner {
     const handle = [...this.#active.values()].filter(candidate => !candidate.terminal).at(-1);
     if (!handle) throw new LiveError('not_found', 'No active Live session');
     this.#guardHandle(handle);
-    const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true };
+    const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true, finalOrigin: 'typed' as const };
     handle.connectorRecovery = this.#tools?.recover?.();
     handle.session.sendText({ text });
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
@@ -2119,7 +2120,7 @@ export class LiveSessionOwner {
     handle.inputFinalTimer = this.#schedule(() => {
       if (this.#settled(handle) || handle.generation !== generation || handle.inputJournalId !== journalId) return;
       try {
-        this.#store.transaction(tx => tx.run("UPDATE live_journal SET finished=1 WHERE journal_id=? AND live_session_id=? AND kind='inputTranscription'", [journalId, handle.liveSessionId]));
+        this.#store.transaction(tx => tx.run("UPDATE live_journal SET finished=1,final_origin='app_model_start',finalized_at=?,finalized_mono_ms=? WHERE journal_id=? AND live_session_id=? AND kind='inputTranscription'", [this.#now(), hostMonotonicMs(), journalId, handle.liveSessionId]));
       } catch (error) {
         handle.persistFailure = error;
         handle.abort.abort();
@@ -2660,8 +2661,13 @@ export class LiveSessionOwner {
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     const persist = (tx: Transaction) => {
-      tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
-        [handle.liveSessionId, event.sequence, kind, text, finished, value, toolJSON, bytes, now]);
+      const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
+      const mono = hostMonotonicMs();
+      tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',
+        [handle.liveSessionId,event.sequence,kind,text,finished,value,toolJSON,bytes,now,handle.connection.epoch,
+          transcription?.providerEventId ?? null,transcription?.providerStartMs ?? null,transcription?.providerEndMs ?? null,mono,hostClockDomain,
+          finished === 1 ? transcription?.finalOrigin ?? (this.#profile.provider === 'gemini' ? 'provider' : 'unknown') : null,
+          finished === 1 ? now : null,finished === 1 ? mono : null]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);

@@ -117,6 +117,7 @@ export interface LiveVoiceDiagnostics {
   outputAudioFrames: number; outputAudioPCMBytes: number;
   outputAudioAfterInitialTurnFrames: number; outputAudioAfterInitialTurnPCMBytes: number;
 }
+export type TranscriptFinalOrigin = 'provider' | 'app_quiet' | 'app_model_start' | 'app_response_end' | 'typed' | 'unknown';
 export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'ready' }
   | { type: 'modelTurnStarted' }
@@ -125,7 +126,7 @@ export type LiveVoiceEvent = { sequence: number } & (
   /** `audible` and `rmsDbfs` are the adapter's own level classification of this chunk (16-bit PCM in, dBFS
    *  against full scale). An adapter that does not classify leaves both out, and the host reads that as speech. */
   | { type: 'audio'; pcm: Uint8Array; rate: number; audible?: boolean; rmsDbfs?: number }
-  | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
+  | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean; providerEventId?: string; providerStartMs?: number; providerEndMs?: number; finalOrigin?: TranscriptFinalOrigin }
   | { type: 'modelText'; text: string; thought: boolean }
   | { type: 'generationComplete' | 'turnComplete' | 'interrupted' }
   | { type: 'waitingForInput'; value: boolean }

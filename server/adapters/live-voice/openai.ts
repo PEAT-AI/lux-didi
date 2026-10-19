@@ -137,6 +137,16 @@ const REAL_CLOCK: LiveVoiceClock = {
   setTimer: (ms, fire) => setTimeout(fire, ms),
   clearTimer: handle => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
 };
+function transcriptMetadata(message: ObjectValue): { providerEventId?: string; providerStartMs?: number; providerEndMs?: number } {
+  const validMs = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const start = message.start_ms, end = message.end_ms;
+  const interval = (!validMs(start) || !validMs(end) || end >= start);
+  return {
+    ...(typeof message.event_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/.test(message.event_id) ? { providerEventId: message.event_id } : {}),
+    ...(interval && validMs(start) ? { providerStartMs: start } : {}),
+    ...(interval && validMs(end) ? { providerEndMs: end } : {}),
+  };
+}
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024, upstreamStallMs: 400,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
@@ -831,7 +841,7 @@ class Session implements LiveVoiceSession {
     this.userTranscriptOpen = true;
     this.diagnostic.inputTranscriptionEvents += 1;
     this.diagnostic.inputTranscriptionCharacters += message.delta.length;
-    this.emit({ type: 'inputTranscription', text: message.delta, finished: false });
+    this.emit({ type: 'inputTranscription', text: message.delta, finished: false, ...transcriptMetadata(message) });
     this.touch();
   }
 
@@ -999,7 +1009,7 @@ class Session implements LiveVoiceSession {
     // The semantic end of the turn subsumes the audible-silence receipt: no listening flip after the completion.
     this.silenceSent = true;
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
+    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
     hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true });
     hostLogEvent({ event: 'playback_rearm', count: this.playbackRearms });
@@ -1012,7 +1022,7 @@ class Session implements LiveVoiceSession {
     // Transcripts are never dropped: the host journals what was actually spoken.
     if (message.delta.length) {
       this.outputTranscriptOpen = true;
-      this.emit({ type: 'outputTranscription', text: message.delta, finished: false });
+      this.emit({ type: 'outputTranscription', text: message.delta, finished: false, ...transcriptMetadata(message) });
     }
     this.touch();
   }
@@ -1033,7 +1043,7 @@ class Session implements LiveVoiceSession {
           createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
         });
         this.clearInputEpisode(false);
-        this.endTurnTranscripts();
+        this.endTurnTranscripts('app_model_start');
         this.delegatedOutstanding = true;
         this.generation += 1;
         // 3r D10: the completion account belongs to the response that is answering now, so the audible line of the
@@ -1104,17 +1114,17 @@ class Session implements LiveVoiceSession {
       });
     }
     if (message) this.responseDone(message);
-    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
+    if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
     // End of turn is presentation idle, never these frames: a terminal response does not drain playback.
     this.settleTurn();
     this.writeAnswered();
     this.resumeContinuation();
   }
 
-  private endTurnTranscripts(): void {
+  private endTurnTranscripts(finalOrigin: 'app_quiet' | 'app_model_start' = 'app_quiet'): void {
     if (!this.userTranscriptOpen) return;
     this.userTranscriptOpen = false;
-    this.emit({ type: 'inputTranscription', text: '', finished: true });
+    this.emit({ type: 'inputTranscription', text: '', finished: true, finalOrigin });
   }
 
   /** A delegated function call: `{call_id, name, arguments}` on the nested output item. */

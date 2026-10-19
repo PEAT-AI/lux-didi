@@ -1,3 +1,4 @@
+import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
@@ -34,7 +35,7 @@ export interface RunSnapshot { acceptance: RunAcceptance; connections: BoundConn
 /** Separate trusted metadata boundary, not parsed from reader markdown or arbitrary MCP fields. */
 export interface TrustedRestrictions { localOnly: boolean; nonDisclosure: boolean; dataClasses: readonly DataClass[] }
 export const HOST_EVIDENCE: unique symbol = Symbol('host-evidence');
-export type HostEvidenceRef = { kind: 'local-history'; sources: HistorySourceRef[] }
+export type HostEvidenceRef = { kind: 'remote-page'; parent: RemoteResultLineage } | { kind: 'local-history'; sources: HistorySourceRef[] }
   | { kind: 'remote-body'; source: ResultScope; entitySha256: string; bodySha256: string; expiresAt: number; tool: string; body: string;
       upstreamComplete: boolean | 'unknown'; upstreamOmitted: boolean | 'unknown' };
 export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[]; sourceDispatchRefs?: readonly string[]; [HOST_EVIDENCE]?: HostEvidenceRef }

@@ -1,10 +1,11 @@
+import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, receivedBodyCoverage } from '../tools/received-body.js';
 import { historyEvidenceCurrent, type HistoryEvidence } from '../domain/history-reader.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, HostContext, ToolResultBinding, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
+import type { Content, DataClass, HostContext, ToolResultBinding, JsonObject, LoopResult, ModelResult, ModelRequest, ModelControl, ToolDefinition } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
@@ -27,7 +28,8 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
  * this copy strips them, so the strip call site is exercised without a full tool run. */
 export function ownerEvidenceMarkdown(response: Record<string, unknown>): string {
   if (response.status === 'ok' && Array.isArray(response.hits)) return response.hits.length ? response.hits.map(hit => hit && typeof hit === 'object' ? String((hit as Record<string, unknown>).snippet ?? '') : '').join('\n').slice(0, 4096) : 'No matching eligible local history. Coverage may be incomplete.';
-  const text = typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.';
+  const bodyText = Array.isArray(response.bodySlices) ? response.bodySlices.flatMap(slice => slice && typeof slice === 'object' && typeof slice.text === 'string' ? [slice.text] : []).join('\n') : undefined;
+  const text = bodyText ?? (typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.');
   return stripModelOnlyNotes(text).slice(0, 4096);
 }
 /** Stable capability identity: a description or schema reword never changes it. */
@@ -153,7 +155,8 @@ export class ChatService implements ChatPort {
         policyMatches: !frozen || frozen.policy_identity === policyIdentity });
       if (!frozen) return registry;
       const admitted = JSON.parse(String(frozen.capabilities_json)) as CapabilityIdentity[];
-      return admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
+      const allowed = admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
+      return allowed.some(tool => RECEIVED_BODY_TOOLS.has(tool.name)) ? allowed : allowed.filter(tool => tool.name !== RECEIVED_BODY.name);
     });
   }
 
@@ -174,13 +177,16 @@ export class ChatService implements ChatPort {
     const model = this.#config.model!;
     const tools = this.#config.tools;
     let dataClass: 'private' | 'sensitive' = 'private';
-    const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
+    const observedBodyResponses: JsonObject[] = [];
+    const generate = async (outgoing: ModelRequest, outgoingControl: ModelControl) => {
       this.#checkPolicy(run.runId, run.sessionId, context);
       const evidenceClasses = this.#resultClasses(run.runId);
       if (evidenceClasses === null) throw new ContextFailure('unavailable');
       outgoing = { ...outgoing, dataClasses: [...new Set([...outgoing.dataClasses, ...evidenceClasses])] };
       if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
-      return model.generate(outgoing, outgoingControl);
+      const result = await model.generate(outgoing, outgoingControl);
+      if (result.status === 'complete') for (const content of outgoing.contents) for (const part of content.parts) if (part.functionResponse?.response['bodyCoverage']) observedBodyResponses.push({ bodyCoverage: structuredClone(part.functionResponse.response['bodyCoverage']) });
+      return result;
     };
     if (!tools) { const result = await generate(request, control); return { status: result.status, text: result.text, dataClass }; }
     const active = this.#toolAuthorities.get(run.runId)!;
@@ -252,23 +258,45 @@ export class ChatService implements ChatPort {
     release([]);
     // The finite bound can stop after a tool result, before another model request.
     // Read its projection through the SAME canonical gate, never from raw journal JSON.
+    let bodyCoverage: JsonObject[] = [];
+    let bodyResponses: JsonObject[] = [];
+    let bodyAnswerContents: Content[] | undefined;
     if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
       const final = await tools.owner.resultGate.authorize(host, loop?.resultBindings ?? [], request.dataClasses, control.signal);
       if (final.state === 'allowed') this.#resultEvidence.set(run.runId, { host, bindings: structuredClone(loop?.resultBindings ?? []) });
       if (final.state !== 'allowed' || this.#resultClasses(run.runId) === null) throw new ContextFailure('unavailable');
+      bodyResponses = final.results.map(result => result.response);
+      bodyCoverage = receivedBodyCoverage(bodyResponses, observedBodyResponses);
+      if (bodyCoverage.length && loop) {
+        bodyAnswerContents = structuredClone(loop.continuation);
+        for (const result of final.results) {
+          const response = bodyAnswerContents[result.binding.contentIndex]?.parts[result.binding.partIndex]?.functionResponse;
+          if (!response || response.name !== result.binding.name || response.id !== result.binding.callId) throw new ContextFailure('unavailable');
+          response.response = structuredClone(result.response);
+        }
+      }
       // Only journaled bindings are re-gated here; host-answered composed reads keep the evidence the
       // request seam already persisted, so a later empty projection never wipes it.
       const toolEvidence = final.state === 'allowed' && final.results.length ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : null;
       this.#config.store.transaction(tx => {
         const row = this.#row(tx, run.runId, context);
         const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
-        if (toolEvidence) tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
+        if (toolEvidence) tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence, receivedBodyCoverage: bodyCoverage }), run.runId]);
       });
     }
+    const withBodyCoverage = (text: string): { text: string; partial?: true; notReached?: readonly string[] } => {
+      bodyCoverage = receivedBodyCoverage(bodyResponses, observedBodyResponses);
+      const bodyGaps = bodyCoverage.filter(coverage => Number(coverage['remaining']) > 0 || coverage['upstreamComplete'] !== true || coverage['upstreamOmitted'] !== false);
+      if (bodyCoverage.length) this.#config.store.transaction(tx => { const row = this.#row(tx, run.runId, context); const trace = row.trace ? JSON.parse(String(row.trace)) : {}; tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, receivedBodyCoverage: bodyCoverage }), run.runId]); });
+      if (!bodyGaps.length) return { text };
+      const remaining = bodyGaps.reduce((n, coverage) => n + Number(coverage['remaining']), 0);
+      const note = [remaining > 0 ? `I have not consumed all the received text: ${remaining} characters remain.` : '', bodyGaps.some(coverage => coverage['upstreamOmitted'] === true) ? 'The source omitted content beyond what it returned.' : bodyGaps.some(coverage => coverage['upstreamComplete'] !== true) ? 'The source did not confirm whether its returned content was complete.' : ''].filter(Boolean).join(' ');
+      return { text: `${text}\n\n${note}`, partial: true, notReached: [] };
+    };
     const settled = loop;
     if (settled !== undefined && settled.status === 'complete' && settled.text.trim().length > 0) {
       this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'answered');
-      return { status: 'complete', text: settled.text, dataClass };
+      return { status: 'complete', ...withBodyCoverage(settled.text), dataClass };
     }
     // A gate refusal or a provider error is not a cut run: it keeps its own outcome, never an invented answer.
     if (settled !== undefined && (settled.status === 'denied' || settled.status === 'error')) {
@@ -293,7 +321,7 @@ export class ChatService implements ChatPort {
       const answerTimer = setTimeout(() => answerAbort.abort(), answerMs);
       try {
         const result = await generate({ ...request, declarations: [],
-          contents: [...request.contents, { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
+          contents: [...(bodyAnswerContents ?? request.contents), { role: 'user', parts: [{ text: answerInstruction(evidence, notReached) }] }] },
         { signal: AbortSignal.any([control.signal, answerAbort.signal]), deadlineMs: this.#now() + answerMs });
         answer = result.text.trim();
       } catch (error) {
@@ -302,7 +330,7 @@ export class ChatService implements ChatPort {
       } finally { clearTimeout(answerTimer); }
     }
     this.#timing(run, rounds, steps, this.#now() - startedAt, acquireMs, answerMs, 'fenced');
-    return { status: 'complete', text: answer || deterministicAnswer(evidence, notReached), dataClass, partial: true, notReached };
+    return { status: 'complete', ...withBodyCoverage(answer || deterministicAnswer(evidence, notReached)), dataClass, partial: true, notReached };
   }
 
   /** One bounded receipt per run: model and tool milliseconds and counts only, never text. */
@@ -667,7 +695,7 @@ export class ChatService implements ChatPort {
     if (!resultCurrent) { outcome = 'unavailable'; text = ''; }
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
-      if (!resultCurrent && row.trace) { const trace = JSON.parse(String(row.trace)); tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence: [] }), run.runId]); }
+      if (!resultCurrent && row.trace) { const trace = JSON.parse(String(row.trace)); tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence: [], receivedBodyCoverage: [] }), run.runId]); }
       if (row.state === 'terminal') return this.#snapshot(tx, row, context);
       let entryId: string | null = null;
       if (outcome === 'complete') {

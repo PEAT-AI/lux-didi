@@ -13,7 +13,7 @@
 #     (cd <dir> && npm ci --offline --ignore-scripts --no-audit --no-fund)
 #   A call site that needs extra flags or another subcommand (for example the
 #   offline tarball installs) passes its exact npm arguments after <dir>, so the
-#   helper runs those arguments with <dir> as its working directory.
+#   helper pins npm to <dir> and runs those arguments with <dir> as its working directory.
 set -uo pipefail
 
 dir=${1:-}
@@ -29,7 +29,7 @@ fi
 log=$(mktemp "${TMPDIR:-/tmp}/npm-ci-offline.XXXXXX")
 trap 'rm -f "$log"' EXIT
 
-(cd "$dir" && npm "$@") 2>"$log"
+(cd "$dir" && npm --prefix "$PWD" "$@") 2>"$log"
 status=$?
 cat "$log" >&2
 

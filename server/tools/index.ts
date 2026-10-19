@@ -683,7 +683,20 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             const coverage = { rootCursor: page.rootCursor, offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted, stage: 'canonical-preparation' };
             const response: JsonObject = { status: 'completed', cursor: args.cursor, bodyCoverage: coverage, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor),
               ...(page.completed ? { alreadyPrepared: true, bodySlices: [] } : { bodySlices: [{ source: evidence.tool === 'gmail_read' ? 'mail' : evidence.tool === 'get_insight' ? 'knowledge' : 'mongoose', tool: evidence.tool, text: evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted }] }) };
-            const result = complete(call, response, gated.results[0]!.dataClasses, undefined, { kind: 'remote-page', parent: page.parent });
+            const provenance = store.transaction(tx => {
+              const { snapshot, hash } = readRun(tx, runId);
+              if (!authorizedStoredResult(tx, snapshot, page.parent)) throw Error('body_parent_unavailable');
+              const parentCall = originalCall(tx, runId, page.parent);
+              const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, parentCall, tx).connectionId);
+              if (!bound) throw Error('body_parent_unavailable');
+              const row = exactIntent(tx, parentCall);
+              const value = JSON.parse(String(row.result_json)) as { sourceDispatchRefs?: unknown };
+              const ids = value.sourceDispatchRefs;
+              if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length)) throw Error('dispatch_reference_denied');
+              return { bound, hash, snapshot, refs: (ids as string[] | undefined)?.map(id => ({ id })) };
+            });
+            dispatch.run({ call, bound: provenance.bound, snapshotSha256: provenance.hash, allowedClasses: provenance.snapshot.acceptance.allowedClasses.filter(c => provenance.snapshot.acceptance.route.allowedClasses.includes(c)) }, () => provenance.refs?.forEach(ref => dispatch.reuse(ref)));
+            const result = complete(call, response, gated.results[0]!.dataClasses, undefined, { kind: 'remote-page', parent: page.parent }, provenance.refs);
             if (!page.completed) {
               page.completed = result;
               if (page.nextCursor) {

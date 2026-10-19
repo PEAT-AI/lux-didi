@@ -5,7 +5,7 @@ import type { ExecutionContext, ToolDefinition } from '../adapters/model/types.j
 import { attachHostLogSink } from '../tools/host-events.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -14,6 +14,7 @@ import { openFixture, result } from './chat-process.js';
 import { ChatService, type RunSnapshot } from '../chat/index.js';
 import { chatAllowsToolClasses } from '../chat/context.js';
 import { toolsMigrations } from '../tools/index.js';
+import { readDiagnosticDispatches } from '../tools/dispatch.js';
 import { canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
@@ -31,7 +32,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const dir = mkdtempSync(join(tmpdir(), 'chat-tools-'));
   const requests: ModelRequest[] = [];
   const responseEntities: string[] = [];
-  let ask = true; let exactRead = false; let followBodies = false; let bodyMode: 'follow' | 'duplicate' | 'repeat' = 'follow';
+  let mailId = 'synthetic-message'; let ask = true; let exactRead = false; let followBodies = false; let bodyMode: 'follow' | 'duplicate' | 'repeat' = 'follow';
   // Fence fixtures: hang the connector after N dispatches, and fail the tool-free answer call.
   let hangAfter: number | null = null;
   let failAnswer = false;
@@ -43,7 +44,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
     if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'gmail_read' : exactRead ? 'get_insight' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'gmail_read' : exactRead ? 'get_insight' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: 'synthetic-message' } : exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'gmail_read' : exactRead ? 'get_insight' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId } : exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -73,11 +74,11 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;
-  let payload = ACCEPTED;
+  let payload = ACCEPTED; let canonicalSource = false;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
   sdk.setRequestHandler('tools/call', req => { sourceRequests.push(structuredClone(req.params.arguments ?? {})); executions++; onDispatch?.();
     if (hangAfter !== null && executions > hangAfter) return new Promise(() => {}) as never;
-    return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
+    return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: canonicalSource ? { result: reject ? REJECTED : payload } : { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
 
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -97,7 +98,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
-  const chat = new ChatService(Object.assign({}, f.config, { tools: composition }, overrides));
+  const chat = new ChatService(Object.assign({}, f.config, { tools: composition, classify: (subject: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[0], tx: Parameters<NonNullable<import('../chat/index.js').ChatConfig['classify']>>[1]) => { if (subject.kind === 'recall') return null; const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id }); return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision }; } }, overrides));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
   composition.registerAuthoritySource(async (id, signal) => signal.aborted ? null : (chat as ChatService & { lookupAuthority?(id: string): LiveAuthority | null }).lookupAuthority?.(id) ?? null);
@@ -120,7 +121,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (!finished) throw Error('no terminal snapshot');
     return { run: finished, events };
   };
-  return { ...f, chat, owner, registry, sourceRequests, followBodies: (mode: 'follow' | 'duplicate' | 'repeat' = 'follow') => { followBodies = true; bodyMode = mode; }, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
+  return { ...f, dir, chat, owner, registry, sourceRequests, exactMail: (id: string) => { mailId = id; }, canonicalSource: () => { canonicalSource = true; }, followBodies: (mode: 'follow' | 'duplicate' | 'repeat' = 'follow') => { followBodies = true; bodyMode = mode; }, exactGet: () => { exactRead = true; }, turnEvents, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions,
     slowCalls: (after = 0) => { hangAfter = after; }, failAnswerCall: () => { failAnswer = true; }, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
@@ -529,7 +530,7 @@ test('Lux sensitive integration: trusted whole-source policy selects sensitive d
 });
 
 test('Text body integration: canonical same-run consumer reconstructs the received tail with immutable source lineage', async t => {
-  const f = await fixture(t); await f.approveY(); f.exactGet(); f.followBodies();
+  const f = await fixture(t); f.canonicalSource(); await f.approveY(); f.exactGet(); f.followBodies();
   const raw = JSON.stringify({ id: 42, title: 'Synthetic complete received content', content: 'Source evidence sentence. '.repeat(1300) + '🍃'.repeat(1200) + 'TEXT_FINAL_RECEIVED_TAIL' }); f.leak(raw);
   const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
   const continuations = f.requests.flatMap(request => request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse] : [])));
@@ -548,6 +549,18 @@ test('Text body integration: canonical same-run consumer reconstructs the receiv
   const rows = f.store.transaction(tx => tx.all("SELECT state,result_id,result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='read_received_body'", [run.runId]));
   assert.equal(rows.length, unique.size); assert(rows.every(row => row.state === 'completed' && JSON.parse(String(row.result_json)).hostEvidenceRequired === true));
   assert.equal(new Set(rows.map(row => row.result_id)).size, rows.length); assert.doesNotMatch(JSON.stringify([...unique.values()]), /bodySha256|entitySha256|remote-page|gateway:/);
+  const parentRefs = JSON.parse(String(originalRow.result_json)).sourceDispatchRefs; assert.equal(parentRefs?.length, 1, JSON.stringify(f.store.transaction(tx => tx.all('SELECT state,reason,source_json FROM tool_dispatches WHERE run_id=?',[run.runId]))));
+  for (const row of rows) assert.deepEqual(JSON.parse(String(row.result_json)).sourceDispatchRefs, parentRefs, 'each local page preserves exact canonical source provenance');
+  const edges = f.store.transaction(tx => tx.all('SELECT * FROM tool_dispatch_reuse WHERE run_id=?', [run.runId])); assert.equal(edges.length, rows.length); assert(edges.every(edge => edge.origin_dispatch_id === parentRefs[0]));
+  f.chat.shutdown(); await f.mcp.close(); f.store.close();
+  const reopened = openFixture(f.dir, { generate: async request => result(request, 'complete', '') }, {}, undefined, toolsMigrations);
+  try {
+    const authority = { ownerId: reopened.store.assistantId, allowedClasses: ['ordinary', 'private'] as const };
+    const read = () => reopened.store.transaction(tx => readDiagnosticDispatches(tx, run.runId, authority));
+    const persisted = read(); assert.equal(persisted.reuse.length, rows.length); assert(persisted.reuse.every(edge => edge.read_state === 'allowed' && String(edge.source_json).includes('TEXT_FINAL_RECEIVED_TAIL')));
+    reopened.store.transaction(tx => tx.run('UPDATE tool_connections SET generation=generation+1 WHERE connection_id=?', [f.endpoint.id]));
+    assert(read().reuse.every(edge => edge.source_json === null && edge.read_state === 'origin_unavailable_or_denied'));
+  } finally { reopened.chat.shutdown(); reopened.store.close(); }
 });
 
 test('Text body integration: the fixed four-step budget reports exact remaining received range', async t => {
@@ -592,6 +605,20 @@ test('Text body integration: source completeness remains distinct from fully con
     if (complete) { assert.doesNotMatch(run.finalText!, /source omitted|characters remain/); assert(!events.some(event => event.type === 'snapshot' && event.partial)); }
     else { assert.match(run.finalText!, /source omitted content/); assert(events.some(event => event.type === 'snapshot' && event.partial === true)); }
   }
+});
+
+test('Text body integration: actual companion MIME envelope reaches the final received tail with one source read', async t => {
+  const f = await fixture(t, ['ordinary', 'private'], {}, 'gmail'); f.followBodies();
+  const envelope = readFileSync(new URL('../../test/fixtures/google-mime-long-produced.json', import.meta.url), 'utf8');
+  const produced = JSON.parse(envelope) as { data: { id: string; body: string; bodyCoverage: { complete: boolean } } };
+  f.exactMail(produced.data.id); f.leak(envelope);
+  const run = await f.turn(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
+  assert.deepEqual(f.sourceRequests, [{ id: produced.data.id, format: 'full' }]);
+  const pages = f.store.transaction(tx => tx.all("SELECT result_json FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='read_received_body' ORDER BY rowid", [run.runId]));
+  const text = pages.map(row => JSON.parse(String(row.result_json)).response.bodySlices.map((slice: { text: string }) => slice.text).join('')).join('');
+  assert(text.includes(produced.data.body)); assert(text.endsWith('TAIL-MIME-SYNTHETIC'));
+  const trace = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace)));
+  assert.equal(trace.receivedBodyCoverage[0].remaining, 0); assert.equal(trace.receivedBodyCoverage[0].upstreamComplete, true); assert.equal(trace.receivedBodyCoverage[0].upstreamOmitted, false);
 });
 
 test('Text body integration: cancel while local execution waits releases its original evidence and cannot prepare a late page', async t => {

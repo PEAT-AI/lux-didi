@@ -8,7 +8,7 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
-import { shapeGcalList } from '../tools/live-shape.js';
+import { shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import './research-shape.test.js';
 import './research-calendar.test.js';
@@ -1115,4 +1115,38 @@ test('fluency: complete bounded bodies avoid hydration while unknown and truncat
   await runResearch(h.deps, { action: 'start', question: 'read full insight #412', sources: 'knowledge' }, new AbortController().signal);
   assert.equal(h.executed.some(call => call.name === 'search_knowledge'), false);
   assert.equal(h.executed.filter(call => call.name === 'get_insight').length, 1);
+});
+
+
+test('research 469: stopped known continuation fails while retained delivery remains successful without source work', async t => {
+  const messages = Array.from({ length: 13 }, (_, n) => ({ id: `continuation-${n}`, headers: [{ name: 'Subject', value: `Synthetic continuation ${n}` }] }));
+  const steps: Parameters<NonNullable<ResearchDeps['step']>>[0][] = [];
+  let calls = 0;
+  const h = harness({ execute: async subs => { calls += subs.length; return subs.map(call => ({ key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages }) })); } });
+  h.deps.step = step => steps.push(step);
+  t.after(() => h.deps.ledger.close());
+  const scheduler = new ResearchScheduler(h.deps), signal = new AbortController().signal;
+  const first = await scheduler.call({ action: 'start', question: 'List synthetic continuation', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] }, signal);
+  assert.equal(first['status'], 'partial'); assert.equal(first['error'], undefined);
+  const researchId = String(first['researchId']), cursor = String(first['nextCursor']);
+  const next = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
+  assert.match(JSON.stringify(next['findings']), /Synthetic continuation 12/);
+  const before = steps.length;
+  assert.equal(calls, 1); assert.equal(before, 2, 'one start and end for the actual source read');
+  const retained = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
+  assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'answered'); assert.equal(retained['error'], undefined);
+  assert.deepEqual(retained['findings'], []);
+  const stopped = await scheduler.call({ action: 'stop', researchId }, signal);
+  assert.equal(stopped['status'], 'stopped'); assert.equal(stopped['error'], undefined);
+  const unavailable = await scheduler.call({ action: 'continue', researchId }, signal);
+  assert.deepEqual(await scheduler.call({ action: 'continue', researchId: 'unknown-synthetic' }, signal), { error: 'unknown_research_run' });
+  assert.equal(calls, 1); assert.equal(steps.length, before, 'retained, stopped and unavailable calls fabricate no source steps');
+  assert.deepEqual(unavailable, { researchId, error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' });
+  const cancellable = await scheduler.call({ action: 'start', question: 'A new synthetic lookup', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] }, signal);
+  const cancelledId = String(cancellable['researchId']), beforeCancelSteps = steps.length;
+  assert.equal(calls, 2); h.deps.ledger.cancelActive();
+  assert.equal(h.deps.ledger.find(cancelledId)?.cancelled, true); assert.equal(h.deps.ledger.find(cancelledId)?.stopped, false);
+  const cancelled = await scheduler.call({ action: 'continue', researchId: cancelledId }, signal);
+  assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
+  assert.equal(calls, 2); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
 });

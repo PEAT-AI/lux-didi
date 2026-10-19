@@ -4,7 +4,7 @@ import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
 import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, FakeClock, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
+import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -1728,4 +1728,32 @@ describe('openai gpt-live receipts', () => {
     assert.deepEqual([detail.status, detail.terminalReason], ['completed', 'completed']);
     session.close();
   });
+});
+
+
+test('research 469: unavailable output preserves completed transport receipt without local retry', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-research-469-trace-')), store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const trace = liveTracePort({ port: store, liveSessionId: 'synthetic-469', connectionEpoch: 'e0', turnId: () => 'synthetic-469:t1' });
+  const socket = new FakeSocket();
+  const socketFactory = (() => { queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); }); return socket as unknown as ReturnType<NonNullable<LiveVoiceAdapterOptions['socketFactory']>>; });
+  const session = new OpenAiLiveVoiceAdapter(options({ socketFactory })).open(request(), { ...control(), trace });
+  t.after(() => session.close());
+  const captured = collect(session);
+  await until(() => socket.sent.length === 1);
+  socket.deliver({ type: 'session.started', session: { id: 'synthetic-469' } }); await session.ready;
+  socket.deliver({ type: 'session.delegation.created', delegation: { id: 'delegation-469', offset_ms: 0, response_id: 'response-469' } });
+  socket.deliver({ type: 'response.event', delegation_id: 'delegation-469', event: { type: 'response.created', response: { id: 'response-469' } } });
+  socket.deliver({ type: 'response.event', delegation_id: 'delegation-469', event: functionCall('research-469') });
+  await until(() => captured.events.some(event => event.type === 'toolCall'));
+  socket.deliver({ type: 'response.event', delegation_id: 'delegation-469', event: { type: 'response.done', response: { id: 'response-469', status: 'completed' } } });
+  await tick();
+  const response = { researchId: 'known-stopped', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
+  session.sendToolResponse({ responses: [{ id: 'research-469', name: 'research', response }] });
+  await tick();
+  const rows = store.transaction(tx => tx.all("SELECT outcome FROM trace_call WHERE name='research'"));
+  assert.deepEqual(rows.map(row => row['outcome']), ['completed'], 'successful error output retains existing transport convention');
+  const outputs = socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { output?: string } }).filter(frame => frame.type === 'response.item.create');
+  assert.equal(outputs.length, 1); assert.deepEqual(JSON.parse(outputs[0]!.item!.output!), response);
+  assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'no locally generated retry');
 });

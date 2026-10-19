@@ -2069,7 +2069,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       }
     }
     const resumed = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
-    if (!resumed) return { researchId: call.researchId ?? '', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
+    if (!resumed) return { researchId: call.researchId ?? '', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
     run = resumed;
   }
   run.direction = call.direction ?? run.direction;

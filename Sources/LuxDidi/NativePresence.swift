@@ -91,6 +91,26 @@ final class NativePresence {
     /// What the surfaces render now.
     var posture: PresencePosture { PresencePosture(state: state, alwaysShow: alwaysShow, failed: failed) }
 
+    func start(_ trigger: PresenceTrigger) {
+        guard state == .cold else { return }
+        connect(trigger)
+    }
+
+    func stop(_ trigger: PresenceTrigger) {
+        guard state != .cold else { return }
+        if state == .connecting { cancelConnecting(trigger) } else { teardown(trigger) }
+    }
+
+    func sessionEnded() {
+        guard state != .cold else { return }
+        connectingTrigger = nil
+        holding = false
+        holdOrigin = nil
+        hotMuteKind = nil
+        mutedAt = nil
+        move(to: .cold, trigger: .app)
+    }
+
     /// The mute toggle the UI controls keep: LIVE mutes and hot-muted listens again. Q2
     /// took the Right Command key off this path, so a tap stops instead (see `tap`), and
     /// the native-presence ring keeps the mute transitions proven through it.

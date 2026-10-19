@@ -297,7 +297,7 @@ import WebKit
                     await self.live?.stop()
                     self.live = nil
                 }, start: {
-                    self.startLive(pickupJobID: selected)
+                    self.onPresenceStart?(selected)
                 })
                 if !pickedUp {
                     self.error = "This callback is no longer pending. Your current conversation was not changed."
@@ -311,8 +311,9 @@ import WebKit
             }
         }
     }
-    func startLive(pickupJobID: String? = nil) {
-        guard let client else { error = "Connect the local service before starting Live voice."; return }
+    @discardableResult
+    func startLive(pickupJobID: String? = nil) -> Bool {
+        guard let client else { error = "Connect the local service before starting Live voice."; return false }
         stopTrigger.clear()
         if live?.isCapturing == false { liveAuthorityOwner.clear() }
         micModeReceiptAtLiveStart()
@@ -324,6 +325,7 @@ import WebKit
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
         orbLevels?.start()
+        return true
     }
     /// D12-5: the Stop receipt names what pressed it. A stop the app makes itself stays `other`.
     /// The status menu's item travels through the web state machine and comes back as a bridge
@@ -435,14 +437,24 @@ import WebKit
     /// Council 2026-10-17: the app's mic control asks the presence machine, so the
     /// button, Right Command and the orb click can never disagree.
     var onPresenceMute: ((Bool) -> Void)?
+    var onPresenceStart: ((String?) -> Void)?
+    var onPresenceStop: (() -> Void)?
+
+    func bindPresence(_ presence: NativePresence, start: @escaping (String?) -> Void) {
+        onPresenceStart = start
+        onPresenceStop = { [weak presence] in presence?.stop(.app) }
+        onPresenceMute = { [weak presence] muted in
+            if muted { presence?.mute(.app) } else { presence?.unmute(.app) }
+        }
+    }
 
     func handleBridgeCommand(_ message: BridgeInbound) {
         switch message {
         case .mini: onMiniMode?()
-        case .start: startLive()
-        case .stop: stopLive(trigger: .button)
-        case .mute: if live?.isMuted == false { onPresenceMute?(true) }
-        case .unmute: if live?.isMuted == true { onPresenceMute?(false) }
+        case .start: onPresenceStart?(nil)
+        case .stop: onPresenceStop?()
+        case .mute: onPresenceMute?(true)
+        case .unmute: onPresenceMute?(false)
         case .openExternal(let url): shell?.openExternal(url)
         case .showMicrophoneModes: SystemMicMode.showPicker()
         case .ready, .consentGranted, .theme, .unknown: break
@@ -515,9 +527,9 @@ struct RootView: View {
     let liveShortcuts = NativeShortcuts()
     private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
         isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
-        start: { [weak self] in self?.model.startLive() },
+        start: { [weak self] in self?.startPresence() },
         mute: { [weak self] in self?.presence.mute(.app) },
-        stop: { [weak self] in self?.model.stopLive(trigger: .hotkey) })
+        stop: { [weak self] in self?.model.stopTrigger.arm(.hotkey); self?.presence.stop(.hotkey) })
     // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
     private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
     /// Q4-R2: the status menu's "Show mini orb" is presentation only.
@@ -526,8 +538,8 @@ struct RootView: View {
     private var miniPanel: MiniOrbPanel?
     private var miniCookie: HTTPCookie?
     private lazy var miniOrb = MiniOrbToggle(
-        startLive: { [weak self] in self?.model.startLive() },
-        stopLive: { [weak self] in self?.model.stopLive(trigger: .button) },
+        startLive: { [weak self] in self?.startPresence() },
+        stopLive: { [weak self] in self?.stopPresence() },
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
         presentPanel: { [weak self] trigger in self?.presentMiniThroughCoordinator(trigger: trigger) ?? .failed("no_app") },
         dismissPanel: { [weak self] in self?.miniPanel?.orderOut(nil) },
@@ -539,7 +551,7 @@ struct RootView: View {
     /// coordinator's mute fence, the device's playback cancel and the provider's
     /// input mute are effects of the same transitions.
     private lazy var presence = NativePresence(effects: PresenceEffects(
-        openSession: { [weak self] in self?.model.startLive() },
+        openSession: { [weak self] in self?.openPresenceSession() },
         cancelConnecting: { [weak self] in self?.model.stopLive(trigger: .button) },
         closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
@@ -547,6 +559,7 @@ struct RootView: View {
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
         prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
+    private var presencePickupJobID: String?
     private var presenceGraceTimer: Timer?
     private var presenceMenuItem: NSMenuItem?
     /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
@@ -634,9 +647,7 @@ struct RootView: View {
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
         model.startMicModeWatching()
            model.onMiniMode = { [weak self] in self?.showMiniOrb() }
-           model.onPresenceMute = { [weak self] muted in
-               if muted { self?.presence.mute(.app) } else { self?.presence.unmute(.app) }
-           }
+        model.bindPresence(presence, start: { [weak self] job in self?.startPresence(pickupJobID: job) })
         model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Naya")
@@ -1034,6 +1045,20 @@ struct RootView: View {
     /// Council 2026-10-17 (P1-R1): the two facts the presence machine cannot observe for
     /// itself. Provider readiness is the guarded barrier that opens LIVE, and a failed
     /// session is the fail-loud teardown. `.pausedForInput` keeps its existing meaning.
+    private func stopPresence() { presence.stop(.app) }
+
+    private func startPresence(pickupJobID: String? = nil) {
+        if model.live == nil { presence.sessionEnded() }
+        presencePickupJobID = pickupJobID
+        presence.start(.app)
+    }
+
+    private func openPresenceSession() {
+        let job = presencePickupJobID
+        presencePickupJobID = nil
+        if !model.startLive(pickupJobID: job) { presence.fail() }
+    }
+
     private func presenceTransitioned(_ state: NativeLiveConversation.State) {
         switch state {
         case .listening:
@@ -1043,7 +1068,8 @@ struct RootView: View {
         case .speaking:
             presence.ready()
         case .failed: presence.fail()
-        case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        case .ended: presence.sessionEnded()
+        case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }
     /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and

@@ -202,8 +202,8 @@ function requireChanged(changes: number, what: string): void {
 
 /**
  * Write one event and its denormalised summary in one transaction. A native receipt whose
- * (source_instance_id, source_seq) is already present is a replay: nothing is written twice
- * and the existing seq is returned.
+ * (live_session_id, source_instance_id, source_seq) is already present is a replay: nothing is
+ * written twice and the existing seq is returned.
  */
 export function record<K extends TraceEventKind>(port: TraceWritePort, kind: K, ids: TraceEventIds, detail: TraceDetailMap[K]): RecordResult {
   validateEvent(kind, ids, detail);
@@ -215,12 +215,14 @@ export function record<K extends TraceEventKind>(port: TraceWritePort, kind: K, 
   return port.transaction(tx => {
     const changes = tx.run(
       `INSERT INTO trace_event(live_session_id, turn_id, response_key, call_key, playback_key, action_id, caused_by_event_id, kind, source, source_instance_id, source_seq, at, mono_ms, received_at, connection_epoch, schema_version, detail)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_instance_id, source_seq) DO NOTHING`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(live_session_id, source_instance_id, source_seq) DO NOTHING`,
       [ids.liveSessionId, ids.turnId ?? null, ids.responseKey ?? null, ids.callKey ?? null, ids.playbackKey ?? null,
         ids.actionId ?? null, ids.causedByEventId ?? null, kind, source, ids.sourceInstanceId ?? null, ids.sourceSeq ?? null,
         at, monoMs, receivedAt, epoch, TRACE_SCHEMA_VERSION, JSON.stringify(detail)]);
     if (changes === 0) {
-      const row = tx.get('SELECT seq FROM trace_event WHERE source_instance_id=? AND source_seq=?', [ids.sourceInstanceId ?? null, ids.sourceSeq ?? null]);
+      // A replay is the same sequence in the same session: another session's sequence is not this one's.
+      const row = tx.get('SELECT seq FROM trace_event WHERE live_session_id=? AND source_instance_id=? AND source_seq=?',
+        [ids.liveSessionId, ids.sourceInstanceId ?? null, ids.sourceSeq ?? null]);
       return { seq: Number(row!.seq), duplicate: true };
     }
     const seq = Number(tx.get('SELECT last_insert_rowid() AS seq')!.seq);

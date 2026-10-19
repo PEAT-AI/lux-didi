@@ -404,7 +404,7 @@ test('the timeline prints a drained playback inside its turn when attributable a
     assert.equal(report.turns[0]!.playback.length, 0);
     assert.equal(report.unattributedPlayback.length, 1);
     const rendered = renderTimeline(report);
-    assert.match(rendered, /^playback inst-a1:1 segment=1 .*turn=none/m);
+    assert.match(rendered, new RegExp(`^playback ${SESSION}:inst-a1:1 segment=1 .*turn=none`, 'm'));
     assert.deepEqual(report.gaps, [], 'an orphan segment is not a stall: it is printed outside the turns');
   });
 });

@@ -10,11 +10,11 @@ Owner conversation content and actual credentials remain root-only. Worker evide
 
 | Claim | Status | Evidence | Verifier | Resolution |
 | --- | --- | --- | --- | --- |
-| Research fails before any source operation in the tested installed session | Verified validation refusal; exact malformed field unavailable | 15 failed/refused calls with zero operations; this event shape is exclusive to failed validateResearch | Tools lane plus root logs | Fix pending |
-| Advertised research requests can fail runtime validation | Reproduced | Official SDK accepts source-only lookup; actual composed host refuses it. Adding a query dispatches under identical sensitive-source permission | Tools lane, 18 focused cases | Fix pending |
-| Host commentary caused repeated spoken progress in the recorded refusals | Refuted | 15 silent thinking messages, zero host commentary. Two public voice instructions require a pre-call acknowledgement | Progress lane plus root transcript | Prompt repair pending; model behavior not yet tested |
-| Typed routed lookups produce the same progress receipts as selector lookups | Refuted | Slow typed success has no commentary through ten seconds; selector control produces first commentary at six seconds | Progress lane actual Live replay | Fix pending |
-| Ad-hoc signing explains permission recurrence after replacement | Supported mechanism; exact same-build recurrence unproven | Installed ad-hoc signature; Apple TN3127; native mic requests only when undecided | Permission lane | Stable identity setup pending root decision |
+| Research fails before any source operation in the tested installed session | Verified validation refusal; exact malformed field unavailable | 15 failed/refused calls with zero operations; this event shape is exclusive to failed validateResearch | Tools lane plus root logs | Canonical repair reasons and semantic refusal receipts implemented and independently checked |
+| Advertised research requests can fail runtime validation | Reproduced and locally corrected | Official SDK plus actual host controls cover nine valid forms and fourteen refused forms; valid Lux, calendar and mail reads dispatch under unchanged authority | Tools lane and independent reviewer | Correct declaration/parser included; real backend invocation acceptance remains issue463 |
+| Host commentary caused repeated spoken progress in the recorded refusals | Refuted | 15 silent thinking messages, zero host commentary. Two public voice instructions require a pre-call acknowledgement | Progress lane plus root transcript | Prompt candidate held in005f154e under issue463; installed prompt retained |
+| Typed routed lookups produce the same progress receipts as selector lookups | Refuted and locally corrected | Fifteen Scheduler and eleven affected actual Live/source controls cover execution, continuation, cancellation and exact six-second/eight-second timing | Progress author and two independent reviewers | Common execution receipts, current-question ownership and noncontradictory source status accepted |
+| Ad-hoc signing explains permission recurrence after replacement | Supported mechanism; exact same-build recurrence unproven | Installed ad-hoc signature; Apple TN3127; native mic requests only when undecided | Permission lane | Root created retained identity, trust and changed-build acceptance remain issue462 |
 
 ## Evidence
 
@@ -26,11 +26,13 @@ Each diagnosis needs an actual reproduction through the canonical host/Live/Tool
 
 ## Remediation
 
-No fix yet. Council packet covers precise argument declarations, closed actionable refusal reasons, content-free diagnostics and truthful progress ownership. Preserve all source and provider authorization. Historical malformed arguments cannot be reconstructed; synthetic fixture evidence is not recovered owner input. Progress fixes distinguish silent thinking, verified audible status and model-generated filler. One focused release PR, affected local checks, exact merged install and detailed knowledge/handover updates. No full/slow rings or cloud CI.
+The reviewed code implements precise argument declarations, canonical parsing, closed actionable refusal reasons, content-free diagnostics and truthful progress ownership. Source and provider authorization remain unchanged. Historical malformed arguments cannot be reconstructed; synthetic fixture evidence is not recovered owner input. Progress fixes distinguish silent thinking, verified host status and model-generated filler. One focused release PR carries affected local checks, followed by an exact merged install and knowledge/handover updates. No full/slow rings or cloud CI.
+
+The actual provider trial was inconclusive. Startup echoed the candidate schema, but the helper supplied only startup context without the explicit typed-input trigger. A900second Mac maintenance sleep suspended its local timeout. No tool call, transcript or terminal usage arrived; actual billing is unknown and remaining trials stopped. Issue463 owns the helper repair, actual backend acceptance and held waiting-prompt candidate. Root retains the accurate declaration as a deterministic contract correction with this remote-validation limitation explicit. The new waiting-prompt unit is excluded from this release; no speech behavior acceptance is claimed.
 
 ## Closure
 
-Open. Finish the demonstrated tool, chatter and permission failures; record remaining owner/system acceptance explicitly. Prior cleanup remains bounded: release train tree closed, six proof-refused lanes retained under existing emissary888, report payload cleanup receipt owned by the cleanup lane.
+Ready for the final subset review and local release after prompt restoration. Issue461 owns the verified code repair, issue463 owns unfinished generated-speech/backend acceptance, and issue462 owns system trust and permission persistence. Prior cleanup remains bounded: release train tree closed, six proof-refused lanes retained under existing emissary888, report payload cleanup receipt owned by the cleanup lane.
 
 ## Root permission setup checkpoint
 

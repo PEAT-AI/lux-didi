@@ -44,12 +44,6 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'stop_insufficient', source: null },
 ]);
 
-/** The voice view's action word per candidate: what the source is being asked to do. */
-const STEP_ACTION: Record<CandidateKind, string> = {
-  knowledge_search: 'search', calendar_window: 'read', mail_search: 'search', mail_open: 'read',
-  chat_search: 'search', chat_thread: 'read', brief: 'search', stop_answer: 'search', stop_insufficient: 'search',
-};
-
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
   tool: RESEARCH_TOOL_NAME,
@@ -661,6 +655,7 @@ export interface RunState {
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
+  progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
   evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
   /** Read signatures already issued this run, so an identical duplicate read is never executed twice. */
@@ -693,7 +688,7 @@ export class ResearchLedger {
     const run: RunState = {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
-      cancelled: false, ended: false, stopped: false,
+      progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
       calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(),
@@ -711,7 +706,7 @@ export class ResearchLedger {
     const run: RunState = {
       ...existing, bodies: new Map([...existing.bodies].map(([key, body]) => [key, { ...body }])), bodyCursors: new Map([...existing.bodyCursors].map(([key, page]) => [key, { ...page }])), runId: ++this.#counter, direction: input.direction ?? existing.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
-      rounds: 0, ops: 0, cancelled: false, ended: false, stopped: false,
+      rounds: 0, ops: 0, progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       mail: new Map([...existing.mail].map(([key, read]) => [key, { ...read, messages: new Map(read.messages), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), mailDelivered: new Set(existing.mailDelivered), mailCursors: new Map([...existing.mailCursors].map(([key, cursor]) => [key, { ...cursor, ids: [...cursor.ids] }])),
       historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens),
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
@@ -720,7 +715,7 @@ export class ResearchLedger {
       unavailableReasons: new Map(existing.unavailableReasons),
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
-    existing.cancelled = true;
+    existing.cancelled = true; existing.progressAbort.abort();
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
     this.#last = run;
@@ -732,14 +727,14 @@ export class ResearchLedger {
   /** A new `start` cancels the previous active run. */
   cancelActive(): void {
     const active = this.#activeId ? this.#runs.get(this.#activeId) : undefined;
-    if (active) { this.releaseEvidence?.(this.evidenceBindings(active.researchId)); active.cancelled = true; invalidateEvidence(active); }
+    if (active) { this.releaseEvidence?.(this.evidenceBindings(active.researchId)); active.cancelled = true; active.progressAbort.abort(); invalidateEvidence(active); }
   }
   stop(researchId?: string): RunState | undefined {
     const run = researchId === undefined ? this.#last : this.#runs.get(researchId);
-    if (run) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.stopped = true; run.ended = true; invalidateEvidence(run); }
+    if (run) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.stopped = true; run.ended = true; run.progressAbort.abort(); invalidateEvidence(run); }
     return run;
   }
-  close(): void { for (const run of this.#runs.values()) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.cancelled = true; invalidateEvidence(run); } }
+  close(): void { for (const run of this.#runs.values()) { this.releaseEvidence?.(this.evidenceBindings(run.researchId)); run.cancelled = true; run.progressAbort.abort(); invalidateEvidence(run); } }
   evidenceBindings(researchId: string): ToolResultBinding[] {
     const run = this.#runs.get(researchId);
     return run && !run.cancelled && !run.stopped ? [...[...run.bodies.values()].map(body => body.binding), ...run.historyBindings, ...[...run.mail.values()].flatMap(read => read.bindings), ...[...run.calendar.values()].flatMap(read => read.bindings)] : [];
@@ -867,16 +862,81 @@ export interface ResearchCall { cursor?: string; action: ResearchAction; questio
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
-export function validateResearch(args: unknown): boolean {
-  if (!isRecord(args)) return false;
-  const keys = new Set(['action', 'question', 'researchId', 'sources', 'direction', 'lookups', 'cursor']);
-  if (!Object.keys(args).every(key => keys.has(key))) return false;
-  const action = args['action'];
-  if (action !== 'start' && action !== 'continue' && action !== 'stop') return false;
-  if (args['cursor'] !== undefined && (action !== 'continue' || typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128 || args['lookups'] !== undefined)) return false;
-  if (args['lookups'] !== undefined && (action === 'stop' || !validLookups(args['lookups']))) return false;
-  if (action === 'start') return optionalString(args['question']) !== undefined;
-  return optionalString(args['researchId']) !== undefined;
+export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
+export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
+export interface ResearchArgumentShape {
+  action: ResearchAction | 'missing' | 'invalid';
+  fields: Record<typeof RESEARCH_ARGUMENT_FIELDS[number], typeof RESEARCH_ARGUMENT_TYPES[number]>;
+  unknownFieldCount: number;
+  lookupCount: number;
+}
+export type ParsedResearch = { ok: true; call: ResearchCall } | { ok: false; reason: ResearchRefusalReason; shape: ResearchArgumentShape };
+
+function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMENT_TYPES[number] {
+  if (!present) return 'absent';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  const type = typeof value;
+  return type === 'string' || type === 'number' || type === 'boolean' || type === 'object' ? type : 'other';
+}
+
+/** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
+export function parseResearch(args: unknown): ParsedResearch {
+  const record = isRecord(args) ? args : {};
+  const action = record['action'];
+  const shape: ResearchArgumentShape = {
+    action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
+    fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, argumentType(record[key], Object.hasOwn(record, key))])) as ResearchArgumentShape['fields'],
+    unknownFieldCount: Object.keys(record).filter(key => !(RESEARCH_ARGUMENT_FIELDS as readonly string[]).includes(key)).length,
+    lookupCount: Array.isArray(record['lookups']) ? record['lookups'].length : 0,
+  };
+  const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
+  if (!isRecord(args)) return refuse('root_type');
+  if (shape.unknownFieldCount) return refuse('unknown_fields');
+  if (!Object.hasOwn(args, 'action')) return refuse('action_missing');
+  if (action !== 'start' && action !== 'continue' && action !== 'stop') return refuse('action_invalid');
+  for (const [key, reason] of [['question', 'question_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
+    if (Object.hasOwn(args, key) && typeof args[key] !== 'string') return refuse(reason);
+  }
+  if (args['question'] !== undefined && optionalString(args['question']) === undefined) return refuse('question_required');
+  if (args['researchId'] !== undefined && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
+  if (action === 'start' && optionalString(args['question']) === undefined) return refuse('question_required');
+  if (action !== 'start' && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
+  if (Object.hasOwn(args, 'cursor')) {
+    if (typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128) return refuse('cursor_type');
+    if (action !== 'continue') return refuse('cursor_action');
+    if (Object.hasOwn(args, 'lookups')) return refuse('cursor_lookups_conflict');
+  }
+  if (Object.hasOwn(args, 'lookups')) {
+    if (action === 'stop') return refuse('lookups_stop');
+    if (!Array.isArray(args['lookups'])) return refuse('lookups_type');
+    if (args['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    for (const entry of args['lookups']) {
+      if (!isRecord(entry)) return refuse('lookup_type');
+      if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
+      if (typeof entry['source'] !== 'string' || !(LOOKUP_SOURCES as readonly string[]).includes(entry['source'])) return refuse('lookup_source');
+      if (Object.hasOwn(entry, 'history')) {
+        if (entry['source'] !== 'memory' || Object.hasOwn(entry, 'query') || Object.hasOwn(entry, 'mail') || !validateHistory(entry['history'])) return refuse('lookup_history');
+      } else if (Object.hasOwn(entry, 'mail')) {
+        if (entry['source'] !== 'mail' || Object.hasOwn(entry, 'query') || !validMailLookup(entry['mail'])) return refuse('lookup_mail');
+      } else {
+        if (optionalString(entry['query']) === undefined) return refuse('lookup_query_required');
+        if (String(entry['query']).length > RESEARCH.queryLimitChars) return refuse('lookup_query_length');
+      }
+    }
+  }
+  return { ok: true, call: args as unknown as ResearchCall };
+}
+
+export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
+
+export function researchRepair(reason: ResearchRefusalReason): JsonObject {
+  return {
+    error: 'invalid_research_arguments', state: 'refused', reason,
+    guidance: 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+  };
 }
 
 function validMailLookup(value: unknown): value is MailLookup {
@@ -884,19 +944,6 @@ function validMailLookup(value: unknown): value is MailLookup {
   if ('id' in value) return Object.keys(value).every(key => key === 'id' || key === 'format') && typeof value['id'] === 'string' && value['id'].length > 0 && (value['format'] === undefined || value['format'] === 'full' || value['format'] === 'metadata');
   return Object.keys(value).every(key => key === 'q' || key === 'maxResults') && typeof value['q'] === 'string' && value['q'].trim().length > 0 && value['q'].length <= 2048
     && (value['maxResults'] === undefined || Number.isSafeInteger(value['maxResults']) && Number(value['maxResults']) > 0 && Number(value['maxResults']) <= 50);
-}
-
-/** K6: every named lookup is a known layer with a short query of its own. */
-function validLookups(value: unknown): boolean {
-  if (!Array.isArray(value)) return false;
-  return value.every(entry => isRecord(entry)
-    && Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')
-    && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source'])
-    && (entry['source'] === 'mail' && entry['mail'] !== undefined
-      ? entry['query'] === undefined && entry['history'] === undefined && validMailLookup(entry['mail'])
-      : entry['mail'] === undefined && (entry['source'] === 'memory' && entry['history'] !== undefined
-      ? entry['query'] === undefined && validateHistory(entry['history'])
-      : entry['history'] === undefined && optionalString(entry['query']) !== undefined)));
 }
 
 /** The display order and human name of every research source the host loop can read today (R2-R2). */
@@ -951,11 +998,11 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
   return {
     name: RESEARCH_TOOL_NAME,
     description: researchDescription(configured),
-    guidance: 'start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
+    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
       properties: {
-        action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start a lookup, continue one, or stop one.' },
+        action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start requires question; continue and stop require the researchId returned by start. Stop must omit lookups and cursor.' },
         question: { type: 'string', minLength: 1, description: 'The owner question; required for start.' },
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
         sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
@@ -966,8 +1013,16 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
           description: 'Optional: the layers to read, one lookup each, at most four. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat. replies: what is waiting on him in the team chat.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
+            anyOf: [
+              { required: ['source', 'query'], properties: { source: { type: 'string', enum: [...LOOKUP_SOURCES] }, query: { type: 'string', minLength: 1, maxLength: RESEARCH.queryLimitChars } }, additionalProperties: false },
+              { required: ['source', 'history'], properties: { source: { type: 'string', enum: ['memory'] }, history: HISTORY_PARAMETERS }, additionalProperties: false },
+              { required: ['source', 'mail'], properties: { source: { type: 'string', enum: ['mail'] }, mail: { type: 'object' } }, additionalProperties: false },
+            ],
             properties: {
-              mail: { type: 'object', additionalProperties: false, description: 'Only for mail. Exact source search {q,maxResults?} or precise message {id,format?}, mutually exclusive. Omit query. Full message is the default; metadata must be deliberate. IDs come from source evidence, never prose guesses.', properties: { q: { type: 'string', minLength: 1, maxLength: 2048 }, maxResults: { type: 'integer', minimum: 1, maximum: 50 }, id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['full', 'metadata'] } } },
+              mail: { type: 'object', additionalProperties: false, anyOf: [
+                { required: ['id'], properties: { id: { type: 'string' }, format: { type: 'string' } }, additionalProperties: false },
+                { required: ['q'], properties: { q: { type: 'string' }, maxResults: { type: 'integer' } }, additionalProperties: false },
+              ], description: 'Only for mail. Exact source search {q,maxResults?} or precise message {id,format?}, mutually exclusive. Omit query. Full message is the default; metadata must be deliberate. IDs come from source evidence, never prose guesses.', properties: { q: { type: 'string', minLength: 1, maxLength: 2048 }, maxResults: { type: 'integer', minimum: 1, maximum: 50 }, id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['full', 'metadata'] } } },
               history: { ...HISTORY_PARAMETERS, description: 'Only for memory. Canonical local search/date bounds, exact recordRef, or source-native cursor copied from historyPages. Use continue with the same researchId for recordRef or cursor. This cursor is not the top-level consumer continuation cursor. Omit query when history is present.' },
               source: { type: 'string', enum: [...LOOKUP_SOURCES], description: 'The layer this lookup reads.' },
               query: { type: 'string', minLength: 1, maxLength: RESEARCH.queryLimitChars, description: 'A short search string written for that source.' },
@@ -1267,7 +1322,10 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.calendarList: return 'calendar';
     case INTERNAL.mailList:
     case INTERNAL.mailRead: return 'mail';
+    case HISTORY_IDENTITY.name: return 'memory';
+    case INTERNAL.mongooseSearch: return 'mongoose';
     case INTERNAL.chatSearch:
+    case INTERNAL.chatAttention:
     case 'mattermost_get_thread': return 'chat';
     default: return null;
   }
@@ -1983,7 +2041,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (call.action === 'stop') {
     const run = deps.ledger.stop(call.researchId);
     if (!run) return { researchId: call.researchId ?? '', status: 'stopped', findings: [], unchecked: configured, canContinue: false };
-    deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: Math.max(0, now() - run.startedAt) });
+    deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
     const reply = buildReply(run, 'stopped', configured, false, limit);
     deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound: [], stopReason: 'stop', status: 'stopped', ops: run.ops, sources: [], elapsedMs: Math.max(0, now() - run.startedAt), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply).length, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: false, findingChars: [] });
     return reply;
@@ -2016,12 +2074,53 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   }
   run.direction = call.direction ?? run.direction;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
-  const executeSource = deps.execute;
-  deps = { ...deps, execute: async (subs, sourceSignal) => {
+  const executeSource = deps.execute, emitProgress = deps.emit;
+  const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);
+  const current = (): boolean => !run.cancelled && !run.stopped && deps.ledger.find(run.researchId) === run;
+  const emit = (event: ResearchProgress): void => {
+    if (current()) emitProgress({ ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
+  };
+  const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
+  let invocation = 0;
+  deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
     const dispatchSignal = mailOnly ? AbortSignal.any([sourceSignal, AbortSignal.timeout(Math.max(1, (run.mailDeadlineAt ?? now()) - now()))]) : sourceSignal;
-    const results = await executeSource(subs, dispatchSignal);
+    if (!current() || dispatchSignal.aborted) return subs.map(sub => ({ key: sub.key, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'round_cancelled' }));
+    const at = now(), batch = ++invocation;
+    const sources = [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
+    const steps = sources.map(source => {
+      const sub = subs.find(sub => sourceKindOfKindName(sub.name) === source)!;
+      const subject = stepSubject(sub.args);
+      const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
+      return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
+    });
+    for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); }
+    update();
+    let ended = false;
+    const finish = (results: readonly IntentSubResult[], errorCode?: 'failed' | 'timeout' | 'cancelled'): void => {
+      if (ended) return;
+      ended = true;
+      for (const step of steps) {
+        const own = subs.flatMap((sub, index) => sourceKindOfKindName(sub.name) === step.source ? [results[index]] : []);
+        const ok = errorCode === undefined && own.length > 0 && own.every(result => result?.ok);
+        const code = errorCode ?? (own.some(result => result?.code === 'timeout' || result?.code === 'deadline') ? 'timeout' : ok ? undefined : 'failed');
+        const count = (running.get(step.source) ?? 1) - 1;
+        if (count > 0) running.set(step.source, count); else running.delete(step.source);
+        if (ok) completed.add(step.source);
+        const resultCount = own.reduce((count, result) => count + (result?.ok ? result.mailPage?.messages.length ?? result.calendarPage?.events.length ?? (Array.isArray(result.historyPage?.['hits']) ? result.historyPage['hits'].length : shapeBlock(shapeKindOf(step.source, 'knowledge_search'), [result]).total) : 0), 0);
+        publishStep({ ...step, phase: 'end', ok, ...(ok ? { resultCount } : {}), ...(code ? { errorCode: code } : {}), ms: Math.max(0, now() - at) });
+      }
+      update();
+    };
+    const progressSignal = AbortSignal.any([dispatchSignal, run.progressAbort.signal]);
+    const aborted = (): void => finish([], dispatchSignal.aborted && dispatchSignal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled');
+    progressSignal.addEventListener('abort', aborted, { once: true });
+    if (progressSignal.aborted) aborted();
+    let results: IntentSubResult[];
+    try { results = await executeSource(subs, dispatchSignal); finish(results, current() ? undefined : 'cancelled'); }
+    catch (error) { finish([], 'failed'); throw error; }
+    finally { progressSignal.removeEventListener('abort', aborted); }
     const fresh = results.flatMap(result => result.binding ? [result.binding] : []);
     if (run.stopped || run.cancelled || dispatchSignal.aborted || deps.ledger.find(run.researchId) !== run) {
       deps.ledger.discardEvidence(fresh);
@@ -2237,17 +2336,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           if (subs.length === 0) return;
           widenFor(subs);
           readStarted.add(kind);
-          // The voice view sees each source start now and end where its part is credited below. One
-          // step id per source of this read, so the end line replaces its own start line in place.
-          const stepIds = new Map<SourceKind, string>();
-          const stepOf = (source: SourceKind): string => {
-            const known = stepIds.get(source);
-            if (known !== undefined) return known;
-            const id = `${stepCallId}:${kind}:${source}:${stepIds.size}`;
-            stepIds.set(source, id);
-            return id;
-          };
-          const subjectOfRead = stepSubject({ query: action?.query, window: action?.window });
           const named = sourceKindOf(kind);
           const allSources = named !== null ? [named]
             : [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
@@ -2259,7 +2347,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const sourceDeadlineMsOfRead = sourceDeadlineMs(allSources);
           for (const source of startSources) {
             first.reading.add(source);
-            publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
           }
           for (const source of deadSources) {
             run.unavailableReasons.set(source, unavailableReason(source));
@@ -2277,7 +2364,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const readSignal = AbortSignal.any([roundSignal, cut.signal]);
           // P5: the cut follows this source's own deadline from the table, never one number for every source.
           const readDeadlineMs = sourceDeadlineMs(startSources);
-          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
+          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
           const issued = served.filter(call => !run.calls.has(callSignature(call)));
@@ -2369,7 +2456,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
             if (part.source === null) continue;
-            publishStep({ callId: stepCallId, stepId: stepOf(part.source), source: part.source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'end', resultCount: block.total, ok: part.results.some(result => result.ok), ms: Math.max(0, now() - at) });
             if (part.results.some(result => result.ok && result.text.trim())) {
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
             } else if (part.results.some(result => result.ok)) {
@@ -2430,7 +2516,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
       }
       run.rounds = round;
-      notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
+      notify({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: now() - started });
       if (stopReason === 'deadline' || stopReason === 'ops_exhausted' || stopReason === 'answered') break;
       // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
       if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
@@ -2541,7 +2627,7 @@ export class ResearchScheduler {
       if (call.action === 'stop') {
         this.#deps.ledger.stop(target.id);
         this.#active.delete(target.id);
-        this.#deps.emit({ researchId: target.id, phase: 'stopped', sourcesDone: [], sourcesPending: [...this.#deps.configured], elapsedMs: 0 });
+        this.#deps.emit({ researchId: target.id, phase: 'stopped', sourcesDone: [], sourcesPending: [], elapsedMs: 0 });
         return Promise.resolve(knownReply(this.#deps.ledger, target.id, this.#deps.configured));
       }
       // continue: stop the old loop, run on with a fresh budget reusing the ledger.

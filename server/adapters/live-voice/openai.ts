@@ -1427,7 +1427,7 @@ class Session implements LiveVoiceSession {
       }
       const writtenAt = this.clock.now();
       this.receipt('call.output_written', this.callIds(call.id), {
-        outputWrittenAt: writtenAt, outcome: 'completed', ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
+        outputWrittenAt: writtenAt, outcome: call.name === 'research' && response.error === 'invalid_research_arguments' && response.state === 'refused' ? 'refused' : 'completed', ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
         resultChars: JSON.stringify(response).length,
       });
       written.push(call.id);

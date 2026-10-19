@@ -797,8 +797,10 @@ export class HostLog {
   event(raw: unknown): void { const event = safeEvent(raw); if (event) this.append(event); }
   terminal(raw: unknown): void {
     if (!raw || typeof raw !== 'object') return;
+    const state = (raw as { state?: unknown }).state;
     const code = (raw as { code?: unknown }).code;
     if (typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(code)) return;
+    if (state === 'closed') { this.append({ event: 'live_terminal', state, code }); return; }
     this.append({ event: 'host_error', class: 'LiveTerminal', code });
   }
   error(error: unknown): void {

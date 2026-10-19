@@ -18,16 +18,16 @@ try {
    for(const n of [1,2])tx.run(`INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,payload_bytes,arrived_at) VALUES(?,?,'inputTranscription',?,1,30,?)`,[id,n,'Synthetic Cobalt discussion '+n,at+n]);
   }
  });
- const parent=store.transaction(tx=>insertSummary(tx,{liveSessionId:'parent-voice',status:'complete',summary:'Synthetic parent.',endedAt:at,now:at}));
- const child=store.transaction(tx=>insertSummary(tx,{liveSessionId:'descendant-voice',status:'complete',summary:'Synthetic child.',endedAt:at,now:at,injectedSummaryIds:[parent.id]}));
+ store.transaction(tx=>recordHistorySession(tx,'parent-voice',store.assistantId,['ordinary','private'],[],at));
+ const parent=store.transaction(tx=>insertSummary(tx,{liveSessionId:'parent-voice',dataClass:'private',sourceRevision:1,status:'complete',summary:'Synthetic parent.',endedAt:at,now:at}));
+ store.transaction(tx=>recordHistorySession(tx,'descendant-voice',store.assistantId,['ordinary','private'],[parent.id],at));
+ const child=store.transaction(tx=>insertSummary(tx,{liveSessionId:'descendant-voice',dataClass:'private',sourceRevision:1,status:'complete',summary:'Synthetic child.',endedAt:at,now:at,injectedSummaryIds:[parent.id]}));
  store.transaction(tx=>{
-  recordHistorySession(tx,'parent-voice',store.assistantId,['ordinary','private'],[],at);
-  recordHistorySession(tx,'descendant-voice',store.assistantId,['ordinary','private'],[parent.id],at);
   recordHistorySession(tx,'pending-voice',store.assistantId,['ordinary','private'],[parent.id],at);
  });
  let release;let entered;const enteredPromise=new Promise(r=>entered=r);
  const wait=new Promise(r=>release=r);
- const racing=createSummarizer({store,model:{generate:async()=>{entered();await wait;return {status:'complete',text:'{"skip":false,"summary":"Synthetic stale result."}'};}},modelId:'fake',assistantName:'Synthetic',timeZone:'UTC',now:()=>now,log:()=>{}});
+ const racing=createSummarizer({store,model:{generate:async()=>{entered();await wait;return {status:'complete',text:'{"skip":false,"summary":"Synthetic stale result."}'};}},modelId:'fake',modelAllowedClasses:['ordinary','private'],assistantName:'Synthetic',timeZone:'UTC',now:()=>now,log:()=>{}});
  const running=racing.distill('pending-voice');await enteredPromise;
  const removed=store.transaction(tx=>deleteSummary(tx,parent.id));assert.deepEqual(new Set(removed.deletedIds),new Set([parent.id,child.id]));
  release();await running;
@@ -36,7 +36,7 @@ try {
  store.close();store=new Store(dir,[...d.migrations,...liveMigrations]);
  const eligible=store.transaction(tx=>endedSessionsWithoutSummary(tx));assert.equal(eligible.length,0, 'forgotten sessions never reenter reconciliation');
  let calls=0;const model={generate:async()=>{calls++;return {status:'complete',text:'{"skip":false,"summary":"Synthetic recreated Cobalt summary."}'};}};
- await createSummarizer({store,model,modelId:'fake',assistantName:'Synthetic',timeZone:'UTC',now:()=>now,log:()=>{}}).reconcile();
+ await createSummarizer({store,model,modelId:'fake',modelAllowedClasses:['ordinary','private'],assistantName:'Synthetic',timeZone:'UTC',now:()=>now,log:()=>{}}).reconcile();
  const after=store.transaction(tx=>['parent-voice','descendant-voice'].map(id=>getBySession(tx,id)));
  assert(after.every(row=>row===null));assert.equal(calls,0);
  

@@ -8,9 +8,23 @@ export function historyForgotten(tx: Transaction, liveSessionId: string): boolea
     || !!tx.get("SELECT 1 FROM entry_tombstones WHERE source_kind='live-voice' AND substr(source_key,1,36)=?", [liveSessionId]);
 }
 
-export function historySessionClass(tx: Transaction, liveSessionId: string): DataClass | null {
-  const row = tx.get('SELECT data_class FROM history_sessions WHERE live_session_id=?', [liveSessionId]);
-  return row && HISTORY_CLASSES.includes(row.data_class as DataClass) ? row.data_class as DataClass : null;
+export interface HistorySessionEvidence { dataClass: DataClass; revision: number }
+export type HistoryEligibility = Map<string, HistorySessionEvidence | null>;
+export function historySessionEvidence(tx: Transaction, id: string, memo: HistoryEligibility = new Map(), visiting = new Set<string>()): HistorySessionEvidence | null {
+  if (memo.has(id)) return memo.get(id)!;
+  if (visiting.has(id) || historyForgotten(tx, id)) return null;
+  const row = tx.get('SELECT data_class,revision FROM history_sessions WHERE live_session_id=?', [id]);
+  if (!row || !HISTORY_CLASSES.includes(row.data_class as DataClass)) return null;
+  visiting.add(id);
+  for (const dependency of tx.all('SELECT parent_session_id,parent_revision FROM history_dependencies WHERE child_session_id=?', [id])) {
+    const parent = historySessionEvidence(tx, String(dependency.parent_session_id), memo, visiting);
+    if (!parent || parent.revision !== dependency.parent_revision || HISTORY_CLASSES.indexOf(parent.dataClass) > HISTORY_CLASSES.indexOf(row.data_class as DataClass)) {
+      visiting.delete(id); memo.set(id, null); return null;
+    }
+  }
+  visiting.delete(id);
+  const value = { dataClass: row.data_class as DataClass, revision: Number(row.revision) };
+  memo.set(id, value); return value;
 }
 
 /** Only the trusted CREATE owner records eligibility; migrations never infer legacy authority. */
@@ -19,10 +33,18 @@ export function recordHistorySession(tx: Transaction, id: string, ownerId: strin
   if (!ceiling || permitted.some(value => !HISTORY_CLASSES.includes(value)) || historyForgotten(tx, id)) throw new Error('history_lifecycle_denied');
   tx.run('INSERT INTO history_sessions(live_session_id,owner_id,data_class,revision,created_at) VALUES(?,?,?,1,?)', [id, ownerId, ceiling, now]);
   for (const summaryId of injectedSummaryIds) {
-    const parent = tx.get('SELECT live_session_id FROM conversation_summaries WHERE id=?', [summaryId]);
-    if (!parent || historyForgotten(tx, String(parent.live_session_id))) throw new Error('history_dependency_unavailable');
-    tx.run('INSERT OR IGNORE INTO history_dependencies(child_session_id,parent_session_id) VALUES(?,?)', [id, String(parent.live_session_id)]);
+    const parent = tx.get('SELECT live_session_id,data_class,source_revision FROM conversation_summaries WHERE id=?', [summaryId]);
+    const evidence = parent && historySessionEvidence(tx, String(parent.live_session_id));
+    if (!parent || !evidence || parent.data_class !== evidence.dataClass || parent.source_revision !== evidence.revision || HISTORY_CLASSES.indexOf(evidence.dataClass) > HISTORY_CLASSES.indexOf(ceiling)) throw new Error('history_dependency_unavailable');
+    recordHistoryDependency(tx, id, String(parent.live_session_id));
   }
+}
+
+export function recordHistoryDependency(tx: Transaction, childId: string, parentId: string): void {
+  const parent = historySessionEvidence(tx, parentId);
+  const child = tx.get('SELECT data_class FROM history_sessions WHERE live_session_id=?', [childId]);
+  if (!parent || !child || HISTORY_CLASSES.indexOf(parent.dataClass) > HISTORY_CLASSES.indexOf(child.data_class as DataClass)) throw new Error('history_dependency_unavailable');
+  tx.run('INSERT OR IGNORE INTO history_dependencies(child_session_id,parent_session_id,parent_revision) VALUES(?,?,?)', [childId, parentId, parent.revision]);
 }
 
 /** Atomic content-free exclusion of a source and every known derived session, including unsummarized children. */

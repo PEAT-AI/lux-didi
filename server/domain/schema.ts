@@ -165,4 +165,12 @@ export const domainMigrations: SchemaMigration[] = [
         PRIMARY KEY(child_session_id,parent_session_id))`,
     ],
   },
+  {
+    owner: 'domain', version: 8,
+    statements: [
+      `ALTER TABLE conversation_summaries ADD COLUMN data_class TEXT`,
+      `ALTER TABLE conversation_summaries ADD COLUMN source_revision INTEGER`,
+      `ALTER TABLE history_dependencies ADD COLUMN parent_revision INTEGER`,
+    ],
+  },
 ];

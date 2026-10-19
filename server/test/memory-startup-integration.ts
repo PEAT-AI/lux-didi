@@ -10,6 +10,7 @@ import { Store } from '../runtime/store.js';
 import { createLiveSessionOwner, validateLiveProfile } from '../live/index.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
 import { composeLiveInstruction, NAYA_LIVE_BASE } from '../prompt/live-persona.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { insertSummary } from '../domain/summaries.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 
@@ -74,9 +75,11 @@ test('memory startup integration: current CREATE summaries and notes never mutat
     memorySource: () => { reads++; return [{ id: 'note', text: note, dataClass: 'ordinary' }]; } });
   const context = { clientId: 'synthetic', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
   try {
-    const a = store.transaction(tx => insertSummary(tx, { liveSessionId: 'ended-a', status: 'complete', summary: 'Synthetic prior summary A.', endedAt: now - 1000, now }));
+    store.transaction(tx => recordHistorySession(tx, 'ended-a', store.assistantId, ['ordinary'], [], now));
+    const a = store.transaction(tx => insertSummary(tx, { liveSessionId: 'ended-a', dataClass: 'ordinary', sourceRevision: 1, status: 'complete', summary: 'Synthetic prior summary A.', endedAt: now - 1000, now }));
     const first = owner.create({ idempotencyKey: 'first', inputClass: 'ordinary' }, context), frozen = snapshot(store, first.liveSessionId);
-    const b = store.transaction(tx => insertSummary(tx, { liveSessionId: 'ended-b', status: 'complete', summary: 'Synthetic newest summary B.', endedAt: now, now })); note = 'Synthetic new note';
+    store.transaction(tx => recordHistorySession(tx, 'ended-b', store.assistantId, ['ordinary'], [], now));
+    const b = store.transaction(tx => insertSummary(tx, { liveSessionId: 'ended-b', dataClass: 'ordinary', sourceRevision: 1, status: 'complete', summary: 'Synthetic newest summary B.', endedAt: now, now })); note = 'Synthetic new note';
     for (const minutes of [0, 9, 11, 30]) {
       now = NOW + minutes * 60_000; await owner.prewarm(); const current = owner.create({ idempotencyKey: `summary-${minutes}`, inputClass: 'ordinary' }, context);
       assert.ok(snapshot(store, current.liveSessionId).system.includes('Synthetic newest summary B.')); assert.ok(snapshot(store, current.liveSessionId).system.includes('Synthetic new note'));

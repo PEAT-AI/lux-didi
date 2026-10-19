@@ -443,6 +443,8 @@ export function earlierConversationsBudget(otherSectionsChars: number): number {
   return Math.max(0, LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length);
 }
 
+export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
+
 export interface EarlierConversationCandidate { readonly id: string; readonly endedAt: number; readonly summary: string }
 export interface EarlierConversationsResult {
   readonly section: string;
@@ -498,7 +500,7 @@ export const OPENING_OPTIONS_CHARS = 700;
 /** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
 export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
 export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
-export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string }
+export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string }
 export interface OpeningOptionsInput {
   /** The stored summaries, newest first; the same candidates the earlier-conversations section reads. */
   readonly candidates: readonly EarlierConversationCandidate[];
@@ -564,9 +566,9 @@ function calendarTopic(digest: string | undefined, now: number, timeZone: string
 }
 
 /** Every still-to-do fragment the stored summaries name, newest first and deduplicated as written. */
-function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): string[] {
+function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): { topic: string; sourceId: string }[] {
   const seen = new Set<string>();
-  const loops: string[] = [];
+  const loops: { topic: string; sourceId: string }[] = [];
   for (const candidate of candidates) {
     for (const sentence of sentencesOf(candidate.summary)) {
       if (!OPEN_LOOP_CUE.test(sentence) || CLOSED_OPENER_TOPIC.test(sentence)) continue;
@@ -574,7 +576,7 @@ function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): st
       const key = topic.toLowerCase();
       if (topic.length === 0 || seen.has(key)) continue;
       seen.add(key);
-      loops.push(topic);
+      loops.push({ topic, sourceId: candidate.id });
     }
   }
   return loops;
@@ -606,9 +608,9 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   const calendar = calendarTopic(input.calendar, input.now, input.timeZone);
   if (calendar !== undefined) options.push({ kind: 'calendar', topic: calendar });
   const loops = openLoopTopics(stored);
-  if (loops.length > 0) options.push({ kind: 'open-loop', topic: loops[rotation % loops.length]! });
+  if (loops.length > 0) options.push({ kind: 'open-loop', ...loops[rotation % loops.length]! });
   const thread = recentThreadTopic(stored);
-  if (thread !== undefined) options.push({ kind: 'recent-thread', topic: thread });
+  if (thread !== undefined) options.push({ kind: 'recent-thread', topic: thread, sourceId: stored[0]!.id });
   const kept = [...options];
   const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
     : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD, ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.topic}`), OPENING_OPTIONS_RULE].join('\n');

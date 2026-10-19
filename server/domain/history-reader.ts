@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Transaction, SQLRow } from '../contracts/storage.js';
 import type { DataClass, JsonObject } from '../adapters/model/types.js';
-import { HISTORY_CLASSES, historyForgotten } from './history-lifecycle.js';
+import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
 import { fold, tokenize } from './util.js';
 
 export interface HistoryScope {
@@ -10,7 +10,7 @@ export interface HistoryScope {
 }
 export interface HistoryArguments { query?: string; from?: string; to?: string; limit?: number; cursor?: string; recordRef?: string }
 export interface HistorySourceRef {
-  kind: 'entry' | 'live'; id: string; first: number; last: number; transcriptKind: string;
+  kind: 'entry' | 'live' | 'summary'; id: string; first: number; last: number; transcriptKind: string;
   dataClass: DataClass; fingerprint: string;
 }
 export interface HistoryEvidence { sources: HistorySourceRef[] }
@@ -46,11 +46,11 @@ function entryValue(tx: Transaction, id: string): RecordValue | null {
   return { ref: { kind: 'entry', id, first: 0, last: 0, transcriptKind: '', dataClass, fingerprint: digest({ metadata, text }) }, text, metadata, date: Number(row.captured_at) };
 }
 
-function liveValue(tx: Transaction, ownerId: string, id: string, rows: SQLRow[]): RecordValue | null {
+function liveValue(tx: Transaction, ownerId: string, id: string, rows: SQLRow[], eligibility: HistoryEligibility = new Map()): RecordValue | null {
   if (!rows.length || historyForgotten(tx, id)) return null;
   const session = tx.get(`SELECT h.data_class,h.revision,l.journal_complete FROM history_sessions h JOIN live_sessions l ON l.live_session_id=h.live_session_id
     WHERE h.live_session_id=? AND h.owner_id=? AND l.owner_assistant_id=?`, [id, ownerId, ownerId]);
-  if (!session || !knownClass(session.data_class)) return null;
+  if (!session || !knownClass(session.data_class) || !historySessionEvidence(tx, id, eligibility)) return null;
   const first = rows[0]!, last = rows.at(-1)!;
   const text = rows.map(row => String(row.text ?? '')).join('');
   const metadata = { sourceId: `${id}:${first.journal_id}:${last.journal_id}`, sessionId: id, sourceKind: 'live', role: first.kind === 'inputTranscription' ? 'user' : 'assistant',
@@ -60,20 +60,42 @@ function liveValue(tx: Transaction, ownerId: string, id: string, rows: SQLRow[])
     fingerprint: digest({ metadata, rows }) }, text, metadata, date: Number(first.arrived_at) };
 }
 
-function sourceValue(tx: Transaction, ownerId: string, ref: HistorySourceRef): RecordValue | null {
+function summaryValue(tx: Transaction, id: string, eligibility: HistoryEligibility = new Map()): RecordValue | null {
+  const row = tx.get("SELECT * FROM conversation_summaries WHERE id=? AND status='complete' AND summary IS NOT NULL", [id]);
+  if (!row) return null;
+  const source = historySessionEvidence(tx, String(row.live_session_id), eligibility);
+  if (!source || source.dataClass !== row.data_class || source.revision !== row.source_revision) return null;
+  const metadata = { sourceId: id, sessionId: row.live_session_id, sourceKind: 'summary', role: 'assistant', date: new Date(Number(row.ended_at ?? row.created_at)).toISOString(),
+    derivation: 'conversation_summary', dataClass: source.dataClass, revision: source.revision, model: row.model, promptVersion: row.prompt_version };
+  const text = String(row.summary);
+  return { ref: { kind: 'summary', id, first: 0, last: 0, transcriptKind: '', dataClass: source.dataClass, fingerprint: digest({ metadata, text }) }, metadata, text, date: Number(row.ended_at ?? row.created_at) };
+}
+
+export function historySummaryEvidence(tx: Transaction, ids: readonly string[]): HistoryEvidence {
+  return { sources: ids.map(id => {
+    const value = summaryValue(tx, id);
+    if (!value) throw new Error('history_source_changed');
+    return value.ref;
+  }) };
+}
+
+function sourceValue(tx: Transaction, ownerId: string, ref: HistorySourceRef, eligibility: HistoryEligibility = new Map()): RecordValue | null {
   if (ref.kind === 'entry') return entryValue(tx, ref.id);
+  if (ref.kind === 'summary') return summaryValue(tx, ref.id, eligibility);
   if (!hasTable(tx, 'live_journal')) return null;
   return liveValue(tx, ownerId, ref.id, tx.all(`SELECT journal_id,provider_sequence,kind,text,finished,arrived_at FROM live_journal
-    WHERE live_session_id=? AND journal_id>=? AND journal_id<=? AND kind=? ORDER BY journal_id`, [ref.id, ref.first, ref.last, ref.transcriptKind]));
+    WHERE live_session_id=? AND journal_id>=? AND journal_id<=? AND kind=? ORDER BY journal_id`, [ref.id, ref.first, ref.last, ref.transcriptKind]), eligibility);
 }
 
 /** Called by the canonical result gate, after every await and before publication. */
 export function historyEvidenceCurrent(tx: Transaction, ownerId: string, evidence: HistoryEvidence): boolean {
-  return evidence.sources.every(ref => sourceValue(tx, ownerId, ref)?.ref.fingerprint === ref.fingerprint);
+  const eligibility: HistoryEligibility = new Map();
+  return evidence.sources.every(ref => sourceValue(tx, ownerId, ref, eligibility)?.ref.fingerprint === ref.fingerprint);
 }
 
 function corpus(tx: Transaction, scope: HistoryScope): { records: RecordValue[]; coverage: JsonObject } {
   const records: RecordValue[] = [];
+  const eligibility: HistoryEligibility = new Map();
   let unavailableLabels = false, classFiltered = false, legacyRawUnavailable = false;
   const admit = (value: RecordValue | null) => {
     if (!value) { unavailableLabels = true; return; }
@@ -81,13 +103,14 @@ function corpus(tx: Transaction, scope: HistoryScope): { records: RecordValue[];
     if (value.text.trim()) records.push(value);
   };
   for (const row of tx.all('SELECT id FROM entries ORDER BY id')) admit(entryValue(tx, String(row.id)));
+  for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' ORDER BY id")) admit(summaryValue(tx, String(row.id), eligibility));
   if (hasTable(tx, 'live_journal')) {
     for (const session of tx.all('SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? ORDER BY live_session_id', [scope.ownerId])) {
       const id = String(session.live_session_id);
       if (historyForgotten(tx, id)) continue;
       if (!tx.get('SELECT 1 FROM history_sessions WHERE live_session_id=? AND owner_id=?', [id, scope.ownerId])) { legacyRawUnavailable = true; continue; }
       const pending = new Map<string, SQLRow[]>();
-      const flush = (kind: string) => { const rows = pending.get(kind); if (rows?.length) admit(liveValue(tx, scope.ownerId, id, rows)); pending.delete(kind); };
+      const flush = (kind: string) => { const rows = pending.get(kind); if (rows?.length) admit(liveValue(tx, scope.ownerId, id, rows, eligibility)); pending.delete(kind); };
       for (const row of tx.all(`SELECT journal_id,provider_sequence,kind,text,finished,arrived_at FROM live_journal WHERE live_session_id=? ORDER BY journal_id`, [id])) {
         const kind = String(row.kind);
         if (kind === 'inputTranscription' || kind === 'outputTranscription') {

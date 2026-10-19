@@ -1,5 +1,6 @@
 import type { SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
-import { historyForgotten, forgetHistorySessions } from './history-lifecycle.js';
+import type { DataClass } from '../adapters/model/types.js';
+import { historyForgotten, forgetHistorySessions, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
 import { newId } from './util.js';
 
 /**
@@ -12,6 +13,8 @@ import { newId } from './util.js';
 export type SummaryStatus = 'complete' | 'skipped' | 'failed';
 
 export interface SummaryRecord {
+  dataClass: DataClass | null;
+  sourceRevision: number | null;
   id: string;
   liveSessionId: string;
   status: SummaryStatus;
@@ -51,6 +54,8 @@ function parseIds(value: SQLValue | undefined): string[] {
 function toRecord(row: SQLRow): SummaryRecord {
   return {
     id: String(row['id']),
+    dataClass: row['data_class'] as DataClass | null ?? null,
+    sourceRevision: row['source_revision'] === null || row['source_revision'] === undefined ? null : Number(row['source_revision']),
     liveSessionId: String(row['live_session_id']),
     status: String(row['status']) as SummaryStatus,
     summary: row['summary'] === null || row['summary'] === undefined ? null : String(row['summary']),
@@ -69,6 +74,8 @@ function toRecord(row: SQLRow): SummaryRecord {
 }
 
 export interface InsertSummaryInput {
+  dataClass?: DataClass;
+  sourceRevision?: number;
   liveSessionId: string;
   status: SummaryStatus;
   summary?: string | null;
@@ -93,17 +100,21 @@ export function getBySession(tx: Transaction, liveSessionId: string): SummaryRec
 /** Idempotent insert keyed by the unique live_session_id; returns the stored row. */
 export function insertSummary(tx: Transaction, input: InsertSummaryInput): SummaryRecord {
   if (historyForgotten(tx, input.liveSessionId)) throw new Error('history_forgotten');
+  if (input.dataClass !== undefined || input.sourceRevision !== undefined) {
+    const source = historySessionEvidence(tx, input.liveSessionId);
+    if (!source || source.dataClass !== input.dataClass || source.revision !== input.sourceRevision) throw new Error('history_source_changed');
+  }
   const existing = getBySession(tx, input.liveSessionId);
   if (existing) return existing;
   const id = newId();
   tx.run(
     `INSERT INTO conversation_summaries
-       (id, live_session_id, status, summary, open_loop, prompt_version, skip_reason, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, live_session_id, status, summary, open_loop, prompt_version, skip_reason, ended_at, model, input_chars, input_truncated, injected_summary_ids, retry_count, error_code, created_at, data_class, source_revision)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, input.liveSessionId, input.status, input.summary ?? null, input.openLoop ?? null, input.promptVersion ?? null,
       input.skipReason ?? null, input.endedAt ?? null, input.model ?? null,
       input.inputChars ?? null, input.inputTruncated ? 1 : 0, JSON.stringify([...(input.injectedSummaryIds ?? [])]),
-      input.retryCount ?? 0, input.errorCode ?? null, input.now],
+      input.retryCount ?? 0, input.errorCode ?? null, input.now, input.dataClass ?? null, input.sourceRevision ?? null],
   );
   return getBySession(tx, input.liveSessionId)!;
 }
@@ -205,14 +216,28 @@ export function deadHostOutcome(value: unknown): boolean {
   }
 }
 
-export interface InjectionCandidate { id: string; endedAt: number; summary: string }
+export interface InjectionCandidate { id: string; liveSessionId: string; endedAt: number; summary: string; dataClass: DataClass; sourceRevision: number }
+export function summarySelection(tx: Transaction, allowedClasses: readonly DataClass[]) {
+  const candidates: InjectionCandidate[] = [];
+  const eligibility: HistoryEligibility = new Map();
+  const coverage = { legacyUnavailable: 0, sourceUnavailable: 0, classFiltered: 0 };
+  if (!hasTable(tx)) return { candidates, coverage };
+  for (const row of listSummaries(tx)) {
+    if (row.status !== 'complete' || row.summary === null) continue;
+    if (row.dataClass === null || row.sourceRevision === null) { coverage.legacyUnavailable++; continue; }
+    const source = historySessionEvidence(tx, row.liveSessionId, eligibility);
+    if (!source || source.dataClass !== row.dataClass || source.revision !== row.sourceRevision) { coverage.sourceUnavailable++; continue; }
+    if (!allowedClasses.includes(row.dataClass)) { coverage.classFiltered++; continue; }
+    if (row.endedAt === null || !Number.isFinite(row.endedAt)) continue;
+    candidates.push({ id: row.id, liveSessionId: row.liveSessionId, endedAt: row.endedAt, summary: row.summary, dataClass: row.dataClass, sourceRevision: row.sourceRevision });
+  }
+  candidates.sort((a, b) => b.endedAt - a.endedAt || a.id.localeCompare(b.id));
+  return { candidates, coverage };
+}
 
-/** Every complete summary that could be injected, newest first. The budget is applied by the prompt builder. */
-export function injectionCandidates(tx: Transaction): InjectionCandidate[] {
-  if (!hasTable(tx)) return [];
-  return tx.all("SELECT id, ended_at, summary FROM conversation_summaries WHERE status='complete' AND summary IS NOT NULL ORDER BY ended_at DESC, rowid DESC")
-    .map(row => ({ id: String(row['id']), endedAt: Number(row['ended_at']), summary: String(row['summary']) }))
-    .filter(row => Number.isFinite(row.endedAt));
+/** Unknown legacy provenance never defaults to ordinary. */
+export function injectionCandidates(tx: Transaction, allowedClasses: readonly DataClass[] = ['ordinary']): InjectionCandidate[] {
+  return summarySelection(tx, allowedClasses).candidates;
 }
 
 /** The domain migration owns this table; a store built without it has no summaries. */

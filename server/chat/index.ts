@@ -1,3 +1,4 @@
+import { historyEvidenceCurrent, type HistoryEvidence } from '../domain/history-reader.js';
 import { sourceCards } from '../tools/source-cards.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
@@ -172,6 +173,7 @@ export class ChatService implements ChatPort {
     const tools = this.#config.tools;
     let dataClass: 'private' | 'sensitive' = 'private';
     const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
+      this.#checkPolicy(run.runId, run.sessionId, context);
       if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
       return model.generate(outgoing, outgoingControl);
     };
@@ -458,9 +460,15 @@ export class ChatService implements ChatPort {
     if (Buffer.byteLength(JSON.stringify(resolved.records), 'utf8') > MAX_SERIALIZED_SELECTION_BYTES) throw new ChatError('selection_too_large');
     return resolved.records;
   }
+  #summaryCurrent(tx: Transaction, runId: string): boolean {
+    const row = tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [runId]);
+    const trace = row?.trace ? JSON.parse(String(row.trace)) as { summaryEvidence?: HistoryEvidence } : {};
+    return !trace.summaryEvidence || historyEvidenceCurrent(tx, this.#config.store.assistantId, trace.summaryEvidence);
+  }
   #checkPolicy(runId: string, sessionId: string, context: DomainContext) {
     return this.#config.store.transaction(tx => {
       const consent = this.#liveConsent(tx, sessionId, context);
+      if (!this.#summaryCurrent(tx, runId)) throw new ChatError('unavailable');
       const policy = tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [runId]);
       if (!policy || policy.consent_revision !== consent.revision || policy.route_identity !== this.#identity()) throw new ChatError('unavailable');
       const labels: { kind: 'session' | 'entry'; id: string; revision: number; dataClass: string }[] = JSON.parse(String(policy.selected_labels));
@@ -638,12 +646,13 @@ export class ChatService implements ChatPort {
       if (row.state === 'terminal') return this.#snapshot(tx, row, context);
       let entryId: string | null = null;
       if (outcome === 'complete') {
+        if (!this.#summaryCurrent(tx, run.runId)) throw new ChatError('unavailable');
         const session = this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).session;
         const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone, sourceRef: { id: randomUUID(), label: 'Connected chat', provider: 'chat', externalId: run.sessionId, sourceTimestamp: null, availability: 'present' } }, this.#context(context), { writer: 'model', dataClass });
         entryId = entry.id;
       }
       const max = this.#config.maxPartialChars ?? 100000;
-      const partial = outcome === 'complete' ? '' : text || String(row.partial_text);
+      const partial = outcome === 'complete' || !this.#summaryCurrent(tx, run.runId) ? '' : text || String(row.partial_text);
       const changed = tx.run(`UPDATE chat_runs SET state='terminal',outcome=?,final_entry_id=?,terminal_at=?,terminal_epoch=?,
         partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state=?`,
         [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), run.runId, context.assistantId, String(row.authority_epoch), String(row.state)]);
@@ -653,6 +662,7 @@ export class ChatService implements ChatPort {
     this.#emit(final.runId, { type: 'snapshot', sequence: final.sequence, run: final, ...extras }); return final;
   }
   #partial(run: RunSnapshot, context: DomainContext, text: string) {
+    if (!this.#config.store.transaction(tx => this.#summaryCurrent(tx, run.runId))) return;
     if (!text) return;
     this.#authorize(context);
     const event = this.#config.store.transaction(tx => {
@@ -767,6 +777,7 @@ export class ChatService implements ChatPort {
       }
       const outcome = this.#outcome(result);
 
+      if (!this.#config.store.transaction(tx => this.#summaryCurrent(tx, run.runId))) { this.#finish(run, context, 'unavailable'); return; }
       const extras = result.partial === true ? { partial: true as const, notReached: result.notReached ?? [] } : {};
       try { this.#finish(run, context, outcome, result.text, result.dataClass, extras); }
       catch { this.#finish(run, context, 'persistence_failed', result.text); }

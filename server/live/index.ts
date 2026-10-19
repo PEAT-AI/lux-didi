@@ -1,7 +1,7 @@
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult, type CalendarPage, type CalendarScope } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
-import { recordHistorySession } from '../domain/history-lifecycle.js';
+import { recordHistorySession, historySessionEvidence, recordHistoryDependency } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -17,7 +17,7 @@ import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallResult, recordUtterance, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -135,18 +135,24 @@ function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
  */
-function previousOpeners(tx: Transaction, assistantId: string): { readonly text: string; readonly topic?: string }[] {
-  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC LIMIT 3", [assistantId]);
-  return sessions.flatMap(row => {
+function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass }[] {
+  const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC", [assistantId]);
+  const previous: ReturnType<typeof previousOpeners> = [];
+  const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
+  for (const row of sessions) {
+    const source = historySessionEvidence(tx, String(row.live_session_id), eligibility);
+    if (!source || !allowedClasses.includes(source.dataClass)) continue;
     const text = openerFromJournal(tx.all("SELECT kind, text, finished FROM live_journal WHERE live_session_id=? AND (kind='outputTranscription' OR kind IN ('generationComplete','turnComplete','interrupted')) ORDER BY journal_id", [String(row['live_session_id'])]).map(entry => ({
       kind: String(entry['kind']),
       text: entry['text'] === null || entry['text'] === undefined ? null : String(entry['text']),
       finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
     })));
-    if (text === '') return [];
+    if (text === '') continue;
     const topic = openerTopicOf(text, recordedOptions(row['accepted_prompt_snapshot']));
-    return [{ text, ...(topic === undefined ? {} : { topic }) }];
-  });
+    previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, ...(topic === undefined ? {} : { topic }) });
+    if (previous.length === 3) break;
+  }
+  return previous;
 }
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
@@ -820,12 +826,14 @@ export class LiveSessionOwner {
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       // Q5-R4: opener variety. The two previous calls' first spoken lines come from the owner-local
       // journal, so this start can name what not to repeat; nothing here reaches host.log.
-      const earlierOpeners = previousOpeners(tx, assistantId);
+      const earlierOpeners = previousOpeners(tx, assistantId, this.#profile.route.dataClasses);
       const openers = openersNote(earlierOpeners.map(early => early.text), earlierOpeners.map(early => early.topic));
       // Release 3u: the plan this start offers. The persisted start counter is the row count for the
       // owner, so consecutive calls walk the stored open loops even when no summary was written between
       // them; the warm calendar digest supplies the first option when the host built one.
-      const storedSummaries = summaries.injectionCandidates(tx);
+      const summarySelection = summaries.summarySelection(tx, this.#profile.route.dataClasses);
+      const storedSummaries = summarySelection.candidates;
+      const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
@@ -836,7 +844,7 @@ export class LiveSessionOwner {
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(calendar ? { calendar } : {}),
-        ...(earlierSection ? { earlierConversations: earlierSection } : {}),
+        ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(openers !== undefined ? { openersNote: openers } : {}),
         ...(openerPlan.section.length ? { openingOptions: openerPlan.section } : {}) });
@@ -866,15 +874,20 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'opener_plan', kinds: openerPlan.options.map(option => option.kind), rotation: openerPlan.rotation });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
-      const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
+      const injectedSummaryIds = [...new Set([...(composed.earlierConversationsIncluded ? earlier.selectedIds : []),
+        ...(composed.sections.some(section => section.id === 'opening-options') ? openerPlan.options.flatMap(option => option.sourceId ? [option.sourceId] : []) : [])])];
+      const injectedOpeners = composed.sections.some(section => section.id === 'previous-openers') ? earlierOpeners : [];
+      const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
+      const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
-      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds }), liveSessionId]);
+      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
       recordHistorySession(tx, liveSessionId, assistantId, this.#profile.route.dataClasses, injectedSummaryIds, now);
+      for (const opener of injectedOpeners) recordHistoryDependency(tx, liveSessionId, opener.sessionId);
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
       if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob, tx); }
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',

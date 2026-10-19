@@ -3,8 +3,11 @@ const fields: Readonly<Record<string, readonly string[]>> = {
   search_knowledge: ['query','limit','include_sensitive','detail','max_chars','deadline_ms'], get_insight: ['ids','id','include_links','detail','max_chars','deadline_ms'],
   gmail_get_profile: [], gmail_list: ['q','maxResults','pageToken'], gmail_read: ['id','format'],
   gcal_calendars: ['maxResults','pageToken'], gcal_list: ['calendarId','calendarIds','maxResults','pageToken','timeMin','timeMax','timeZone'],
-  ask_mongoose: ['question','limit','domain'], search_mongoose: ['query','limit','domain'], get_knowledge_item: ['id','identifier','detail','max_chars'], read_knowledge_body: ['id','identifier','offset','length'],
-  get_company_profile: [], list_tickets: ['limit','status'], get_ticket: ['id'],
+  ask_mongoose: ['question','limit'], search_mongoose: ['query','scope','domain','limit','offset','include','include_strong'],
+  get_knowledge_item: ['id','item_id','identifier','detail'], read_knowledge_body: ['ref','max_chars','cursor'],
+  get_company_profile: ['company_name','sections','detail','flagship_only','launch_year'],
+  list_tickets: ['status','kind','mine','mentioning_handle','audience','company_name','tags','search','not_updated_in_days','owner_handle','limit','offset'],
+  get_ticket: ['number','detail','limit','offset','body_offset'],
   mattermost_whoami: [], mattermost_list_channels: ['limit'], mattermost_get_channel_history: ['channel','limit'], mattermost_get_thread: ['post_id','postId'], mattermost_search: ['query','limit','after','before'], mattermost_attention: ['days','limit'],
   conversation_history: ['query','recordRef','cursor','after','before','limit'], remember_note: ['text','kind'], open_url: ['url'], open_file: ['path'], open_application: ['name'],
 };

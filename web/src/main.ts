@@ -554,13 +554,19 @@ async function pollLive(){
     // opens blank and the session stays reachable only from the closed panel (spec 1.3 cause 1, UI3b).
     if(prior.live&&next.live&&prior.live.since!==next.live.since){
       const block=earlierSession(prior.live);
-      if(block&&!earlierFeed.some(entry=>entry.at===block.at))earlierFeed=[...earlierFeed,block];
+      archiveSession(block);
     }
     const ended=next.live?.pastSession?earlierSession(next.live):undefined;
-    if(ended&&!earlierFeed.some(entry=>entry.at===ended.at))earlierFeed=[...earlierFeed,ended];
+    archiveSession(ended);
     livePoll={...next,earlier:earlierFeed};live=livePoll.live;paintLive();
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
+}
+function archiveSession(block: EarlierSession | undefined){
+  if(!block)return;
+  const index=earlierFeed.findIndex(entry=>entry.at===block.at);
+  if(index<0)earlierFeed=[...earlierFeed,block];
+  else if(earlierFeed[index]!.html!==block.html)earlierFeed=earlierFeed.map((entry,n)=>n===index?block:entry);
 }
 /** Replace the settings panel in place and re-bind the controls the replacement carries. */
 function repaintLiveSettings(){const panel=document.getElementById('settings-summary');if(!panel)return;panel.outerHTML=settingsMarkup(settingsInput());bindConnectedHistory();bindLiveProviderSwitch();}

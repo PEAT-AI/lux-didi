@@ -1,5 +1,5 @@
 import * as memory from '../domain/memory.js';
-import * as labels from '../domain/labels.js';
+import { entryAndParentOrdinary } from '../domain/labels.js';
 import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -177,8 +177,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
 /** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */
 export const resolveLiveMemory: LiveMemorySource = tx => {
   const ids = tx.all('SELECT id,session_id FROM entries ORDER BY id').filter(row =>
-    labels.current(tx, { kind: 'entry', id: String(row['id']) }).dataClass === 'ordinary'
-    && labels.current(tx, { kind: 'session', id: String(row['session_id']) }).dataClass === 'ordinary'
+    entryAndParentOrdinary(tx, String(row['id']), String(row['session_id']))
   ).map(row => String(row['id']));
   const records: ReturnType<typeof memory.resolveEntries> = [];
   for (let offset = 0; offset < ids.length; offset += memory.MAX_RESOLVE_ENTRIES) {

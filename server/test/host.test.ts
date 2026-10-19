@@ -1,3 +1,4 @@
+import './memory-eligibility-integration.js';
 import './memory-startup-integration.js';
 // The declared host check also exercises the real installer's isolated seed block (R5).
 import './install-template.test.js';

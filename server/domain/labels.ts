@@ -54,6 +54,15 @@ export function current(tx: Transaction, subject: RoutingSubject): RoutingLabelL
   return row ? toLabel(checked, row) : { subject: checked, revision: 0, dataClass: 'unknown', writer: null, recordedAt: null };
 }
 
+/** Current entry and parent labels must both be ordinary; absent subjects or labels fail closed. */
+export function entryAndParentOrdinary(tx: Transaction, entryId: string, sessionId: string): boolean {
+  return tx.get(`SELECT 1 AS eligible FROM entries e JOIN sessions s ON s.id=e.session_id
+    WHERE e.id=? AND s.id=?
+      AND (SELECT data_class FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id ORDER BY revision DESC LIMIT 1)='ordinary'
+      AND (SELECT data_class FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id ORDER BY revision DESC LIMIT 1)='ordinary'`,
+  [entryId, sessionId]) !== undefined;
+}
+
 export function history(tx: Transaction, subject: RoutingSubject): RoutingLabel[] {
   const checked = existingSubject(tx, subject);
   return tx.all(

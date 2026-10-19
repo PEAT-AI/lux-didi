@@ -4,6 +4,7 @@ const {Store}=await import(new URL('runtime/store.js',dist)),{hostMigrations}=aw
 const {OpenAiLiveVoiceAdapter}=await import(new URL('adapters/live-voice/openai.js',dist)),{FakeSocket,FakeClock,options}=await import(new URL('test/openai-live-voice-fixture.js',dist));
 const {createLiveSessionOwner,validateLiveProfile}=await import(new URL('live/index.js',dist)),{buildTimeline}=await import(new URL('trace/timeline.js',dist));
 const {record,liveTracePort}=await import(new URL('trace/record.js',dist)),{forgetHistorySessions}=await import(new URL('domain/history-lifecycle.js',dist));
+const {diagnosticQueries}=await import('./diagnostic-query-fixture.mjs');
 const tick=async()=>{for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));};
 const profile=()=>validateLiveProfile({provider:'openai',liveModelId:'gpt-live-1',voice:'marin',keyReference:'openai-primary',route:{enabled:true,provider:'openai',modelId:'gpt-live-1',dataClasses:['ordinary']},prompt:{text:'Synthetic diagnostic test',dataClass:'ordinary'}});
 async function run(failContent){
@@ -20,6 +21,7 @@ async function run(failContent){
   await a.close();await consume;await owner.shutdown();owner=undefined;
   const cli=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('../../scripts/didi-timeline',import.meta.url)),created.liveSessionId,'--data-dir',dir,'--json','--content'],{encoding:'utf8'}));
   assert.equal(cli.contentAccess.state,'allowed');assert.equal(cli.transcript.map(x=>x.text).join(''),'Synthetic greeting.Synthetic question.');
+  const queries=diagnosticQueries(join(dir,'state.sqlite'),{session:created.liveSessionId,run:created.liveSessionId,conversation:'synthetic-text-conversation'});assert.equal(queries.transcript_fragments.map(row=>row.text).join(''),'Synthetic greeting.Synthetic question.');
   const result=store.transaction(tx=>{
    const row=tx.get('SELECT journal_complete,diagnostic_metadata_state,diagnostic_content_state,diagnostic_failures,diagnostic_unattributed_transcripts,native_receipt_state FROM live_sessions WHERE live_session_id=?',[created.liveSessionId]);
    assert.equal(row.journal_complete,1);assert.equal(row.diagnostic_unattributed_transcripts,1);assert.equal(row.native_receipt_state,'unknown');

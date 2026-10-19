@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,writeFileSync,mkdirSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {fixture,text,tail,profile} from './dispatch-diagnostics.integration.mjs';
 const dist=new URL(process.env.DIDI_DISPATCH_DIST??'../dist/',import.meta.url);
 const {Store}=await import(new URL('runtime/store.js',dist));
@@ -52,6 +54,7 @@ try{
  chat.shutdown();await mcp.close();mcp=undefined;await live?.shutdown();live=undefined;store.close();store=new Store(join(dir,'state'),hostMigrations);
  const authority={ownerId:store.assistantId,allowedClasses:classes};const access=auth=>store.transaction(tx=>diagnosticContentAccess(tx,accepted.runId,auth??authority));
  const persistedCall=store.transaction(tx=>tx.get('SELECT input_json,input_sha256 FROM tool_calls WHERE run_id=?',[accepted.runId]));assert.equal(persistedCall.input_json,calls.input_json);assert.equal(persistedCall.input_sha256,calls.input_sha256);
+ const cli=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('../../scripts/didi-timeline',import.meta.url)),accepted.runId,'--data-dir',join(dir,'state'),'--json','--content'],{encoding:'utf8',maxBuffer:4_000_000}));assert.equal(cli.tools.contentAccess.state,'allowed');assert.equal(cli.tools.calls[0].input_json,calls.input_json);assert.equal(cli.tools.dispatches[0].source_json,dispatch.source_json);
  const reopened=store.transaction(tx=>readDiagnosticDispatches(tx,accepted.runId,authority));assert.equal(reopened.access.state,'allowed');assert.equal(reopened.dispatches[0].source_json,dispatch.source_json);assert.deepEqual(JSON.parse(reopened.dispatches[0].arguments_json),source.calls[0].arguments);
  assert.equal(access({...authority,ownerId:'wrong-owner'}).state,'denied');assert.equal(access({...authority,allowedClasses:['ordinary']}).state,'denied');
  for(const id of [accepted.userEntryId,session]){const saved=store.transaction(tx=>tx.all('SELECT * FROM routing_labels WHERE subject_id=?',[id]));store.transaction(tx=>tx.run('DELETE FROM routing_labels WHERE subject_id=?',[id]));assert.equal(access().state,'denied');for(const label of saved)store.transaction(tx=>tx.run('INSERT INTO routing_labels VALUES(?,?,?,?,?,?)',[label.subject_kind,label.subject_id,label.revision,label.data_class,label.writer,label.recorded_at]));}

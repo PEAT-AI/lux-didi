@@ -139,9 +139,7 @@ in** names the log that already carried it; **dropped** means nothing needs it a
 | `playback_receipt_rejected` | retained in `host.log` as `live_trace_rejected` (kind plus the store's typed code) |
 | native `native` receipt | retained in `native-live.log` and `host.log`; the stored rows also carry it |
 
-Every trace kind above is allowlisted in `server/trace/record.ts`: ids, closed codes, counts and
-durations only, with transcript and tool result text confined to `trace_utterance` and
-`trace_call_result`.
+Every trace kind above is allowlisted in `server/trace/record.ts`: ids, closed codes, counts and durations only. Legacy trace content remains in `trace_utterance` and `trace_call_result`; new text and source results have canonical owners described in [the diagnostic store guide](diagnostic-store.md).
 
 ### Removing the old day directories
 
@@ -223,7 +221,7 @@ production seam, not a longer trace.
 
 ## Privacy rule
 
-The trace content tables hold transcript lines and tool result text, and the unified log may too.
+Legacy trace content tables and the unified log can contain transcript and tool preview text. New canonical journal, tool execution and source dispatch tables hold their own protected content.
 Only the owner and owner-authorized Claude sessions read them. Never paste a transcript or a tool
 result into a public issue, a pull request, a commit, a test
 fixture or a message, and never read the owner's real data directory from a test or a check.
@@ -239,3 +237,7 @@ Call and response trace keys are scoped to session and connection epoch; raw pro
 Always pass `--data-dir` for the installed app: `~/Library/Application Support/ai.peat.lux-didi`. The CLI's older default `Lux Didi` directory is a different runtime. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
 
 Focused actual-runtime proof: after server compilation, run `node server/test/diagnostic-trace.integration.mjs`. It exercises actual adapter, Store and CLI, new reference resolution, model-first greeting, forced write failure, forgotten/class-denied content, restart unknown state, scoped call/response ids and unlike-clock observations. No provider or audio device is used.
+
+## Canonical tool inspection
+
+See [the diagnostic store guide](diagnostic-store.md) for the installed versus development database paths, Live session and Chat run mapping, exact requested/effective input stages, supported full source envelopes, current source gating and tested read-only SQL. `didi-timeline --content` resolves canonical source content and keeps bounded model projections distinct. Metadata-only defaults do not select argument or body columns.

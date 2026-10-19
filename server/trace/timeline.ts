@@ -1,4 +1,5 @@
 import { diagnosticContentAccess, type DiagnosticContentAuthority, type DiagnosticContentAccess } from './content.js';
+import { readToolDiagnostics, type ToolDiagnostics } from '../tools/diagnostics.js';
 import type { SQLRow, SQLValue } from '../contracts/storage.js';
 import type {
   CallOutcome, ContinuationOutcome, PlaybackTerminationReason, ResponseStatus, ResponseTerminalReason, StallReason,
@@ -48,6 +49,7 @@ export interface TraceGap {
 }
 export interface NativeGap { sourceInstanceId: string; fromSeq: number; toSeq: number }
 export interface TimelineReport {
+  tools?: ToolDiagnostics;
   coverage?: { metadata: string; content: string; native: string; failureCountLowerBound: number | null; lastReason: string | null; unassociatedTranscriptRows: number | null };
   contentAccess?: DiagnosticContentAccess;
   transcript?: { journalId: number; role: UtteranceRole; text: string; final: boolean; finalOrigin: string | null; providerStartMs: number | null; providerEndMs: number | null }[];
@@ -169,6 +171,7 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
 
   const gaps = turns.flatMap(gapsFor).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
+    tools: readToolDiagnostics(read,liveSessionId,{content: options.content === true,...(options.contentAuthority ? {authority: options.contentAuthority} : {})}),
     liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
     capturedAt: options.capturedAt ?? Date.now(),
     turns,
@@ -334,6 +337,21 @@ export function renderTimeline(report: TimelineReport): string {
   if (report.coverage) lines.push(`coverage metadata=${report.coverage.metadata} content=${report.coverage.content} native=${report.coverage.native} failures_at_least=${report.coverage.failureCountLowerBound ?? 'unknown'}`);
   if (report.contentAccess) lines.push(`content: ${report.contentAccess.state}${report.contentAccess.state === 'denied' ? ` reason=${report.contentAccess.reason}` : ''}`);
   for (const row of report.transcript ?? []) lines.push(`transcript journal=${row.journalId} role=${row.role} source=automatic_transcription final_origin=${row.finalOrigin ?? 'unknown'} ${JSON.stringify(row.text)}`);
+  if(report.tools){
+    lines.push(`tools coverage=${JSON.stringify(report.tools.coverage)}`);
+    for(const call of report.tools.calls){
+      lines.push(`tool execution=${call.execution_id} name=${call.tool_name} state=${call.state} requested_fidelity=${call.input_fidelity??'legacy_unknown'} result=${call.result_id??'unknown'} result_sha256=${call.result_sha256??'unknown'}`);
+      if(call.input_json!==undefined)lines.push(`  requested ${call.input_json??'unavailable'}`);
+      if(call.result_json!==undefined)lines.push(`  bounded_model_result ${call.result_json}`);
+    }
+    for(const source of report.tools.dispatches){
+      lines.push(`source dispatch=${source.dispatch_id} execution=${source.execution_id} ordinal=${source.ordinal} destination=${source.connector}/${source.endpoint_id} tool=${source.tool_name} generation=${source.generation} state=${source.state} wire=${source.wire_state??'unknown'} reason=${source.reason??'pending'} binding=${source.binding_digest} schema=${source.schema_digest} accepted_run=${source.run_snapshot_sha256} received_body_sha256=${source.source_sha256??'unavailable'}`);
+      if(source.arguments_json!==undefined)lines.push(`  effective ${source.arguments_json??'unavailable'}`);
+      if(source.source_json!==undefined)lines.push(`  normalized_source ${source.source_json??'unavailable'}`);
+    }
+    for(const reuse of report.tools.reuse)lines.push(`source reuse=${reuse.id} execution=${reuse.execution_id} origin=${reuse.origin_dispatch_id??'unavailable'} state=${reuse.state} read=${reuse.read_state??'content_not_requested'}${reuse.source_json?` normalized_source=${reuse.source_json}`:''}`);
+    for(const capture of report.tools.capture)lines.push(`source coverage execution=${capture.execution_id??'unattributed'} kind=${capture.kind} reason=${capture.reason}`);
+  }
   for (const nativeGap of report.nativeGaps) {
     lines.push(`NATIVE-GAP instance=${nativeGap.sourceInstanceId} missing=${nativeGap.fromSeq}..${nativeGap.toSeq}`);
   }

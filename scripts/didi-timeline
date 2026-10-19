@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // didi-timeline: read the trace tables in state.sqlite and print one joinable timeline.
-// Read-only, SQL only, no journal and no host.log. See docs/debugging.md.
+// Read-only canonical SQLite timeline. See docs/diagnostic-store.md.
 const { DatabaseSync } = require('node:sqlite');
 const { existsSync } = require('node:fs');
 const { homedir } = require('node:os');
@@ -9,9 +9,9 @@ const { fileURLToPath } = require('node:url');
 
 const usage = `didi-timeline <session|latest> [options]
 
-  <session|latest>      a live session id, or the most recent session in the trace tables
+  <session|latest>      a live session or Chat run id; latest selects the most recent Live session
   --turn N              only turn index N
-  --content             add utterances and tool result text from the content tables
+  --content             opt into gated transcripts, requested/effective arguments and supported full source results
   --json                print the report as JSON (no owner text unless --content)
   --export-metadata     named columns of the five metadata tables only, never a dump
   --session <id>        with --export-metadata, restrict the export to one live session

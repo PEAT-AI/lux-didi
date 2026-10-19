@@ -101,7 +101,9 @@ public enum LiveControl: String, Sendable {
 
 public protocol LiveSocket: Sendable {
     func receive() async throws -> LiveFrame
-    func sendPCM(_ data: Data) async throws
+    /// Z2: returns false when the frame was shed because the wire was held by a control frame or a
+    /// playback receipt. A shed frame is a gap in the microphone stream, never a failed call.
+    func sendPCM(_ data: Data) async throws -> Bool
     func sendControl(_ control: LiveControl) async throws
     /// O1b-N: one bounded playback receipt frame on the socket the call already holds.
     func sendReceipt(_ frame: String) async throws
@@ -314,11 +316,12 @@ private actor FoundationLiveSocket: LiveSocket {
             throw LiveClientError.transport
         }
     }
-    func sendPCM(_ data: Data) async throws {
+    func sendPCM(_ data: Data) async throws -> Bool {
         try LiveSocketTransport.validatePCM(data)
-        guard await sends.acquireAudio() else { throw LiveClientError.queueOverflow }
+        guard await sends.acquireAudio() else { return false }
         do { try await send(.data(data)) } catch { await sends.release(); throw error }
         await sends.release()
+        return true
     }
     /// O1b-N: one bounded playback receipt on the same socket. Like a control frame it is never shed:
     /// a receipt is tiny, and a dropped one is a hole the timeline would have to report.

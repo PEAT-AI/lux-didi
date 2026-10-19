@@ -574,7 +574,8 @@ struct NativeLiveInterruptionSample: Sendable {
     private var terminatedSegment = 0
     /// One recorded underrun per starved arrival, for the native-live.log line.
     var onUnderrun: ((NativePlaybackArrival) -> Void)?
-    var onInterruption: (() async -> Void)?
+    /// Z2: capture was released. Carries the failure that did it (class and code only reach the log).
+    var onInterruption: ((Error?) async -> Void)?
     var onInputChange: ((String) -> Void)?
     var onResume: (() -> Void)?
     /// E1: called once per provider barge-in with the pre facts, then again after `interruptionPostRmsDelayNanos` with postRms.
@@ -1051,7 +1052,7 @@ struct NativeLiveInterruptionSample: Sendable {
                         do { try Task.checkCancellation(); try await send(frame, epoch) }
                         catch {
                             guard self.captureGeneration == token, !Task.isCancelled else { return }
-                            await self.interrupt(); return
+                            await self.interrupt(error); return
                         }
                     }
                 }
@@ -1102,10 +1103,12 @@ struct NativeLiveInterruptionSample: Sendable {
                 rmsMean: post.mean, rmsMax: post.max, rmsSpeechBuffers: post.speechBuffers, at: after))
         }
     }
-    private func interrupt() async {
+    private func interrupt(_ failure: Error? = nil) async {
         stop()
-        await onInterruption?()
+        await onInterruption?(failure)
     }
+    /// Test seam: release capture exactly as a real interruption does, without opening hardware.
+    func interruptForTesting(_ failure: Error? = nil) async { await interrupt(failure) }
     // MARK: Wait cue (contract C1)
 
     /// A tool marker for the current turn arms the wait. If the queue is already dry (the

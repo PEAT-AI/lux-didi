@@ -154,6 +154,70 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     print("DURATION \(started.duration(to: .now)) conversation-diagnostics")
 }
 
+/// Z2: the conversation state machine. One unrequested capture interruption restarts the call once and one more
+/// inside 60 s stays `.failed`; a user Stop never restarts.
+@MainActor private func checkInterruptionRestart() async throws {
+    let started = ContinuousClock.now
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("didi-interruption-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+        (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+    func make(_ name: String) -> (NativeLiveConversation, NativeLiveAudioDevice) {
+        let device = NativeLiveAudioDevice(captureInput: format,
+            defaultInput: { (id: "synthetic", name: "Synthetic input") })
+        let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+            logsDirectory: root.appendingPathComponent(name), audioDevice: device)
+        return (conversation, device)
+    }
+    func event(_ name: String, in directory: URL) throws -> [[String: Any]] {
+        let file = directory.appendingPathComponent("native-live.log")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }.filter { $0["event"] as? String == name }
+    }
+    func settle(_ conversation: NativeLiveConversation) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        try await Task.sleep(for: .milliseconds(1))
+        while conversation.state != .failed {
+            try audioRequire(ContinuousClock.now < deadline, "an interruption settles the conversation")
+            await Task.yield()
+        }
+    }
+    let restartedDirectory = root.appendingPathComponent("restart")
+    let (restarted, restartedDevice) = make("restart")
+    await restartedDevice.interruptForTesting(LiveClientError.transport)
+    try await settle(restarted)
+    let interruptions = try event("capture_interruption", in: restartedDirectory)
+    try audioRequire(interruptions.count == 1, "one native-live line per capture interruption, got \(interruptions.count)")
+    try audioRequire(interruptions[0]["failureClass"] as? String == "LiveClientError"
+        && interruptions[0]["code"] as? String == "transport", "the line names the error class and code, never content")
+    try audioRequire(try event("live_restart", in: restartedDirectory).count == 1,
+        "one unrequested interruption restarts the call exactly once")
+    await restartedDevice.interruptForTesting(LiveClientError.transport)
+    try await settle(restarted)
+    try audioRequire(try event("capture_interruption", in: restartedDirectory).count == 2,
+        "the second interruption is still recorded")
+    try audioRequire(try event("live_restart", in: restartedDirectory).count == 1,
+        "a second interruption within 60 s never restarts again")
+    try audioRequire(restarted.state == .failed
+        && restarted.failure == "Live audio could not recover. Capture released. Restart explicitly to try again.",
+        "a second interruption inside the window keeps the existing failed text")
+    let stoppedDirectory = root.appendingPathComponent("stop")
+    let (stopped, stoppedDevice) = make("stop")
+    stopped.start()
+    await stopped.stop(reason: .userStop, trigger: .button)
+    await stoppedDevice.interruptForTesting(LiveClientError.transport)
+    try await settle(stopped)
+    try audioRequire(try event("capture_interruption", in: stoppedDirectory).count >= 1,
+        "an interruption after a user Stop is still recorded")
+    try audioRequire(try event("live_restart", in: stoppedDirectory).isEmpty, "a user Stop never restarts the call")
+    await stopped.stop()
+    print("PASS one interruption restarts once, a second within 60 s stays failed, a user Stop never restarts")
+    print("DURATION \(started.duration(to: .now)) interruption-restart")
+}
+
 @MainActor private func checkCaptureTapExecutor() async throws {
     let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
     let capture = NativeCaptureBuffer(converter: try NativePCMConverter(input: format))
@@ -667,6 +731,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkCaptureTapExecutor()
             try await checkCaptureLedger()
             try await checkConversationDiagnostics()
+            try await checkInterruptionRestart()
             try checkProductionAudioJournal()
             try checkMinimumDucking()
             try checkReleaseLeakAndDeallocation()

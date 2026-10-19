@@ -120,8 +120,10 @@ node /path/to/your/install/server/dist/host/index.js --mongoose-login
 ```
 
 Your default browser opens the Mongoose consent page, where you sign in with
-Google. The window closes when the session is saved; no token is ever copied,
-pasted or printed. The session refreshes itself while you use it. If it ever
+Google. To keep the current window focused, add `--no-browser`; the command
+prints a sign-in URL for you to open yourself. The complete attempt expires five
+minutes after it starts. After sign-in, the callback page confirms receipt and
+can be closed; no token is ever copied, pasted or printed. The session refreshes itself while you use it. If it ever
 goes stale, the connector next step says **Mongoose session expired, reconnect
 Mongoose** with the same command.
 

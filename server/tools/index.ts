@@ -4,11 +4,14 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
-import { endpointBinding } from '../adapters/mcp/port.js';
+import { endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { redactSecretsWithCount } from './redact.js';
+import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
+import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
+import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
@@ -94,6 +97,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   ownedStores.add(store);
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
   const persistenceFailures = new Set<string>();
+  const historyReader = createHistoryReader();
+  const retained = new Map<string, { runId: string; executionId: string; resultSha256: string; evidence: HostEvidenceRef }>();
   const connection = (tx: Transaction, id: string): BoundConnection => {
     const row = tx.get("SELECT c.*,COALESCE(s.binding_mode,'legacy') AS binding_mode FROM tool_connections c LEFT JOIN tool_connection_semantics s ON s.owner_id=c.owner_id AND s.connection_id=c.connection_id WHERE c.owner_id=? AND c.connection_id=?", [ownerId, id]);
     if (!row || typeof row.policy_json !== 'string' || sha256(row.policy_json) !== row.policy_sha256) throw Error('connection_policy_missing_or_corrupt');
@@ -111,7 +116,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
   // A run freezes admission, not a global conjunction of every connector's policy.
   const currentPolicies = (tx: Transaction, snapshot: RunSnapshot, id: string): boolean => {
-    if (id === 'gateway:live-voice') return options.grantMode === 'owner-trusted-reads';
+    if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id);
     if (!bound || !snapshot.acceptance.connectionIds.includes(id)) return false;
     const current = connection(tx, id); const p = current.policy; const c = p.sourcePolicy.unknownClass;
@@ -119,7 +124,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(set => set.includes(c));
   };
   const currentProjection = (snapshot: RunSnapshot, id: string): boolean => {
-    if (id === 'gateway:live-voice') return options.grantMode === 'owner-trusted-reads';
+    if (id === 'gateway:live-voice' || id === HISTORY_IDENTITY.accountId) return options.grantMode === 'owner-trusted-reads';
     const bound = snapshot.connections.find(b => b.connectionId === id); if (!bound) return false;
     const p = bound.policy;
     try {
@@ -143,6 +148,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return row;
   };
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
+    if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+    }
     if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
@@ -178,7 +187,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     }
   });
 
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction): ToolResultRef => {
+  const evidenceCurrent = (tx: Transaction, call: ToolCallRefusal, snapshot: RunSnapshot, evidence: HostEvidenceRef): boolean => {
+    if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
+    const bound = snapshot.connections.find(item => item.connectionId === target(snapshot, call).connectionId);
+    if (!bound || evidence.expiresAt <= Date.now() || !/^[a-f0-9]{64}$/.test(evidence.entitySha256) || sha256(evidence.body) !== evidence.bodySha256) return false;
+    const p = bound.policy, source = evidence.source;
+    const binding = 'transport' in p.endpoint ? bindingDigestOf(p.endpoint) : p.endpoint.url;
+    return evidence.tool === call.toolName && source.toolName === call.toolName && source.endpointId === p.endpoint.id && sourceBindingOf(source) === binding
+      && source.generation === p.generation && source.schemaDigest === p.schemaDigest && source.account === p.endpoint.account && source.resource === p.endpoint.resource;
+  };
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction, hostEvidence?: HostEvidenceRef): ToolResultRef => {
     const call = callDTO(input);
     try {
       const commit = (tx: Transaction) => {
@@ -187,11 +205,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         if (!currentPolicies(tx, snapshot, bound.connectionId) || !currentProjection(snapshot, bound.connectionId)) throw Error('completion_policy_denied');
         classSet(dataClasses); exact(response, [], Object.keys(response));
         if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
-        const value = { response: detached(response), dataClasses: [...dataClasses] };
+        if (hostEvidence && (!evidenceCurrent(tx, call, snapshot, hostEvidence) || (hostEvidence.kind === 'local-history' && hostEvidence.sources.some(source => !dataClasses.includes(source.dataClass))))) throw Error('evidence_binding_denied');
+        const value = { response: detached(response), dataClasses: [...dataClasses], ...(hostEvidence ? { hostEvidenceRequired: true } : {}) };
         if (Buffer.byteLength(canonicalJSON({ ...value, routeIdentity: snapshot.acceptance.route.identity, intentSha256: sha256(intentBytes(tx, call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
         return persistTerminal(tx, call, 'completed', value);
       };
-      return transaction ? commit(transaction) : store.transaction(commit);
+      const result = transaction ? commit(transaction) : store.transaction(commit);
+      if (hostEvidence) retained.set(result.id, { runId: call.runId, executionId: call.executionId, resultSha256: result.sha256, evidence: detached(hostEvidence) });
+      return result;
     } catch (error) { persistenceFailures.add(call.executionId); throw error; }
   };
   const journal: ToolsOwner['journal'] = {
@@ -241,7 +262,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         const call = storedCall(tx, row);
         if (!hostMatches(accepted, call) || call.executionId !== binding.executionId || call.toolName !== binding.name || call.callId !== binding.callId || row.call_id !== (call.callId ?? null)) return denied;
         if (row.state !== 'refused') { const selected = target(snapshot, call); if (!currentPolicies(tx, snapshot, selected.connectionId) || !currentProjection(snapshot, selected.connectionId)) return denied; }
-        const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string }; classSet(value.dataClasses);
+        const value = JSON.parse(row.result_json) as ModelSnapshot & { intentSha256: string; routeIdentity: string; hostEvidenceRequired?: boolean }; classSet(value.dataClasses);
+        const reference = retained.get(binding.result.id);
+        if (value.hostEvidenceRequired && (!reference || reference.runId !== call.runId || reference.executionId !== call.executionId || reference.resultSha256 !== binding.result.sha256 || !evidenceCurrent(tx, call, snapshot, reference.evidence))) return denied;
+        if (call.toolName === HISTORY_IDENTITY.name && row.state === 'completed' && !value.hostEvidenceRequired) return denied;
         if (value.intentSha256 !== sha256(intentBytes(tx, call)) || value.routeIdentity !== accepted.route.identity) return denied;
         if (value.dataClasses.some(c => !live.allowedClasses.includes(c) || !live.route.allowedClasses.includes(c))) return denied;
         if (row.state === 'completed') {
@@ -284,6 +308,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
 
   const owner: ToolsOwner = {
     journal, resultGate, authorizeDelivery, complete,
+    consumeEvidence(host, binding, authority, signal) {
+      const authorized = authorizeDelivery(host, [binding], [], authority, signal);
+      if (authorized.state !== 'allowed') return authorized;
+      const reference = retained.get(binding.result.id);
+      if (!reference) return { state: 'refused', reason: 'evidence_unavailable' };
+      return { state: 'allowed', evidence: detached(reference.evidence) };
+    },
     applyConnection(input) { apply(input, undefined); },
     applyConnectionIntent(intent) {
       exact(intent, ['expectedPolicySha256', 'policy']);
@@ -396,6 +427,29 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     definitions(runId, tx?: Transaction) {
       const snapshot = tx ? readRun(tx, runId).snapshot : store.transaction(current => readRun(current, runId).snapshot);
       const definitions: ToolDefinition[] = [];
+      if (options.grantMode === 'owner-trusted-reads') definitions.push({ ...HISTORY_IDENTITY, effect: 'read', parameters: HISTORY_PARAMETERS,
+        description: 'Search retained local conversations and notes, or read an exact returned record. Use query/date bounds for search, recordRef alone for detail, or cursor alone to continue. Coverage gaps are explicit.',
+        validate: validateHistory,
+        async execute(args, context) {
+          if (!validateHistory(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId,
+              toolName: HISTORY_IDENTITY.name, accountId: HISTORY_IDENTITY.accountId, resourceId: HISTORY_IDENTITY.resourceId, argumentsHash: sha256(JSON.stringify(args)), ...(call.callId ? { callId: call.callId } : {}) };
+            exactIntent(tx, expected);
+            const accepted = validateCallRun(tx, call).acceptance;
+            const read = historyReader.read(tx, { ownerId, runId: call.runId, authorityEpoch: accepted.authorityEpoch, revision: accepted.revision,
+              routeIdentity: accepted.route.identity, allowedClasses: accepted.allowedClasses.filter(value => accepted.route.allowedClasses.includes(value)) }, args);
+            const response = redactSecretsWithCount(read.response).value;
+            return complete(call as ToolCallIntent, response, read.dataClasses, tx, { kind: 'local-history', ...read.evidence });
+          });
+          return { status: 'completed', result };
+        },
+      });
       for (const bound of snapshot.connections) {
         const p = bound.policy;
         const descriptor = connectorDescriptor(p.connector);
@@ -491,7 +545,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               if (prepared?.notice !== undefined && typeof value.response['text'] === 'string') {
                 value = { ...value, response: { ...value.response, text: `${value.response['text']} ${prepared.notice}` } };
               }
-              return { status: 'completed', result: complete(call, value.response, value.dataClasses) };
+              const hostEvidence = value[HOST_EVIDENCE];
+              if (hostEvidence?.kind === 'remote-body') {
+                const body = redactSecretsWithCount({ text: hostEvidence.body }).value.text as string;
+                return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, { ...hostEvidence, body, bodySha256: sha256(body) }) };
+              }
+              return { status: 'completed', result: complete(call, value.response, value.dataClasses, undefined, hostEvidence) };
             },
           });
         }

@@ -79,11 +79,15 @@ let positive,denied,revoked;
 try{
  positive=await fixture();
  for(const [reason,input] of invalid){const before=positive.calls.length,response=await positive.send(input);assert.equal(response.state,'refused');assert.equal(response.reason,reason);assert.equal(JSON.stringify(response).includes(sentinel),false);assert.equal(positive.calls.length,before);}
+ const refusedTrace=positive.store.transaction(tx=>tx.all('SELECT outcome,output_written_at FROM trace_call ORDER BY intent_at'));
+ assert.equal(refusedTrace.length,invalid.length);assert(refusedTrace.every(row=>row.outcome==='refused'&&Number.isSafeInteger(row.output_written_at)),'successful output receipt preserves semantic refusal');
+ assert.equal(positive.store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM tool_calls').n),0);assert.equal(positive.store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM tool_dispatches').n),0);
  assert.equal(events.filter(event=>event.event==='research_run').length,0,'no invented run ID/question class for an invalid call');
  assert.equal(events.some(event=>event.event==='thinking_sent'),false,'invalid calls never claim a lookup is running');
  const refusals=events.filter(event=>event.event==='research_refused');assert.equal(refusals.length,invalid.length);assert.equal(JSON.stringify(refusals).includes(sentinel),false);
  for(const event of refusals){assert(safeEvent(event));assert.equal(safeEvent({...event,privateQuestion:sentinel}),undefined);assert.equal(safeEvent({...event,reason:sentinel}),undefined);assert.equal(safeEvent({...event,fields:{...event.fields,[sentinel]:'null'}}),undefined);}
  for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'},{source:'mail',mail:{q:'synthetic',maxResults:1}}]){const response=await positive.send({action:'start',question:'synthetic',lookups:[lookup]});assert.equal(response.error,undefined);assert(response.findings.some(finding=>finding.source===lookup.source),'source evidence returned');}
+ assert.equal(positive.store.transaction(tx=>tx.get("SELECT COUNT(*) AS n FROM trace_call WHERE outcome='completed' AND output_written_at IS NOT NULL").n),3);
  assert.equal(positive.calls.filter(call=>call.id==='lux-knowledge').length,1);assert.equal(positive.calls.find(call=>call.id==='lux-knowledge').args.include_sensitive,true);assert.equal(positive.calls.filter(call=>call.id==='gmail').length,1);assert.equal(positive.calls.filter(call=>call.id==='calendar').length,2);
  await positive.close();positive=undefined;
  denied=await fixture(['ordinary','private']);const refusal=await denied.send({action:'start',question:'synthetic',lookups:[{source:'knowledge',query:'synthetic'}]});assert.equal(denied.calls.length,0);assert(!(refusal.findings??[]).some(finding=>finding.source==='knowledge'));await denied.close();denied=undefined;

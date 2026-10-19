@@ -708,6 +708,25 @@ test('K6: a start with no lookups keeps the selector path and its reply shape', 
   assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
 });
 
+// R9: the selector loop's terminal line comes from a finally, so a throw inside the loop leaves a receipt
+// and a good run is never written twice.
+test('R9: a selector round that throws still writes one failed run line, with no exception text', async () => {
+  const h = harness({ selector: knowledge });
+  const deps: ResearchDeps = { ...h.deps, step: () => { throw new Error('step sink gone'); } };
+  await assert.rejects(runResearch(deps, { action: 'start', question: 'what is waiting on me' }, new AbortController().signal), /step sink gone/);
+  assert.equal(h.logs.length, 1, 'the failed run is visible once and never written twice');
+  assert.equal(h.logs[0]!.status, 'failed');
+  assert.equal(h.logs[0]!.stopReason, 'failed', 'a closed error code, never an exception message');
+  assert.equal(JSON.stringify(h.logs[0]).includes('step sink gone'), false, 'no exception text leaves in the line');
+});
+
+test('R9: a normal selector run writes exactly one terminal run line', async () => {
+  const h = harness({ selector: knowledge });
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  assert.equal(h.logs.filter(entry => entry.event === 'research_run').length, 1, 'one run, one line');
+  assert.equal(h.logs[0]!.status !== 'failed', true, 'a good run is never reported as failed');
+});
+
 // --- P5: one deadline per source, the call budget follows the slowest source it reads ---------------
 
 test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget follows that source', async () => {

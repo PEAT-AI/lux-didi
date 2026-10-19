@@ -2887,6 +2887,22 @@ test('U1: research progress reaches the live channel with metadata only', async 
   assert.doesNotMatch(JSON.stringify(progress), /what is on my calendar/, 'the question text never reaches the channel');
 });
 
+// R9: a research call refused at dispatch never reaches the research tool, so before this receipt it left no
+// run line at all and a refused lookup read as a silent no-op in host.log.
+test('R9: a research call refused at dispatch writes one failed run receipt', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-refused-research-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t, { tools: true });
+  await attached(h, 'refused-research');
+  await settleLiveTool(h, 'ref1', 'research', { action: 'not_an_action' });
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event?: string; status?: string; stopReason?: string });
+  const runs = lines.filter(line => line.event === 'research_run');
+  assert.equal(runs.length, 1, 'the refused call leaves exactly one run receipt');
+  assert.equal(runs[0]!.status, 'failed');
+  assert.equal(runs[0]!.stopReason, 'refused');
+});
+
 test('F6: three tool calls in one model message run concurrently and return three responses in order', async t => {
   let inFlight = 0; let peak = 0;
   let release!: () => void;

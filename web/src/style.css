@@ -132,8 +132,8 @@
 /* Activity line under the orb: the one place a tool phrase shows, calm and small. */
 /* W15-R1(b)/issue 230 item 2: the whole activity line, including the tool phrase, must
    read at 4.5:1 or better against the light orb stage. */
-.activity-line{display:flex;align-items:center;justify-content:center;gap:8px;max-width:420px;margin:2px auto 0;padding:0 22px 4px;font-size:.84rem;color:var(--activity-dim);animation:activity-in .3s ease-out}
-.activity-line .activity-text{overflow-wrap:anywhere}
+.activity-line{display:flex;align-items:center;justify-content:center;gap:8px;max-width:420px;margin:2px auto 0;padding:0 22px 4px;font-size:.875rem;color:var(--text-secondary);animation:activity-in .3s ease-out}
+.activity-line .activity-text{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .activity-indicator{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--teal);animation:activity-pulse 1.4s ease-in-out infinite}
 .activity-mark{flex:0 0 auto;color:var(--teal);font-weight:700;line-height:1}
 .activity-thinking{color:var(--text-secondary)}

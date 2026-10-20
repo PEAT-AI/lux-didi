@@ -26,7 +26,12 @@ try{
  const session=new OpenAiLiveVoiceAdapter(options({socketFactory:f.socketFactory})).open(request({system:{text:current,dataClass:'ordinary'}}),control());cleanup.push(()=>session.close());
  await f.frame(1);const frame=f.frames[0];assert.equal(frame.session.instructions,expected);
  f.send({type:'session.started',session:{id:'synthetic-held-prompt'}});await session.ready;
- session.sendCommentary({text:'Synthetic verified source is still reading.'});session.sendThinking({text:'Synthetic silent status.'});await f.frame(3);
- assert.deepEqual(f.frames.slice(1).map(x=>x.type),['session.commentary.append','session.thinking.append']);assert(f.frames.slice(1).every(x=>x.delegation_id===null));
- console.log(JSON.stringify({case:'actual_openai_shipped_prompt_byte_identity',baselineCommit,promptByteIdentical:true,characterSha256:createHash('sha256').update(NAYA_CHARACTER).digest('hex'),instructionsSha256:createHash('sha256').update(expected).digest('hex'),heldPromptCandidate:'005f154ef535061cee130daad94cf93416e53fd0',distinctCommentaryAndThinkingWire:true,behavioralAcceptance:false,audio:false}));
+ // W4: with no delegation open the append is refused rather than written with an id the wire would reject.
+ assert.equal(session.sendCommentary({text:'Synthetic verified source is still reading.'}),false);
+ session.sendThinking({text:'Synthetic silent status.'});await f.frame(2);
+ assert.deepEqual(f.frames.slice(1).map(x=>x.type),['session.thinking.append']);
+ assert.equal(f.frames[1].delegation_id,null,'silent context keeps its null delegation');
+ // W4: the append that names an open delegation is covered in openai-live-voice.test.ts, where a fake clock and
+ // a delegation frame can be driven deterministically; this script keeps to the shipped prompt and the ports.
+ console.log(JSON.stringify({case:'actual_openai_shipped_prompt_byte_identity',baselineCommit,promptByteIdentical:true,characterSha256:createHash('sha256').update(NAYA_CHARACTER).digest('hex'),instructionsSha256:createHash('sha256').update(expected).digest('hex'),heldPromptCandidate:'005f154ef535061cee130daad94cf93416e53fd0',distinctCommentaryAndThinkingWire:false,commentaryRefusedWithNoDelegation:true,behavioralAcceptance:false,audio:false}));
 }finally{for(const fn of cleanup.reverse())await fn();}

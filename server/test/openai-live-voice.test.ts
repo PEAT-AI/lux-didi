@@ -180,6 +180,8 @@ describe('openai gpt-live adapter', () => {
 
   test('S4a-R2 (d): every client command carries its own event id and is recorded in the ledger', async t => {
     const { f, session, captured } = await ready(t);
+    // W4: a commentary append names the open delegation, so one has to be open for the frame to exist at all.
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_s4a', response_id: 'resp_0', offset_ms: 0 } });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
       item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{"q":"x"}' } } });
@@ -193,15 +195,46 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2', 'thk_3']);
     assert.ok(f.frames.slice(1).every(frame => typeof frame['event_id'] === 'string'));
     assert.equal(f.frames[3]!['type'], 'session.commentary.append');
-    assert.equal(f.frames[3]!['delegation_id'], null, 'Responses delegation carries a null delegation_id');
+    assert.equal(f.frames[3]!['delegation_id'], 'dlg_s4a', 'the commentary names the delegation that is open');
     assert.equal(f.frames[3]!['content'], 'Still reading the mail.');
     assert.equal(f.frames[4]!['type'], 'session.thinking.append');
     assert.equal(f.frames[4]!['content'], 'Reading mail.');
   });
 
+  test('W4: a commentary names the one open delegation, and sends nothing without one', async t => {
+    const logged = hostReceipts(t);
+    const { f, session } = await ready(t);
+    // W4: the wire refuses an append whose delegation_id is not the open one, and that refusal can cost the
+    // answer, so an append with no delegation to name is not written at all.
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'no open delegation, nothing sent');
+    session.sendThinking!({ text: 'Reading mail.' });
+    await tally(f.frames, 2);
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['session.thinking.append'],
+      'the silent line still goes out, and no commentary frame was written');
+    assert.equal(f.frames[1]!['delegation_id'], null, 'silent context keeps its null delegation');
+    // One delegation open: the append names it, and the transport says it went out.
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_open', response_id: 'resp_open', offset_ms: 0 } });
+    await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
+    const before = f.frames.length;
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'the open delegation carries it');
+    await tally(f.frames, before + 1);
+    assert.equal(f.frames[before]!['delegation_id'], 'dlg_open', 'the append names the delegation that is open');
+    // Two open delegations: no single id can be vouched for, so the append is refused rather than guessed.
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_second', response_id: 'resp_second', offset_ms: 0 } });
+    await until(() => logged().filter(entry => entry['event'] === 'delegation_open').length === 2);
+    const held = f.frames.length;
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'two open delegations, no send');
+    session.sendThinking!({ text: 'Reading mail.' });
+    await tally(f.frames, held + 1);
+    assert.deepEqual(f.frames.slice(held).map(frame => frame['type']), ['session.thinking.append'], 'no commentary frame');
+    session.close();
+  });
+
   test('S4A-R2 (c): a rejected command is a receipt with its kind, never an interruption', async t => {
     const logged = hostReceipts(t);
     const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_reject', response_id: 'resp_reject', offset_ms: 0 } });
+    await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
     session.sendCommentary!({ text: 'Still reading the mail.' });
     await tally(f.frames, 2);
     f.send({ type: 'error', event_id: 'event_1', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'content', message: 'bad content', client_event_id: 'cmt_1' } });

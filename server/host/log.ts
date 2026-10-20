@@ -39,6 +39,9 @@ const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_su
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
+/** W4: why a progress decision stayed silent, as a closed set (never free text, never the line itself). */
+const PROGRESS_SKIP_REASONS = ['settled', 'no_channel', 'budget', 'interval', 'no_call_in_flight', 'owner_speaking',
+  'answer_playing', 'no_content', 'send_failed', 'no_delegation'];
 /** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. A call the
  *  provider cancelled never settles at the ceiling: its own `tool_cancelled` receipt names it, with no answer. */
 const CEILING_OUTCOMES = ['timeout', 'uncertain'];
@@ -713,6 +716,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'delegationKey', 'reason'])) return;
     if (!isSafeId(value.delegationKey) || !isSafeMember(value.reason, PROGRESS_REASONS)) return;
     return { event: 'commentary_sent', delegationKey: value.delegationKey, reason: value.reason };
+  }
+  if (value.event === 'commentary_skipped') {
+    // W4: a progress line was refused. Which delegation asked, and why it stayed silent; never any text.
+    if (!closedKeys(value, ['event', 'delegationKey', 'reason'])) return;
+    if (!isSafeId(value.delegationKey) || !isSafeMember(value.reason, PROGRESS_SKIP_REASONS)) return;
+    return { event: 'commentary_skipped', delegationKey: value.delegationKey, reason: value.reason };
   }
   if (value.event === 'thinking_sent') {
     // S4a: silent context went out; the count alone, since the text is what the owner must never see in a log.

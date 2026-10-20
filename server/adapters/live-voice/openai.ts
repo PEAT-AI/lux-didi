@@ -1422,7 +1422,7 @@ class Session implements LiveVoiceSession {
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
-          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(); }
+          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(false); }
         }
         if (error && this.checkpoint()) {
           if (pcmBytes && this.isReady) this.dropUpstream('write_error', socket); else this.onError(error);
@@ -1670,7 +1670,7 @@ class Session implements LiveVoiceSession {
    * is bounded by UPLINK_SHED_BYTES plus one frame, and the oldest frames go first so the newest speech wins.
    * W3: a shed is one contiguous run down to the low-water mark, so the wire carries runs, never thin islands.
    */
-  private flushMic(): boolean {
+  private flushMic(sample = true): boolean {
     const socket = this.socket;
     const now = this.clock.now();
     const open = socket !== undefined && socket.readyState === WebSocket.OPEN;
@@ -1705,6 +1705,7 @@ class Session implements LiveVoiceSession {
     // The bytes the socket took out of its own buffer since the last flush: acceptance, never delivery. The level
     // is read after the writes, so a flush nested in a write callback records the same socket state, not a guess.
     const accepted = open && this.lastBufferedAt !== undefined ? Math.max(0, this.lastBuffered - buffered) : 0;
+    if (!sample) return !this.terminal;
     this.sampleUplink(now, accepted, open, open ? socket.bufferedAmount : buffered);
     this.evaluateConnection(now);
     if ((this.shedBytes || this.notOpenBytes) && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
@@ -1718,7 +1719,6 @@ class Session implements LiveVoiceSession {
 
   /** Record what this flush interval captured, discarded and the socket accepted, then start the next interval. */
   private sampleUplink(now: number, accepted: number, open: boolean, buffered: number): void {
-    if (now > 1_000_000 && now < 1_100_000) console.log('DBG', now, accepted, buffered, this.lastBuffered, this.lastBufferedAt);
     this.uplinkSamples.push({ at: now, captured: this.sampleCaptured, discarded: this.sampleDiscarded, accepted,
       backlogged: open && buffered >= UPLINK_SHED_BYTES });
     this.sampleCaptured = 0;

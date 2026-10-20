@@ -1648,9 +1648,18 @@ class Session implements LiveVoiceSession {
 
   /** Speakable progress: the voice model paraphrases it aloud, so the owner hears that a lookup is still running.
    *  Documented shape (`session.commentary.append`, guides/live-delegation): plain-string `content` under 500
-   *  tokens, and a null `delegation_id` under Responses delegation. */
-  sendCommentary(input: { text: string }): void {
-    this.append('session.commentary.append', 'cmt', input);
+   *  tokens. W4: the append names the delegation that is open right now, because the wire refuses an append whose
+   *  `delegation_id` is not the open one and that refusal can cost the answer. No open delegation, or more than
+   *  one so no single id can be vouched for, means nothing is written and the host is told. */
+  sendCommentary(input: { text: string }): boolean {
+    const delegationId = this.openDelegationId();
+    if (delegationId === undefined) return false;
+    return this.append('session.commentary.append', 'cmt', input, delegationId);
+  }
+
+  /** W4: the one delegation open right now, which is the only id a commentary append may name. */
+  private openDelegationId(): string | undefined {
+    return this.delegations.size === 1 ? [...this.delegations.keys()][0] : undefined;
   }
 
   /** Silent context: the model may use it to answer a question about the lookup, and never speaks it on append. */
@@ -1658,13 +1667,14 @@ class Session implements LiveVoiceSession {
     this.append('session.thinking.append', 'thk', input);
   }
 
-  private append(type: 'session.commentary.append' | 'session.thinking.append', kind: 'cmt' | 'thk', input: { text: string }): void {
-    if (this.draining) return;
+  private append(type: 'session.commentary.append' | 'session.thinking.append', kind: 'cmt' | 'thk', input: { text: string }, delegationId: string | null = null): boolean {
+    if (this.draining) return false;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     // The documented ceiling is 500 tokens per append; a short character bound keeps every line well under it.
-    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) fail('invalid_request');
-    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), delegation_id: null, content: input.text }))) fail(this.terminal!.code);
+    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) { fail('invalid_request'); return false; }
+    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), delegation_id: delegationId, content: input.text }))) { fail(this.terminal!.code); return false; }
+    return true;
   }
 
   endAudioStream(): void {

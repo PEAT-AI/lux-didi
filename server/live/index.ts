@@ -1357,12 +1357,11 @@ export class LiveSessionOwner {
     if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return this.#progressSkip(handle, 'answer_playing');
     const line = this.#progressLine(handle);
     if (line === undefined) return this.#progressSkip(handle, 'no_content');
-    // W4: the transport answers whether the append left the wire. A refusal (no open delegation) is a receipt,
-    // never a claimed send, and the answer that is owed is untouched by it. The port is typed `void` today, so a
-    // transport that says nothing at all counts as delivered.
-    let delivered: boolean | undefined;
-    try { delivered = handle.session.sendCommentary!({ text: line }) as unknown as boolean | undefined; } catch { return this.#progressSkip(handle, 'send_failed'); }
-    if (delivered === false) return this.#progressSkip(handle, 'no_delegation');
+    // W4: the transport answers whether the append left the wire. A refusal (no open delegation to name) is a
+    // receipt, never a claimed send, and the answer that is owed is untouched by it. A transport that answers
+    // nothing at all counts as delivered.
+    try { if (handle.session.sendCommentary!({ text: line }) === false) return this.#progressSkip(handle, 'no_delegation'); }
+    catch { return this.#progressSkip(handle, 'send_failed'); }
     handle.progressSentAt = now;
     handle.progressLines += 1;
     hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason });
@@ -2044,7 +2043,9 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          this.#sendThinking(handle, event.calls.filter(call => call.name !== RESEARCH_TOOL_NAME));
+          // W4-R2: #sendThinking filters the research call itself and names the fan-out from it, so it is handed
+          // the whole batch; a pre-filtered list made a research-only batch look like no batch at all.
+          this.#sendThinking(handle, event.calls);
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');

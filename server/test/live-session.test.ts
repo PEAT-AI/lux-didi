@@ -4067,6 +4067,24 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   answered.attachment.close();
 });
 
+test('W4: a research-only batch still gets its silent line', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'research-thinking');
+  // W4-R2: the tool-call handler used to hand #sendThinking a list it had already stripped of the research call,
+  // so a batch of nothing but research looked like a batch of nothing at all and no line went out.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
+  await settlePort();
+  assert.equal(fake.thinking.length, 1, 'the research lookup reaches the silent channel');
+  assert.match(fake.thinking[0]!, /Running a lookup across your sources/, 'and the line names the fan-out, not a source');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('review F1/F2: the research lookup, the one the model can call, speaks and thinks', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();

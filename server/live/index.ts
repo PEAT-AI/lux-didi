@@ -1356,10 +1356,11 @@ export class LiveSessionOwner {
     if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return this.#progressSkip(handle, 'answer_playing');
     const line = this.#progressLine(handle);
     if (line === undefined) return this.#progressSkip(handle, 'no_content');
-    let delivered: boolean | void;
-    try { delivered = handle.session.sendCommentary!({ text: line }); } catch { return this.#progressSkip(handle, 'send_failed'); }
     // W4: the transport answers whether the append left the wire. A refusal (no open delegation) is a receipt,
-    // never a claimed send, and the answer that is owed is untouched by it.
+    // never a claimed send, and the answer that is owed is untouched by it. The port is typed `void` today, so a
+    // transport that says nothing at all counts as delivered.
+    let delivered: boolean | undefined;
+    try { delivered = handle.session.sendCommentary!({ text: line }) as unknown as boolean | undefined; } catch { return this.#progressSkip(handle, 'send_failed'); }
     if (delivered === false) return this.#progressSkip(handle, 'no_delegation');
     handle.progressSentAt = now;
     handle.progressLines += 1;

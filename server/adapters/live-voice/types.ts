@@ -116,6 +116,9 @@ export interface LiveVoiceDiagnostics {
   generationCompleteEvents: number; turnCompleteEvents: number;
   outputAudioFrames: number; outputAudioPCMBytes: number;
   outputAudioAfterInitialTurnFrames: number; outputAudioAfterInitialTurnPCMBytes: number;
+  /** W3: the quality the adapter derives from its own uplink measurements, and the bytes the socket drained.
+   *  `weakAt` is the last moment it observed the link weak, which is what the watchdog compares with its wait. */
+  connection?: { quality: 'ok' | 'weak'; uploadKbps: number; weakAt?: number };
 }
 export type TranscriptFinalOrigin = 'provider' | 'app_quiet' | 'app_model_start' | 'app_response_end' | 'typed' | 'unknown';
 export type LiveVoiceEvent = { sequence: number } & (

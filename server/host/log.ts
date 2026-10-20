@@ -320,11 +320,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_upstream_queue', bufferedBytes: value.bufferedBytes };
   }
   if (value.event === 'uplink_shed') {
-    // Closed shape (3o): mic frame bytes shed from the front of the uplink queue, and the peak backlog of the
-    // window. One record per UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
-    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak'])) return;
-    if (!isSafeCount(value.bytes) || !isSafeCount(value.bufferedPeak)) return;
-    return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak };
+    // Closed shape (3o, W3): mic frame bytes shed from the front of the uplink queue, the peak backlog of the
+    // window, how many contiguous runs went, the bytes the socket drained per second and the frames lost while
+    // the socket was not open. One record per UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
+    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak', 'shedRuns', 'drainBytesPerSec', 'notOpenBytes'])) return;
+    if (!isSafeCount(value.bytes) || !isSafeCount(value.bufferedPeak) || !isSafeCount(value.shedRuns)) return;
+    if (!isSafeCount(value.drainBytesPerSec) || !isSafeCount(value.notOpenBytes)) return;
+    return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak, shedRuns: value.shedRuns,
+      drainBytesPerSec: value.drainBytesPerSec, notOpenBytes: value.notOpenBytes };
+  }
+  if (value.event === 'connection_quality') {
+    // Closed shape (W3): one record when the adapter's own uplink measurement flips between ok and weak, with
+    // the drained upload as counts only. The words the owner reads are never in the log.
+    if (!closedKeys(value, ['event', 'quality', 'uploadKbps'])) return;
+    if (value.quality !== 'ok' && value.quality !== 'weak') return;
+    if (!isSafeCount(value.uploadKbps)) return;
+    return { event: 'connection_quality', quality: value.quality, uploadKbps: value.uploadKbps };
   }
   if (value.event === 'live_stall') {
     // The same recovery path owns inbound silence and bounded outbound no-progress. Each receipt carries only the

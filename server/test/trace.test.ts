@@ -638,6 +638,8 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     Number(store.transaction(tx => tx.get(`SELECT COUNT(*) AS n FROM ${table}`)!['n']))]));
   const traceVersion = (store: Store): number => Number(store.transaction(tx =>
     tx.get("SELECT MAX(version) AS v FROM runtime_migrations WHERE owner='trace'")!['v']));
+  // The current owner version, not a number frozen at v2: the migration list grows with the schema.
+  const latestTraceVersion = Math.max(...traceMigrations.map(migration => migration.version));
   try {
     const db = new DatabaseSync(join(dir, 'state.sqlite'));
     try {
@@ -661,7 +663,7 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const migrated = new Store(dir, []);
     try {
       assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
-      assert.equal(traceVersion(migrated), 2);
+      assert.equal(traceVersion(migrated), latestTraceVersion);
       const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
       assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
         'the same native sequence in another session is its own event, not a replay of ls-v1');
@@ -672,8 +674,8 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const again = new Store(dir, []);
     try {
       assert.deepEqual(counts(again), { ...seeded, trace_event: 2, trace_playback: 2 }, 'reopening an already-migrated store keeps every row');
-      assert.equal(traceVersion(again), 2);
-      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), 2,
+      assert.equal(traceVersion(again), latestTraceVersion);
+      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), traceMigrations.length,
         'one ledger row per applied version, so the migration ran once');
     } finally { again.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

@@ -1189,7 +1189,7 @@ test('#472: a run cancelled after its first answer is logged partial and still h
 // --- #1020 behaviour 1: what the model is told about the sources it could not read ---------------
 
 test('#1020: a source that was not configured is named with its reason in the note the model voices', async () => {
-  const h = harness({ configured: ['knowledge'] });
+  const h = harness({ configured: ['knowledge'], execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? '### Release scope (DECISION | 2026-10-17) [id 12]' : 'evidence', true, call.key)) });
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'who is on my team',
     lookups: [{ source: 'company', query: 'team structure' }, { source: 'chat', query: 'team' }, { source: 'knowledge', query: 'team' }],
@@ -1199,7 +1199,7 @@ test('#1020: a source that was not configured is named with its reason in the no
 });
 
 test('#1020: a timed-out source is named as timed out, in seconds, beside the source that answered', async () => {
-  const h = harness({ configured: ['knowledge', 'chat'] });
+  const h = harness({ configured: ['knowledge', 'chat'], execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? '### Release scope (DECISION | 2026-10-17) [id 12]' : 'evidence', true, call.key)) });
   const deps: ResearchDeps = { ...h.deps, unavailableNow: () => [{ source: 'chat', reason: 'timeout' }] };
   const reply = await runResearch(deps, {
     action: 'start', question: 'what is waiting on me',

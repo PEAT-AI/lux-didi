@@ -53,7 +53,7 @@ import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
-import { fixture as openAiFixture } from './openai-live-voice-fixture.js';
+import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -4911,6 +4911,22 @@ test('W6/Q8: one status definition, so an error result is the only thing the jou
     'a reply that names a failure is a failure, whatever else it carries');
   assert.equal(journalToolStatus({ status: 'partial', researchId: 'r1', findings: [{ text: 'a source answered' }] }), 'completed',
     'a reply that carries an answer is completed: error is never inferred from anywhere else');
+});
+
+test('W6/H3: a gate held with nothing unanswered writes no deferred receipt', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => detach());
+  const { socket, session, captured } = await openAiReady(t);
+  socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+  socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{}' } } });
+  for (let attempt = 0; attempt < 40 && !captured.events.some(event => event.type === 'toolCall'); attempt += 1) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(captured.events.some(event => event.type === 'toolCall'), 'the adapter emitted the call');
+  // The response is still open, so the turn owes a continuation, but this call has its answer: nothing is
+  // awaited, so no receipt may claim a wait (#451 H3, ruling W6-R1 ASK-3).
+  assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'continuation_deferred'), []);
 });
 
 test('W6/H22: a research receipt names the call it answers', async t => {

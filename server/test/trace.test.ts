@@ -409,7 +409,7 @@ test('exportMetadata selects named columns only', () => {
     recordUtterance(store, { turnId: 't1', role: 'owner', at: T0 + 1, final: true, text: 'text' });
     const exported = exportMetadata(readOf(store), SESSION);
     assert.deepEqual(Object.keys(exported.trace_turn![0]!).sort(), [
-      'attribution_uncertain', 'close_reason', 'closed_at', 'first_audible_at', 'live_session_id', 'mono_ms',
+      'attribution_uncertain', 'clock_domain', 'close_reason', 'closed_at', 'first_audible_at', 'live_session_id', 'mono_ms',
       'opened_at', 'origin', 'outcome', 'playback_drained_at', 'stall_reason', 'supersedes_turn_id', 'turn_id', 'turn_index',
     ]);
     assert.equal(exported.trace_utterance, undefined);

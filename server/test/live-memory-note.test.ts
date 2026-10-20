@@ -171,6 +171,13 @@ test('a short ordinary note stores against the preference the owner stated', asy
   assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
 });
 
+test('the same short note stores when the owner stated it without a preference verb', async t => {
+  // The reviewer's second acceptance payload: "just tea for me first thing" says nothing about
+  // preference, so the note's verb must not be refused for want of a matching one.
+  const store = liveSession(t, [{ text: 'just tea for me first thing', finished: true }]);
+  assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
+});
+
 test('that same short note is still refused when it flips the preference', async t => {
   // The paired guard: with the verb out of the ratio the support is 1 of 1, so only polarity refuses.
   const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);

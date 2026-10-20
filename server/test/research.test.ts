@@ -1180,15 +1180,20 @@ test('one configured source never pays a selector round', async () => {
 });
 
 test('a quick_fact continuation reads deterministically: no second selector round runs', async () => {
+  // B1: the fixture must prove the deterministic path still reads, so the direction names a second
+  // configured source and the test observes the read and the credit, not just the missing selector.
   let selects = 0;
   const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }, () => { selects += 1; });
-  const h = harness({ selector: quick });
+  const h = harness({ selector: quick, executeText: MERGED_CALENDAR });
   const scheduler = new ResearchScheduler(h.deps);
   const first = await scheduler.call({ action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   assert.equal(selects, 1);
-  const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'and the invoice from the plumber' }, new AbortController().signal);
+  const readsBefore = h.executed.length;
+  const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
-  assert.equal(next['status'] !== undefined, true, 'the continuation still answers');
+  const reads = h.executed.slice(readsBefore);
+  assert.ok(reads.some(call => call.name === 'gcal_list'), `the continuation reads the source its direction names: ${JSON.stringify(reads)}`);
+  assert.equal((next['unchecked'] as string[]).includes('calendar'), false, 'and the reply credits the source it read');
 });
 
 test('a selector round still delivers every source the selector chose', async () => {

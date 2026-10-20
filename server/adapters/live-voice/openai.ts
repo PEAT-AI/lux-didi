@@ -1679,10 +1679,11 @@ class Session implements LiveVoiceSession {
       for (const queued of this.micPending) { const bytes = Buffer.byteLength(queued.frame); this.notOpenBytes += bytes; this.sampleDiscarded += bytes; }
       this.micPending = []; this.micPendingBytes = 0;
     } else {
-      if (this.micPending.length > 1 && socket.bufferedAmount + this.micPendingBytes > UPLINK_SHED_BYTES) {
+      if (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_BYTES) {
         // W3: one contiguous run of the oldest frames down to the low-water mark, so the frames that follow are
-        // consecutive speech rather than every other 20 ms frame. Triggered by the whole queue, priced on the
-        // queued bytes alone: a pinned socket cannot shrink, so a total-queue low-water mark would thin the queue.
+        // consecutive speech rather than every other 20 ms frame. The trigger and the mark are the queued bytes:
+        // a socket pinned at the cap cannot shrink, so pricing the shed on the whole queue would drop a frame per
+        // arrival and hand back exactly the islands this replaces.
         while (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_LOW_BYTES) {
           const shed = this.micPending.shift()!;
           const bytes = Buffer.byteLength(shed.frame);
@@ -1701,9 +1702,9 @@ class Session implements LiveVoiceSession {
       this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
       this.watchUpstreamStall(socket);
     }
-    // Both drains are the bytes the socket took out of its own buffer since the last flush: acceptance, not delivery.
-    const accepted = open && this.lastBufferedAt !== undefined ? Math.max(0, this.lastBuffered + written - buffered) : 0;
-    this.sampleUplink(now, accepted, open, buffered);
+    // The bytes the socket took out of its own buffer since the last flush: acceptance, never delivery.
+    const accepted = open && this.lastBufferedAt !== undefined ? Math.max(0, this.lastBuffered - buffered) : 0;
+    this.sampleUplink(now, accepted, open, buffered + written);
     this.evaluateConnection(now);
     if ((this.shedBytes || this.notOpenBytes) && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
       this.shedReportedAt = now;

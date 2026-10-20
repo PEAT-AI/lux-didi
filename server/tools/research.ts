@@ -148,7 +148,7 @@ export interface ResearchLookup { source: LookupSource; query: string; history?:
 export type LookupOutcome = 'ok' | 'empty' | 'unavailable' | 'failed' | 'timeout';
 
 export interface ResearchRoutedLog {
-  event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number;
+  event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number; callKey?: string;
   ms: number[]; outcomes: LookupOutcome[];
 }
 
@@ -654,6 +654,8 @@ export interface RunState {
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
+  /** #451 H22: the model call this run answers, the adapter's own call id (ruling W6-R1). */
+  callKey?: string;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
   progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
@@ -683,10 +685,11 @@ export class ResearchLedger {
   #last: RunState | undefined;
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
-  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number }): RunState {
+  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
     const run: RunState = {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
+      ...(input.callKey === undefined ? {} : { callKey: input.callKey }),
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
@@ -766,6 +769,15 @@ export class ResearchLedger {
 // ---------------------------------------------------------------------------------------------
 // Run
 
+/** #451 H22 (W6-R1): the model call a run answers, the adapter's own call id, which is the value
+ *  `trace_call.provider_call_id` already holds, so one call reads across host.log and the trace. */
+const callKeyOf = (run: RunState): { callKey?: string } => (run.callKey === undefined ? {} : { callKey: run.callKey });
+/** The resolved calendar window as two dates, never the query that produced it. */
+const windowDates = (window: string, now: number, timeZone: string): { windowFrom?: string; windowTo?: string } => {
+  const range = windowRange(window, now, timeZone);
+  return { windowFrom: range.timeMin.slice(0, 10), windowTo: range.timeMax.slice(0, 10) };
+};
+
 /** R6: one metadata-only line for the moment a call answered ahead of the sources still reading. */
 export interface ResearchFirstAnswer {
   event: 'research_first_answer'; researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
@@ -778,6 +790,8 @@ export interface ResearchLateFindings {
 
 export interface ResearchProgress {
   researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
+  /** #451 H22: the model call this run answers, the id `trace_call.provider_call_id` records. */
+  callKey?: string;
   sourcesDone: SourceKind[]; sourcesPending: SourceKind[]; elapsedMs: number;
 }
 export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'routed';
@@ -794,7 +808,9 @@ export interface ResearchRunLog {
 
 /** Q1: one metadata-only record per internal sub-call: counts and bytes, never the query or text. */
 export interface ResearchSubcallLog {
-  event: 'research_subcall'; researchId: string; kind: LedgerKind; tool: string; ok: boolean;
+  event: 'research_subcall'; researchId: string; kind: LedgerKind; tool: string; ok: boolean; callKey?: string;
+  /** Calendar reads only: the resolved window as two dates, never the query that produced it. */
+  windowFrom?: string; windowTo?: string;
   errorCode?: string; items: number; rawBytes: number; keptBytes: number; queryChars: number;
   queryAuthor: 'selector' | 'fallback' | 'routed';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
@@ -1803,11 +1819,11 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const schedule = deps.schedule ?? scheduleTimer;
-  deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
+  deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
   // 3r R1 outcome 5: a routed read used to go silent until it returned. It now beats at the same
   // dead-air cadence as the loop, so the model and the owner hear the run is alive inside five seconds.
   const beat = (): void => {
-    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
+    deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
   };
   let beatTimer: { unref(): void; cancel(): void } | undefined;
   const arm = (): void => { beatTimer = schedule(() => { beat(); arm(); }, RESEARCH.progressEveryMs); beatTimer.unref(); };
@@ -1844,7 +1860,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
       });
       logSubcall({
-        event: 'research_subcall', researchId: run.researchId, kind: outcome.kind, tool: outcome.tool,
+        event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
         ok: outcome.outcome === 'ok' || outcome.outcome === 'empty',
         ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { errorCode: outcome.outcome }),
         items: outcome.lines.length,
@@ -1895,13 +1911,13 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     const status = cut ? 'stopped' : (answered ? 'answered' : 'partial');
     runStatus = cut ? 'failed' : (answered ? 'answered' : 'partial');
     runStop = cut ? 'cancelled' : (answered ? 'answered' : 'insufficient');
-    deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
+    deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
     reply = buildReply(run, status, configured, false, limit, sources);
     const historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
     reply = withHistoryPages(reply, historyPages);
     logRouted({
-      event: 'research_routed', researchId: run.researchId, sources: outcomes.map(outcome => outcome.lookup.source),
+      event: 'research_routed', researchId: run.researchId, ...callKeyOf(run), sources: outcomes.map(outcome => outcome.lookup.source),
       lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
     });
     return reply;
@@ -2041,7 +2057,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (call.action === 'stop') {
     const run = deps.ledger.stop(call.researchId);
     if (!run) return { researchId: call.researchId ?? '', status: 'stopped', findings: [], unchecked: configured, canContinue: false };
-    deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
+    deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
     const reply = buildReply(run, 'stopped', configured, false, limit);
     deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound: [], stopReason: 'stop', status: 'stopped', ops: run.ops, sources: [], elapsedMs: Math.max(0, now() - run.startedAt), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply).length, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: false, findingChars: [] });
     return reply;
@@ -2051,7 +2067,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
-    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now() });
+    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
   } else {
     if (call.cursor !== undefined) {
       const prior = deps.ledger.find(call.researchId ?? '');
@@ -2078,7 +2094,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);
   const current = (): boolean => !run.cancelled && !run.stopped && deps.ledger.find(run.researchId) === run;
   const emit = (event: ResearchProgress): void => {
-    if (current()) emitProgress({ ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
+    if (current()) emitProgress({ ...callKeyOf(run), ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
   };
   const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
   let invocation = 0;
@@ -2179,7 +2195,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const at = now();
     worstGapMs = Math.max(worstGapMs, at - lastHeardAt);
     lastHeardAt = at;
-    deps.emit(progress);
+    deps.emit({ ...callKeyOf(run), ...progress });
   };
 
   notify({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
@@ -2488,12 +2504,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const calText = result?.text ?? '';
             const partial = /\[calendar read incomplete: (\d+) calendars? not read\]/.exec(calText);
             logSubcall({
-              event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,
+              event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind, tool: sub.name,
               ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
               items: result ? itemLines(result.text).length : 0,
               rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
               queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
-              ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
+              ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today'), ...windowDates(action?.window ?? 'today', now(), deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) } : {}),
               ...(partial ? { unread: Number(partial[1]) } : {}),
             });
           }

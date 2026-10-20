@@ -662,6 +662,21 @@ describe('openai gpt-live adapter', () => {
       [{ event: 'gptlive_tool_output', calls: 2, responseCreate: 'sent' }]);
   });
 
+  test('W6/H3: a gate held with nothing unanswered writes no deferred receipt', async t => {
+    const clock = new FakeClock();
+    const logged = hostReceipts(t);
+    const { f, session, captured } = await ready(t, { clock });
+    f.send(delegated('response.created', { response: { id: 'resp_1' } }));
+    f.send(delegated('response.output_item.done', functionCall('call_1')));
+    await until(() => captured.events.filter(event => event.type === 'toolCall').length === 1);
+    // The response is still open (no response.done), so the turn owes a continuation, but this call has
+    // its answer: nothing is awaited, so no receipt may claim a wait.
+    assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
+    await quiet();
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'continuation_deferred'), [],
+      'deferred is only written when something is really awaited');
+  });
+
   test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {
     const clock = new FakeClock();
     const logged = hostReceipts(t);

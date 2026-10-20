@@ -539,11 +539,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_progress') {
     // 241: run phase and source kinds only, never question text, evidence or item ids.
-    if (Object.keys(value).sort().join(',') !== ['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'].sort().join(',')) return;
+    const hasCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    const progressKeys = [...['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'], ...(hasCall ? ['callKey'] : [])];
+    if (Object.keys(value).sort().join(',') !== progressKeys.sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_progress');
     if (!isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
     if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
-    return { event: 'research_progress', researchId: value.researchId, phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
+    if (hasCall && !isSafeId(value.callKey)) return;
+    return { event: 'research_progress', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
   }
   if (value.event === 'research_run') {
     // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
@@ -595,14 +598,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
-    const keys = ['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'];
+    const routedCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : [])];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
+    if (routedCall && !isSafeId(value.callKey)) return;
     if (!isSafeCount(value.lookups)) return;
     if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
-    return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
+    return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
   }
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
@@ -654,7 +659,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
     const hasWindow = Object.prototype.hasOwnProperty.call(value, 'window');
     const hasUnread = Object.prototype.hasOwnProperty.call(value, 'unread');
-    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : []), ...(hasUnread ? ['unread'] : [])];
+    const hasCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    const hasFrom = Object.prototype.hasOwnProperty.call(value, 'windowFrom');
+    const hasTo = Object.prototype.hasOwnProperty.call(value, 'windowTo');
+    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : []), ...(hasUnread ? ['unread'] : []),
+      ...(hasCall ? ['callKey'] : []), ...(hasFrom ? ['windowFrom'] : []), ...(hasTo ? ['windowTo'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_subcall');
     if (!isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
@@ -664,7 +673,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
-    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
+    // A resolved window is two calendar dates in the id form, never a query and never an event title.
+    if (hasFrom !== hasTo) return;
+    if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;
+    if (hasCall && !isSafeId(value.callKey)) return;
+    return { event: 'research_subcall', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}), ...(hasFrom ? { windowFrom: value.windowFrom, windowTo: value.windowTo } : {}) };
   }
   if (value.event === 'conversation_summary_recovery') {
     // OUTCOME 3: the host-start recovery sweep, a count of rows re-queued and rows left for later only.

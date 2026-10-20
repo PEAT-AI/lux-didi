@@ -1491,6 +1491,9 @@ class Session implements LiveVoiceSession {
    */
   private deferralReceipt(): void {
     const awaiting = this.pendingCalls.filter(call => !this.answeredCalls.has(call.id)).length;
+    // #451 H3: "deferred" names a wait, so a gate held by `delegatedOutstanding` with no unanswered call
+    // has nothing to await and says nothing here. The continuation decision receipt already names that skip.
+    if (awaiting === 0) return;
     hostLogEvent({ event: 'continuation_deferred', responseKey: this.currentResponse ?? 'none', awaiting });
   }
 

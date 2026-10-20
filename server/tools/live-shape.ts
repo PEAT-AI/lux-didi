@@ -12,12 +12,12 @@
 
 /** Per-tool budgets for the text a tool result puts in front of the Live model. Each bound is
  * named so a reviewer can see the size policy: 3 knowledge hits with 400-character bodies, 8
- * Mattermost posts with 250-character bodies, 5 mail messages with 300-character excerpts (1500
+ * Mattermost posts with 250-character bodies, 10 mail messages with 300-character excerpts (1500
  * for one requested message), and 8 calendar events of 150 characters. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
 export const GMAIL_BODY_CHARS = 1500;
-export const GMAIL_LIST_MESSAGES = 5;
+export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
 export const CALENDAR_EVENTS = 8;
 export const CALENDAR_EVENT_CHARS = 150;

@@ -2391,8 +2391,8 @@ export class LiveSessionOwner {
     if (names.has('search_knowledge')) sources.push('knowledge');
     // Outcome 3: detect a source by the tool its read actually uses, never a sibling, so a calendar
     // read is never advertised when the connection only grants the calendar-list sibling.
-    if (names.has('gcal_list')) sources.push('calendar');
-    if (names.has('gmail_list')) sources.push('mail');
+    if (names.has('calendar_list_events')) sources.push('calendar');
+    if (names.has('gmail_search_messages')) sources.push('mail');
     if (names.has('mattermost_search')) sources.push('chat');
     if (names.has('search_mongoose')) sources.push('mongoose');
     // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
@@ -2443,9 +2443,9 @@ export class LiveSessionOwner {
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
-          ...(ok && call.name === 'gmail_list' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
-          ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
-          ...(ok && call.name === 'gcal_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
+          ...(ok && call.name === 'gmail_search_messages' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
+          ...(ok && call.name === 'calendar_list_events' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
+          ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({

@@ -9,7 +9,7 @@ import { canonicalJSON } from '../tools/canonical.js';
  */
 export const LIVE_CACHED_READS: readonly string[] = [
   'mattermost_list_channels',
-  'gcal_calendars',
+  'calendar_list_calendars',
   'gmail_get_profile',
 ];
 

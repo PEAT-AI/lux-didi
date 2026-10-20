@@ -45,8 +45,8 @@ async function fixture(routeClasses=classes){
  const store=new Store(join(dir,'data'),hostMigrations),cleanups=[],wire=await voiceFixture({after:fn=>cleanups.push(fn)}),sdkRows=[],calls=[];let runtime,service,dispatch;
  const definitions={
   'lux-knowledge':[{name:'search_knowledge',inputSchema:{type:'object',properties:{query:{type:'string'},limit:{type:'integer'},include_sensitive:{type:'boolean'}},required:['query','limit','include_sensitive'],additionalProperties:false}}],
-  gmail:[{name:'gmail_list',inputSchema:{type:'object',properties:{q:{type:'string'},maxResults:{type:'integer'},pageToken:{type:'string'}},additionalProperties:false}}],
-  calendar:[{name:'gcal_calendars',inputSchema:{type:'object',properties:{},additionalProperties:false}},{name:'gcal_list',inputSchema:{type:'object',properties:{calendarId:{type:'string'},timeMin:{type:'string'},timeMax:{type:'string'},maxResults:{type:'integer'},pageToken:{type:'string'}},additionalProperties:false}}],
+  gmail:[{name:'gmail_search_messages',inputSchema:{type:'object',properties:{q:{type:'string'},maxResults:{type:'integer'},pageToken:{type:'string'}},additionalProperties:false}}],
+  calendar:[{name:'calendar_list_calendars',inputSchema:{type:'object',properties:{},additionalProperties:false}},{name:'calendar_list_events',inputSchema:{type:'object',properties:{calendarId:{type:'string'},timeMin:{type:'string'},timeMax:{type:'string'},maxResults:{type:'integer'},pageToken:{type:'string'}},additionalProperties:false}}],
  };
  const transports=new Map(),originalFetch=globalThis.fetch,sources=[];
  try{
@@ -57,8 +57,8 @@ async function fixture(routeClasses=classes){
     calls.push({id,name:request.params.name,args:request.params.arguments});await dispatch?.(id);
     let text;
     if(id==='lux-knowledge')text='knowledge results: 1\n**#1** Synthetic result';
-    else if(id==='gmail')text=JSON.stringify({family:'gmail',tool:'gmail_list',data:{messages:[{id:'synthetic-message',headers:{Subject:'Synthetic message',From:'synthetic@example.invalid',Date:'Synthetic date'}}]},coverage:{complete:true,next_page_token:null}});
-    else text=JSON.stringify({family:'calendar',tool:request.params.name,data:request.params.name==='gcal_calendars'?{calendars:[{id:'primary',summary:'Synthetic primary',primary:true,timeZone:'UTC'}]}:{events:[{id:'synthetic-event',summary:'Synthetic event',start:{dateTime:request.params.arguments.timeMin},end:{dateTime:request.params.arguments.timeMax}}]},coverage:{complete:true,next_page_token:null}});
+    else if(id==='gmail')text=JSON.stringify({family:'gmail',tool:'gmail_search_messages',data:{messages:[{id:'synthetic-message',headers:{Subject:'Synthetic message',From:'synthetic@example.invalid',Date:'Synthetic date'}}]},coverage:{complete:true,next_page_token:null}});
+    else text=JSON.stringify({family:'calendar',tool:request.params.name,data:request.params.name==='calendar_list_calendars'?{calendars:[{id:'primary',summary:'Synthetic primary',primary:true,timeZone:'UTC'}]}:{events:[{id:'synthetic-event',summary:'Synthetic event',start:{dateTime:request.params.arguments.timeMin},end:{dateTime:request.params.arguments.timeMax}}]},coverage:{complete:true,next_page_token:null}});
     return {content:[{type:'text',text}]};
    });await sdk.connect(transport);sdkRows.push({sdk,transport});transports.set(id,transport);
   }

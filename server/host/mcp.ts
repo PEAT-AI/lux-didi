@@ -13,7 +13,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
-import { identityAction, identityProofMemo, proveIdentity, IDENTITY_TIMEOUT_MS, type IdentityProof } from '../connectors/identity.js';
+import { identityAction, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -67,7 +67,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in'; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -360,7 +360,9 @@ export async function composeMcpRuntime(options: {
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;
       let identity: IdentityProof | undefined;
-      if (identitySource && descriptor && expectedIdentities.length) {
+      // A strict source probes even when no owner identity is configured: Google's helper pins its own
+      // account, so the no-comparison policy must not publish an unverified read (lux-didi #495).
+      if (identitySource && descriptor && (expectedIdentities.length > 0 || identitySource.strict === true)) {
         registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource, tools: discovery.tools });
         try {
           const reader = descriptor.createReader({ port: sourcePort, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
@@ -380,8 +382,11 @@ export async function composeMcpRuntime(options: {
           });
         } finally { registry.clearProbe(entry.id); }
         if (stale()) return { retryable: false };
-        if (identityAction(identity) === 'refuse') {
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-mismatch', reasonCode: 'identity_mismatch', identity });
+        if (identityAction(identity, identitySource.strict === true) === 'refuse') {
+          // A strict source refuses an unproven identity too. The reason code is a closed helper code,
+          // so the reply names the source without ever carrying the account or a token path.
+          const code = refusalCode(identity);
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
           return { retryable: false };
         }
         if (!identity.proven) {
@@ -389,7 +394,7 @@ export async function composeMcpRuntime(options: {
           return { retryable: false };
         }
       } else if (identitySource && expectedIdentities.length === 0) {
-        // No owner identity configured: the explicit no-comparison policy, never a failed proof.
+        // No owner identity configured and a non-strict source: the explicit no-comparison policy.
         options.identityLog?.(entry.connector, true, null);
       }
       if (stale()) return { retryable: false };

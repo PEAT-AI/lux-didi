@@ -63,7 +63,7 @@ export async function replay(connector,name,args,response,{unavailable=false,cli
  }finally{await live?.shutdown();await adapter?.close();store.close();await f.close();rmSync(dir,{recursive:true,force:true});}
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)){
-const cases=[];cases.push(await replay('lux-knowledge','get_insight',{ids:[101]},text));cases.push(await replay('mongoose','get_knowledge_item',{id:'synthetic-item'},text));cases.push(await replay('google','gmail_read',{id:'synthetic-message',format:'full'},JSON.stringify({data:{id:'synthetic-message',subject:'Synthetic',body:text,from:'synthetic@example.invalid'}})));console.log(JSON.stringify({case:'canonical_full_source_close_reopen',cases}));
+const cases=[];cases.push(await replay('lux-knowledge','get_insight',{ids:[101]},text));cases.push(await replay('mongoose','get_knowledge_item',{id:'synthetic-item'},text));cases.push(await replay('google','gmail_read_message',{id:'synthetic-message',format:'full'},JSON.stringify({data:{id:'synthetic-message',subject:'Synthetic',body:text,from:'synthetic@example.invalid'}})));console.log(JSON.stringify({case:'canonical_full_source_close_reopen',cases}));
 
 }
 export {profile,text,tail};

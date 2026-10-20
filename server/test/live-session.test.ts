@@ -226,7 +226,7 @@ async function harness(t: TestContext, overrides: {
     let calendarEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
     let calendarSdk: Server | undefined;
     let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
+    const calendarSchemas = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object' } }];
     if (overrides.calendar) {
       calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
       registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
@@ -235,7 +235,7 @@ async function harness(t: TestContext, overrides: {
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
       calendarSdk.setRequestHandler('tools/call', async req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        const raw = overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'gcal_list'
+        const raw = overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'calendar_list_events'
           ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
           : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
         const { nextPageToken, ...data } = raw;
@@ -247,8 +247,8 @@ async function harness(t: TestContext, overrides: {
     let mailTransport: WebStandardStreamableHTTPServerTransport | undefined;
     const mailEndpoint = { id: 'mail', url: 'https://fixture.invalid/mail', account: 'synthetic-mail-account', resource: 'synthetic-mailbox' };
     const mailSchemas = [
-      { name: 'gmail_list', inputSchema: { type: 'object', properties: { q: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
-      { name: 'gmail_read', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id'], additionalProperties: false } },
+      { name: 'gmail_search_messages', inputSchema: { type: 'object', properties: { q: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
+      { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id'], additionalProperties: false } },
     ];
     if (overrides.mail) {
       registry.register(mailEndpoint); registry.enable('mail'); registry.allowEgress('mail');
@@ -311,7 +311,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.calendar && calendarEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars', 'gcal_list'], schemaDigest: canonicalToolDigest(calendarSchemas),
+        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['calendar_list_calendars', 'calendar_list_events'], schemaDigest: canonicalToolDigest(calendarSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
@@ -320,7 +320,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.mail) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mail', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...mailEndpoint, credentialRef: null }, toolNames: ['gmail_list', 'gmail_read'], schemaDigest: canonicalToolDigest(mailSchemas),
+        endpoint: { ...mailEndpoint, credentialRef: null }, toolNames: ['gmail_search_messages', 'gmail_read_message'], schemaDigest: canonicalToolDigest(mailSchemas),
         sourcePolicy: { id: 'live-mail-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 2048, maxSearchLimit: 50, maxGetIds: 3, maxEntityBytes: 65536, maxResultBytes: 65536 } });
@@ -2673,8 +2673,8 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
 test('the calendar declarations never invite a list before an event read', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
   const descriptions = new Map(CONNECTOR_DESCRIPTORS['google']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
-  assert.match(descriptions.get('gcal_calendars')!, /Call it only when the owner asks which calendars exist; an event read needs no calendar list\./);
-  assert.match(descriptions.get('gcal_list')!, /Omit both for today in the host timezone\./);
+  assert.match(descriptions.get('calendar_list_calendars')!, /Call it only when the owner asks which calendars exist; an event read needs no calendar list\./);
+  assert.match(descriptions.get('calendar_list_events')!, /Omit both for today in the host timezone\./);
 });
 
 function toolResponseCount(h: Harness): number {
@@ -2692,15 +2692,15 @@ test('a replayed Live question reaches the connector once per allowlisted read',
   const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-replay');
   const channelId = 'abcdefghijklmnopqrstuvwxzy';
-  await settleLiveTool(h, 'c1', 'gcal_calendars', {});
-  await settleLiveTool(h, 'c2', 'gcal_calendars', {});
-  await settleLiveTool(h, 'c3', 'gcal_calendars', {});
+  await settleLiveTool(h, 'c1', 'calendar_list_calendars', {});
+  await settleLiveTool(h, 'c2', 'calendar_list_calendars', {});
+  await settleLiveTool(h, 'c3', 'calendar_list_calendars', {});
   await settleLiveTool(h, 's1', 'mattermost_search', { query: 'standup', limit: 12 });
   await settleLiveTool(h, 's2', 'mattermost_search', { query: 'standup', limit: 12 });
   await settleLiveTool(h, 'h1', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
   await settleLiveTool(h, 'h2', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
   const count = (name: string) => h.calls.filter(call => call.name === name).length;
-  assert.equal(count('gcal_calendars'), 1, 'three identical list calls reach the connector once');
+  assert.equal(count('calendar_list_calendars'), 1, 'three identical list calls reach the connector once');
   assert.equal(count('mattermost_search'), 2, 'a search is never cached');
   assert.equal(count('mattermost_get_channel_history'), 2, 'a history read is never cached');
 });
@@ -2708,22 +2708,22 @@ test('a replayed Live question reaches the connector once per allowlisted read',
 test('a new Live session starts with an empty read cache', async t => {
   const first = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(first, 'cache-session-one');
-  await settleLiveTool(first, 'o1', 'gcal_calendars', {});
-  assert.equal(first.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  await settleLiveTool(first, 'o1', 'calendar_list_calendars', {});
+  assert.equal(first.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   const second = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(second, 'cache-session-two');
-  await settleLiveTool(second, 'o2', 'gcal_calendars', {});
-  assert.equal(second.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'the second session reads the connector afresh');
+  await settleLiveTool(second, 'o2', 'calendar_list_calendars', {});
+  assert.equal(second.calls.filter(call => call.name === 'calendar_list_calendars').length, 1, 'the second session reads the connector afresh');
 });
 
 test('a cached read expires after ten minutes even inside one session', async t => {
   const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-ttl');
-  await settleLiveTool(h, 't1', 'gcal_calendars', {});
-  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  await settleLiveTool(h, 't1', 'calendar_list_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   h.advance(10 * 60 * 1000);
-  await settleLiveTool(h, 't2', 'gcal_calendars', {});
-  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'an expired entry is read again');
+  await settleLiveTool(h, 't2', 'calendar_list_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 2, 'an expired entry is read again');
 });
 
 test('creating a second Live session supersedes the first for the owner', async t => {
@@ -2957,9 +2957,9 @@ test('the calendar intent reads events from every calendar the owner keeps', asy
   h.f.send({ toolCall: { functionCalls: [{ id: 'cal', name: 'calendar', args: {} }] } });
   for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
   assert.equal(toolResponseCount(h), 1, 'one response for the calendar intent');
-  assert.ok(h.calls.some(call => call.name === 'gcal_calendars'), 'the calendars are enumerated first');
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_calendars'), 'the calendars are enumerated first');
   const response = h.f.frames.find(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame) as { toolResponse: { functionResponses: { response: { text: string } }[] } };
-  const lists = h.calls.filter(call => call.name === 'gcal_list').map(call => (call.args as { calendarId?: string }).calendarId).sort();
+  const lists = h.calls.filter(call => call.name === 'calendar_list_events').map(call => (call.args as { calendarId?: string }).calendarId).sort();
   assert.deepEqual(lists, ['primary', 'work'], 'one event read per calendar, all calendars server-side');
   assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
 });
@@ -4319,13 +4319,13 @@ test('fluency: cached Live metadata cannot bypass suspended or revoked connector
   for (const revoked of [false, true]) {
     const h = await harness(t, { tools: true, calendar: true });
     await attached(h, `cache-authority-${revoked}`);
-    await settleLiveTool(h, 'before', 'gcal_calendars', {});
-    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+    await settleLiveTool(h, 'before', 'calendar_list_calendars', {});
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
     if (revoked) h.toolRegistry!.revoke('calendar'); else h.toolRegistry!.suspend('calendar');
-    await settleLiveTool(h, 'after', 'gcal_calendars', {});
+    await settleLiveTool(h, 'after', 'calendar_list_calendars', {});
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     assert.ok(frame.toolResponse.functionResponses[0]!.response['error'], 'cached success must not outlive canonical authority');
-    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'denied cache does not dispatch');
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1, 'denied cache does not dispatch');
   }
 });
 
@@ -4335,11 +4335,11 @@ test('fluency: demand recovery belongs to new owner input and not repeated model
   const h = await harness(t, { tools: true, calendar: true, recover: async () => { demands++; } });
   await attached(h, 'distinct-recovery-demand');
   h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic request', finished: true } } });
-  await settleLiveTool(h, 'first', 'gcal_calendars', {});
-  await settleLiveTool(h, 'model-retry', 'gcal_calendars', {});
+  await settleLiveTool(h, 'first', 'calendar_list_calendars', {});
+  await settleLiveTool(h, 'model-retry', 'calendar_list_calendars', {});
   assert.equal(demands, 1);
   h.f.send({ serverContent: { inputTranscription: { text: 'A distinct synthetic request', finished: true } } });
-  await settleLiveTool(h, 'new-request', 'gcal_calendars', {});
+  await settleLiveTool(h, 'new-request', 'calendar_list_calendars', {});
   assert.equal(demands, 2);
 });
 
@@ -4349,8 +4349,8 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     const started = deferred<void>(), finish = deferred<void>();
     const h = await harness(t, { tools: true, calendar: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
     const { session } = await attached(h, `cache-delivery-${boundary}`);
-    await settleLiveTool(h, 'prime-calendar', 'gcal_calendars', {});
-    await settleLiveTool(h, 'prime-calendar-small', 'gcal_calendars', { maxResults: 1 });
+    await settleLiveTool(h, 'prime-calendar', 'calendar_list_calendars', {});
+    await settleLiveTool(h, 'prime-calendar-small', 'calendar_list_calendars', { maxResults: 1 });
     if (boundary === 'final-microtask') {
       const gate = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
       t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof gate>) => {
@@ -4361,8 +4361,8 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     }
     const before = toolResponseCount(h);
     h.f.send({ toolCall: { functionCalls: [
-      { id: 'cached-calendar', name: 'gcal_calendars', args: {} },
-      { id: 'cached-calendar-small', name: 'gcal_calendars', args: { maxResults: 1 } },
+      { id: 'cached-calendar', name: 'calendar_list_calendars', args: {} },
+      { id: 'cached-calendar-small', name: 'calendar_list_calendars', args: { maxResults: 1 } },
       { id: 'slow', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
     ] } });
     await started.promise;
@@ -4378,8 +4378,8 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     assert.equal(cached['text'], undefined, 'no metadata body reaches provider');
     const projections = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 100 }).fragments.filter(fragment => fragment.kind === 'toolResult');
     assert.equal(projections.at(-3)?.tool?.status, 'error', 'local receipt must deny too');
-    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'neither completed calendar read replays');
-    const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='gcal_calendars'", [session.liveSessionId]));
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 2, 'neither completed calendar read replays');
+    const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='calendar_list_calendars'", [session.liveSessionId]));
     assert.deepEqual(rows.map(row => row.state), ['completed', 'completed'], 'original completed journal is unchanged');
   }
 });
@@ -4387,7 +4387,7 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
 test('calendar integration: actual Google projector and Live ledger deliver every page and local remainder with original authority', async t => {
   const events = Array.from({ length: 15 }, (_, n) => ({ id: `calendar-event-${n}`, start: `2023-11-${String(14 + Math.floor(n / 5)).padStart(2, '0')}T10:00:00Z`, summary: `Synthetic event ${n}`, description: n === 0 ? 'Long description. '.repeat(40) : '' }));
   for (const revoked of [false, true]) {
-    const h = await harness(t, { tools: true, calendar: true, calendarData: (name, args) => name === 'gcal_calendars'
+    const h = await harness(t, { tools: true, calendar: true, calendarData: (name, args) => name === 'calendar_list_calendars'
       ? { calendars: [{ id: 'primary', summary: 'Main' }], nextPageToken: 'more-calendars' }
       : args['pageToken'] ? { events: events.slice(12) } : { events: events.slice(0, 12), nextPageToken: 'next-events' } });
     await attached(h, `calendar-complete-${revoked}`);
@@ -4401,7 +4401,7 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     const coverage = reply['calendarCoverage'] as Record<string, unknown>;
     assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 7);
     assert.equal(coverage['bodyTruncated'], true); assert.equal(coverage['calendarListComplete'], false);
-    const calls = h.calls.filter(call => call.name === 'gcal_list');
+    const calls = h.calls.filter(call => call.name === 'calendar_list_events');
     assert.equal(calls.length, 2);
     const first = calls[0]!.args as Record<string, unknown>, second = calls[1]!.args as Record<string, unknown>;
     assert.equal(first['calendarId'], 'primary'); assert.equal(first['timeMin'], '2023-11-12T18:30:00.000Z');
@@ -4412,19 +4412,19 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
     if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
     else { assert.match(JSON.stringify(last()['findings']), /Synthetic event 14/); assert.equal(last()['canContinue'], false); }
-    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 2, 'neither retained delivery nor denial rereads completed pages');
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }
 });
 
 test('calendar integration: revocation during a sibling await or final microtask denies retained results at publication', async t => {
   for (const boundary of ['sibling', 'final-microtask'] as const) {
     const started = deferred<void>(), finish = deferred<void>(), calendarAccepted = deferred<void>();
-    const h = await harness(t, { tools: true, calendar: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'exact-retained', start: '2023-11-15T10:00:00Z', summary: 'Calendar publication must be gated' }] } });
+    const h = await harness(t, { tools: true, calendar: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'exact-retained', start: '2023-11-15T10:00:00Z', summary: 'Calendar publication must be gated' }] } });
     await attached(h, `calendar-delivery-race-${boundary}`);
     const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
       const result = await authorize(...args);
-      if (args[1].some(binding => binding.name === 'gcal_list')) calendarAccepted.resolve();
+      if (args[1].some(binding => binding.name === 'calendar_list_events')) calendarAccepted.resolve();
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
       return result;
     });
@@ -4440,7 +4440,7 @@ test('calendar integration: revocation during a sibling await or final microtask
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied');
     assert.doesNotMatch(JSON.stringify(frame), /Calendar publication must be gated/);
-    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
   }
 });
 
@@ -4547,13 +4547,13 @@ test('mail integration: exact native query pages and retained remainder reach la
   const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
   const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
   assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
-  const sourceCalls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(sourceCalls.length, 2);
+  const sourceCalls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(sourceCalls.length, 2);
   assert.equal((sourceCalls[0]!.args as Record<string, unknown>)['q'], 'from:sender@example.invalid subject:"precise phrase"');
   assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['pageToken'], 'private-native-mail-next');
   assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['maxResults'], 8);
   await settleLiveTool(h, 'mail-next', 'research', { action: 'continue', researchId: first['researchId'], cursor: first['nextCursor'] });
   assert.match(JSON.stringify(last()['findings']), /Synthetic mail 12/); assert.equal(last()['canContinue'], false);
-  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2);
+  assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 2);
 });
 
 
@@ -4578,7 +4578,7 @@ test('mail integration: delivered consumer cursors are idempotent and Stop inval
       assert.equal(last()['alreadyDelivered'], true); assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false);
       assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8).map(message => message.id));
     }
-    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1, 'no source replay for retained, denied or repeated consumer pages');
+    assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 1, 'no source replay for retained, denied or repeated consumer pages');
   }
 });
 
@@ -4596,7 +4596,7 @@ test('mail integration: a failed dispatched native page is terminal and truthful
   const reply = last(); assert.equal(reply['status'], 'partial'); assert.equal(reply['canContinue'], false);
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 7/);
   await settleLiveTool(h, 'continue', 'research', { action: 'continue', researchId: reply['researchId'] });
-  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2, 'the failed native page is not replayed');
+  assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 2, 'the failed native page is not replayed');
 });
 
 
@@ -4610,7 +4610,7 @@ test('mail integration: actual selector parsing shares the native page collector
   catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;
-  const calls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(calls.length, 2);
+  const calls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(calls.length, 2);
   assert.equal((calls[0]!.args as Record<string, unknown>)['q'], 'from:selector@example.invalid');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
@@ -4624,7 +4624,7 @@ test('mail integration: revocation during a sibling await or final microtask den
     const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
       const result = await authorize(...args);
-      if (args[1].some(binding => binding.name === 'gmail_list')) mailAccepted.resolve();
+      if (args[1].some(binding => binding.name === 'gmail_search_messages')) mailAccepted.resolve();
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
       return result;
     });
@@ -4636,7 +4636,7 @@ test('mail integration: revocation during a sibling await or final microtask den
     if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Mail publication must be gated/);
-    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+    assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 1);
   }
 });
 
@@ -4657,7 +4657,7 @@ test('mail integration: an unused cursor keeps its original message coordinates 
   assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8, 16).map(message => message.id)); assert.equal(last()['nextCursor'], nextCursor); assert.deepEqual(last()['findings'], []);
   await settleLiveTool(h, 'final-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor });
   assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(16).map(message => message.id));
-  assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+  assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 1);
 });
 
 
@@ -4669,7 +4669,7 @@ test('mail body integration: full received text continues locally once with exac
   const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
     const result = await authorize(...args);
-    const binding = args[1].find(binding => binding.name === 'gmail_read');
+    const binding = args[1].find(binding => binding.name === 'gmail_read_message');
     if (binding && result.state === 'allowed') {
       const consumed = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]);
       if (consumed.state === 'allowed' && consumed.evidence.kind === 'remote-body') received = consumed.evidence.body;
@@ -4682,7 +4682,7 @@ test('mail body integration: full received text continues locally once with exac
   };
   await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
   assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
-  const calls = h.calls.filter(call => call.name === 'gmail_read'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
+  const calls = h.calls.filter(call => call.name === 'gmail_read_message'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
   const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
   for (;;) {
     const slices = last()['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string; source: string }[];
@@ -4696,7 +4696,7 @@ test('mail body integration: full received text continues locally once with exac
     assert.equal(typeof next, 'string'); assert(++count < 30, 'continuation must make bounded progress');
     await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, cursor: next }); next = last()['nextCursor'];
   }
-  assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1, 'local body remainder must not re-fetch the message');
+  assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1, 'local body remainder must not re-fetch the message');
 });
 
 test('mail body integration: completed research Stop releases the canonical host evidence', async t => {
@@ -4704,22 +4704,22 @@ test('mail body integration: completed research Stop releases the canonical host
   const { session } = await attached(h, 'mail-stop-releases-body');
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   let captured: Parameters<typeof original> | undefined;
-  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'stop-message' } }] });
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const researchId = frame.toolResponse.functionResponses[0]!.response['researchId']; assert(captured);
-  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'allowed');
   await settleLiveTool(h, 'body-stop', 'research', { action: 'stop', researchId });
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused', 'Stop must release the actual original source ref, not just a private ledger flag');
-  assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
 test('mail body integration: immutable receipt, metadata opt-out and new-start cleanup use the real owner', async t => {
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Body identity' }, body: args['format'] === 'metadata' ? null : 'Sentence evidence. '.repeat(1600), bodyCoverage: { complete: true } }) });
   const { session } = await attached(h, 'mail-body-lifecycle');
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined;
-  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
@@ -4730,9 +4730,9 @@ test('mail body integration: immutable receipt, metadata opt-out and new-start c
   await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
   assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
   await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
-  assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 2);
-  assert.equal((h.calls.filter(call => call.name === 'gmail_read')[1]!.args as Record<string, unknown>)['format'], 'metadata');
-  assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 2);
+  assert.equal((h.calls.filter(call => call.name === 'gmail_read_message')[1]!.args as Record<string, unknown>)['format'], 'metadata');
+  assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
   await settleLiveTool(h, 'old-body-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor }); assert.equal(last()['error'], 'continuation_unavailable');
 });
 
@@ -4743,7 +4743,7 @@ test('mail body integration: revocation during sibling await and final microtask
     await attached(h, `body-race-${boundary}`);
     const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
-      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'gmail_read')) mailAccepted.resolve();
+      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'gmail_read_message')) mailAccepted.resolve();
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
       return result;
     });
@@ -4752,16 +4752,16 @@ test('mail body integration: revocation during sibling await and final microtask
     for (let n = 0; n < 2000 && !(entered && collected); n++) await tick(); assert(entered && collected);
     if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
-    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Revoked body evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Revoked body evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
   }
 });
 
 test('mail body integration: a source completion after research Stop cannot resurrect canonical evidence', async t => {
   const entered = deferred<void>(), release = deferred<void>(); const scheduler = new DeadlineClock();
-  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'ready-calendar', start: '2023-11-15T10:00:00Z', summary: 'Synthetic ready calendar event' }] }, scheduler, limits: { idleMs: 60000, sessionMs: 600000 }, mailData: async (_name, args) => { entered.resolve(); await release.promise; return { id: args['id'], headers: { Subject: 'Late stopped body' }, body: 'Never retain stopped evidence. '.repeat(1000), bodyCoverage: { complete: true } }; } });
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'ready-calendar', start: '2023-11-15T10:00:00Z', summary: 'Synthetic ready calendar event' }] }, scheduler, limits: { idleMs: 60000, sessionMs: 600000 }, mailData: async (_name, args) => { entered.resolve(); await release.promise; return { id: args['id'], headers: { Subject: 'Late stopped body' }, body: 'Never retain stopped evidence. '.repeat(1000), bodyCoverage: { complete: true } }; } });
   const { session } = await attached(h, 'body-stop-pending'); t.after(() => release.resolve());
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined; let siblingReady = false;
-  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gcal_list') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'calendar_list_events') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
   let dispatched = false; void entered.promise.then(() => { dispatched = true; }); for (let n = 0; n < 2000 && !dispatched; n++) await tick(); assert(dispatched);
   const progress = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 500 }).fragments.find(fragment => fragment.kind === 'researchProgress'); assert(progress?.text);
@@ -4772,9 +4772,9 @@ test('mail body integration: a source completion after research Stop cannot resu
   const replies = () => h.f.frames.flatMap(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame ? (frame as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses : []);
   for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-stop'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-stop'));
   release.resolve(); for (let n = 0; n < 2000 && (!captured || !replies().some(reply => reply.id === 'pending-body-start')); n++) await tick(); assert(captured); assert(replies().some(reply => reply.id === 'pending-body-start'));
-  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
-  assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
 test('mail body integration: actual source expiry denies local continuation without another remote read', async t => {
@@ -4782,7 +4782,7 @@ test('mail body integration: actual source expiry denies local continuation with
   const { session } = await attached(h, 'body-expiry'); let expiresAt = 0; let captured: Parameters<NonNullable<Harness['toolOwner']>['resultGate']['authorize']> | undefined;
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
-    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'gmail_read');
+    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'gmail_read_message');
     if (binding && result.state === 'allowed') { captured = args; const value = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]); if (value.state === 'allowed' && value.evidence.kind === 'remote-body') expiresAt = value.evidence.expiresAt; }
     return result;
   });
@@ -4793,15 +4793,15 @@ test('mail body integration: actual source expiry denies local continuation with
   await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
   const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(expiresAt > Date.now());
   assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
-  assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
   changedClock.mock.restore();
   await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, cursor });
-  assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
 test('mail body integration: body consumption preserves simultaneous calendar evidence and its local remainder', async t => {
   const events = Array.from({ length: 12 }, (_, n) => ({ id: `body-sibling-${n}`, start: '2023-11-15T10:00:00Z', summary: `Body sibling event ${n}` }));
-  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Mixed body' }, body: 'Mixed-source body evidence. '.repeat(600), bodyCoverage: { complete: true } }) }); await attached(h, 'mixed-body-calendar');
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : { events }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Mixed body' }, body: 'Mixed-source body evidence. '.repeat(600), bodyCoverage: { complete: true } }) }); await attached(h, 'mixed-body-calendar');
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
@@ -4814,7 +4814,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
     if (!last()['canContinue']) break; assert(++count < 20);
     await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['nextCursor'] } : {}) });
   }
-  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1); assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
 });
 
 test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
@@ -4887,7 +4887,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   const events = Array.from({ length: 13 }, (_, n) => ({ id: `progress-event-${n}`, start: '2023-11-15T10:00:00Z', summary: `Synthetic progress event ${n}` }));
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits,
     ...(source === 'mail' ? { mail: true, mailData: (_name: string, args: Record<string, unknown>) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'next' } }
-      : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
+      : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
   });
   const { session } = await openPort(h, `progress-pages-${source}`);
   const args = { action: 'start', question: 'Synthetic pages', lookups: [{ source, query: source === 'calendar' ? 'week' : 'subject:synthetic' }] };

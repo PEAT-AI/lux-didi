@@ -463,8 +463,8 @@ for (const missingMongoose of [true, false]) {
     const config = join(dir, 'provider-config');
     await mkdir(config, { mode: 0o700 });
     const tools = [
-      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_list', 'gmail_read',
-      'gcal_calendars', 'gcal_list', 'mattermost_whoami', 'mattermost_get_channel_history',
+      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
+      'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
       'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
     ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
@@ -903,7 +903,7 @@ function digestReader(events: readonly Record<string, unknown>[] | 'refused'): D
       calls.push(input);
       if (events === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
       const evidence: GoogleEvidence = {
-        state: 'completed', tool: 'gcal_list', observedAt: 1_760_000_000_000,
+        state: 'completed', tool: 'calendar_list_events', observedAt: 1_760_000_000_000,
         decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: { events: [...events] } }) }] },
         source: {} as GoogleEvidence['source'], coverage: {} as GoogleEvidence['coverage'],
         projection: {} as GoogleEvidence['projection'], response: {} as GoogleEvidence['response'],
@@ -1061,10 +1061,10 @@ test('1015: a start reports the digest state the cache reached and never folds a
   } finally { await cleanup(); }
 });
 // R7: mail and calendar are both `connector: google`, so the first google endpoint is not the calendar
-// endpoint. The digest reads the endpoint whose current grant carries gcal_list.
-test('R7: the calendar digest selects the google endpoint by its gcal_list grant', () => {
+// endpoint. The digest reads the endpoint whose current grant carries calendar_list_events.
+test('R7: the calendar digest selects the google endpoint by its calendar_list_events grant', () => {
   const grant = { endpointId: 'gmail', account: 'owner@example.test', resource: 'mail', schemaDigest: 's', toolNames: ['gmail_search'], effect: 'read' as const, generation: 1 };
-  const grants: Record<string, typeof grant> = { gmail: grant, gcal: { ...grant, endpointId: 'gcal', resource: 'calendar', toolNames: ['gcal_list'] } };
+  const grants: Record<string, typeof grant> = { gmail: grant, gcal: { ...grant, endpointId: 'gcal', resource: 'calendar', toolNames: ['calendar_list_events'] } };
   const both = [{ id: 'gmail', connector: 'google' }, { id: 'gcal', connector: 'google' }];
   assert.equal(selectCalendarEndpoint(both, id => grants[id])?.endpointId, 'gcal', 'mail listed first never wins');
   assert.equal(selectCalendarEndpoint([...both].reverse(), id => grants[id])?.endpointId, 'gcal', 'and the order does not matter');

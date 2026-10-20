@@ -7,10 +7,10 @@ const LIVE_TOOLS: readonly (readonly [string, string])[] = [
   ['search_knowledge', 'Looking in your knowledge base'],
   ['get_insight', 'Reading your knowledge base'],
   ['gmail_get_profile', 'Checking your mail profile'],
-  ['gmail_list', 'Searching your mail'],
-  ['gmail_read', 'Reading that email'],
-  ['gcal_calendars', 'Checking your calendar'],
-  ['gcal_list', 'Checking your calendar'],
+  ['gmail_search_messages', 'Searching your mail'],
+  ['gmail_read_message', 'Reading that email'],
+  ['calendar_list_calendars', 'Checking your calendar'],
+  ['calendar_list_events', 'Checking your calendar'],
   ['mattermost_whoami', 'Checking your Mattermost account'],
   ['mattermost_get_channel_history', 'Reading a Mattermost channel'],
   ['mattermost_get_thread', 'Reading a Mattermost thread'],
@@ -35,16 +35,16 @@ test('an unknown tool reads Using <connector>, never the raw id', () => {
 });
 
 test('a batch of calls merges into one calm line', () => {
-  assert.equal(toolPhrases(['gmail_list']), 'Searching your mail');
-  assert.equal(toolPhrases(['gmail_list', 'mattermost_search']), 'Searching your mail and Mattermost');
-  assert.equal(toolPhrases(['gmail_list', 'gmail_read']), 'Searching your mail and reading that email');
-  assert.equal(toolPhrases(['gcal_calendars', 'gcal_list']), 'Checking your calendar');
-  assert.equal(toolPhrases(['gmail_list', 'gmail_list']), 'Searching your mail');
+  assert.equal(toolPhrases(['gmail_search_messages']), 'Searching your mail');
+  assert.equal(toolPhrases(['gmail_search_messages', 'mattermost_search']), 'Searching your mail and Mattermost');
+  assert.equal(toolPhrases(['gmail_search_messages', 'gmail_read_message']), 'Searching your mail and reading that email');
+  assert.equal(toolPhrases(['calendar_list_calendars', 'calendar_list_events']), 'Checking your calendar');
+  assert.equal(toolPhrases(['gmail_search_messages', 'gmail_search_messages']), 'Searching your mail');
 });
 
 test('toolConnector gives a readable connector', () => {
   assert.equal(toolConnector('mattermost_search'), 'Mattermost');
-  assert.equal(toolConnector('gcal_list'), 'Calendar');
+  assert.equal(toolConnector('calendar_list_events'), 'Calendar');
 });
 
 // U-k3: a live step reads as one line: what she is looking at, then what came back.

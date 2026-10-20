@@ -264,10 +264,10 @@ const googleDescriptor: ConnectorDescriptor = {
     const listProps = { maxResults: { type: 'integer', minimum: 1, maximum: 50 }, pageToken: { type: 'string', minLength: 1 } };
     return [
       { name: 'gmail_get_profile', description: 'Read the Gmail profile of the selected binding.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: {} }, validate: args => isRecord(args) && Object.keys(args).length === 0 },
-      { name: 'gmail_list', description: 'List Gmail messages matching a Gmail query, newest first. q uses Gmail operators, for example from:name after:2026/10/07 or subject:(board deck) is:unread. Returns message ids; read the full message with gmail_read. Returns at most 5 messages with 300-character excerpts.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, q: { type: 'string', minLength: 1, description: 'Gmail search query using Gmail operators.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
-      { name: 'gmail_read', description: 'Read one full Gmail message by id from gmail_list: subject, from, date and body. Returns the body up to 1500 characters.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
-      { name: 'gcal_calendars', description: 'List the calendars visible to the selected binding. Returns names only, no events. Call it only when the owner asks which calendars exist; an event read needs no calendar list.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: listProps }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken'].includes(key)) },
-      { name: 'gcal_list', description: 'List events on one calendar in a time window. timeMin and timeMax are RFC3339 timestamps with the offset from the runtime context; pass exact start and end instead of asking for a date. Omit both for today in the host timezone. Returns time, title and location. Returns at most 8 events of 150 characters, without dial-in text.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, calendarId: { type: 'string', minLength: 1, description: 'Calendar id; defaults to the primary calendar.' }, timeMin: { type: 'string', minLength: 1, description: 'Window start, RFC3339 with the runtime timezone offset.' }, timeMax: { type: 'string', minLength: 1, description: 'Window end, RFC3339 with the runtime timezone offset.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'calendarId', 'timeMin', 'timeMax'].includes(key)) },
+      { name: 'gmail_search_messages', description: 'List Gmail messages matching a Gmail query, newest first. q uses Gmail operators, for example from:name after:2026/10/07 or subject:(board deck) is:unread. Returns message ids; read the full message with gmail_read_message. Returns at most 5 messages with 300-character excerpts.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, q: { type: 'string', minLength: 1, description: 'Gmail search query using Gmail operators.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
+      { name: 'gmail_read_message', description: 'Read one full Gmail message by id from gmail_search_messages: subject, from, date and body. Returns the body up to 1500 characters.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
+      { name: 'calendar_list_calendars', description: 'List the calendars visible to the selected binding. Returns names only, no events. Call it only when the owner asks which calendars exist; an event read needs no calendar list.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: listProps }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken'].includes(key)) },
+      { name: 'calendar_list_events', description: 'List events on one calendar in a time window. timeMin and timeMax are RFC3339 timestamps with the offset from the runtime context; pass exact start and end instead of asking for a date. Omit both for today in the host timezone. Returns time, title and location. Returns at most 8 events of 150 characters, without dial-in text.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, calendarId: { type: 'string', minLength: 1, description: 'Calendar id; defaults to the primary calendar.' }, timeMin: { type: 'string', minLength: 1, description: 'Window start, RFC3339 with the runtime timezone offset.' }, timeMax: { type: 'string', minLength: 1, description: 'Window end, RFC3339 with the runtime timezone offset.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'calendarId', 'timeMin', 'timeMax'].includes(key)) },
     ];
   },
   createReader({ port, registry, policy }) {
@@ -278,9 +278,9 @@ const googleDescriptor: ConnectorDescriptor = {
     return {
       async call(tool, args, signal) {
         if (tool === 'gmail_get_profile') return await reader.gmailProfile(signal);
-        if (tool === 'gmail_list') return await reader.gmailList(args as GmailListInput, signal);
-        if (tool === 'gmail_read') return await reader.gmailRead(args as unknown as GmailReadInput, signal);
-        if (tool === 'gcal_calendars') return await reader.gcalCalendars(args as GcalCalendarsInput, signal);
+        if (tool === 'gmail_search_messages') return await reader.gmailList(args as GmailListInput, signal);
+        if (tool === 'gmail_read_message') return await reader.gmailRead(args as unknown as GmailReadInput, signal);
+        if (tool === 'calendar_list_calendars') return await reader.gcalCalendars(args as GcalCalendarsInput, signal);
         return await reader.gcalList(args as GcalListInput, signal);
       },
     };
@@ -289,8 +289,8 @@ const googleDescriptor: ConnectorDescriptor = {
   status: googleStatus,
   identity(policy) {
     return googleFamily(policy.toolNames) === 'calendar'
-      ? { tool: 'gcal_calendars', args: {}, values: calendarIdentityValues }
-      : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues };
+      ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
+      : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
   },
 };
 

@@ -7,8 +7,8 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
-  calendarIdentityValues, classifyIdentity, gmailIdentityValues, identityAction, identityMatch,
-  identityProofMemo, mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity,
+  calendarIdentityValues, classifyIdentity, gmailIdentityValues, helperErrorCode, identityAction, identityMatch,
+  identityProofMemo, mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity, refusalCode,
   type IdentityProof, type IdentitySource,
 } from '../connectors/identity.js';
 import { safeEvent } from '../host/log.js';
@@ -53,6 +53,19 @@ test('classifyIdentity proves a value, matches the owner, and leaves an unset ow
   assert.deepEqual(empty, { proven: false, match: null, value: null });
   const refused = classifyIdentity({ state: 'refused', reason: 'source-unavailable' }, gmail, [OWNER]);
   assert.deepEqual(refused, { proven: false, match: null, value: null });
+  // A closed helper code survives into the proof; free text never becomes a code.
+  assert.deepEqual(classifyIdentity({ state: 'refused', reason: 'account_mismatch' }, gmail, [OWNER]), { proven: false, match: null, value: null, code: 'account_mismatch' });
+  const coded = classifyIdentity(evidence({ content: [{ type: 'text', text: 'identity_unverified: the refresh returned no id_token' }], isError: true }), gmail, [OWNER]);
+  assert.deepEqual(coded, { proven: false, match: null, value: null, code: 'identity_unverified' });
+});
+
+test('helperErrorCode reads only a closed code out of an error envelope, never an address or a path', () => {
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true }), 'account_mismatch');
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'credential-missing: LUX_GOOGLE_MCP_TOKEN is not set' }], isError: true }), 'credential_missing');
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: JSON.stringify({ error: 'identity_unverified' }) }], isError: true }), 'identity_unverified');
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'provider-failure: http 500' }], isError: true }), undefined);
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'refused for owner@example.test with /owner/token.json' }], isError: true }), undefined);
+  assert.equal(helperErrorCode({ data: { emailAddress: OWNER } }), undefined);
 });
 
 test('identityAction offers a proof, refuses a mismatch and keeps an unproven connector usable', () => {
@@ -60,6 +73,10 @@ test('identityAction offers a proof, refuses a mismatch and keeps an unproven co
   assert.equal(identityAction({ proven: true, match: null, value: OWNER }), 'offer');
   assert.equal(identityAction({ proven: true, match: false, value: OTHER }), 'refuse');
   assert.equal(identityAction({ proven: false, match: null, value: null }), 'unproven');
+  // A strict source (Google) refuses an unproven identity instead of publishing an unverified read.
+  assert.equal(identityAction({ proven: false, match: null, value: null }, true), 'refuse');
+  assert.equal(identityAction({ proven: true, match: true, value: OWNER }, true), 'offer');
+  assert.equal(identityAction({ proven: true, match: false, value: OTHER }, true), 'refuse');
 });
 
 test('a proof failure (throw or timeout) is unproven, never a refusal', async () => {
@@ -121,7 +138,7 @@ async function gmailHost(email: string) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
-  const tools = ['gmail_get_profile', 'gmail_list', 'gmail_read'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  const tools = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
   const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
     jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
       ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
@@ -176,7 +193,7 @@ test('one proof per connector account per boot, and no diagnostic capture at sta
   await mkdir(config, { mode: 0o700 });
   const families = {
     mail: ['gmail_get_profile', 'gmail_list', 'gmail_read'],
-    calendar: ['gcal_calendars', 'gcal_list'],
+    calendar: ['calendar_list_calendars', 'calendar_list_events'],
   } as const;
   const calls: string[] = [];
   const reply = (family: keyof typeof families, message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
@@ -184,7 +201,7 @@ test('one proof per connector account per boot, and no diagnostic capture at sta
       ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
       : message.method === 'tools/list' ? { tools: families[family].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } })) }
       : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify(
-        message.params?.name === 'gcal_calendars' ? { calendars: [{ id: OWNER, primary: true }] } : { emailAddress: OWNER }) }] }
+        message.params?.name === 'calendar_list_calendars' ? { calendars: [{ id: OWNER, primary: true }] } : { emailAddress: OWNER }) }] }
       : {},
   };
   const endpoint = createServer(async (req, res) => {
@@ -218,10 +235,31 @@ test('one proof per connector account per boot, and no diagnostic capture at sta
         .map(line => JSON.parse(line) as Record<string, unknown>);
       assert.equal(lines.filter(line => line.event === 'connector_identity' && line.connector === 'google').length, 1, 'one identity proof for the account, not one per endpoint');
       assert.deepEqual(lines.filter(line => line.event === 'tool_diagnostic_capture'), [], 'a start arms no diagnostic capture at all');
-      assert.equal(calls.filter(name => name === 'gmail_get_profile' || name === 'gcal_calendars').length, 1, 'the identity read happened once');
+      assert.equal(calls.filter(name => name === 'gmail_get_profile' || name === 'calendar_list_calendars').length, 1, 'the identity read happened once');
     } finally { await host.close(); }
   } finally {
     endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done()));
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('a helper identity refusal refuses a strict source with its closed code, never an unverified read', () => {
+  // lux-didi #495: an unproven identity is never a published connector, so the helper's refusal
+  // cannot become an empty mailbox that reads as "no mail". Neither the address nor a path is spoken.
+  const gmail: IdentitySource = { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
+  const refusal = classifyIdentity(evidence({ content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true }), gmail, [OWNER]);
+  assert.deepEqual(refusal, { proven: false, match: null, value: null, code: 'account_mismatch' });
+  assert.equal(identityAction(refusal, true), 'refuse');
+  assert.equal(identityAction(refusal), 'unproven', 'a non-strict source keeps its no-comparison policy');
+  assert.equal(refusalCode(refusal), 'account_mismatch');
+  assert.equal(JSON.stringify(refusal).includes(OWNER), false, 'no address in the report');
+});
+
+test('an unproven strict proof refuses as identity_unverified, and a mismatch keeps its own code', () => {
+  const gmail: IdentitySource = { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
+  const unproven = classifyIdentity(evidence({ messagesTotal: 0 }), gmail, [OWNER]);
+  assert.deepEqual(unproven, { proven: false, match: null, value: null });
+  assert.equal(identityAction(unproven, true), 'refuse');
+  assert.equal(refusalCode(unproven), 'identity_unverified');
+  assert.equal(refusalCode({ proven: true, match: false, value: OTHER }), 'identity_mismatch');
 });

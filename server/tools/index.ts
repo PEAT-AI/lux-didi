@@ -682,7 +682,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             });
             const coverage = { rootCursor: page.rootCursor, offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted, stage: 'canonical-preparation' };
             const response: JsonObject = { status: 'completed', cursor: args.cursor, bodyCoverage: coverage, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor),
-              ...(page.completed ? { alreadyPrepared: true, bodySlices: [] } : { bodySlices: [{ source: evidence.tool === 'gmail_read' ? 'mail' : evidence.tool === 'get_insight' ? 'knowledge' : 'mongoose', tool: evidence.tool, text: evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted }] }) };
+              ...(page.completed ? { alreadyPrepared: true, bodySlices: [] } : { bodySlices: [{ source: evidence.tool === 'gmail_read_message' ? 'mail' : evidence.tool === 'get_insight' ? 'knowledge' : 'mongoose', tool: evidence.tool, text: evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: evidence.body.length, unit: 'utf16', upstreamComplete: evidence.upstreamComplete, upstreamOmitted: evidence.upstreamOmitted }] }) };
             const provenance = store.transaction(tx => {
               const { snapshot, hash } = readRun(tx, runId);
               if (!authorizedStoredResult(tx, snapshot, page.parent)) throw Error('body_parent_unavailable');

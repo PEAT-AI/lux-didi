@@ -39,7 +39,7 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     configured: opts.configured ?? CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
-      return subs.map(call => call.name === 'gcal_list' && opts.executeText === MERGED_CALENDAR
+      return subs.map(call => call.name === 'calendar_list_events' && opts.executeText === MERGED_CALENDAR
         ? { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: CALENDAR_RECORDS }) }
         : sub(call.name, opts.executeText ?? 'evidence', true, call.key));
     }),
@@ -92,7 +92,7 @@ test('a single-source hint narrows the offered kinds and skips the selector enti
   const h = harness({ selector: counting });
   await runResearch(h.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(selectCalls, 0, 'the single-source path never calls the selector');
-  assert.ok(h.executed.length >= 1 && h.executed.every(call => call.name === 'gmail_list'));
+  assert.ok(h.executed.length >= 1 && h.executed.every(call => call.name === 'gmail_search_messages'));
   assert.equal(h.logs[0]!.fallbackUsed, false);
   assert.equal(h.logs[0]!.driver, 'single-source-hint');
   assert.equal(h.logs[0]!.selectorMs, 0, 'a skipped selector costs no selector time');
@@ -101,7 +101,7 @@ test('a single-source hint narrows the offered kinds and skips the selector enti
 test('a single-source hint with no usable question still runs the hinted source', async () => {
   const h = harness({ selector: undefined });
   await runResearch(h.deps, { action: 'start', question: '', sources: 'mail' }, new AbortController().signal);
-  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the hinted source always runs');
+  assert.ok(h.executed.some(call => call.name === 'gmail_search_messages'), 'the hinted source always runs');
   assert.equal(h.logs[0]!.driver, 'single-source-hint');
 });
 
@@ -330,12 +330,12 @@ test('createGeminiSelector parses one complete text answer and treats a non-comp
 // #263: the declaration names only the sources this session configured and the host loop can read. A session
 // with Google (calendar, mail), Mattermost (team chat) and lux-knowledge (knowledge) names those four.
 test('the research declaration names only the configured sources and the valid hint values', () => {
-  const google = ['gcal_list', 'gmail_list'];
+  const google = ['calendar_list_events', 'gmail_search_messages'];
   const base = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge']);
   assert.deepEqual(base, ['calendar', 'mail', 'chat', 'knowledge']);
-  // Outcome 3: detection uses the read tool. A calendar-list sibling without gcal_list is not a
+  // Outcome 3: detection uses the read tool. A calendar-list sibling without calendar_list_events is not a
   // calendar source, so no calendar read is advertised that the connection cannot perform.
-  assert.deepEqual(researchSourcesFromToolNames(['gcal_calendars', 'gmail_list', 'search_knowledge']), ['mail', 'knowledge']);
+  assert.deepEqual(researchSourcesFromToolNames(['calendar_list_calendars', 'gmail_search_messages', 'search_knowledge']), ['mail', 'knowledge']);
   const description = researchDescription(base);
   assert.match(description, /calendar, mail, team chat and knowledge base/);
   assert.doesNotMatch(description, /company knowledge base/);
@@ -372,7 +372,7 @@ const CALENDAR_RECORDS = [
 test('calendar research issues one primary read and retains every received event', async () => {
   const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
-  const reads = h.executed.filter(call => call.name === 'gcal_list');
+  const reads = h.executed.filter(call => call.name === 'calendar_list_events');
   assert.equal(reads.length, 1, 'one calendar sub-call per exact window');
   assert.equal((reads[0]!.args as Record<string, unknown>)['calendarId'], 'primary');
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
@@ -397,7 +397,7 @@ test('calendar research does not start a read after its run deadline', async () 
   };
   const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
-  assert.equal(h.executed.some(call => call.name === 'gcal_list'), false);
+  assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
   assert.equal(reply['status'], 'partial');
 });
 
@@ -414,7 +414,7 @@ test('the calendar budget never extends another source past the start deadline',
   };
   const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
   await runResearch(h.deps, { action: 'start', question: 'any mail today' }, new AbortController().signal);
-  assert.equal(h.executed.some(entry => entry.name === 'gmail_list'), false);
+  assert.equal(h.executed.some(entry => entry.name === 'gmail_search_messages'), false);
 });
 
 test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {
@@ -438,7 +438,7 @@ test('a refused sub-call maps to a real reason, never a bare refused', () => {
   assert.equal(refusalCode('grant_not_permitted'), 'grant_not_permitted');
   assert.equal(refusalCode('stale_or_revoked_authority'), 'stale_or_revoked_authority');
   assert.equal(refusalCode('round_deadline'), 'round_deadline');
-  assert.equal(refusalCode('Invalid arguments for gcal_list. Expected an object with timeMin (string).'), 'invalid_arguments');
+  assert.equal(refusalCode('Invalid arguments for calendar_list_events. Expected an object with timeMin (string).'), 'invalid_arguments');
   assert.equal(refusalCode('something else entirely'), 'refused');
 });
 
@@ -446,19 +446,19 @@ test('a never-dispatched sub-call logs its real reason instead of refused', asyn
   const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } });
   const h = harness({
     selector,
-    execute: async subs => subs.map(call => call.name === 'gcal_list'
+    execute: async subs => subs.map(call => call.name === 'calendar_list_events'
       ? { ...sub(call.name, '', false, call.key), code: 'unknown_tool' }
       : sub(call.name, 'evidence', true, call.key)),
   });
   await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
-  const refused = h.subcalls.find(entry => entry.tool === 'gcal_list');
+  const refused = h.subcalls.find(entry => entry.tool === 'calendar_list_events');
   assert.equal(refused?.errorCode, 'unknown_tool');
 });
 
 test('a source whose read failed stays unchecked and the reply names it', async () => {
   const h = harness({
     selector: calendarSelector,
-    execute: async subs => subs.map(call => call.name === 'gcal_list'
+    execute: async subs => subs.map(call => call.name === 'calendar_list_events'
       ? { ...sub(call.name, '', false, call.key), code: 'unknown_tool' }
       : sub(call.name, 'evidence', true, call.key)),
   });
@@ -504,7 +504,7 @@ test('knowledge first: a knowledge read starts before the selector returns', asy
 
 test('knowledge findings rank first in the reply', async () => {
   const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }, { kind: 'knowledge_search' }], pUseful: { mail_search: 0.9, knowledge_search: 0.9 } });
-  const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name, call.name === 'gmail_list' ? '- Subject | Sender | Mon | body [id m1]' : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
+  const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name, call.name === 'gmail_search_messages' ? '- Subject | Sender | Mon | body [id m1]' : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string }[];
   assert.equal(findings[0]?.source, 'knowledge', 'the prime source leads the findings');
@@ -525,15 +525,15 @@ test('an identical duplicate read in one run is executed once', async () => {
   const twice = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:2d' }, { kind: 'mail_search', query: 'newer_than:2d' }], pUseful: { mail_search: 0.9 } });
   const h = harness({ selector: twice, executeText: '' });
   await runResearch(h.deps, { action: 'start', question: 'anything new in the mail' }, new AbortController().signal);
-  const mailReads = h.executed.filter(call => call.name === 'gmail_list');
+  const mailReads = h.executed.filter(call => call.name === 'gmail_search_messages');
   assert.equal(mailReads.length, 1, 'the same mail read is issued once');
 });
 
 test('the brief fan-out is credited to every source it read and its findings reach the answer', async () => {
   const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
   const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name,
-    call.name === 'gcal_list' ? MERGED_CALENDAR
-      : call.name === 'gmail_list' ? '- Invoice | Landlord | Mon | due soon [id m1]'
+    call.name === 'calendar_list_events' ? MERGED_CALENDAR
+      : call.name === 'gmail_search_messages' ? '- Invoice | Landlord | Mon | due soon [id m1]'
         : call.name === 'mattermost_search' ? '**team**\nthe decision was recorded'
           : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
@@ -604,7 +604,7 @@ test('when the selector deadline passes the fallback starts at once and the mode
   abortSelector(new Error('aborted'));
   await running;
   assert.equal(h.logs[0]!.fallbackUsed, true, 'the deadline falls back to the fixed recipe');
-  const fallbackReads = readAt.filter(entry => entry.tool === 'gcal_list');
+  const fallbackReads = readAt.filter(entry => entry.tool === 'calendar_list_events');
   assert.ok(fallbackReads.length > 0, 'the fallback reads the calendar');
   assert.ok(fallbackReads.every(entry => entry.at === RESEARCH.selectorDeadlineMs), `the fallback read starts the moment the selector gives up: ${JSON.stringify(readAt)}`);
   const stamps = h.progress.map(entry => entry.elapsedMs);
@@ -633,7 +633,7 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
+    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
@@ -652,7 +652,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
   let mailAborted = false;
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => { mailAborted = true; reject(new Error('aborted')); }; if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
+    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => { mailAborted = true; reject(new Error('aborted')); }; if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, '### Insight (PATTERN) [id 7]\nthe release is green', true, call.key));
   } });
   const controller = new AbortController();
@@ -681,7 +681,7 @@ test('R6: the source that answered keeps its own second hop, and the slow reader
   let winnerSignalAborted = false;
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
     for (const call of subs) read.push(call.name);
-    if (subs.some(call => call.name === 'gmail_list')) {
+    if (subs.some(call => call.name === 'gmail_search_messages')) {
       // The slow source: it answers only after the call has already replied, and it is never cut for that.
       return subs.map(call => sub(call.name, 'the mail body', true, call.key));
     }
@@ -719,7 +719,7 @@ test('a cut source logs a disposition the host log admits and the whole run line
   const clock = fakeClock();
   const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_list')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
+    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);

@@ -1695,6 +1695,7 @@ class Session implements LiveVoiceSession {
           this.sampleDiscarded += bytes;
         }
         this.shedRuns += 1;
+        if (this.shedRuns < 6 && now < 1_100_000) console.log('DBGSHED', now, this.micPending.length, this.micPendingBytes, socket.bufferedAmount);
       }
       while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
         const next = this.micPending.shift()!;

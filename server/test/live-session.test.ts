@@ -3885,7 +3885,7 @@ test('#472: a late source result reaches the model while the session is live', a
   fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
-  assert.equal(fake.toolResponses.length, 1, `the first answer goes out with chat still reading: ${JSON.stringify(receipts.filter(entry => String(entry['event']).startsWith('research')).slice(-6))}`);
+  assert.equal(fake.toolResponses.length, 1, `the first answer goes out with chat still reading: ${JSON.stringify(receipts.filter(entry => /research|tool/.test(String(entry['event']))).slice(-14))}`);
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
   assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
   release();

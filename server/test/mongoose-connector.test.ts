@@ -13,7 +13,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
-import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseFailureStage } from '../connectors/index.js';
+import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage } from '../connectors/index.js';
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { mongooseAccessToken } from '../host/mongoose-auth.js';
 import { Store } from '../runtime/store.js';
@@ -515,4 +515,15 @@ test('Mongoose literal projection: local coverage clipping remains bounded and c
   assert(projected.projection.text.length <= 4000); assert.equal(projected.projection.partial, true);
   assert.equal(projected.projection.text.length + projected.projection.omittedCharacters, projected.projection.originalCharacters);
   assert.equal(f.calls.length, 1, 'source next-tool advice is never executed by projection');
+});
+
+
+// H19: 92 connector_failure credential rows, one at every start, for a connector no research route
+// uses. A mongoose endpoint with no stored credential is not signed in yet: the start says so once and
+// opens nothing, and the next connect after a login probes it for real.
+test('a mongoose endpoint with no stored credential is not probed at start', () => {
+  assert.equal(mongooseCredentialAtStart('mongoose', false), 'not_signed_in');
+  assert.equal(mongooseCredentialAtStart('mongoose', true), 'probe');
+  assert.equal(mongooseCredentialAtStart('google', false), 'probe', 'a read connector still reports its missing credential');
+  assert.equal(mongooseCredentialAtStart('mattermost', false), 'probe');
 });

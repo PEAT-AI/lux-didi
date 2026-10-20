@@ -7,13 +7,13 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
-import { mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
+import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
 import { mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
-import { identityAction, proveIdentity, IDENTITY_TIMEOUT_MS, type IdentityProof } from '../connectors/identity.js';
+import { identityAction, identityProofMemo, proveIdentity, IDENTITY_TIMEOUT_MS, type IdentityProof } from '../connectors/identity.js';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -28,6 +28,10 @@ const ENDPOINT_CALL_DEADLINE_MS = 30000;
 /** Same byte rules as the Gemini key file: non-empty printable ASCII, bounded. */
 function tokenValid(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1024 && /^[\x21-\x7e]+$/.test(value);
+}
+/** Whether a pasted schemaVersion 1 credential exists, answered without opening the connector. */
+function pastedCredentialPresent(configDir: string, reference: string): boolean {
+  try { readMcpCredential(configDir, reference); return true; } catch { return false; }
 }
 /**
  * Reads an operator-supplied MCP bearer token from `<configDir>/<reference>.json`: owner-only
@@ -63,7 +67,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch'; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in'; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -261,6 +265,7 @@ export async function composeMcpRuntime(options: {
     }
   };
 
+  const identityOnce = identityProofMemo();
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh'): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
@@ -272,7 +277,15 @@ export async function composeMcpRuntime(options: {
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     // A schemaVersion 2 OAuth record counts as present on its refresh token alone: no refresh happens here.
     if (entry.credentialRef) {
-      try { if (!mongooseCredentialPresent(configDir, entry.credentialRef)) readMcpCredential(configDir, entry.credentialRef); }
+      const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
+      // H19: a mongoose endpoint with no stored credential is not signed in yet. Nothing is opened and
+      // no failing probe is logged at every launch: one typed status, and the next connect after a
+      // login (the app refreshes the connector then) probes it for real.
+      if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
+        return { retryable: false };
+      }
+      try { if (!stored) readMcpCredential(configDir, entry.credentialRef); }
       catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
     try {
@@ -351,7 +364,10 @@ export async function composeMcpRuntime(options: {
           // identity call is slow under host load is proven rather than wrongly marked unproven and
           // fail-closed; a connector that never answers still times out at the call deadline and stays
           // uncallable.
-          identity = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
+          // H19: one proof per boot per connector account, so a mailbox and a calendar on the same
+          // account prove that account once instead of reading the identity twice at every start.
+          const proofKey = `${entry.connector}\u0000${policy.endpoint.account ?? entry.id}`;
+          identity = await identityOnce(proofKey, () => proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) }));
         } finally { registry.clearProbe(entry.id); }
         if (stale()) return { retryable: false };
         options.identityLog?.(entry.connector, identity.proven, identity.match);

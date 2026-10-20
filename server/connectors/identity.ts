@@ -135,3 +135,19 @@ export function projectIdentity(value: unknown): IdentityProof | undefined {
   const identityValue = typeof raw === 'string' && raw.length > 0 && raw.length <= 254 ? raw : null;
   return { proven: value['proven'], match, value: identityValue };
 }
+
+/**
+ * One identity proof per boot per connector account (H19): two endpoints of the same account, a
+ * mailbox and a calendar for example, prove the same account once, never twice. Only a proven result
+ * is kept, so an unproven connector probes again on the next connect and a later login is picked up.
+ */
+export function identityProofMemo(): (key: string, probe: () => Promise<IdentityProof>) => Promise<IdentityProof> {
+  const proven = new Map<string, IdentityProof>();
+  return async (key, probe) => {
+    const kept = proven.get(key);
+    if (kept !== undefined) return kept;
+    const proof = await probe();
+    if (proof.proven) proven.set(key, proof);
+    return proof;
+  };
+}

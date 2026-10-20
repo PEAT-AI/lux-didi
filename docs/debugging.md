@@ -144,15 +144,20 @@ Every trace kind above is allowlisted in `server/trace/record.ts`: ids, closed c
 ### Removing the old day directories
 
 The journal wrote `<dataDir>/debug/<YYYY-MM-DD>/<session>.jsonl` with owner content inside. Nothing
-writes there any more and nothing reads it, so the old files are a leftover the owner removes
-himself, one explicit step:
+writes there any more and nothing reads it, so the host removes that exact directory once at start
+and writes one `debug_journal_removed` receipt with the byte count; a start that finds no journal
+writes no receipt, and nothing else in the data directory is touched. A directory it cannot remove
+(say a read-only subdirectory left by hand) never holds the start up: one
+`debug_journal_removal_failed` receipt names the errno token, and the directory stays for the owner.
+
+To do it by hand instead, on a host that has not started since this change:
 
 ```sh
 rm -rf "$HOME/Library/Application Support/Lux Didi/debug"
 ```
 
 On Linux substitute the state directory (`${XDG_DATA_HOME:-$HOME/.local/share}/lux-didi/debug`).
-Take that decision deliberately: the files hold transcripts, and deleting them is the point.
+The files hold transcripts, and deleting them is the point.
 
 ## The reader
 

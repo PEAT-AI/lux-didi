@@ -206,6 +206,21 @@ function journalBytes(root: string): number {
   return total;
 }
 
+/**
+ * The sweep as the start uses it: one receipt on success, one closed receipt on failure, and never a
+ * refused start. A read-only or foreign-owned debug directory is the owner's file system, not a
+ * reason to keep the app from opening.
+ */
+function retireDebugJournal(dataDir: string, log: HostLog): void {
+  try {
+    const bytes = removeRetiredDebugJournal(dataDir);
+    if (bytes !== null) log.event({ event: 'debug_journal_removed', bytes });
+  } catch (error) {
+    const code = String((error as { code?: unknown }).code ?? '').toLowerCase();
+    log.event({ event: 'debug_journal_removal_failed', code: /^[a-z0-9]{1,16}$/.test(code) ? code : 'failed' });
+  }
+}
+
 export async function startHost(config: HostConfig) {
   const dataDir = resolve(config.dataDir), webRoot = resolve(config.webRoot);
   const port = config.port ?? 8765;
@@ -253,8 +268,7 @@ export async function startHost(config: HostConfig) {
     if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
   } catch { /* Composition below owns invalid configuration errors. */ }
   log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
-  const retiredJournalBytes = removeRetiredDebugJournal(dataDir);
-  if (retiredJournalBytes !== null) log.event({ event: 'debug_journal_removed', bytes: retiredJournalBytes });
+  retireDebugJournal(dataDir, log);
   const stopDiagnostics = captureHostDiagnostics(log);
   let store: Store;
   startupStage = 'store';

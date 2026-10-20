@@ -735,6 +735,31 @@ test('a start removes the retired debug journal once and logs one byte-counted r
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+// Reviewer R1: a sweep the host cannot finish is one closed receipt and never a refused start. A
+// read-only directory under debug/ is the owner's file system, not a reason to keep the app closed.
+test('an unremovable debug directory logs one closed receipt and never aborts the start', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-debug-stuck-'));
+  const dataDir = join(dir, 'state');
+  const stuck = join(dataDir, 'debug', 'locked');
+  await mkdir(stuck, { recursive: true, mode: 0o700 });
+  await writeFile(join(stuck, 'session.jsonl'), 'x'.repeat(10));
+  await chmod(stuck, 0o500);
+  try {
+    const host = await startHost({ dataDir, webRoot, port: 0 });
+    try {
+      const lines = (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      const failed = lines.filter(line => line.event === 'debug_journal_removal_failed').map(line => ({ code: line.code, event: line.event }));
+      assert.deepEqual(failed, [{ code: 'eacces', event: 'debug_journal_removal_failed' }], 'one closed receipt names the errno token');
+      await stat(join(dataDir, 'debug'));
+      assert.equal(lines.filter(line => line.event === 'host_started').length, 1, 'the start itself went ahead');
+    } finally { await host.close(); }
+  } finally {
+    await chmod(stuck, 0o700).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // #479 / H4: a call made with no tool context (the start-up connector probes) used to arm a diagnostic
 // capture, so every start wrote four `context_absent` and four `wire_observed_context_absent` receipts,
 // three of them byte-identical. The audit row stays; the receipt is armed only with a real run context.

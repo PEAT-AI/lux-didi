@@ -422,8 +422,22 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
   const callResults = exec.run('DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [cutoff]);
   // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
   if (!tableExists(exec, 'live_journal')) return { utterances, callResults, journalText: 0, promptSnapshots: 0 };
-  const endedBefore = 'IN (SELECT live_session_id FROM live_sessions WHERE terminal_at IS NOT NULL AND terminal_at < ?)';
-  const journalText = exec.run(`UPDATE live_journal SET text=NULL, tool_json=NULL WHERE (text IS NOT NULL OR tool_json IS NOT NULL) AND live_session_id ${endedBefore}`, [cutoff]);
+  // A journal is only surplus once its session ended before the cutoff AND the transcript has already
+  // been distilled or never will be: a complete summary, a summary that gave up for a reason other
+  // than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
+  // ended session that has none, so its text must survive the cutoff. Without the summary tables the
+  // pruner cannot prove that, and proves nothing by leaving the journal alone.
+  const prunable = tableExists(exec, 'conversation_summaries') && tableExists(exec, 'history_exclusions')
+    ? `IN (SELECT s.live_session_id FROM live_sessions s
+           WHERE s.terminal_at IS NOT NULL AND s.terminal_at < ?
+             AND (EXISTS (SELECT 1 FROM conversation_summaries c WHERE c.live_session_id = s.live_session_id
+                            AND (c.status = 'complete'
+                              OR (c.status = 'skipped' AND COALESCE(c.skip_reason, '') <> 'no_text_model')
+                              OR (c.status = 'failed' AND COALESCE(c.error_code, '') <> 'deadline')))
+               OR EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind = 'live' AND h.source_id = s.live_session_id)))`
+    : null;
+  const journalText = prunable === null ? 0
+    : exec.run(`UPDATE live_journal SET text=NULL, tool_json=NULL WHERE (text IS NOT NULL OR tool_json IS NOT NULL) AND live_session_id ${prunable}`, [cutoff]);
   const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
   return { utterances, callResults, journalText, promptSnapshots };
 }

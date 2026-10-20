@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { liveMigrations } from '../live/schema.js';
+import { domainMigrations } from '../domain/schema.js';
 import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
@@ -254,46 +255,76 @@ test('pruneTraceContent is scoped to the two content tables', () => {
 
 // Retention rule (lux 90269): content pruned at 30 days, metadata kept. A live session that ended
 // before the cutoff keeps its row, its kind, its byte count and its outcome, and loses only the
-// owner text: journal text, journal tool payload and the accepted prompt snapshot.
-test('pruneTraceContent clears live session text that ended before the cutoff and keeps the metadata', () => {
+// owner text: journal text, journal tool payload and the accepted prompt snapshot. The journal text
+// of a session that has no summary yet is kept, because summaries.reconcile() still distils it.
+test('pruneTraceContent clears live text only where the transcript is no longer needed', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
   const day = 86_400_000, endedAt = T0 + 1 * day, liveAt = T0 + 31 * day, now = T0 + 60 * day;
+  type Summary = { status: 'complete' | 'skipped' | 'failed'; skipReason?: string; errorCode?: string } | null;
   try {
-    const store = new Store(dir, [...liveMigrations]);
-    const seed = (id: string, terminalAt: number | null, at: number): void => {
+    const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+    const seed = (id: string, terminalAt: number | null, at: number, summary: Summary, excluded = false): void => {
       store.transaction(tx => {
         tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
             client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
             journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, accepted_prompt_snapshot)
           VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?,0,0,'attached',?,?,?,?,?)`,
           [id, store.assistantId, store.authorityEpoch, `key-${id}`, `fp-${id}`, 'client', `audit-${id}`, 'profile', 'prompt',
-            terminalAt === null ? 'active' : 'terminal', 2, terminalAt === null ? null : 'complete', terminalAt, at, at,
+            terminalAt === null ? 'active' : 'terminal', 3, terminalAt === null ? null : 'complete', terminalAt, at, at,
             JSON.stringify({ ownerText: `accepted words ${id}` })]);
         tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?)",
           [id, 'inputTranscription', `owner words ${id}`, 1, 9, at]);
-        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, tool_json, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?)",
-          [id, 'toolCall', null, 1, JSON.stringify({ name: 'search', args: { query: `owner words ${id}` } }), 9, at]);
+        // A marker row: no payload text, no tool payload, and therefore no retained bytes.
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,NULL,1,0,?)",
+          [id, 'ready', at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, tool_json, payload_bytes, arrived_at) VALUES (?,?,NULL,1,?,0,?)",
+          [id, 'toolCall', JSON.stringify({ name: 'search', args: { query: `owner words ${id}` } }), at]);
+        if (summary) {
+          tx.run(`INSERT INTO conversation_summaries (id, live_session_id, status, summary, ended_at, model, input_chars,
+              input_truncated, injected_summary_ids, retry_count, error_code, created_at, skip_reason)
+            VALUES (?,?,?,?,?,?,?,0,'[]',0,?,?,?)`,
+            [`sum-${id}`, id, summary.status, summary.status === 'complete' ? 'a summary' : null, at, 'm', 10,
+              summary.errorCode ?? null, at, summary.skipReason ?? null]);
+        }
+        if (excluded) tx.run("INSERT INTO history_exclusions (source_kind, source_id, forgotten_at) VALUES ('live',?,?)", [id, at]);
       });
     };
-    seed('ls-ended', endedAt, endedAt);
-    seed('ls-live', null, liveAt);
+    seed('ls-summarised', endedAt, endedAt, { status: 'complete' });
+    seed('ls-unsummarised', endedAt, endedAt, null);
+    seed('ls-no-model', endedAt, endedAt, { status: 'skipped', skipReason: 'no_text_model' });
+    seed('ls-deadline', endedAt, endedAt, { status: 'failed', errorCode: 'deadline' });
+    seed('ls-gave-up', endedAt, endedAt, { status: 'failed', errorCode: 'model_error' });
+    seed('ls-forgotten', endedAt, endedAt, null, true);
+    seed('ls-live', null, liveAt, null);
 
     const pruned = store.transaction(tx => pruneTraceContent(tx, now));
-    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 2, promptSnapshots: 1 });
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 4, promptSnapshots: 5 },
+      'four ended sessions are done with their transcript; every ended session loses its snapshot');
 
-    const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes, arrived_at FROM live_journal ORDER BY live_session_id, journal_id"));
-    assert.deepEqual(rows.map(row => [row.live_session_id, row.text, row.tool_json]), [
-      ['ls-ended', null, null], ['ls-ended', null, null],
-      ['ls-live', 'owner words ls-live', null],
-      ['ls-live', null, JSON.stringify({ name: 'search', args: { query: 'owner words ls-live' } })],
-    ], 'the ended session keeps its rows and loses its text; the live session keeps both');
-    assert.equal(rows[0]!.payload_bytes, 9, 'the byte count is metadata and stays');
-    assert.equal(rows[0]!.arrived_at, endedAt);
+    const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind <> 'ready' ORDER BY live_session_id, journal_id"));
+    const bySession = new Map<string, Array<Record<string, unknown>>>();
+    for (const row of rows) bySession.set(String(row.live_session_id), [...(bySession.get(String(row.live_session_id)) ?? []), row]);
+    const cleared = ['ls-summarised', 'ls-gave-up', 'ls-forgotten', 'ls-live'].filter(id => bySession.get(id)!.every(row => row.text === null && row.tool_json === null));
+    assert.deepEqual(cleared, ['ls-forgotten', 'ls-gave-up', 'ls-summarised'], 'a session still owed a summary keeps its text');
+    for (const id of ['ls-unsummarised', 'ls-no-model', 'ls-deadline']) {
+      assert.deepEqual(bySession.get(id)!.map(row => row.text), [`owner words ${id}`, null], `${id} still has to be distilled`);
+    }
+    assert.equal(bySession.get('ls-live')!.every(row => row.text === null && row.tool_json === null), false, 'a session that has not ended keeps its reattach text');
+
+    const transcription = store.transaction(tx => tx.get("SELECT payload_bytes, arrived_at FROM live_journal WHERE live_session_id='ls-summarised' AND kind='inputTranscription'"));
+    assert.deepEqual(transcription, { payload_bytes: 9, arrived_at: endedAt }, 'the byte count and the arrival time are metadata and stay');
+    const marker = store.transaction(tx => tx.get("SELECT text, tool_json, payload_bytes, finished FROM live_journal WHERE live_session_id='ls-summarised' AND kind='ready'"));
+    assert.deepEqual(marker, { text: null, tool_json: null, payload_bytes: 0, finished: 1 }, 'a marker row keeps its own metadata untouched');
 
     const sessions = store.transaction(tx => tx.all('SELECT live_session_id, lifecycle, terminal_outcome, accepted_prompt_snapshot FROM live_sessions ORDER BY live_session_id'));
     assert.deepEqual(sessions.map(row => [row.live_session_id, row.lifecycle, row.terminal_outcome, row.accepted_prompt_snapshot]), [
-      ['ls-ended', 'terminal', 'complete', null],
+      ['ls-deadline', 'terminal', 'complete', null],
+      ['ls-forgotten', 'terminal', 'complete', null],
+      ['ls-gave-up', 'terminal', 'complete', null],
       ['ls-live', 'active', null, JSON.stringify({ ownerText: 'accepted words ls-live' })],
+      ['ls-no-model', 'terminal', 'complete', null],
+      ['ls-summarised', 'terminal', 'complete', null],
+      ['ls-unsummarised', 'terminal', 'complete', null],
     ]);
 
     const again = store.transaction(tx => pruneTraceContent(tx, now));
@@ -303,18 +334,26 @@ test('pruneTraceContent clears live session text that ended before the cutoff an
   }
 });
 
-// H16: the boot prune must be an index search, never a full scan of a content table that grows
-// with every turn. The statements here are the prune predicates from pruneTraceContent.
-test('the prune deletes run as index searches', () => {
-  withStore(store => {
+// H16: the boot prune must be an index search, never a full scan of a content table that grows with
+// every turn. The statements here are the prune predicates from pruneTraceContent.
+test('the prune deletes and scans run as index searches', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+  try {
     const plan = store.transaction(tx => [
       ...tx.all('EXPLAIN QUERY PLAN DELETE FROM trace_utterance WHERE at < ?', [T0]),
       ...tx.all('EXPLAIN QUERY PLAN DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [T0]),
+      ...tx.all('EXPLAIN QUERY PLAN UPDATE live_journal SET text=NULL, tool_json=NULL WHERE (text IS NOT NULL OR tool_json IS NOT NULL) AND live_session_id IN (SELECT s.live_session_id FROM live_sessions s WHERE s.terminal_at IS NOT NULL AND s.terminal_at < ?)', [T0]),
+      ...tx.all('EXPLAIN QUERY PLAN UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?', [T0]),
     ].map(row => String(row.detail)));
-    assert.deepEqual(plan.filter(detail => /^SCAN (trace_utterance|trace_call)\b/.test(detail)), [], 'no content table is scanned');
-    assert.ok(plan.some(detail => detail.includes('trace_utterance_at')), `trace_utterance(at) is searched: ${plan.join(' | ')}`);
-    assert.ok(plan.some(detail => detail.includes('trace_call_intent_at')), `trace_call(intent_at) is searched: ${plan.join(' | ')}`);
-  });
+    assert.deepEqual(plan.filter(detail => /^SCAN (trace_utterance|trace_call|live_journal|live_sessions)\b/.test(detail)), [], `no content table is scanned: ${plan.join(' | ')}`);
+    for (const index of ['trace_utterance_at', 'trace_call_intent_at', 'live_journal_content', 'live_sessions_terminal_at']) {
+      assert.ok(plan.some(detail => detail.includes(index)), `${index} is searched: ${plan.join(' | ')}`);
+    }
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('scripts/didi-timeline reads SQL only and prints the timeline and the metadata export', () => {

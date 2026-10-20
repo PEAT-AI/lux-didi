@@ -62,7 +62,7 @@ WHERE run_id IS NULL GROUP BY kind,reason;
 -- name: tool_trace_stages
 SELECT call_key,kind,at,mono_ms,clock_domain,response_key,turn_id,connection_epoch
 FROM trace_event WHERE live_session_id=:session
-  AND kind IN ('call.intent','call.executed','call.completed','call.output_prepared','call.output_written') ORDER BY seq;
+  AND kind IN ('call.intent','call.executed','call.output_prepared','call.output_written') ORDER BY seq;
 
 -- name: playback_receipts
 SELECT playback_key,source_instance_id,segment_seq,response_key,turn_id,

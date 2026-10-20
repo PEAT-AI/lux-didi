@@ -57,9 +57,9 @@ try{
  }
  assert.equal(new Set(keys).size,3);assert.equal(store.transaction(tx=>Number(tx.get('SELECT count(*) AS n FROM trace_response').n)),3);
  record(store,'call.executed',{liveSessionId:'session-one',connectionEpoch:'e0',callKey:keys[0],clockDomain:'clock-a',monoMs:200},{executedAt:1200});
- record(store,'call.completed',{liveSessionId:'session-one',connectionEpoch:'e0',callKey:keys[0],clockDomain:'clock-b',monoMs:1000},{completedAt:2000});
+ record(store,'call.output_written',{liveSessionId:'session-one',connectionEpoch:'e0',callKey:keys[0],clockDomain:'clock-b',monoMs:1000},{outputWrittenAt:2000,outcome:'completed',ms:1,resultChars:1});
  const report=buildTimeline({get:(sql,p)=>store.transaction(tx=>tx.get(sql,p)),all:(sql,p)=>store.transaction(tx=>tx.all(sql,p))},'session-one');
- const rows=store.transaction(tx=>tx.all("SELECT clock_domain FROM trace_event WHERE kind IN ('call.executed','call.completed')"));assert.deepEqual(rows.map(x=>x.clock_domain),['clock-a','clock-b']);
+ const rows=store.transaction(tx=>tx.all("SELECT clock_domain FROM trace_event WHERE kind IN ('call.executed','call.output_written')"));assert.deepEqual(rows.map(x=>x.clock_domain),['clock-a','clock-b']);
  assert.equal(report.unattributedCalls.length,2);assert.equal(report.unattributedCalls.find(x=>x.callKey===keys[0]).executionMs,null);
  console.log(JSON.stringify({case:'diagnostic_trace_canonical_references',cases,scopedCallKeys:3,scopedResponseKeys:3,unlikeClockDomainsPreserved:true,unattributedCallsStayOutsideTurns:report.turns.length===0,unlikeClockExecutionMs:report.unattributedCalls.find(x=>x.callKey===keys[0]).executionMs}));
 }finally{store.close();rmSync(dir,{recursive:true,force:true});}

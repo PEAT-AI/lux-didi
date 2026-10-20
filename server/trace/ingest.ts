@@ -6,8 +6,8 @@
 import { isOneOf, PLAYBACK_TERMINATION_REASONS, type PlaybackTerminationReason } from './kinds.js';
 import { record, type RecordResult, type TraceWritePort } from './record.js';
 
-/** The six receipts a playback segment reports. Closed, so a receipt name is never free text. */
-export const PLAYBACK_RECEIPTS = ['received', 'enqueued', 'started', 'drained', 'interrupted', 'terminated'] as const;
+/** The seven receipts a playback segment reports. Closed, so a receipt name is never free text. */
+export const PLAYBACK_RECEIPTS = ['received', 'enqueued', 'started', 'audible', 'drained', 'interrupted', 'terminated'] as const;
 export type PlaybackReceipt = (typeof PLAYBACK_RECEIPTS)[number];
 
 /** A receipt frame is a few hundred bytes; anything longer is not one of ours. */
@@ -86,6 +86,9 @@ export function recordPlaybackReceipt(port: TraceWritePort, liveSessionId: strin
       return record(port, 'playback.enqueued', ids, { enqueuedAt: receipt.wallMs });
     case 'started':
       return record(port, 'playback.started', ids, { startedAt: receipt.wallMs });
+    case 'audible':
+      // #451 H13: the app's own first-audible-chunk receipt. Until it arrives, audibility is unknown.
+      return record(port, 'playback.audible', ids, { audibleAt: receipt.wallMs });
     case 'drained':
       return record(port, 'playback.drained', ids, { drainedAt: receipt.wallMs });
     case 'interrupted':

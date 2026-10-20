@@ -498,7 +498,7 @@ test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write
     const firstEpochKey = scopedTraceKey(SESSION, 'e1', 'response', 'r1');
     assert.throws(() => record(store, 'response.observed', { liveSessionId: SESSION, connectionEpoch: 'e2', responseKey: firstEpochKey }, { observedAt: T0 + 20 }),
       (error: unknown) => error instanceof TraceRecordError && error.code === 'STALE_EPOCH',
-      'a receipt that names another epoch's row is refused by the epoch it carries');
+      'a receipt that names a row from another epoch is refused by the epoch it carries');
   });
 });
 

@@ -587,7 +587,7 @@ test('manual Live refresh cancels the scheduled handle before held logout', asyn
   const gate=new Promise<void>(resolve=>{release=resolve;});
   const version={};
   const projection:LiveCurrent={state:'listening',since:'synthetic-timer-session',cursor:0,entries:[]};
-  const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,
+  const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,orbSurfaceVisible:()=>true,
     livePoll:{live:projection},live:projection,liveDelay,pollLiveView,AbortSignal,authorityVersion:()=>version,
     setTimeout:(fn:()=>void,delay:number)=>{const handle=++id;timers.set(handle,{fn,delay});return handle;},
     clearTimeout:(handle:number)=>{timers.delete(handle);},fetchLive:async()=>{await gate;return projection;},paintLive:()=>{}};

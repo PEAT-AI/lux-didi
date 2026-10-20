@@ -1346,6 +1346,9 @@ export class LiveSessionOwner {
   #sendProgress(handle: ActiveSession, reason: 'dead_air' | 'stalled'): boolean {
     if (this.#settled(handle) || handle.rebuilding) return this.#progressSkip(handle, 'settled');
     if (!this.#progressPath(handle)) return this.#progressSkip(handle, 'no_channel');
+    // W4: a dead-air line speaks only for work still in flight. The stall deadline after the answer keeps its own
+    // one line (S4a-R2 b), which is about the owed answer, not about a lookup.
+    if (reason === 'dead_air' && !this.#workInFlight(handle)) return this.#progressSkip(handle, 'no_call_in_flight');
     if (handle.progressLines >= PROGRESS_LINES_PER_TURN) return this.#progressSkip(handle, 'budget');
     const now = this.#now();
     if (handle.progressSentAt !== undefined && now - handle.progressSentAt < PROGRESS_INTERVAL_MS) return this.#progressSkip(handle, 'interval');

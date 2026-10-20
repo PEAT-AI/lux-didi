@@ -1184,6 +1184,9 @@ test('#472: a run cancelled after its first answer is logged partial and still h
   const run = h.logs.filter(entry => entry.event === 'research_run').at(-1);
   assert.equal(run?.stopReason, 'cancelled', 'the run was cut, not completed');
   assert.equal(run?.status, 'partial', 'a run that delivered an answer is partial, never failed');
+  const knowledge = late.filter(entry => entry.source === 'knowledge').at(-1);
+  assert.equal(knowledge?.cut, true, `the cut run's late event says it was a cut, not a source failure: ${JSON.stringify(late)}`);
+  assert.match((knowledge?.items ?? []).join(' '), /late findings land here/, `and it carries what the cut reader did return: ${JSON.stringify(knowledge)}`);
 });
 
 // --- #1020 behaviour 1: what the model is told about the sources it could not read ---------------

@@ -2376,7 +2376,8 @@ export class LiveSessionOwner {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
-    if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    // #472: a cut run's empty late event is a cut, not a source failure, and the receipt must say so.
+    if (event.items.length === 0) return drop(event.cut === true ? 'run_cut' : event.ok ? 'no_new_findings' : 'source_failed');
     {
       // #472: a run cancelled after it answered is still this session's run, and the answer's own evidence is
       // the authority that matters. The lifecycle state is not a second permission gate, so a late source is

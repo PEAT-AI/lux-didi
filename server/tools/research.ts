@@ -778,6 +778,8 @@ export interface ResearchFirstAnswer {
 /** R6: one event per source that settles after the first answer. Only what the source really returned. */
 export interface ResearchLateFindings {
   researchId: string; runId?: number; calendarKeys?: string[]; mailKeys?: string[]; source: SourceKind; ms: number; items: string[]; ok: boolean;
+  /** #472: the run was cut (cancelled or stopped) before this source settled, so silence here is a cut, not a failure. */
+  cut?: boolean;
 }
 
 export interface ResearchProgress {
@@ -2045,7 +2047,7 @@ function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId:
     const entry = [...run.calendar.values()].flatMap(read => [...read.events]).find(([key, event]) => event.line === item && !run.calendarDelivered.has(key) && !calendarKeys.includes(key));
     if (entry) calendarKeys.push(entry[0]);
   }
-  deps.late?.({ researchId, ...(runId !== undefined ? { runId } : {}), ...(source === 'calendar' ? { calendarKeys } : {}), ...(mailKeys.length ? { mailKeys } : {}), source, ms, items, ok });
+  deps.late?.({ researchId, ...(runId !== undefined ? { runId } : {}), ...(source === 'calendar' ? { calendarKeys } : {}), ...(mailKeys.length ? { mailKeys } : {}), source, ms, items, ok, ...(run !== undefined && (run.cancelled || run.stopped) ? { cut: true } : {}) });
 }
 
 /**

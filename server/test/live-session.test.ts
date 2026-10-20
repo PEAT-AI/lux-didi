@@ -3741,6 +3741,35 @@ test('R6: a source that settles after the first answer is appended once, and sai
   h.owner.revoke(session.liveSessionId);
 });
 
+// #472 at the drop point the reviewer named: a run the model has closed is no longer "current", and base
+// dropped its late result at index.ts:2379 before the delivery authority was ever asked. The reader returns
+// lines after the stop, so the model must receive them.
+test('#472: a late result for a run the model stopped still reaches the model', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-stopped-472');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the first answer names the reader still open: ${JSON.stringify(reply).slice(0, 300)}`);
+  // The model closes the run itself while the chat reader is still open: the run is no longer current.
+  await settleLiveTool(h, 'ls2', 'research', { action: 'stop', researchId: String(reply['researchId']) });
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.ok(late.length >= 1, 'the reader landing after the stop is reported');
+  assert.notEqual(late.at(-1)!['delivered'], 'dropped', `the late result is not dropped: ${JSON.stringify(late.at(-1))}`);
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model carries the late finding');
+  h.owner.revoke(session.liveSessionId);
+});
+
 // #472: the delivery half. A source that lands after the first answer must reach the model through the
 // later-findings path while the session is live, and a calendar answer supplies the first answer here so
 // the assertion stands on a source the base suite serves (the memory-backed R6 cases are base-red).

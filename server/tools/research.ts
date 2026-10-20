@@ -388,7 +388,7 @@ export function parseSelector(text: string): SelectorOutput | null {
   return { questionClass: questionClass as QuestionClass, actions, pUseful };
 }
 
-/** The real selector: the same-provider Gemini text adapter, one structured request, 2 s deadline. */
+/** The real selector: the same-provider Gemini text adapter, one structured request, its deadline is selectorDeadlineMs. */
 export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1'): ResearchSelector {
   return {
     async select(input, signal) {

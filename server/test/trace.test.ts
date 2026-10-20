@@ -8,9 +8,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
+import { liveMigrations } from '../live/schema.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
-import { TRACE_SCHEMA_VERSION } from '../trace/kinds.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -247,10 +247,125 @@ test('pruneTraceContent is scoped to the two content tables', () => {
     recordUtterance(store, { turnId: 't1', role: 'model', at: T0, final: true, text: 'hello' });
     recordCallResult(store, { callKey: 'c1', text: 'r'.repeat(20_000) });
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 40 * 86_400_000));
-    assert.deepEqual(pruned, { utterances: 1, callResults: 1 });
+    assert.deepEqual(pruned, { utterances: 1, callResults: 1, journalText: 0, promptSnapshots: 0 });
     assert.equal(counts(store).trace_turn, 1);
     assert.equal(counts(store).trace_call, 1);
   });
+});
+
+// Retention rule (lux 90269): content pruned at 30 days, metadata kept. A live session that ended
+// before the cutoff keeps its row, its kind, its byte count and its outcome, and loses only the
+// owner text: journal text, journal tool payload and the accepted prompt snapshot. The journal text
+// of a session that has no summary yet is kept, because summaries.reconcile() still distils it.
+test('pruneTraceContent clears live text only where the transcript is no longer needed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
+  const day = 86_400_000, endedAt = T0 + 1 * day, liveAt = T0 + 31 * day, now = T0 + 60 * day;
+  type Summary = { status: 'complete' | 'skipped' | 'failed'; skipReason?: string; errorCode?: string } | null;
+  try {
+    const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+    const seed = (id: string, terminalAt: number | null, at: number, summary: Summary, excluded = false): void => {
+      store.transaction(tx => {
+        tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+            client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
+            journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, accepted_prompt_snapshot)
+          VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?,0,0,'attached',?,?,?,?,?)`,
+          [id, store.assistantId, store.authorityEpoch, `key-${id}`, `fp-${id}`, 'client', `audit-${id}`, 'profile', 'prompt',
+            terminalAt === null ? 'active' : 'terminal', 3, terminalAt === null ? null : 'complete', terminalAt, at, at,
+            JSON.stringify({ ownerText: `accepted words ${id}` })]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?)",
+          [id, 'inputTranscription', `owner words ${id}`, 1, 9, at]);
+        // Marker rows: no owner speech, and their `text` is the marker itself, which must survive.
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,NULL,1,0,?)",
+          [id, 'ready', at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,4,?)",
+          [id, 'remember_deferred', '1200', at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,44,?)",
+          [id, 'continuity', JSON.stringify({ event: 'rebuilding', reason: 'stall' }), at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, tool_json, payload_bytes, arrived_at) VALUES (?,?,NULL,1,?,0,?)",
+          [id, 'toolCall', JSON.stringify({ name: 'search', args: { query: `owner words ${id}` } }), at]);
+        if (summary) {
+          tx.run(`INSERT INTO conversation_summaries (id, live_session_id, status, summary, ended_at, model, input_chars,
+              input_truncated, injected_summary_ids, retry_count, error_code, created_at, skip_reason)
+            VALUES (?,?,?,?,?,?,?,0,'[]',0,?,?,?)`,
+            [`sum-${id}`, id, summary.status, summary.status === 'complete' ? 'a summary' : null, at, 'm', 10,
+              summary.errorCode ?? null, at, summary.skipReason ?? null]);
+        }
+        if (excluded) tx.run("INSERT INTO history_exclusions (source_kind, source_id, forgotten_at) VALUES ('live',?,?)", [id, at]);
+      });
+    };
+    seed('ls-summarised', endedAt, endedAt, { status: 'complete' });
+    seed('ls-unsummarised', endedAt, endedAt, null);
+    seed('ls-no-model', endedAt, endedAt, { status: 'skipped', skipReason: 'no_text_model' });
+    seed('ls-deadline', endedAt, endedAt, { status: 'failed', errorCode: 'deadline' });
+    seed('ls-gave-up', endedAt, endedAt, { status: 'failed', errorCode: 'model_error' });
+    seed('ls-forgotten', endedAt, endedAt, null, true);
+    seed('ls-live', null, liveAt, null);
+
+    const pruned = store.transaction(tx => pruneTraceContent(tx, now));
+    // Three ended sessions are done with their transcript, and each clears two rows (the transcript
+    // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 6, promptSnapshots: 6 });
+
+    const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind IN ('inputTranscription','toolCall') ORDER BY live_session_id, journal_id"));
+    const bySession = new Map<string, Array<Record<string, unknown>>>();
+    for (const row of rows) bySession.set(String(row.live_session_id), [...(bySession.get(String(row.live_session_id)) ?? []), row]);
+    const cleared = ['ls-summarised', 'ls-gave-up', 'ls-forgotten', 'ls-live'].filter(id => bySession.get(id)!.every(row => row.text === null && row.tool_json === null)).sort();
+    assert.deepEqual(cleared, ['ls-forgotten', 'ls-gave-up', 'ls-summarised'], 'a session still owed a summary keeps its text');
+    for (const id of ['ls-unsummarised', 'ls-no-model', 'ls-deadline']) {
+      assert.deepEqual(bySession.get(id)!.map(row => row.text), [`owner words ${id}`, null], `${id} still has to be distilled`);
+    }
+    assert.equal(bySession.get('ls-live')!.every(row => row.text === null && row.tool_json === null), false, 'a session that has not ended keeps its reattach text');
+
+    const transcription = store.transaction(tx => tx.get("SELECT payload_bytes, arrived_at FROM live_journal WHERE live_session_id='ls-summarised' AND kind='inputTranscription'"));
+    assert.deepEqual([transcription?.payload_bytes, transcription?.arrived_at], [9, endedAt], 'the byte count and the arrival time are metadata and stay');
+    const marker = store.transaction(tx => tx.get("SELECT text, tool_json, payload_bytes, finished FROM live_journal WHERE live_session_id='ls-summarised' AND kind='ready'"));
+    assert.deepEqual([marker?.text, marker?.tool_json, marker?.payload_bytes, marker?.finished], [null, null, 0, 1], 'a marker row keeps its own metadata untouched');
+    // The reviewer's seed: a wait duration and a continuity event are markers, not owner speech, so a
+    // prune that cleared them would report a 1200 ms wait as 0 and lose the continuity event.
+    const wait = store.transaction(tx => tx.get("SELECT text, payload_bytes FROM live_journal WHERE live_session_id='ls-summarised' AND kind='remember_deferred'"));
+    assert.deepEqual([wait?.text, wait?.payload_bytes], ['1200', 4], 'the deferred wait keeps its duration and its byte count');
+    const continuity = store.transaction(tx => tx.get("SELECT text, payload_bytes FROM live_journal WHERE live_session_id='ls-summarised' AND kind='continuity'"));
+    assert.equal(continuity?.text, JSON.stringify({ event: 'rebuilding', reason: 'stall' }), 'the continuity event survives');
+    assert.equal(continuity?.payload_bytes, 44);
+
+    const sessions = store.transaction(tx => tx.all('SELECT live_session_id, lifecycle, terminal_outcome, accepted_prompt_snapshot FROM live_sessions ORDER BY live_session_id'));
+    assert.deepEqual(sessions.map(row => [row.live_session_id, row.lifecycle, row.terminal_outcome, row.accepted_prompt_snapshot]), [
+      ['ls-deadline', 'terminal', 'complete', null],
+      ['ls-forgotten', 'terminal', 'complete', null],
+      ['ls-gave-up', 'terminal', 'complete', null],
+      ['ls-live', 'active', null, JSON.stringify({ ownerText: 'accepted words ls-live' })],
+      ['ls-no-model', 'terminal', 'complete', null],
+      ['ls-summarised', 'terminal', 'complete', null],
+      ['ls-unsummarised', 'terminal', 'complete', null],
+    ]);
+
+    const again = store.transaction(tx => pruneTraceContent(tx, now));
+    assert.deepEqual(again, { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// H16: the boot prune must be an index search, never a full scan of a content table that grows with
+// every turn. The statements here are the prune predicates from pruneTraceContent.
+test('the prune deletes and scans run as index searches', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+  try {
+    const plan = store.transaction(tx => [
+      ...tx.all('EXPLAIN QUERY PLAN DELETE FROM trace_utterance WHERE at < ?', [T0]),
+      ...tx.all('EXPLAIN QUERY PLAN DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [T0]),
+      ...tx.all('EXPLAIN QUERY PLAN UPDATE live_journal SET text=NULL, tool_json=NULL WHERE (text IS NOT NULL OR tool_json IS NOT NULL) AND live_session_id IN (SELECT s.live_session_id FROM live_sessions s WHERE s.terminal_at IS NOT NULL AND s.terminal_at < ?)', [T0]),
+      ...tx.all('EXPLAIN QUERY PLAN UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?', [T0]),
+    ].map(row => String(row.detail)));
+    assert.deepEqual(plan.filter(detail => /^SCAN (trace_utterance|trace_call|live_journal|live_sessions)\b/.test(detail)), [], `no content table is scanned: ${plan.join(' | ')}`);
+    for (const index of ['trace_utterance_at', 'trace_call_intent_at', 'live_journal_content', 'live_sessions_terminal_at']) {
+      assert.ok(plan.some(detail => detail.includes(index)), `${index} is searched: ${plan.join(' | ')}`);
+    }
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('scripts/didi-timeline reads SQL only and prints the timeline and the metadata export', () => {
@@ -557,6 +672,8 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     Number(store.transaction(tx => tx.get(`SELECT COUNT(*) AS n FROM ${table}`)!['n']))]));
   const traceVersion = (store: Store): number => Number(store.transaction(tx =>
     tx.get("SELECT MAX(version) AS v FROM runtime_migrations WHERE owner='trace'")!['v']));
+  // The current owner version, not a number frozen at v2: the migration list grows with the schema.
+  const latestTraceVersion = Math.max(...traceMigrations.map(migration => migration.version));
   try {
     const db = new DatabaseSync(join(dir, 'state.sqlite'));
     try {
@@ -580,7 +697,7 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const migrated = new Store(dir, []);
     try {
       assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
-      assert.equal(traceVersion(migrated), TRACE_SCHEMA_VERSION);
+      assert.equal(traceVersion(migrated), latestTraceVersion);
       const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
       assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
         'the same native sequence in another session is its own event, not a replay of ls-v1');
@@ -591,8 +708,8 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const again = new Store(dir, []);
     try {
       assert.deepEqual(counts(again), { ...seeded, trace_event: 2, trace_playback: 2 }, 'reopening an already-migrated store keeps every row');
-      assert.equal(traceVersion(again), TRACE_SCHEMA_VERSION);
-      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), TRACE_SCHEMA_VERSION,
+      assert.equal(traceVersion(again), latestTraceVersion);
+      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), traceMigrations.length,
         'one ledger row per applied version, so the migration ran once');
     } finally { again.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

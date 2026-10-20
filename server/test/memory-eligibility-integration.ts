@@ -89,7 +89,9 @@ test('memory eligibility integration: real summarizer rejects private input befo
   const f = fixture(); let calls = 0;
   const model: ModelPort = { generate: async () => { calls++; return { status: 'complete', text: JSON.stringify({ skip: false, summary: 'Synthetic ordinary summary keyword.', openLoop: null }),
     providerContent: { role: 'model', parts: [{ text: 'Synthetic response' }] }, reason: '', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } }; } };
-  const summarizer = createSummarizer({ store: f.store, model, modelId: 'synthetic-model', assistantName: 'Synthetic assistant', now: () => NOW, timeZone: 'UTC', log: () => {} });
+  // The product's summary route admits ordinary content only (server/host/runtime.ts passes the
+  // provider route's classes), which is what makes private and sensitive input refusable.
+  const summarizer = createSummarizer({ store: f.store, model, modelId: 'synthetic-model', assistantName: 'Synthetic assistant', now: () => NOW, timeZone: 'UTC', log: () => {}, modelAllowedClasses: ['ordinary'] });
   try {
     for (const dataClass of ['private', 'sensitive', 'ordinary']) {
       const id = `live-${dataClass}`;
@@ -97,12 +99,13 @@ test('memory eligibility integration: real summarizer rejects private input befo
         tx.run(`INSERT INTO live_sessions (live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,terminal_outcome,terminal_at,created_at,updated_at)
           VALUES (?,?,?,?,?,?,?,?,?,'terminal',0,0,0,0,1,'ended',?,?,?,?)`, [id, f.store.assistantId, f.store.authorityEpoch, id, id, 'synthetic', 'synthetic-audit', 'synthetic-profile', 'synthetic-prompt', JSON.stringify({ state: 'closed', code: 'normal' }), NOW, NOW, NOW]);
         tx.run('INSERT INTO live_grants VALUES (?,?,?,?,?,?,?,?,?,?)', [id, id, 'openai', 'gpt-live-1', 'marin', 'synthetic-key', JSON.stringify(['ordinary', 'private', 'sensitive']), dataClass, 1, NOW]);
+        tx.run('INSERT INTO history_sessions(live_session_id,owner_id,data_class,revision,created_at) VALUES(?,?,?,1,?)', [id, f.store.assistantId, dataClass, NOW]);
         for (const text of ['Synthetic owner first turn', 'Synthetic owner second turn']) tx.run('INSERT INTO live_journal (live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES (?,\'inputTranscription\',?,1,?,?)', [id, text, text.length, NOW]);
       });
       await summarizer.distill(id);
       const stored = f.store.transaction(tx => getBySession(tx, id))!;
       assert.equal(stored.status, dataClass === 'ordinary' ? 'complete' : 'skipped');
-      if (dataClass !== 'ordinary') { assert.equal(stored.skipReason, 'non_ordinary'); assert.equal(stored.summary, null); assert.equal(calls, 0); }
+      if (dataClass !== 'ordinary') { assert.equal(stored.skipReason, 'summary_route_class_denied'); assert.equal(stored.summary, null); assert.equal(calls, 0); }
     }
     assert.equal(calls, 1); assert.equal(f.store.transaction(tx => memoryLookup(tx, 'summary keyword')).lines.length, 1);
   } finally { f.cleanup(); }

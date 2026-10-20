@@ -164,4 +164,10 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     `ALTER TABLE live_sessions ADD COLUMN diagnostic_last_reason TEXT`,
     `ALTER TABLE live_sessions ADD COLUMN diagnostic_unattributed_transcripts INTEGER`,
     `ALTER TABLE live_sessions ADD COLUMN diagnostic_clock_domain TEXT`,
+]}, { owner: 'live', version: 10, statements: [
+    // The boot retention prune walks the sessions that ended before the cutoff and then the journal
+    // rows that still carry content (H16): without these two indexes that is a full scan of both
+    // tables inside the start-up transaction, and both grow with every session the owner speaks.
+    `CREATE INDEX live_sessions_terminal_at ON live_sessions(terminal_at) WHERE terminal_at IS NOT NULL`,
+    `CREATE INDEX live_journal_content ON live_journal(live_session_id) WHERE text IS NOT NULL OR tool_json IS NOT NULL`,
 ]}];

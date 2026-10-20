@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
   calendarIdentityValues, classifyIdentity, gmailIdentityValues, identityAction, identityMatch,
-  mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity,
+  identityProofMemo, mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity,
   type IdentityProof, type IdentitySource,
 } from '../connectors/identity.js';
 import { safeEvent } from '../host/log.js';
@@ -94,6 +94,26 @@ test('projectIdentity returns a closed shape, dropping anything unvalidated', ()
   assert.deepEqual((projectIdentity({ proven: true, match: true, value: long }) as IdentityProof).value, null);
 });
 
+test('the identity memo proves one account once and retries an unproven connector', async () => {
+  const once = identityProofMemo();
+  let probes = 0;
+  const probe = async (): Promise<IdentityProof> => { probes += 1; return { proven: true, match: true, value: OWNER }; };
+  assert.deepEqual(await once('google\u0000acc', probe), { proven: true, match: true, value: OWNER });
+  assert.deepEqual(await once('google\u0000acc', probe), { proven: true, match: true, value: OWNER });
+  assert.equal(probes, 1, 'the second endpoint of one account reuses the first proof');
+  await once('google\u0000other', probe);
+  assert.equal(probes, 2, 'a different account is proved for itself');
+  // Endpoints connect concurrently, so two simultaneous endpoints of one account must share the
+  // in-flight probe, not merely its result.
+  const [first, second] = await Promise.all([once('google\u0000acc', probe), once('google\u0000acc', probe)]);
+  assert.deepEqual([first, second], [{ proven: true, match: true, value: OWNER }, { proven: true, match: true, value: OWNER }]);
+  assert.equal(probes, 2, 'a concurrent pair still probes once');
+  const unproven = async (): Promise<IdentityProof> => { probes += 1; return { proven: false, match: null, value: null }; };
+  await once('mattermost\u0000acc', unproven);
+  await once('mattermost\u0000acc', unproven);
+  assert.equal(probes, 4, 'an unproven connector proves again on the next connect');
+});
+
 // Real refusal wiring: one fake Gmail endpoint, the real host compose path, synthetic identities only.
 const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 
@@ -148,4 +168,60 @@ test('a proven match keeps the connector and logs only the booleans', async () =
   assert.equal(reports[0]!.reasonCode, undefined);
   assert.deepEqual(reports[0]!.identity, { proven: true, match: true, value: OWNER.toUpperCase() });
   assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
+});
+
+test('one proof per connector account per boot, and no diagnostic capture at start', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-identity-once-'));
+  const config = join(dir, 'provider-config');
+  await mkdir(config, { mode: 0o700 });
+  const families = {
+    mail: ['gmail_get_profile', 'gmail_list', 'gmail_read'],
+    calendar: ['gcal_calendars', 'gcal_list'],
+  } as const;
+  const calls: string[] = [];
+  const reply = (family: keyof typeof families, message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
+    jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
+      ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
+      : message.method === 'tools/list' ? { tools: families[family].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } })) }
+      : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify(
+        message.params?.name === 'gcal_calendars' ? { calendars: [{ id: OWNER, primary: true }] } : { emailAddress: OWNER }) }] }
+      : {},
+  };
+  const endpoint = createServer(async (req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const parsed = JSON.parse(Buffer.concat(chunks).toString()) as { id?: unknown; method: string; params?: { name?: string } };
+    if (parsed.method === 'tools/call' && parsed.params?.name) calls.push(parsed.params.name);
+    const family = (req.url ?? '').includes('calendar') ? 'calendar' : 'mail';
+    const response = reply(family, parsed);
+    res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
+    res.end(response ? JSON.stringify(response) : undefined);
+  });
+  endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+  const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
+  // Two endpoints of one Google account: a mailbox and a calendar. The audit found both proving the
+  // same account at every start (H19), and both wire calls also armed a context_absent capture (#479).
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
+    { id: 'mail', connector: 'google', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/mail`, account: 'synthetic', resource: 'mail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'calendar', connector: 'google', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/calendar`, account: 'synthetic', resource: 'calendar', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+  ] }), { mode: 0o600 });
+  try {
+    const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    try {
+      const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch, 'Idempotency-Key': randomUUID() };
+      const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
+      const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; identity?: IdentityProof }>;
+      assert.deepEqual(reports.map(report => [report.id, report.state, report.identity?.proven, report.identity?.match]), [
+        ['mail', 'connected', true, true], ['calendar', 'connected', true, true],
+      ], 'both endpoints of the account are proven and published');
+      const lines = (await readFile(join(dir, 'state', 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      assert.equal(lines.filter(line => line.event === 'connector_identity' && line.connector === 'google').length, 1, 'one identity proof for the account, not one per endpoint');
+      assert.deepEqual(lines.filter(line => line.event === 'tool_diagnostic_capture'), [], 'a start arms no diagnostic capture at all');
+      assert.equal(calls.filter(name => name === 'gmail_get_profile' || name === 'gcal_calendars').length, 1, 'the identity read happened once');
+    } finally { await host.close(); }
+  } finally {
+    endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done()));
+    await rm(dir, { recursive: true, force: true });
+  }
 });

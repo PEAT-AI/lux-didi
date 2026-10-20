@@ -12,6 +12,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { createDispatchOwner } from '../tools/dispatch.js';
+import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
@@ -703,6 +705,96 @@ test('a host writes no debug journal under any data dir or config dir', async ()
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+// #487: the retired JSONL debug journal is unread and unremoved on 4282b639 (282 files, 8.2 MB of transcripts).
+// One bounded start-up step removes exactly `<dataDir>/debug` and logs one byte-counted receipt; the second
+// start finds nothing and logs nothing.
+test('a start removes the retired debug journal once and logs one byte-counted receipt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-debug-retired-'));
+  const dataDir = join(dir, 'state');
+  const journal = join(dataDir, 'debug', '2026-10-17');
+  await mkdir(journal, { recursive: true, mode: 0o700 });
+  await writeFile(join(journal, 'session-a.jsonl'), 'x'.repeat(700));
+  await writeFile(join(journal, 'session-b.jsonl'), 'y'.repeat(300));
+  await writeFile(join(dataDir, 'keep-me.txt'), 'kept');
+  try {
+    const first = await startHost({ dataDir, webRoot, port: 0 });
+    const receipts = async (): Promise<Record<string, unknown>[]> =>
+      (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'debug_journal_removed')
+        .map(line => ({ bytes: line.bytes, event: line.event }));
+    try {
+      await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the retired journal is gone');
+      assert.equal(await readFile(join(dataDir, 'keep-me.txt'), 'utf8'), 'kept', 'nothing else in the data dir is touched');
+      assert.deepEqual(await receipts(), [{ event: 'debug_journal_removed', bytes: 1000 }], 'one receipt carries the byte count');
+    } finally { await first.close(); }
+
+    const second = await startHost({ dataDir, webRoot, port: 0 });
+    try {
+      assert.equal((await receipts()).length, 1, 'a second start finds no journal and writes no second receipt');
+    } finally { await second.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// Reviewer R1: a sweep the host cannot finish is one closed receipt and never a refused start. A
+// read-only directory under debug/ is the owner's file system, not a reason to keep the app closed.
+test('an unremovable debug directory logs one closed receipt and never aborts the start', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-debug-stuck-'));
+  const dataDir = join(dir, 'state');
+  const stuck = join(dataDir, 'debug', 'locked');
+  await mkdir(stuck, { recursive: true, mode: 0o700 });
+  await writeFile(join(stuck, 'session.jsonl'), 'x'.repeat(10));
+  await chmod(stuck, 0o500);
+  try {
+    const host = await startHost({ dataDir, webRoot, port: 0 });
+    try {
+      const lines = (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      const failed = lines.filter(line => line.event === 'debug_journal_removal_failed').map(line => ({ code: line.code, event: line.event }));
+      assert.equal(failed.length, 1, 'one receipt, not one per file it could not remove');
+      assert.equal(failed[0]!.event, 'debug_journal_removal_failed');
+      assert.match(String(failed[0]!.code), /^[a-z0-9]{1,16}$/, 'the receipt carries an errno token, never a path');
+      await stat(join(dataDir, 'debug'));
+      assert.equal(lines.filter(line => line.event === 'host_started').length, 1, 'the start itself went ahead');
+    } finally { await host.close(); }
+  } finally {
+    await chmod(stuck, 0o700).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #479 / H4: a call made with no tool context (the start-up connector probes) used to arm a diagnostic
+// capture, so every start wrote four `context_absent` and four `wire_observed_context_absent` receipts,
+// three of them byte-identical. The receipt is armed only with a real run context.
+//
+// R3: the red stage asserted that the call wrote no `tool_dispatch_coverage` row either. That was
+// wrong and the composition check proves it (dispatch-diagnostics-composition.integration.mjs asserts
+// the unattributed marker for a context-free wire call), so the assertion here is two-sided: no
+// capture receipt at all, and the audit row still records one unattributed call with its reason.
+// The end-to-end half lives in connector-identity.test.ts, where a real start with two endpoints on
+// one account asserts zero `tool_diagnostic_capture` lines in host.log.
+test('a tool call with no run context arms no diagnostic capture', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-no-context-'));
+  const store = new Store(dir, [...toolsMigrations]);
+  try {
+    const captured: string[] = [];
+    const port = {
+      async call() { return { state: 'completed' as const, content: [{ type: 'text' as const, text: 'ok' }], isError: false }; },
+    };
+    const owner = createDispatchOwner({
+      store, port: port as never, ownerId: store.assistantId,
+      current: () => true, failure: reason => { captured.push(reason); },
+    });
+    const result = await owner.port.call({ toolName: 'gmail_get_profile', arguments: {}, connectionId: 'gmail', class: 'ordinary' } as never);
+    assert.equal((result as { state?: string }).state, 'completed', 'the probe still reaches the connector');
+    assert.deepEqual(captured, [], 'no diagnostic capture without a context');
+    // The audit row is the other half: the context-free wire call is recorded, without a receipt.
+    const coverage = store.transaction(tx => tx.all('SELECT kind, reason, run_id FROM tool_dispatch_coverage'));
+    assert.deepEqual(coverage.map(row => [row.kind, row.reason, row.run_id]), [['unattributed', 'dispatch_unknown_context_absent', null]], 'the audit row still records the context-free call');
+    owner.reuse(undefined);
+    assert.deepEqual(captured, [], 'reuse without a context captures nothing either');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('the installed app config dir is refused with one line naming --data-dir, and supervision lifts it', () => {
   const installed = join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi', 'provider-38');
   const refusal = installedConfigDirRefusal(installed, false);
@@ -761,7 +853,9 @@ test('POST api/v1/live/prewarm answers the receipt and refuses a body field', as
     const asked = await fetch(url, { method: 'POST', headers, body: '{}' });
     assert.equal(asked.status, 200);
     const answered = await asked.json() as { data: unknown };
-    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false });
+    // WarmPrewarmReceipt carries the assembly reason as a required field (server/live/index.ts), and
+    // an unconfigured Live answers `unconfigured`, as the owner-prewarm test above asserts.
+    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' });
     const unknown = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ digest: 'x' }) });
     assert.equal(unknown.status, 400, 'the body is closed: it names no field');
     const read = await fetch(url, { method: 'GET', headers });

@@ -343,8 +343,10 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
   t.after(async () => { await runtime.close(); });
   const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongo');
+  // H19: no stored mongoose credential is a not-signed-in state, not a failing probe at every start.
   assert.equal(report?.state, 'error');
-  assert.equal(report?.error, 'credential mongo missing or invalid');
+  assert.equal(report?.error, 'not_signed_in');
+  assert.equal(report?.reasonCode, 'not_signed_in');
   assert.equal(report?.tools, 0);
 });
 

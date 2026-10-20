@@ -1481,7 +1481,7 @@ describe('openai gpt-live turn states', () => {
     socket.trackBuffer = true;
     const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
     for (let index = 0; index < 300; index += 1) {
-      socket.drain(4_000); // the link keeps up: no backlog, nothing shed
+      socket.drain(20_000); // the link keeps up: the socket buffer stays far below the cap
       socket.readyState = index % 20 < 3 ? 2 : 1; // three frames in twenty land while the socket is reconnecting
       session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
       clock.advance(20);

@@ -455,7 +455,7 @@ export async function composeMcpRuntime(options: {
       // again with a new generation, exactly as a first connect would (R9).
       await Promise.all([...needsSignIn].map(async id => {
         const entry = active.find(candidate => candidate.id === id);
-        if (closed || entry === undefined || entry.credentialRef === undefined) return;
+        if (closed || entry === undefined || entry.credentialRef == null) return;
         const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
         if (!stored) return;
         needsSignIn.delete(id);

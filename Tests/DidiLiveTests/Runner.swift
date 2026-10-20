@@ -1058,6 +1058,24 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             print("PASS stop control survives a busy send queue and its receipt names the press")
             record("stop-control")
 
+            // #476/V10: one Stop is one teardown. A repeated stop() gets no second receipt, so the
+            // native log cannot hold a second live_stop / socket_close_sent pair for one press.
+            let looseHTTP = TestHTTP(fixture), looseGate = Gate()
+            await looseHTTP.configure(failRead: true)
+            let looseSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], looseGate)
+            let loose = LiveSessionCoordinator(http: looseHTTP, sockets: ProbeSockets(socket: looseSocket), sink: SilentSink())
+            await loose.begin(frozen); try await until { await loose.state == .active }
+            let firstStop = await loose.close(trigger: .button)
+            try require(firstStop != nil, "the first stop returns its receipt even when the read-back fails")
+            let afterFirst = await looseHTTP.requests
+            let secondStop = await loose.close(trigger: .button)
+            try require(secondStop == nil, "a repeated stop returns no second receipt")
+            try require(await looseHTTP.requests == afterFirst, "a repeated stop does not ask the host again")
+            try require(await looseSocket.controls.filter { $0 == .close }.count == 1, "the wire sees one close control")
+            await looseHTTP.finish()
+            print("PASS one stop is one receipt and one close control")
+            record("stop-once")
+
             // Z2: a playback receipt holds the wire; the microphone sheds one frame and the call lives on.
             let shedHTTP = TestHTTP(fixture), receiptGate = Gate()
             let shedSocket = BusyWireSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], receiptGate)

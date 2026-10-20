@@ -8,7 +8,7 @@ import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { lstatSync, readFileSync, rmSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createDomainPort, domainMigrations } from '../domain/index.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -178,6 +178,34 @@ function removeOwnDescriptor(path: string): void {
   if (found !== 'absent' && found.pid === process.pid) rmDescriptorQuietly(path);
 }
 
+/**
+ * #487: the retired JSONL debug journal (`<dataDir>/debug/<day>/<session>.jsonl`, transcripts and full
+ * instructions) is unread since `server/host/journal.ts` was deleted, and nothing removed it. One
+ * bounded start-up step removes exactly that directory and answers the bytes removed, or null when
+ * there is nothing to remove. Only a real directory is touched: a symlink is never followed and never
+ * unlinked, and no other entry of the data directory is read or removed. The second start removes
+ * nothing, so the receipt is written once.
+ */
+export function removeRetiredDebugJournal(dataDir: string): number | null {
+  const root = join(resolve(dataDir), 'debug');
+  const top = lstatSync(root, { throwIfNoEntry: false });
+  if (!top?.isDirectory()) return null;
+  const bytes = journalBytes(root);
+  rmSync(root, { recursive: true, force: true });
+  return bytes;
+}
+
+function journalBytes(root: string): number {
+  let total = 0;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) total += journalBytes(path);
+    else if (entry.isFile()) total += lstatSync(path, { throwIfNoEntry: false })?.size ?? 0;
+  }
+  return total;
+}
+
 export async function startHost(config: HostConfig) {
   const dataDir = resolve(config.dataDir), webRoot = resolve(config.webRoot);
   const port = config.port ?? 8765;
@@ -225,6 +253,8 @@ export async function startHost(config: HostConfig) {
     if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
   } catch { /* Composition below owns invalid configuration errors. */ }
   log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
+  const retiredJournalBytes = removeRetiredDebugJournal(dataDir);
+  if (retiredJournalBytes !== null) log.event({ event: 'debug_journal_removed', bytes: retiredJournalBytes });
   const stopDiagnostics = captureHostDiagnostics(log);
   let store: Store;
   startupStage = 'store';

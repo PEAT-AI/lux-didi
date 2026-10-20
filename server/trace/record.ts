@@ -410,15 +410,26 @@ export function recordCallResult(port: TraceWritePort, result: { callKey: string
 }
 
 /**
- * Retention for the two trace content tables only, called at host start. Metadata rows keep
- * their place; a 30-day-old transcript or tool result is deleted logically, and WAL frames or
- * free pages are not forensically erased.
+ * Retention for owner content at 30 days, called at host start. Metadata rows keep their place: a
+ * 30-day-old transcript, tool result, journal payload or accepted prompt snapshot loses its text and
+ * keeps its ids, counts, kinds and outcome; WAL frames or free pages are not forensically erased.
+ * A live session is only content-pruned once it has ended before the cutoff, so the reattach window
+ * of a session that is still live is never shortened.
  */
-export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number } {
+export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; journalText: number; promptSnapshots: number } {
   const cutoff = now - TRACE_RETENTION_DAYS * TRACE_DAY_MS;
   const utterances = exec.run('DELETE FROM trace_utterance WHERE at < ?', [cutoff]);
   const callResults = exec.run('DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [cutoff]);
-  return { utterances, callResults };
+  // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
+  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, journalText: 0, promptSnapshots: 0 };
+  const endedBefore = 'IN (SELECT live_session_id FROM live_sessions WHERE terminal_at IS NOT NULL AND terminal_at < ?)';
+  const journalText = exec.run(`UPDATE live_journal SET text=NULL, tool_json=NULL WHERE (text IS NOT NULL OR tool_json IS NOT NULL) AND live_session_id ${endedBefore}`, [cutoff]);
+  const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
+  return { utterances, callResults, journalText, promptSnapshots };
+}
+
+function tableExists(exec: TraceExec, table: string): boolean {
+  return exec.all("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?", [table]).length > 0;
 }
 
 export { EVENT_KINDS };

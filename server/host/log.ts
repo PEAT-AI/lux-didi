@@ -113,6 +113,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!SAFE_TOKEN.test(String(value.tool)) || typeof value.count !== 'number' || !Number.isInteger(value.count) || value.count < 1 || value.count > 1_000_000) return;
     return { event: 'tool_redaction', tool: value.tool, count: value.count };
   }
+  if (value.event === 'debug_journal_removed') {
+    // #487: the retired JSONL journal (transcripts and full instructions) is removed at start. The
+    // receipt carries the size removed and never a path, a session id or a byte of its content.
+    if (!closedKeys(value, ['bytes', 'event'])) return;
+    if (!Number.isSafeInteger(value.bytes) || (value.bytes as number) < 0) return;
+    return { event: 'debug_journal_removed', bytes: value.bytes };
+  }
   if (value.event === 'live_trace_rejected') {
     // O1b-A: the trace store's own receipt for a refused write: the kind and the store's typed code only,
     // never a payload. It replaces the debug journal's error receipt in the same slot in this whitelist.

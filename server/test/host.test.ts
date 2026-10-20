@@ -736,8 +736,8 @@ test('a start removes the retired debug journal once and logs one byte-counted r
 
 // #479 / H4: a call made with no tool context (the start-up connector probes) used to arm a diagnostic
 // capture, so every start wrote four `context_absent` and four `wire_observed_context_absent` receipts,
-// three of them byte-identical. Capture is now armed only when a real run context exists.
-test('a tool call with no run context captures no diagnostic and writes no coverage row', async () => {
+// three of them byte-identical. The audit row stays; the receipt is armed only with a real run context.
+test('a tool call with no run context arms no diagnostic capture', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-no-context-'));
   const store = new Store(dir, [...toolsMigrations]);
   try {
@@ -752,7 +752,8 @@ test('a tool call with no run context captures no diagnostic and writes no cover
     const result = await owner.port.call({ toolName: 'gmail_get_profile', arguments: {}, connectionId: 'gmail', class: 'ordinary' } as never);
     assert.equal((result as { state?: string }).state, 'completed', 'the probe still reaches the connector');
     assert.deepEqual(captured, [], 'no diagnostic capture without a context');
-    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM tool_dispatch_coverage')!.n)), 0, 'no coverage row without a context');
+    const coverage = store.transaction(tx => tx.all('SELECT kind, reason, run_id FROM tool_dispatch_coverage'));
+    assert.deepEqual(coverage.map(row => [row.kind, row.reason, row.run_id]), [['unattributed', 'dispatch_unknown_context_absent', null]], 'the audit row still records the context-free call');
     owner.reuse(undefined);
     assert.deepEqual(captured, [], 'reuse without a context captures nothing either');
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }

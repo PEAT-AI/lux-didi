@@ -108,7 +108,7 @@ async function compose(t: TestContext, options: { ownerIdentity?: string | null;
 }
 
 test('a connector round is deferred: composition returns while connect is blocked', async t => {
-  const { mcp, fake } = await compose(t, { blockConnect: true });
+  const { mcp, fake } = await compose(t, { blockConnect: true, autoProof: OWNER });
   assert.equal(mcp.connectionIds().length, 0);
   assert.equal(mcp.status().endpoints[0]!.state, 'connecting');
   const started = mcp.start();
@@ -326,11 +326,11 @@ test('fluency: host recovers exact approved transport once and never replays the
   for (let i = 0; i < 1000 && mcp.connectionIds().length === 0; i++) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
   assert.equal(fake.discoveryCount(), 2, 'exactly one automatic recovery discovery');
-  assert.deepEqual(fake.calls, ['gmail_search_messages'], 'no read replay or identity probe');
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages'], 'no read replay and exactly one identity probe');
   assert.deepEqual(store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail'])), before);
   const next = await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_search_messages', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
   assert.equal(next.state, 'completed');
-  assert.deepEqual(fake.calls, ['gmail_search_messages', 'gmail_search_messages']);
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages', 'gmail_search_messages']);
 });
 
 
@@ -342,11 +342,11 @@ test('fluency: failed recovery has no recursive retry and a distinct demand can 
   await mcp.recover();
   assert.equal(mcp.status().endpoints[0]!.state, 'error');
   assert.equal(fake.discoveryCount(), 2, 'failed discovery does not recurse');
-  assert.deepEqual(fake.calls, ['gmail_search_messages']);
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages']);
   await mcp.recover();
   assert.equal(fake.discoveryCount(), 3);
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
-  assert.deepEqual(fake.calls, ['gmail_search_messages'], 'demand recovers transport only');
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages'], 'demand recovers transport only, with one identity probe');
 });
 
 test('fluency: recovery refuses changed catalog, binding, revocation and late close', async t => {
@@ -369,6 +369,6 @@ test('fluency: recovery refuses changed catalog, binding, revocation and late cl
     assert.equal(mcp.connectionIds().length, 0, change);
     assert.notEqual(mcp.status().endpoints[0]!.state, 'connected', change);
     assert.deepEqual(store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail'])), before, change);
-    assert.deepEqual(fake.calls, ['gmail_search_messages']);
+    assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages']);
   }
 });

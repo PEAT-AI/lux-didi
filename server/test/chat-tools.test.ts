@@ -70,13 +70,18 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
   let executions = 0; const sourceRequests: Record<string, unknown>[] = [];
-  let exposed = sourceKind === 'gmail' ? [{ name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
+  // The real helper always publishes its identity probe, and a strict Google connector refuses to
+  // publish without it, so the fixture publishes and answers gmail_get_profile as well.
+  let exposed = sourceKind === 'gmail' ? [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }, { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;
   let payload = ACCEPTED; let canonicalSource = false;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', req => { sourceRequests.push(structuredClone(req.params.arguments ?? {})); executions++; onDispatch?.();
+  sdk.setRequestHandler('tools/call', req => {
+    // The identity probe is not a read: it never counts as an execution and never reaches the payload.
+    if (req.params.name === 'gmail_get_profile') return { content: [{ type: 'text', text: JSON.stringify({ emailAddress: 'owner@example.invalid' }) }] } as never;
+    sourceRequests.push(structuredClone(req.params.arguments ?? {})); executions++; onDispatch?.();
     if (hangAfter !== null && executions > hangAfter) return new Promise(() => {}) as never;
     return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: canonicalSource ? { result: reject ? REJECTED : payload } : { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
 

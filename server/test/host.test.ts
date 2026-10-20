@@ -764,7 +764,14 @@ test('an unremovable debug directory logs one closed receipt and never aborts th
 
 // #479 / H4: a call made with no tool context (the start-up connector probes) used to arm a diagnostic
 // capture, so every start wrote four `context_absent` and four `wire_observed_context_absent` receipts,
-// three of them byte-identical. The audit row stays; the receipt is armed only with a real run context.
+// three of them byte-identical. The receipt is armed only with a real run context.
+//
+// R3: the red stage asserted that the call wrote no `tool_dispatch_coverage` row either. That was
+// wrong and the composition check proves it (dispatch-diagnostics-composition.integration.mjs asserts
+// the unattributed marker for a context-free wire call), so the assertion here is two-sided: no
+// capture receipt at all, and the audit row still records one unattributed call with its reason.
+// The end-to-end half lives in connector-identity.test.ts, where a real start with two endpoints on
+// one account asserts zero `tool_diagnostic_capture` lines in host.log.
 test('a tool call with no run context arms no diagnostic capture', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-no-context-'));
   const store = new Store(dir, [...toolsMigrations]);
@@ -780,6 +787,7 @@ test('a tool call with no run context arms no diagnostic capture', async () => {
     const result = await owner.port.call({ toolName: 'gmail_get_profile', arguments: {}, connectionId: 'gmail', class: 'ordinary' } as never);
     assert.equal((result as { state?: string }).state, 'completed', 'the probe still reaches the connector');
     assert.deepEqual(captured, [], 'no diagnostic capture without a context');
+    // The audit row is the other half: the context-free wire call is recorded, without a receipt.
     const coverage = store.transaction(tx => tx.all('SELECT kind, reason, run_id FROM tool_dispatch_coverage'));
     assert.deepEqual(coverage.map(row => [row.kind, row.reason, row.run_id]), [['unattributed', 'dispatch_unknown_context_absent', null]], 'the audit row still records the context-free call');
     owner.reuse(undefined);

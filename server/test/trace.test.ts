@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { domainMigrations } from '../domain/schema.js';
-import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { TRACE_SCHEMA_VERSION } from '../trace/kinds.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -275,8 +276,11 @@ test('scripts/didi-timeline reads SQL only and prints the timeline and the metad
     assert.match(text, /turn 1 \(t1\) origin=owner/);
     assert.ok(!text.includes('SECRET-OWNER-WORDS'));
 
+    // --content asks, and the gate answers truthfully: this fixture is a trace-only session with no
+    // canonical live evidence, so it is refused rather than served legacy preview rows (content.ts).
     const withContent = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--content'], { encoding: 'utf8' });
-    assert.ok(withContent.includes('SECRET-OWNER-WORDS'), '--content is the one way to see text');
+    assert.match(withContent, /content: denied reason=legacy_unavailable/);
+    assert.ok(!withContent.includes('SECRET-OWNER-WORDS'), 'a refused gate never serves text anyway');
 
     const turnOne = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--turn', '1'], { encoding: 'utf8' });
     assert.match(turnOne, /^turn 1 \(t1\)/m);
@@ -487,8 +491,14 @@ test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write
     const rejected: string[] = [];
     const rebuilt = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e2', onReject: code => rejected.push(code) });
     rebuilt.receipt('response.observed', { responseKey: 'r1' }, { observedAt: T0 + 10 });
-    assert.deepEqual(rejected, ['STALE_EPOCH'], 'a receipt from the socket the rebuild replaced is refused');
+    assert.deepEqual(rejected, ['UNKNOWN_ID'],
+      'a rebuilt port names its own epoch, so its key for r1 belongs to no row: refused, never written');
     assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='response.observed'")).length, 0, 'and it writes no row');
+    // The epoch guard itself still refuses a row written under another epoch, whatever key names it.
+    const firstEpochKey = scopedTraceKey(SESSION, 'e1', 'response', 'r1');
+    assert.throws(() => record(store, 'response.observed', { liveSessionId: SESSION, connectionEpoch: 'e2', responseKey: firstEpochKey }, { observedAt: T0 + 20 }),
+      (error: unknown) => error instanceof TraceRecordError && error.code === 'STALE_EPOCH',
+      'a receipt that names another epoch's row is refused by the epoch it carries');
   });
 });
 
@@ -570,7 +580,7 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const migrated = new Store(dir, []);
     try {
       assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
-      assert.equal(traceVersion(migrated), 2);
+      assert.equal(traceVersion(migrated), TRACE_SCHEMA_VERSION);
       const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
       assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
         'the same native sequence in another session is its own event, not a replay of ls-v1');
@@ -581,7 +591,7 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const again = new Store(dir, []);
     try {
       assert.deepEqual(counts(again), { ...seeded, trace_event: 2, trace_playback: 2 }, 'reopening an already-migrated store keeps every row');
-      assert.equal(traceVersion(again), 2);
+      assert.equal(traceVersion(again), TRACE_SCHEMA_VERSION);
       assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), 2,
         'one ledger row per applied version, so the migration ran once');
     } finally { again.close(); }

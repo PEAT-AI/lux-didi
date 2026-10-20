@@ -343,10 +343,10 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '8a0e859356765262148b264dd8aa8e24647fb19ae9b334f8d9343293d674dce9');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'd10d76ba29670386d5c0beff0cfcbe52f42ad372cf22cfb9fdce0558582d11eb');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '8e8f657c333fcab1e14e69a3127599afe1c1aeb2733b7a94dac6abdf93169543');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'ebe82555d71952862192514ba00a7a267db3b54c7f930f1c04976597648e1cd4');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '0eb168f0ff29660d19b1ef0f8dfb88e3a9e631b8ebde9e6ac92ccbf2e50be832');
+  assert.equal(sha(NAYA_TOOLS), 'e4dc62c74ef312cd084ae047c104dfe5dd99d81e3232006d33b37a2a6e34653b');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -403,7 +403,8 @@ test('P1: owner lore survives while memory yields under the budget', () => {
 
 test('P1: the tool conduct forbids narrating during a tool run', () => {
   assert.doesNotMatch(NAYA_TOOLS, /while a tool runs/i);
-  assert.doesNotMatch(NAYA_TOOLS, /narrat/i);
+  // W5-R2: the rule, not the word: the conduct must carry the forbidding sentence itself.
+  assert.ok(NAYA_TOOLS.includes('Do not narrate every lookup or invent activity to fill a pause.'), 'the conduct forbids narrating a lookup');
   // PV1-R3: the old cue rule left the tools section, so the base sentence is the only cue rule left.
   assert.doesNotMatch(NAYA_TOOLS, /three to five word/i);
   assert.doesNotMatch(NAYA_TOOLS, /never announce progress/i);
@@ -653,7 +654,7 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // interruption and honesty rules), and the accent block (pinned verbatim by PV1-R1)
 // keeps its wording.
 /** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. */
-const WRAPPER_W5_CHARS = 10_531;
+const WRAPPER_W5_CHARS = 10_546;
 test('3p: five wrapper rules are stated once each, the six-word cue is retired, and the wrapper stays bounded', () => {
   const rules = [
     'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
@@ -841,7 +842,7 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
-  "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence.",
+  "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first.",
   'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.',
   'Let that request return before starting another for the same question.',
 ];
@@ -1074,19 +1075,18 @@ const W5_RULES = [
   'Open a fresh call on one current specific, never a generic ready-to-help line',
   'A short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends.',
   'Never hand any continuation, research included, back as a permission question',
-  'name any source that failed in one clause',
+  'name any failed source in one clause',
 ];
 /** The sentences the four rules replace or duplicate: no copy may survive in the conduct. */
 const W5_REPLACED = [
   'Open a fresh call from work, the calendar or an open work loop',
   'A short acknowledgement while he is mid-thought is enough. Never fill the silence while a lookup runs.',
   'Never hand ordinary continuation back to the owner as a permission question',
-  'Do not narrate every lookup or invent activity to fill a pause.',
   'Vary how you start replies; never open two replies in a row with the same word.',
   'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
 ];
-/** The GPT-Live static voice prompt, base plus voice conduct, in chars before the W5 change. */
-const W5_VOICE_BEFORE = 6997;
+/** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
+const W5_VOICE_BEFORE = 6993;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1109,6 +1109,6 @@ test('W5: the four rules stay out of the backend procedure, which the executing 
 });
 
 test('W5: the voice instruction does not grow', () => {
-  const voice = NAYA_LIVE_BASE.length + 2 + NAYA_VOICE_TOOLS.length;
+  const voice = NAYA_CHARACTER.length + NAYA_VOICE_SURFACE.length + NAYA_VOICE_TOOLS.length;
   assert.ok(voice <= W5_VOICE_BEFORE, `the voice instruction gains no chars (${voice} vs ${W5_VOICE_BEFORE})`);
 });

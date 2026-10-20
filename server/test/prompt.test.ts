@@ -344,10 +344,9 @@ test('W5: the compiled Gemini voice instruction carries the four audit rules onc
     'Open a fresh call on one current specific, never a generic ready-to-help line',
     'after announcing a check, say what it found before the turn ends',
     'Never hand any continuation, research included, back as a permission question',
-    'name any source that failed in one clause',
+    'name any failed source in one clause',
   ]) assert.equal(instruction.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   for (const gone of [
-    'Do not narrate every lookup or invent activity to fill a pause.',
     'Vary how you start replies; never open two replies in a row with the same word.',
     'Never hand ordinary continuation back to the owner as a permission question',
   ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);

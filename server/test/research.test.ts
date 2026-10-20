@@ -28,7 +28,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -36,7 +36,7 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
   const joined: string[] = [];
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
-    configured: CONFIGURED,
+    configured: opts.configured ?? CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
       return subs.map(call => call.name === 'gcal_list' && opts.executeText === MERGED_CALENDAR
@@ -1184,4 +1184,28 @@ test('#472: a run cancelled after its first answer is logged partial and still h
   const run = h.logs.filter(entry => entry.event === 'research_run').at(-1);
   assert.equal(run?.stopReason, 'cancelled', 'the run was cut, not completed');
   assert.equal(run?.status, 'partial', 'a run that delivered an answer is partial, never failed');
+});
+
+// --- #1020 behaviour 1: what the model is told about the sources it could not read ---------------
+
+test('#1020: a source that was not configured is named with its reason in the note the model voices', async () => {
+  const h = harness({ configured: ['knowledge'] });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'who is on my team',
+    lookups: [{ source: 'company', query: 'team structure' }, { source: 'chat', query: 'team' }, { source: 'knowledge', query: 'team' }],
+  }, new AbortController().signal);
+  assert.match(String(reply['note']), /team chat: unavailable \(not configured\); company knowledge: unavailable \(not configured\)/, 'each unread source names itself and its reason, in plain words');
+  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'and the findings that did land sit in the same reply');
+});
+
+test('#1020: a timed-out source is named as timed out, in seconds, beside the source that answered', async () => {
+  const h = harness({ configured: ['knowledge', 'chat'] });
+  const deps: ResearchDeps = { ...h.deps, unavailableNow: () => [{ source: 'chat', reason: 'timeout' }] };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what is waiting on me',
+    lookups: [{ source: 'chat', query: 'release freeze' }, { source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal);
+  assert.match(String(reply['note']), /team chat: not read \(timed out after 12 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
+  assert.match(String(reply['note']), /could not reach team chat/, 'and the voiceable clause about it is still there');
+  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });

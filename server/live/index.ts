@@ -2378,7 +2378,10 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
     if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
     {
-      if (!handle.researchLedger.evidenceCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
+      // #472: a run cancelled after it answered is still this session's run, and the answer's own evidence is
+      // the authority that matters. The lifecycle state is not a second permission gate, so a late source is
+      // ruled out only by `authorizeDelivery` below, which is the check that can actually refuse it.
+      if (handle.researchLedger.find(event.researchId) === undefined || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
       try {
         if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.evidenceBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
       } catch { return drop('result_denied'); }

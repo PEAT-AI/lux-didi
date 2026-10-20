@@ -3741,6 +3741,35 @@ test('R6: a source that settles after the first answer is appended once, and sai
   h.owner.revoke(session.liveSessionId);
 });
 
+// #472: the delivery half. A source that lands after the first answer must reach the model through the
+// later-findings path while the session is live, and a calendar answer supplies the first answer here so
+// the assertion stands on a source the base suite serves (the memory-backed R6 cases are base-red).
+test('#472: a late source result reaches the model while the session is live', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-delivery-472');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1, 'one receipt for the source that landed later');
+  assert.equal(late[0]!['source'], 'chat');
+  assert.notEqual(late[0]!['delivered'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model carries the late finding');
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('R6: a late finding speaks nothing over an owner who has started a new question', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

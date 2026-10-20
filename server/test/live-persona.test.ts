@@ -761,6 +761,40 @@ test('the standing section keeps its own budget and reports each omission as bud
   assert.equal(composed.text, composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records }).text, 'deterministic');
 });
 
+test('a standing note costs at most 40 characters of render overhead and keeps its id', () => {
+  // A real entry id is a 36-character uuid: the delimiters around it are the whole framing budget.
+  const id = '3f1c2a44-1b7e-4c2d-9c3a-9b8d0f7e5a61';
+  assert.equal(id.length, 36);
+  const text = 'Fixture standing note kept whole';
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    records: [standingRecord(id, text)] });
+  const line = composed.text.split('\n').find(candidate => candidate.includes(text))!;
+  assert.ok(line.length - text.length <= 40, `overhead ${line.length - text.length} within 40`);
+  assert.ok(line.includes(id), 'the id stays available to the selection receipt');
+  assert.ok(line.startsWith('[') && line.includes('] '), 'the record is still clearly delimited');
+});
+
+test('the standing section fits more of a 29-note corpus of median 210 characters', () => {
+  const body = 'the owner keeps this note because it carries context for later calls and it is read whole ';
+  const note = (index: number) => standingRecord(`3f1c2a44-1b7e-4c2d-9c3a-${String(index).padStart(12, 'a')}`,
+    `note ${index} ${body.repeat(3)}`.slice(0, 210));
+  const records = Array.from({ length: 29 }, (_, index) => note(index));
+  const lengths = records.map(record => record.text.length).sort((a, b) => a - b);
+  assert.equal(lengths[14], 210, 'the fixture median is 210 characters');
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
+  const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
+  assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
+  assert.ok(composed.selectedIds.length >= 11, `${composed.selectedIds.length} whole notes fit`);
+  assert.ok(composed.omitted.length > 0, 'the cap still bounds the section');
+});
+
+test('the standing selection receipt is a closed shape of counts and no text', () => {
+  const receipt = { event: 'standing_memory_selection', selected: 11, omitted: 18, chars: 2_891 };
+  assert.deepEqual(safeEvent(receipt), receipt, 'the build reports what it selected and left out');
+  assert.equal(safeEvent({ ...receipt, text: 'a standing note' }), undefined, 'no note text');
+  assert.equal(safeEvent({ selected: 11, omitted: 18, chars: 2_891 }), undefined, 'the event name is required');
+});
+
 test('# Memory keeps its own budget when a standing set is present', () => {
   const records = [
     standingRecord('standing-1', 'S'.repeat(MEMORY_SECTION_CHAR_LIMIT)),

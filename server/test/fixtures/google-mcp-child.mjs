@@ -45,7 +45,9 @@ function dataFor(name, args) {
     return { messages: Array.from({ length: count }, (_, index) => ({ id: `m${index + 1}`, threadId: `t${index + 1}`, snippet, headers: listHeaders })) };
   }
   if (name === 'gmail_read_message') return { id: args.id ?? 'm1', threadId: 't1', headers, body: args.format === 'full' ? `${mode === 'quoted' ? 'Latest note.\nOn Monday, Synthetic Sender wrote:\n> Synthetic retained historical evidence.\n' : ''}${'b'.repeat(20000)}` : null, format: args.format ?? 'metadata' };
-  if (name === 'calendar_list_calendars') return { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
+  // The real helper's primary calendar id is the account's own address, which is what the connector
+  // reads as the Google identity; the synthetic child answers the same shape.
+  if (name === 'calendar_list_calendars') return { calendars: [{ id: 'owner@example.invalid', summary: 'Primary', primary: true }, { id: 'work', summary: 'Work' }] };
   if (name === 'calendar_list_events') return { events: [{ id: 'e1', summary: 'Synthetic standup', location: 'Room 1', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] };
   return { written: true };
 }

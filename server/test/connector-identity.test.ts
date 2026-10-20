@@ -234,7 +234,7 @@ test('one proof per connector endpoint per boot, and no diagnostic capture at st
       ], `both endpoints of the account are proven and published: ${JSON.stringify(reports)}`);
       const lines = (await readFile(join(dir, 'state', 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
         .map(line => JSON.parse(line) as Record<string, unknown>);
-      assert.equal(lines.filter(line => line.event === 'connector_identity' && line.connector === 'google').length, 1, 'one identity proof for the account, not one per endpoint');
+      assert.equal(lines.filter(line => line.event === 'connector_identity' && line.connector === 'google').length, 2, 'each endpoint of the account writes its own identity receipt');
       assert.deepEqual(lines.filter(line => line.event === 'tool_diagnostic_capture'), [], 'a start arms no diagnostic capture at all');
       assert.equal(calls.filter(name => name === 'gmail_get_profile').length, 1, 'the mailbox proved its own identity once');
       assert.equal(calls.filter(name => name === 'calendar_list_calendars').length, 1, 'the calendar proved its own identity once');

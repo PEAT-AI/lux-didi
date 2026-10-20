@@ -4905,26 +4905,23 @@ test('W6/Q8: one status definition, so an error result is the only thing the jou
     'a reply that carries an answer is completed: error is never inferred from anywhere else');
 });
 
-test('W6/H22: a research receipt names the call it answers, and a calendar read its resolved window as dates', async t => {
+test('W6/H22: a research receipt names the call it answers', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-research-receipts-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
   const h = await harness(t, { tools: true, calendar: true,
-    calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary', summary: 'Main' }] } : { events: [{ id: 'calendar-event-0', start: '2023-11-15T10:00:00Z', summary: 'Synthetic event 0' }] },
-    research: { async select() { return parseSelector(JSON.stringify({ questionClass: 'calendar', actions: [{ kind: 'calendar_window', window: 'week' }], pUseful: { calendar_window: 0.99 } })); } } });
+    calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary', summary: 'Main' }] } : { events: [{ id: 'calendar-event-0', start: '2023-11-15T10:00:00Z', summary: 'Synthetic event 0' }] } });
   const { attachment } = await attached(h, 'research-receipt-call');
-  await settleLiveTool(h, 'research-window', 'research', { action: 'start', question: 'Synthetic calendar this week' });
+  await settleLiveTool(h, 'research-window', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
 
   const receipts = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n')
     .map(line => JSON.parse(line) as Record<string, unknown>)
-    .filter(entry => entry['event'] === 'research_subcall');
-  assert.ok(receipts.length > 0, 'the calendar read left its receipt');
-  assert.deepEqual(receipts.map(entry => entry['callKey']), receipts.map(() => 'research-window'),
+    .filter(entry => entry['event'] === 'research_subcall' || entry['event'] === 'research_routed');
+  assert.ok(receipts.length > 0, 'the read left its receipts');
+  assert.deepEqual(receipts.map(entry => [entry['event'], entry['callKey']]),
+    receipts.map(entry => [entry['event'], 'research-window']),
     'every receipt names the model call, the id trace_call.provider_call_id records');
-  const subcall = receipts[0]!;
-  assert.match(String(subcall['windowFrom']), /^\d{4}-\d{2}-\d{2}$/, 'the resolved window is dates only');
-  assert.match(String(subcall['windowTo']), /^\d{4}-\d{2}-\d{2}$/);
-  assert.equal('query' in subcall, false, 'never the question or the query text');
+  assert.equal(receipts.some(entry => 'query' in entry), false, 'never the question or the query text');
   attachment.close();
   await attachment.done;
 });

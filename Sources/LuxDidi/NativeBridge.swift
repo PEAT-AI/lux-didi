@@ -316,7 +316,10 @@ final class OrbFramePublication {
     var onTheme: ((BridgeTheme) -> Void)?
     var hydrateProvider: (() -> BridgeHydrate)?
     /// Where the unknown-type diagnostic goes (the same `native-live.log` the live lane writes).
-    var logFile: URL?
+    /// #476 (W7-R1): the line goes through `NativeLogFile`, so it is O_APPEND like every other native
+    /// line and never a second seek-then-write producer on the file.
+    var logFile: URL? { didSet { log = NativeLogFile(logFile) } }
+    private var log = NativeLogFile(nil)
 
     init(consent: ConsentStore = ConsentStore()) { self.consent = consent }
 
@@ -377,21 +380,12 @@ final class OrbFramePublication {
 
     private func logUnknown(_ name: String) {
         guard !name.isEmpty else { return }
-        guard let logFile else { print("[native-bridge] unknown message type \(name)"); return }
-        let fields: [String: Any] = ["event": "native_bridge_unknown_message", "type": name]
-        do {
-            try FileManager.default.createDirectory(at: logFile.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            if !FileManager.default.fileExists(atPath: logFile.path) {
-                guard FileManager.default.createFile(atPath: logFile.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
-            }
-            let handle = try FileHandle(forWritingTo: logFile)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            var record = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
-            record.append(10)
-            try handle.write(contentsOf: record)
-        } catch { print("[native-bridge] unknown message type \(name)") }
+        guard logFile != nil else { print("[native-bridge] unknown message type \(name)"); return }
+        var fields: [String: Any] = ["event": "native_bridge_unknown_message", "type": name]
+        // #476 (W7-R1): every native-live.log line carries the same stamp the journals write.
+        for (key, value) in NativeLogClock.shared.stamp("native-live") { fields[key] = value }
+        guard let record = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]) else { return }
+        log.append(record + Data([10]))
     }
 }
 

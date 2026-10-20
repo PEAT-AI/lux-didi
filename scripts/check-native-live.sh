@@ -117,6 +117,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/NativeBridge.swift Sources/LuxDidi/NativeMicMode.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift \
   Tests/DidiLiveTests/NativeBridgeTests.swift -o "$work/native-bridge-tests"
 "$work/native-bridge-tests"
 # The Mic Mode names, the receipt shape and the once-per-version prompt (#352) run on injected values.

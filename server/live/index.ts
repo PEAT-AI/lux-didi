@@ -198,6 +198,15 @@ const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waiti
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
+/** #451 Q8: one status definition for a tool call. `error` only when the result carries nothing usable. */
+export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
+  const error = response['error'];
+  if (error === undefined) return 'completed';
+  const usable = Object.entries(response).some(([key, value]) => key !== 'error'
+    && ((typeof value === 'string' && value.length > 0) || (Array.isArray(value) && value.length > 0)));
+  return usable ? 'completed' : 'error';
+}
+
 /** S4a ceiling on one non-research tool call: past it the host answers the call itself with a timeout output. */
 const TOOL_CEILING_MS = 12_000;
 /** S4a progress speech on the GPT-Live path: one speakable line about this long into an open delegation, only

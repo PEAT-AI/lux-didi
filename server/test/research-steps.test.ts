@@ -84,8 +84,9 @@ test('a source that fails ends its own line with ok false, never with a body', a
       { action: 'start', question: 'what did the team decide about the release freeze', callId: CALL_ID }, new AbortController().signal);
 
     const failed = collector.steps.filter(step => step.phase === 'end' && step.source === 'mail');
-    assert.equal(failed.length, 1);
-    assert.equal(failed[0]!.ok, false, 'the failed source says so plainly');
+    // W0 (258dd0bd) receipts every attempt honestly: a failed read and its retry each end their own line.
+    assert.ok(failed.length >= 1, 'the failed source ends a line');
+    assert.ok(failed.every(step => step.ok === false), 'the failed source says so plainly');
     for (const step of collector.steps) {
       assert.ok(!(step.subject ?? '').includes('private'), 'a result body never becomes a subject');
     }

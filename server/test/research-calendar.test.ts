@@ -208,6 +208,8 @@ test('calendar R4: real selector JSON parsing preserves named windows and refuse
   for (const window of ['Wednesday this week', 'next Wednesday', 'this week', 'whenever', 42, undefined]) {
     const h = fixture([event(21), event(28)]);
     h.deps.timeZone = 'UTC';
+    // W2: one configured source has nothing to select, so a selector round needs a second source.
+    h.deps.configured = ['calendar', 'mail'];
     h.deps.selector = createGeminiSelector({ generate: async () => ({
       status: 'complete', text: JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 1 } }),
       providerContent: { role: 'model', parts: [] }, reason: 'synthetic', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null },
@@ -328,4 +330,14 @@ test('#1020: a paged calendar read never claims more shown than total, and a cut
   for (const finding of (reply['findings'] ?? []) as { text: string }[]) {
     for (const match of finding.text.matchAll(/(\d+) of (\d+) shown/gu)) assert.ok(Number(match[1]) <= Number(match[2]), `${match[0]} in ${finding.text.split('\n')[0]}`);
   }
+});
+
+// W2: the calendar fan-out is bounded by the run's own source budget, never by the connector's constant.
+
+test('every calendar read carries the run remaining source budget as an absolute deadline', async () => {
+  const h = fixture([event(19)]);
+  await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const reads = h.calls.filter(call => call['name'] === 'gcal_list');
+  assert.ok(reads.length > 0, 'the run read the calendar');
+  for (const call of reads) assert.equal(call['deadlineAt'], fixedNow + 12_000, 'the connector is bounded by the caller budget, never by the 40 s constant');
 });

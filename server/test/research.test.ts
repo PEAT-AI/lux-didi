@@ -1216,3 +1216,54 @@ test('#1020: a timed-out source is named as timed out, in seconds, beside the so
   assert.match(String(reply['note']), /could not reach team chat/, 'and the voiceable clause about it is still there');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });
+
+// --- W2: the selector never sits on the critical path -------------------------------------------
+
+function countingSelector(output: SelectorOutput, tick: () => void): ResearchSelector {
+  return { async select() { tick(); return output; } };
+}
+
+test('a routed run never calls the selector: the model already named the lookups', async () => {
+  let selects = 0;
+  const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
+  await runResearch(h.deps, { action: 'start', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
+  assert.equal(selects, 0, 'routed lookups are the decision: no selector round runs');
+  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the routed lookup is still read');
+});
+
+test('one configured source never pays a selector round', async () => {
+  let selects = 0;
+  const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
+  h.deps.configured = ['knowledge'];
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  assert.equal(selects, 0, 'with one source there is nothing to select');
+  assert.ok(h.executed.some(call => call.name === 'search_knowledge'), 'the one source is still read');
+  assert.equal((reply['unchecked'] as string[]).includes('knowledge'), false, 'the one source was read and credited');
+});
+
+test('a quick_fact continuation reads deterministically: no second selector round runs', async () => {
+  // B1: the skip removes the selector round, so the fixture must show the deterministic path still
+  // reads and credits the source the direction names. The first round settles quick_fact and stops
+  // with rounds left, so the continuation is the round that has to read without the selector.
+  let selects = 0;
+  const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'stop_answer' }], pUseful: { mail_search: 0.9 } }, () => { selects += 1; });
+  const h = harness({ selector: quick });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  assert.equal(selects, 1);
+  assert.equal(first['canContinue'], true, 'the first round leaves a continuation open');
+  const readsBefore = h.executed.length;
+  const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
+  const reads = h.executed.slice(readsBefore);
+  assert.ok(reads.some(call => call.name === 'gcal_list'), `the continuation reads the source its direction names: ${JSON.stringify(reads)}`);
+  assert.equal((next['unchecked'] as string[]).includes('calendar'), false, 'and the reply credits the source it read');
+});
+
+test('a selector round still delivers every source the selector chose', async () => {
+  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'deploy freeze' }], pUseful: { chat_search: 1 } });
+  const h = harness({ selector });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team say about the deploy freeze' }, new AbortController().signal);
+  assert.equal((reply['unchecked'] as string[]).includes('chat'), false, 'the selector pick is still read and credited');
+  assert.ok(h.executed.some(call => JSON.stringify(call.args).includes('deploy freeze')), 'the selector query is the one read');
+});

@@ -65,7 +65,11 @@ export type GoogleResult = GoogleEvidence | GoogleRefused | GoogleUnknown;
 export interface GmailListInput { maxResults?: number; q?: string; pageToken?: string }
 export interface GmailReadInput { id: string; format?: 'metadata' | 'full' }
 export interface GcalCalendarsInput { maxResults?: number; pageToken?: string }
-export interface GcalListInput { calendarId?: string; calendarIds?: readonly string[]; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number }
+export interface GcalListInput {
+  calendarId?: string; calendarIds?: readonly string[]; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
+  /** The caller's remaining source budget as an absolute epoch ms; the fan-out never plans past it. */
+  deadlineAt?: number;
+}
 
 /** How many per-calendar event reads a single connector call may keep in flight at once. */
 export const GOOGLE_CALENDAR_CONCURRENCY = 6;
@@ -256,11 +260,12 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
    * list), read each calendar in bounded parallel, and return one result sorted by start with a shared
    * event deduplicated by id and each event tagged with its calendar name.
    */
-  async function gcalWindow(baseArgs: Record<string, unknown>, explicit: readonly string[] | undefined, signal?: AbortSignal): Promise<GoogleResult> {
+  async function gcalWindow(baseArgs: Record<string, unknown>, explicit: readonly string[] | undefined, signal?: AbortSignal, deadlineAt?: number): Promise<GoogleResult> {
     // The merged read is one serialized remote call per visible calendar, so it carries a wall-clock
     // budget of its own: a read that runs until the caller aborts loses its whole result to the result
-    // gate, so it stops short and reports the calendars it did not reach as unread.
-    const stopAt = Date.now() + settings.calendarReadMs;
+    // gate, so it stops short and reports the calendars it did not reach as unread. A caller that names
+    // its own remaining source budget bounds the read tighter than this constant, never looser (#473).
+    const stopAt = Math.min(Date.now() + settings.calendarReadMs, deadlineAt ?? Number.POSITIVE_INFINITY);
     const listed = await dispatch('gcal_calendars', { maxResults: Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults) }, signal);
     if (listed.state !== 'completed') return listed;
     // The owner's primary calendar is always read first and awaited inside the sub-deadline; every other
@@ -296,7 +301,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     ]);
     // A credentialed or failed read must stay visible: never an empty success.
     if (out.every(entry => entry === undefined) && (failure ?? refusal) !== undefined) return (failure ?? refusal)!;
-    const unread = selected.filter((_, index) => out[index] === undefined).length;
+    const unread = selected.filter((_, index) => out[index] === undefined).map(id => names.get(id) ?? id);
     const merged: Record<string, unknown>[] = [];
     const seen = new Set<string>();
     for (const [index, evidence] of out.entries()) {
@@ -315,7 +320,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       state: 'completed', tool: 'gcal_list',
       [SOURCE_CHILD_DISPATCHES]: [listed,...out.filter((entry): entry is GoogleEvidence => entry !== undefined)].flatMap(entry => entry[SOURCE_DISPATCH] ? [entry[SOURCE_DISPATCH]!] : []),
       source: structuredClone(listed.source), observedAt: listed.observedAt, coverage: structuredClone(listed.coverage),
-      decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: unread > 0 ? { events: merged, partial: { unread } } : { events: merged } }) }] },
+      decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: unread.length > 0 ? { events: merged, partial: { unread: unread.length, calendars: unread } } : { events: merged } }) }] },
       projection: structuredClone(listed.projection),
       response: structuredClone(listed.response),
     };
@@ -365,13 +370,15 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (!window.ok) return { state: 'refused', reason: window.reason };
       bounded.args['timeMin'] = window.timeMin;
       bounded.args['timeMax'] = window.timeMax;
+      // The fan-out plans inside the caller's remaining source budget when it names one (#473).
+      const deadlineAt = typeof input.deadlineAt === 'number' && Number.isFinite(input.deadlineAt) ? input.deadlineAt : undefined;
       // No calendarId (or an explicit list) means every selected calendar, merged into one result.
       if (input.calendarIds !== undefined) {
         const ids = input.calendarIds;
         if (!Array.isArray(ids) || ids.length < 1 || ids.length > 50 || !ids.every(id => typeof id === 'string' && id.length >= 1 && id.length <= 4096)) return { state: 'refused', reason: 'invalid-calendar-ids' };
-        return await gcalWindow(bounded.args, ids, signal);
+        return await gcalWindow(bounded.args, ids, signal, deadlineAt);
       }
-      if (input.calendarId === undefined) return await gcalWindow(bounded.args, undefined, signal);
+      if (input.calendarId === undefined) return await gcalWindow(bounded.args, undefined, signal, deadlineAt);
       const calendarId = input.calendarId;
       if (typeof calendarId !== 'string' || calendarId.length < 1 || calendarId.length > 4096) return { state: 'refused', reason: 'invalid-calendar-id' };
       bounded.args['calendarId'] = calendarId;

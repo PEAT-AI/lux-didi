@@ -627,6 +627,10 @@ interface MailRead {
   args: JsonObject; messages: Map<string, MailMessage>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   received: number; invalid: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** A connector answer that carried text but no page envelope is one read, kept whole. */
+  plain?: string;
+  /** The connector's own failure code, kept so the sub-call log names the real reason. */
+  code?: string;
 }
 type RemoteBody = Extract<HostEvidenceRef, { kind: 'remote-body' }>;
 interface ReceivedBody { evidence: RemoteBody; binding: ToolResultBinding; source: SourceKind; offset: number }
@@ -645,6 +649,8 @@ interface CalendarRead {
   args: JsonObject; events: Map<string, RetainedCalendarEvent>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** The connector's own failure code, kept so the sub-call log names the real reason. */
+  code?: string;
 }
 export interface RunState {
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
@@ -1605,10 +1611,29 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     catch { for (const read of reads) { read.inflight = false; read.failed = true; } if (signal.aborted) run.cutShort.add('mail'); break; }
     if (parent.aborted || run.cancelled || run.stopped) { invalidateEvidence(run); break; }
     if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
+    // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
+    const retried = calls.map((_, index) => index).filter(index => !results[index]?.ok);
+    if (retried.length > 0) {
+      try {
+        const again = await deps.execute(retried.map(index => calls[index]!), signal);
+        retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
+      } catch { /* the first answer stands */ }
+    }
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.mailPage || deps.authorizeEvidence && !result.binding) { read.failed = true; return; }
+      if (!result?.ok || deps.authorizeEvidence && !result.binding) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      // A search that answered with text but no page envelope is still that search's answer: each tagged
+      // line is one message, so the follow-up read and the reply carry it like any other page.
+      if (!result.mailPage) {
+        for (const line of itemLines(result.text).filter(entry => entry.startsWith('- '))) {
+          const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
+          if (id && !read.messages.has(id)) read.messages.set(id, { id, threadId: '', internalDate: '', line, bodyTruncated: false });
+        }
+        if (read.messages.size === 0) read.plain = [read.plain, result.text].filter(Boolean).join('\n');
+        read.exhausted = true;
+        return;
+      }
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.mailPage;
@@ -1664,7 +1689,17 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.calendarPage || (deps.authorizeEvidence && !result.binding)) { read.failed = true; return; }
+      if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      // A calendar answer with text but no page envelope is still that source's answer: each tagged
+      // line is one event, so the brief fan-out and the reply carry it like any other page.
+      if (!result.calendarPage) {
+        for (const [index, line] of itemLines(result.text).filter(entry => entry.startsWith('- ')).entries()) {
+          const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
+          read.events.set(id ? `${id}:${line}` : JSON.stringify([read.args, read.nextPageToken ?? null, index]), { id: id ?? '', start: line.slice(2).split(',')[0]!.trim(), line, bodyTruncated: false });
+        }
+        read.exhausted = true;
+        return;
+      }
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.calendarPage;
@@ -2095,7 +2130,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
       return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
     });
-    for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); }
+    try { for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); } }
+    // A host step sink that throws is the host's fault, never the source's: the run ends, it does not read as empty.
+    catch (error) { if (error !== null && typeof error === 'object') Object.defineProperty(error, 'stepSink', { value: true }); throw error; }
     update();
     let ended = false;
     const finish = (results: readonly IntentSubResult[], errorCode?: 'failed' | 'timeout' | 'cancelled'): void => {
@@ -2240,7 +2277,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const remainingMs = deadlineAt - now();
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch(() => [] as IntentSubResult[]);
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch((error: unknown) => {
+            if ((error as { stepSink?: boolean } | null)?.stepSink === true) throw error;
+            return [] as IntentSubResult[];
+          });
         }
       }
 
@@ -2399,7 +2439,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             return calendarCalls.map(call => {
               const read = run.calendar.get(JSON.stringify(call.args));
               const text = read ? [...read.events.values()].map(event => event.line).join('\n') : '';
-              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0 };
+              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0, ...(read?.code ? { code: read.code } : {}) };
             });
           };
           const mailResults = async (): Promise<IntentSubResult[]> => {
@@ -2408,8 +2448,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const reads = mailCalls.map(call => mailRead(run, call.args));
             await collectMail(deps, run, readSignal, Math.min(readDeadlineMs, deadlineAt - now()), now);
             return mailCalls.map((call, n) => {
-              const read = reads[n]!, text = [...read.messages.values()].map(message => message.line).join('\n');
-              return { key: call.key, name: call.name, ok: read.messages.size > 0 || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0 };
+              const read = reads[n]!;
+              const text = [...read.messages.values()].map(message => message.line).concat(read.plain ? [read.plain] : []).join('\n');
+              return { key: call.key, name: call.name, ok: read.messages.size > 0 || Boolean(read.plain) || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0, ...(read.code ? { code: read.code } : {}) };
             });
           };
           let results: IntentSubResult[];

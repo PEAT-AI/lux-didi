@@ -7,7 +7,7 @@ import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
-import { loadProviderConfig, seedScope } from '../config/index.js';
+import { credentialsFor, loadProviderConfig, seedScope, slotKeyPresent } from '../config/index.js';
 import { loadLiveConfig, saveLiveSelection, currentLivePlaybackRate, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { createLiveVoiceAdapter, LiveVoiceError, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
 import type { Credentials } from '../adapters/model/types.js';
@@ -147,15 +147,23 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   if (!profile) return { service: new UnconfiguredLive(status), status };
   let binding: PinnedProviderBinding | undefined;
   let researchSelector = testing?.researchSelector;
+  // TRAIN3J-R3: the key slot is a create-time gate, never a status one. Status stays local validation
+  // (configured without reading the secret); a session for a slot with no key fails loud, never as Gemini.
+  const keyPresent = testing?.credentials !== undefined || slotKeyPresent(configDir, profile.keyReference);
   try {
-    if (!testing?.credentials) {
-      if (profile.provider === 'gemini') throw new ConfigError('shared_slot_conflict');
-      binding = pinProviderBinding(configDir, seedScope(profile.provider, profile.liveModelId, profile.route.dataClasses));
-      profile = validateLiveProfile({ ...profile, credentialBinding: binding.identity });
+    // A gemini live route shares the text slot, so no per-route receipt exists to pin. A slot with no
+    // receipt is a create-time gate too: status stays local validation and create() fails closed.
+    if (!testing?.credentials && profile.provider !== 'gemini') {
+      try {
+        binding = pinProviderBinding(configDir, seedScope(profile.provider, profile.liveModelId, profile.route.dataClasses));
+        profile = validateLiveProfile({ ...profile, credentialBinding: binding.identity });
+      } catch (error) { if (keyPresent) throw error; binding = undefined; }
     }
     if (!researchSelector) {
-      const provider = loadProviderConfig({ configDir, ownerId: store.assistantId });
-      if (provider.status === 'ready') researchSelector = createGeminiSelector(boundTextModel(configDir, provider, testing).model);
+      try {
+        const provider = loadProviderConfig({ configDir, ownerId: store.assistantId });
+        if (provider.status === 'ready') researchSelector = createGeminiSelector(boundTextModel(configDir, provider, testing).model);
+      } catch { researchSelector = undefined; }
     }
   } catch (error) {
     return { service: new UnconfiguredLive({ ...status, status: 'error', code: error instanceof ConfigError ? error.code : 'binding_unavailable' }), status: { ...status, status: 'error', code: error instanceof ConfigError ? error.code : 'binding_unavailable' } };
@@ -164,7 +172,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   let voice: ReturnType<typeof createLiveVoiceAdapter>;
   try {
     const create = () => createLiveVoiceAdapter({
-    modelId: boundProfile.liveModelId, voice: boundProfile.voice, keyReference: boundProfile.keyReference, credentials: testing?.credentials ?? binding!.credentials(),
+    modelId: boundProfile.liveModelId, voice: boundProfile.voice, keyReference: boundProfile.keyReference, credentials: testing?.credentials ?? binding?.credentials() ?? credentialsFor(configDir),
     route: { enabled: true, provider: boundProfile.provider, modelId: boundProfile.liveModelId, dataClasses: [...boundProfile.route.dataClasses] },
     // wsBufferedBytes belongs to the gateway consumer socket, not this provider socket.
     limits: {
@@ -185,7 +193,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchSelector ? { research: researchSelector } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
-  return { service: new HostLiveService(profile, owner, store, configDir, true, binding), status: statusFromProfile(profile) };
+  return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };
 }
 
 /** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */

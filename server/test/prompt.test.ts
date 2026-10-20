@@ -248,7 +248,10 @@ test('owner profile shares exact classified canonical text and turn-less voice a
     ownerProfile: syntheticOwner } as Parameters<typeof compileVoiceInstruction>[0]);
   // Tool-enabled chat adds channel conduct after the unchanged canonical voice base.
   assert.equal(compiled.system.slice(0, voice.system.length), voice.system);
-  assert.match(compiled.system.slice(voice.system.length), /^\n\nTOOLS\b/);
+  // W5-R1: the guide and the TOOLS conduct are appended to the capabilities section, which is the last
+  // section, so they follow the unchanged voice base as one tail.
+  assert.match(compiled.system.slice(voice.system.length), /^\n\n# Evidence sources\n/);
+  assert.equal(compiled.system.split('\n\nTOOLS: ').length - 1, 1, 'one TOOLS conduct after the base');
   assert.ok(compiled.system.includes(syntheticOwner.style.text));
   assert.ok(compiled.system.includes(syntheticOwner.lore.text));
   for (const section of ['[rules]', '[capabilities]', '[preferences]']) assert.ok(compiled.system.includes(section));
@@ -307,12 +310,12 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 // voiced as an empty one, which is exactly what the owner heard after a 4 s wait.
 test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
   const { NAYA_TOOLS, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
-  assert.ok(NAYA_VOICE_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
-  // Q5-R2: the cut-short rule now carries the no-hand-back clause and the one-clause mention, so the
-  // distinction N3 needed survives in the sentence that replaced it.
-  assert.ok(NAYA_VOICE_TOOLS.includes('When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.'), 'a cut read is voiced as cut short');
-  assert.ok(NAYA_VOICE_TOOLS.indexOf('When a lookup is cut short') > NAYA_VOICE_TOOLS.indexOf('that nothing matched'), 'the cut-short sentence follows the empty-search sentence, so neither is read as the other');
-  assert.ok(NAYA_TOOLS.includes('When a lookup is cut short'), 'the direct-tool conduct keeps the same distinction');
+  // W5-R1: #453 folded the cut-short rule into one enumeration of outcome types. Timeout sits beside no
+  // match in that one sentence, so an empty read and a cut read stay apart without a second rule.
+  const outcomes = 'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.';
+  assert.ok(NAYA_VOICE_TOOLS.includes(outcomes), 'a cut read is named separately from a no match in one sentence');
+  assert.ok(NAYA_VOICE_TOOLS.indexOf('timeout') > NAYA_VOICE_TOOLS.indexOf('no match'), 'the cut read is stated after the no match, so neither is read as the other');
+  assert.ok(NAYA_TOOLS.includes(outcomes), 'the direct-tool conduct keeps the same distinction');
 });
 
 test('PV1: the persona base scopes the spoken cue to an actual lookup and the procedure carries batching', () => {
@@ -322,7 +325,7 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
   assert.ok(instruction.includes('When the answer is already in these instructions, answer from it without a lookup.'), 'the no-lookup answer rule sits beside the cue');
   assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
   // S4b: batching and the second-call rule are the executing model's, never the voice prompt's.
-  for (const moved of ['Put every lookup one question needs into one research call with several lookups.', 'Never make a second research call for the same question until the first has answered.']) {
+  for (const moved of ['put independent source lookups in one research plan so the host can run them concurrently', 'Reuse its researchId, consume retained local remainder before another source read']) {
     assert.equal(instruction.includes(moved), false, `the voice prompt carries no moved procedure sentence: ${moved}`);
     assert.ok(NAYA_BACKEND_PROCEDURE.includes(moved), `the backend procedure carries it: ${moved}`);
   }
@@ -331,5 +334,21 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
     assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
   }
   assert.equal(instruction.split('what you are checking').length - 1, 1, 'the cue surface is stated once');
-  assert.ok(NAYA_VOICE_TOOLS.includes('When you open something, say what you are opening, then open it.'), 'the voice prompt keeps the spoken open rule');
+  assert.ok(NAYA_VOICE_TOOLS.includes('State what is being opened and describe success from the action receipt.'), 'the voice prompt keeps the spoken open rule');
+});
+
+// --- W5: the four audit rules reach the Gemini voice instruction too, and nothing they replaced returns --
+test('W5: the compiled Gemini voice instruction carries the four audit rules once and none of the replaced text', () => {
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
+  for (const rule of [
+    'Open a fresh call on one current specific, never a generic ready-to-help line',
+    'after announcing a check, say what it found before the turn ends',
+    'Never hand any continuation, research included, back as a permission question',
+    'name any failed source in one clause',
+  ]) assert.equal(instruction.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
+  for (const gone of [
+    'Vary how you start replies; never open two replies in a row with the same word.',
+    'Never hand ordinary continuation back to the owner as a permission question',
+  ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
+  assert.equal(instruction.split('Never fill the silence while a lookup runs.').length - 1, 1, 'the silence rule is still stated once');
 });

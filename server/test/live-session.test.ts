@@ -3714,7 +3714,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3745,7 +3745,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3776,7 +3776,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-owner-speech');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3805,7 +3805,7 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   const scheduler = new DeadlineClock();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
@@ -4000,7 +4000,7 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   // `research` is the only lookup the production model is declared, so this is the reachable path (review F2).
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'research-progress');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();

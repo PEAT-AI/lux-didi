@@ -945,6 +945,15 @@ export function researchRepair(reason: ResearchRefusalReason): JsonObject {
   };
 }
 
+/** R9: a call refused before dispatch still leaves exactly one run receipt, in the run line's own shape. */
+export function refusedResearchRunLog(): ResearchRunLog {
+  return {
+    event: 'research_run', researchId: newResearchId(), questionClass: 'cross_source', rounds: 0, perRound: [],
+    stopReason: 'refused', status: 'failed', ops: 0, sources: [], elapsedMs: 0, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 0,
+  };
+}
+
 function validMailLookup(value: unknown): value is MailLookup {
   if (!isRecord(value)) return false;
   if ('id' in value) return Object.keys(value).every(key => key === 'id' || key === 'format') && typeof value['id'] === 'string' && value['id'].length > 0 && (value['format'] === undefined || value['format'] === 'full' || value['format'] === 'metadata');

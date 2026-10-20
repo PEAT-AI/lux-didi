@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2302,6 +2302,8 @@ export class LiveSessionOwner {
       const parsed = parseResearch(call.args);
       if (!parsed.ok) {
         hostLogEvent({ event: 'research_refused', state: 'refused', sequence: event.sequence, reason: parsed.reason, ...parsed.shape });
+        // R9/W0-R1: the refused call leaves its run receipt too, so a refusal is never invisible in the run log.
+        hostLogEvent(refusedResearchRunLog());
         response = researchRepair(parsed.reason);
       } else {
         try {

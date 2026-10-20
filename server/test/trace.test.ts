@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
+import { domainMigrations } from '../domain/schema.js';
 import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
@@ -254,7 +255,7 @@ test('pruneTraceContent is scoped to the two content tables', () => {
 test('scripts/didi-timeline reads SQL only and prints the timeline and the metadata export', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
   try {
-    const store = new Store(dir, []);
+    const store = new Store(dir, [...domainMigrations]);
     openTurn(store, 't1', 1, T0);
     completedResponse(store, 'r1', 't1', T0 + 100);
     reply(store, 'p1', 't1', 'r1', T0 + 200, T0 + 900);

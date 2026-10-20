@@ -259,6 +259,8 @@ test('scripts/didi-timeline reads SQL only and prints the timeline and the metad
     completedResponse(store, 'r1', 't1', T0 + 100);
     reply(store, 'p1', 't1', 'r1', T0 + 200, T0 + 900);
     recordUtterance(store, { turnId: 't1', role: 'model', at: T0 + 250, final: true, text: 'SECRET-OWNER-WORDS' });
+    // --content is gated on the session's own current history evidence, so the fixture records it.
+    store.transaction(tx => tx.run('INSERT INTO history_sessions(live_session_id,owner_id,data_class,revision,created_at) VALUES(?,?,?,1,?)', [SESSION, 'owner-fixture', 'ordinary', T0]));
     store.close();
 
     const script = join(repoRoot, 'scripts', 'didi-timeline');
@@ -303,9 +305,9 @@ test('exportMetadata selects named columns only', () => {
     recordUtterance(store, { turnId: 't1', role: 'owner', at: T0 + 1, final: true, text: 'text' });
     const exported = exportMetadata(readOf(store), SESSION);
     assert.deepEqual(Object.keys(exported.trace_turn![0]!).sort(), [
-      'attribution_uncertain', 'close_reason', 'closed_at', 'first_audible_at', 'live_session_id', 'mono_ms',
+      'attribution_uncertain', 'clock_domain', 'close_reason', 'closed_at', 'first_audible_at', 'live_session_id', 'mono_ms',
       'opened_at', 'origin', 'outcome', 'playback_drained_at', 'stall_reason', 'supersedes_turn_id', 'turn_id', 'turn_index',
-    ]);
+    ], 'the export names every metadata column the turn row carries, including its clock domain');
     assert.equal(exported.trace_utterance, undefined);
   });
 });

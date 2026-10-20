@@ -1445,7 +1445,7 @@ describe('openai gpt-live turn states', () => {
     const measured = Number(connection()?.uploadKbps);
     assert.ok(measured >= 140 && measured <= 180, `about 160 kbit/s of drain, got ${measured}`);
     for (let index = 0; index < 260; index += 1) {
-      socket.drain(4_000);
+      socket.drain(20_000); // the link keeps up again: the socket buffer stays well below the cap
       session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
       clock.advance(20);
     }

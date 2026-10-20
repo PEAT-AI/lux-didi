@@ -333,3 +333,20 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
   assert.equal(instruction.split('what you are checking').length - 1, 1, 'the cue surface is stated once');
   assert.ok(NAYA_VOICE_TOOLS.includes('When you open something, say what you are opening, then open it.'), 'the voice prompt keeps the spoken open rule');
 });
+
+// --- W5: the four audit rules reach the Gemini voice instruction too, and nothing they replaced returns --
+test('W5: the compiled Gemini voice instruction carries the four audit rules once and none of the replaced text', () => {
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  for (const rule of [
+    'Open a fresh call with one specific line drawn from what is current, never a generic ready-to-help line',
+    'after announcing a check, say what it found before the turn ends',
+    'Never hand any continuation, research included, back as a permission question',
+    'name any source that failed in one clause',
+  ]) assert.equal(instruction.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
+  for (const gone of [
+    'Do not narrate every lookup or invent activity to fill a pause.',
+    'Vary how you start replies; never open two replies in a row with the same word.',
+    'Never hand ordinary continuation back to the owner as a permission question',
+  ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
+  assert.equal(instruction.split('Never fill the silence while a lookup runs.').length - 1, 1, 'the silence rule is still stated once');
+});

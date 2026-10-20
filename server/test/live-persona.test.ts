@@ -1068,3 +1068,49 @@ test('R7: a full-length digest keeps the composed instruction inside its limits'
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `stays under the target (${composed.text.length})`);
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'and under the hard limit');
 });
+
+// --- W5: voice prompt hygiene, the four audit rules and the sentences they replace ---------------------
+
+/** Q10, Q4, Q5, Q2: one unconditional rule each, stated once, in the instruction the speaking model reads. */
+const W5_RULES = [
+  'Open a fresh call with one specific line drawn from what is current, never a generic ready-to-help line',
+  'A short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends.',
+  'Never hand any continuation, research included, back as a permission question',
+  'name any source that failed in one clause',
+];
+/** The sentences the four rules replace or duplicate: no copy may survive in the conduct. */
+const W5_REPLACED = [
+  'Open a fresh call from work, the calendar or an open work loop',
+  'A short acknowledgement while he is mid-thought is enough. Never fill the silence while a lookup runs.',
+  'Never hand ordinary continuation back to the owner as a permission question',
+  'Do not narrate every lookup or invent activity to fill a pause.',
+  'Vary how you start replies; never open two replies in a row with the same word.',
+  'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
+];
+/** The GPT-Live static voice prompt, base plus voice conduct, in chars before the W5 change. */
+const W5_VOICE_BEFORE = 6997;
+
+test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
+  const voice = composeLiveSessionInstruction({ text: 'Synthetic system', tools: ['research'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, delegatedBackend: true });
+  for (const rule of W5_RULES) assert.equal(voice.text.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
+  for (const gone of W5_REPLACED) assert.equal(voice.text.includes(gone), false, `replaced sentence is gone: ${gone}`);
+});
+
+test('W5: the Gemini path keeps its own full text and carries the same four rules', () => {
+  const gemini = composeLiveSessionInstruction({ text: 'Synthetic system', tools: ['research'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  assert.ok(gemini.text.includes(NAYA_TOOLS), 'the full conduct is carried byte for byte');
+  for (const rule of W5_RULES) assert.equal(gemini.text.split(rule).length - 1, 1, `stated exactly once on the Gemini path: ${rule}`);
+  for (const gone of W5_REPLACED) assert.equal(gemini.text.includes(gone), false, `replaced sentence is gone from the full conduct: ${gone}`);
+  assert.equal(gemini.text.includes(NAYA_BACKEND_PROCEDURE), true, 'the lookup procedure still travels with the full conduct');
+});
+
+test('W5: the four rules stay out of the backend procedure, which the executing model reads', () => {
+  for (const rule of W5_RULES) assert.equal(NAYA_BACKEND_PROCEDURE.includes(rule), false, `a speaking rule is not lookup procedure: ${rule}`);
+});
+
+test('W5: the voice instruction does not grow', () => {
+  const voice = NAYA_LIVE_BASE.length + 2 + NAYA_VOICE_TOOLS.length;
+  assert.ok(voice <= W5_VOICE_BEFORE, `the voice instruction gains no chars (${voice} vs ${W5_VOICE_BEFORE})`);
+});

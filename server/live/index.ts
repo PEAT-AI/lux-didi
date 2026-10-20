@@ -678,6 +678,8 @@ export class LiveSessionOwner {
   #closed = false;
   /** The last state projected to the web, so one host-log live_state fires per change (F7). */
   #lastProjectedState: LivePageProjection['state'] | undefined;
+  /** W3: the last uplink measurement shown to the web, kept so the ended page can still say why it ended. */
+  #uplink: LivePageProjection['connection'] = undefined;
 
   constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
@@ -972,7 +974,14 @@ export class LiveSessionOwner {
         else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
       const steps = handle !== undefined ? handle.liveSteps.map(step => ({ ...step })) : [];
-      return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, ...(steps.length ? { steps } : {}), cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      // W3: the adapter's own uplink measurement, the one source behind the caption and the terminal code.
+      const measured = handle?.session.diagnostics?.()?.connection;
+      if (measured) this.#uplink = { quality: measured.quality, uploadKbps: measured.uploadKbps };
+      const starved = terminal?.state === 'failed' && terminal.code === 'uplink_starved';
+      const connection: LivePageProjection['connection'] = starved
+        ? { quality: this.#uplink?.quality ?? 'weak', ...(this.#uplink?.uploadKbps === undefined ? {} : { uploadKbps: this.#uplink.uploadKbps }), endedCode: 'uplink_starved' }
+        : this.#uplink;
+      return { state, ...(pastSession ? { pastSession } : {}), ...(connection ? { connection } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, ...(steps.length ? { steps } : {}), cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
     this.#observeState(handle, page.state, 'poll');
     return page;
@@ -1537,11 +1546,16 @@ export class LiveSessionOwner {
   async #watchdogRecover(handle: ActiveSession, generation: number, turnAgeMs: number): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.pendingCallIds.size > 0) return;
     const previous = handle.watchdogRecoveredAt;
+    // W3: the wait being judged started here, so a weak spell before it cannot relabel this timeout.
+    const waitSince = handle.watchdogSince;
     this.#cancelWatchdog(handle);
     if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
-      // A second mute inside the window would loop on the same broken provider: end the call honestly.
+      // A second mute inside the window would loop on the same broken provider: end the call honestly. When the
+      // link was weak during this wait it is the internet, not the model, and the owner is told so.
+      const weakAt = handle.session.diagnostics?.()?.connection?.weakAt;
+      const starved = weakAt !== undefined && waitSince !== undefined && weakAt >= waitSince;
       hostLogEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs, generation });
-      this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
+      this.#settle(handle, { state: 'failed', code: starved ? 'uplink_starved' : 'model_unresponsive' }, false, 'ended', null);
       return;
     }
     handle.watchdogRecoveredAt = this.#now();
@@ -1813,7 +1827,7 @@ export class LiveSessionOwner {
     handle.diagnosticsEmitted = true;
     void Promise.all(handle.diagnosticSnapshots).then(values => {
       const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
-      const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
+      const sum = (field: keyof Omit<LiveVoiceDiagnostics, 'connection'>) => snapshots.reduce((total, value) => total + value[field], 0);
       const accent = this.#profile.overlay?.accent;
       // PV1: the head and the terminal anchors carry the accent block the session composed with, so both
       // are counted from the same composer the instruction used.

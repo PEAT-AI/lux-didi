@@ -87,24 +87,22 @@ const UPLOAD_NO_PROGRESS_MS = 30_000;
 const UPLINK_SHED_BYTES = 48 * 1024;
 /** The shed receipt is bounded to one host.log record per window (3o). */
 const UPLINK_SHED_RECEIPT_MS = 10_000;
+/** W3: connection quality is the adapter's own read of the link, over the last three measured seconds. */
+const CONNECTION_WINDOW_MS = 3_000;
+/** Over a fifth of the captured mic bytes discarded in the window is a weak link (the owner's link: 25% loss). */
+const CONNECTION_WEAK_SHARE = 0.2;
+/** Five quiet seconds, with no discard and no pinned backlog, make it ok again. */
+const CONNECTION_OK_MS = 5_000;
 const QUEUE_LOG_BYTES = 64 * 1024;
 const QUEUE_LOG_INTERVAL_MS = 1_000;
-/** Turn taking: the owner's input episode ends after this much quiet on the input transcript. */
+/** Turn taking: the owner's input episode ends after this much quiet on the input transcript. The episode closes
+ *  the journal pair the host needs; it cuts nothing (ruling W1-R1). */
 const INPUT_EPISODE_QUIET_MS = 700;
 /** Audible silence: SPEAKING ends after this much output quiet with the local playback drained, and the 2000 ms
  *  presentation idle stays the semantic end of the turn. */
 const OUTPUT_SILENCE_MS = 500;
 /** Presentation idle: the spoken reply is over after this much quiet with the local playback drained. */
 const TURN_IDLE_QUIET_MS = 2_000;
-/** After a barge-in flush the cut answer is dropped until the output shows a gap this long, or this long has
- *  passed since the flush, whichever comes first. Both bounds are fixed, so the drop window never latches. */
-const POST_FLUSH_GAP_MS = 400;
-const POST_FLUSH_DROP_LIMIT_MS = 2_500;
-/** The server decides an interruption. While the owner has an open input episode, a flush waits this long with no
- *  new output delta: a stream that keeps arriving is a backchannel or background speech the server chose to talk
- *  over, and nothing is cut. An answer the server has already finished sending has no delta to push it out, so an
- *  owner who speaks over buffered speech is obeyed after this gap (N1, session 82ab994a). */
-const SERVER_YIELD_GAP_MS = 350;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
 /** Audible speech, in dBFS RMS against 16-bit full scale. -50 dBFS is a peak amplitude of about 100 counts of
@@ -191,8 +189,6 @@ function capabilitiesOf(): LiveVoiceCapabilities {
 }
 
 function object(value: unknown): value is ObjectValue { return !!value && typeof value === 'object' && !Array.isArray(value); }
-/** Words in the assembled input transcript of one episode: punctuation-only and empty text count zero. */
-function countWords(text: string): number { return text.split(/[^\p{L}\p{N}]+/u).filter(Boolean).length; }
 function fail(code: LiveVoiceErrorCode): never { throw new LiveVoiceError(code); }
 /** S4a-R4: the command family a rejected client command names, as a closed token for the receipt. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'] as const;
@@ -403,7 +399,22 @@ class Session implements LiveVoiceSession {
   private micPendingBytes = 0;
   private shedBytes = 0;
   private shedPeak = 0;
+  private shedRuns = 0;
+  private notOpenBytes = 0;
   private shedReportedAt: number | undefined;
+  /** One uplink sample per mic flush (W3): what the interval captured, what it discarded, and the bytes the
+   *  socket took out of its buffer. Quality and the drain rate are read from these, never from delivery. */
+  private uplinkSamples: { at: number; captured: number; discarded: number; accepted: number; backlogged: boolean }[] = [];
+  private sampleCaptured = 0;
+  private sampleDiscarded = 0;
+  private lastBuffered = 0;
+  private lastBufferedAt: number | undefined;
+  private connectionQuality: 'ok' | 'weak' = 'ok';
+  /** The last sample that carried a discard or a pinned backlog: the five quiet seconds are counted from it. */
+  private lastUplinkLossAt: number | undefined;
+  /** The last moment the link was observed weak: the watchdog compares it with the wait it is judging. */
+  private connectionWeakAt: number | undefined;
+  private drainBytesPerSec = 0;
   /** Head starts re-armed after a drain in the current turn (3o receipt `playback_rearm`). */
   private playbackRearms = 0;
   private awaitingPong = false;
@@ -438,16 +449,9 @@ class Session implements LiveVoiceSession {
   private muted = -1;
   private userTranscriptOpen = false;
   private outputTranscriptOpen = false;
-  /** The owner's assembled input episode, the once-per-episode barge-in latch and its quiet timer. */
-  private inputEpisode = '';
-  private flushed = false;
+  /** The input episode's quiet timer and its token, which is what a lone journal pair of the owner's turn needs. */
   private episodeQuiet: unknown;
-  private yieldTimer: unknown;
   private episodeToken = 0;
-  private episodeDeadline = 0;
-  private episodeClosed = false;
-  /** What there was to cut when the episode's first word arrived, so a silent episode reports its own reason. */
-  private episodeQueuedMs = 0;
   private readonly unknownFrames = new Map<string, number>();
   /** Presentation idle: the modelled native playback queue, the last forwarded delta and its idle timer. */
   private playbackUntil = 0;
@@ -487,18 +491,10 @@ class Session implements LiveVoiceSession {
   private validationRefused = false;
   /** S4a-R2 (d): event id to the command it identified. Correlation only. */
   private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();
-  /** Audible silence of the current speaking stretch: its timer, whether its receipt was already sent, and the
-   *  arrival clock of the last output delta (dropped or forwarded), which is what a post-flush gap is read on. */
+  /** Audible silence of the current speaking stretch: its timer and whether its receipt was already sent. */
   private outputSilence: unknown;
   private silenceSent = false;
-  private lastOutputDeltaAt = 0;
-  /** When the owner's barge-in flushed the answer, and how much of the cut answer the drop window has discarded. */
-  private postFlushAt: number | undefined;
-  private postFlushDroppedMs = 0;
-  /** Forwarded playback milliseconds since the last barge-in, reported as the post-flush receipt. */
-  private postFlushMs: number | undefined;
-  /** The head start of the current speaking stretch: PCM held until HEAD_START_MS or HEAD_START_BYTES, and its timer. */
-  /** A speaking stretch is open between its first delta and its completion, flush, provider error or close. */
+  /** A speaking stretch is open between its first delta and its completion, provider error or close. */
   private stretchOpen = false;
   private holding = false;
   private held: Uint8Array[] = [];
@@ -524,7 +520,9 @@ class Session implements LiveVoiceSession {
     outputAudioFrames: 0, outputAudioPCMBytes: 0,
     outputAudioAfterInitialTurnFrames: 0, outputAudioAfterInitialTurnPCMBytes: 0,
   };
-  readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic });
+  readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic,
+    connection: { quality: this.connectionQuality, uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000),
+      ...(this.connectionWeakAt === undefined ? {} : { weakAt: this.connectionWeakAt }) } });
 
   constructor(private readonly settings: Settings, private readonly start: string,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number) {
@@ -766,32 +764,10 @@ class Session implements LiveVoiceSession {
     // resets any window that is waiting for the answer to end.
     const level = pcm16RmsDbfs(pcm);
     const audible = level >= AUDIBLE_RMS_DBFS;
-    // The arrival clock every post-flush gap is read on: the frames of the cut answer arrive back to back, so a
-    // gap this long means the answer that replay would cut is over.
-    const gap = now - this.lastOutputDeltaAt;
-    if (audible) this.lastOutputDeltaAt = now;
-    // A delta during an open episode is the server still talking, so the yield is measured again from this frame.
-    if (audible && this.inputEpisode.length) {
-      if (now >= this.episodeDeadline) this.clearInputEpisode(true);
-      else if (!this.flushed) this.armYield();
-    }
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
-    // Contract invariant: no permanent frame dropping. Output audio of an open session is forwarded, and an input
-    // transcript never silences the assistant. The one bounded exception is the window right after a barge-in
-    // flush, where the frames of the answer the owner just cut are discarded so they cannot replay; it ends on an
-    // output gap or a fixed deadline and never latches.
-    if (this.postFlushAt !== undefined) {
-      if (now - this.postFlushAt >= POST_FLUSH_DROP_LIMIT_MS || gap >= POST_FLUSH_GAP_MS) {
-        this.postFlushAt = undefined;
-        hostLogEvent({ event: 'gptlive_post_flush_dropped_ms', ms: Math.round(this.postFlushDroppedMs) });
-        this.postFlushDroppedMs = 0;
-      } else {
-        this.postFlushDroppedMs += pcm.byteLength / OUTPUT_PCM_BYTES_PER_MS;
-        this.touch();
-        return;
-      }
-    }
+    // Contract invariant (ruling W1-R1): output audio is never dropped. An input transcript never silences the
+    // assistant and no gap in the provider's stream cuts her, so every frame is forwarded or held in order.
     // Standing cushion: the hold is armed at the first AUDIBLE audio of a stretch and re-armed whenever the
     // modelled native queue has drained, because after any dry the 80 ms native prebuffer is below one 100 ms
     // delta. Fill frames never open or re-arm a hold: 28 of the 28 flushes in the field call "cut" pure silence
@@ -867,7 +843,6 @@ class Session implements LiveVoiceSession {
     const now = this.clock.now();
     this.lastForwardedAt = now;
     this.playbackUntil = Math.max(this.playbackUntil, now) + bytes / OUTPUT_PCM_BYTES_PER_MS;
-    if (this.postFlushMs !== undefined) this.postFlushMs += bytes / OUTPUT_PCM_BYTES_PER_MS;
   }
 
   private inputTranscript(message: ObjectValue): void {
@@ -875,7 +850,8 @@ class Session implements LiveVoiceSession {
     if (!message.delta.length) return;
     // Ruling GL1-R1: a whitespace-only fragment is still journaled below, but it carries no word, so it starts no
     // episode, takes no word and never touches the barge-in latch.
-    if (message.delta.trim().length) this.noteInput(message.delta);
+    // Ruling GL1-R1: a whitespace-only fragment is still journaled, and it starts no episode.
+    if (message.delta.trim().length) this.noteInput();
     this.userTranscriptOpen = true;
     this.diagnostic.inputTranscriptionEvents += 1;
     this.diagnostic.inputTranscriptionCharacters += message.delta.length;
@@ -884,101 +860,36 @@ class Session implements LiveVoiceSession {
   }
 
   /**
-   * An input episode is the owner's run of input transcript deltas; it ends after INPUT_EPISODE_QUIET_MS of
-   * quiet, which resets the assembled transcript and re-arms the once-per-episode barge-in latch. The episode
-   * is what makes a split delta of one word still count as one word.
+   * An input episode is the owner's run of input transcript deltas; it ends after INPUT_EPISODE_QUIET_MS of quiet,
+   * which is what closes the journal pair the host needs on a plain turn. It cuts nothing: the provider stops
+   * generating on real speech by itself (lux 90233) and queued audio plays out (ruling W1-R1).
    */
-  private noteInput(delta: string): void {
-    const now = this.clock.now();
-    if (this.inputEpisode.length && now >= this.episodeDeadline) this.clearInputEpisode(true);
+  private noteInput(): void {
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
-    if (!this.inputEpisode.length) {
-      this.episodeToken += 1;
-      this.episodeQueuedMs = Math.round(Math.max(0, this.playbackUntil - now) + this.heldAudibleBytes / OUTPUT_PCM_BYTES_PER_MS);
-    }
-    this.episodeClosed = false;
-    this.episodeDeadline = now + INPUT_EPISODE_QUIET_MS;
-    const token = this.episodeToken, epoch = this.socket;
+    const token = this.episodeToken + 1, epoch = this.socket;
+    this.episodeToken = token;
     this.episodeQuiet = this.clock.setTimer(INPUT_EPISODE_QUIET_MS, () => {
       if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
       this.endInputEpisode();
     });
-    this.inputEpisode += delta;
-    if (!this.flushed) this.armYield();
-  }
-
-  private armYield(): void {
-    if (this.episodeClosed || this.clock.now() >= this.episodeDeadline) return;
-    if (this.yieldTimer !== undefined) this.clock.clearTimer(this.yieldTimer);
-    const token = this.episodeToken, epoch = this.socket, generation = this.generation;
-    const timer = this.clock.setTimer(SERVER_YIELD_GAP_MS, () => {
-      if (this.terminal || this.yieldTimer !== timer || token !== this.episodeToken || epoch !== this.socket || generation !== this.generation) return;
-      this.yieldTimer = undefined;
-      if (this.clock.now() <= this.episodeDeadline + SERVER_YIELD_GAP_MS) this.yieldCheck();
-      if (this.clock.now() >= this.episodeDeadline) this.clearInputEpisode(true);
-    });
-    this.yieldTimer = timer;
-  }
-
-  private yieldCheck(): void {
-    if (this.flushed || !this.inputEpisode.length) return;
-    const now = this.clock.now();
-    // The server is still sending: it decided this was a backchannel, not an interruption. Its next delta re-arms.
-    if (now - this.lastOutputDeltaAt < SERVER_YIELD_GAP_MS) return;
-    const queued = Math.max(0, this.playbackUntil - now) + this.heldAudibleBytes / OUTPUT_PCM_BYTES_PER_MS;
-    if (queued <= 0) return;
-    this.flush(queued, now);
-  }
-
-  private flush(queuedMs0: number, now: number): void {
-    const words = countWords(this.inputEpisode);
-    const queuedMs = Math.round(queuedMs0);
-    // The measured quiet that proved the server had yielded, which is what makes this a cut and not a chop.
-    const yieldGapMs = Math.round(now - this.lastOutputDeltaAt);
-    this.flushed = true;
-    this.generation += 1;
-    this.muted = this.generation;
-    // The cut turn is over at the host, so no idle completion is owed to it; later audio reopens the account.
-    this.audioSinceCompletion = false;
-    this.outputTranscriptOpen = false;
-    // The host flushes its native queue on `interrupted`, so the modelled queue and any head start go with it.
-    this.playbackUntil = now;
-    this.discardHeadStart();
-    this.postFlushMs = 0;
-    // The frames of the answer the owner cut keep arriving for a moment; the bounded drop window keeps them out
-    // of the port so the cut answer cannot replay.
-    this.postFlushAt = this.playbackUntil;
-    this.postFlushDroppedMs = 0;
-    this.silenceSent = false;
-    if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    hostLogEvent({ event: 'gptlive_flush', words, queuedMs, yieldGapMs });
-    this.emit({ type: 'interrupted' });
   }
 
   private endInputEpisode(): void {
     this.episodeQuiet = undefined;
-    this.episodeClosed = true;
-    if (this.yieldTimer === undefined) this.clearInputEpisode(true);
+    this.ownerTurnEnded();
   }
 
-  private clearInputEpisode(finalize: boolean): void {
+  /** A new response, a cut or a closed session retires the pending episode, so its quiet timer cannot fire later. */
+  private clearInputEpisode(): void {
     this.episodeToken += 1;
     if (this.episodeQuiet !== undefined) { this.clock.clearTimer(this.episodeQuiet); this.episodeQuiet = undefined; }
-    if (this.yieldTimer !== undefined) { this.clock.clearTimer(this.yieldTimer); this.yieldTimer = undefined; }
-    if (finalize && !this.flushed && this.inputEpisode.length) {
-      hostLogEvent({ event: 'gptlive_no_flush', reason: this.episodeQueuedMs > 0 ? 'server_continued' : 'queue_empty', words: countWords(this.inputEpisode) });
-    }
-    this.inputEpisode = '';
-    this.episodeClosed = false;
-    this.flushed = false;
-    if (finalize) { this.reportPostFlush(); this.ownerTurnEnded(); }
   }
 
   /**
    * The owner's episode is over with no assistant audio playing or held, so what comes next is her think time.
    * gpt-live-1 sends no generation-start event on a plain turn, so the adapter synthesizes the pair the host
-   * needs: the final input transcript and a model turn start, which is what enters THINKING, resets the turn's
-   * completion flag (arming the response watchdog) and re-arms the once-per-episode barge-in latch.
+   * needs: the final input transcript and a model turn start, which is what enters THINKING and resets the turn's
+   * completion flag (arming the response watchdog). It cuts nothing (ruling W1-R1).
    */
   private ownerTurnEnded(): void {
     if (this.terminal) return;
@@ -987,14 +898,6 @@ class Session implements LiveVoiceSession {
     this.endTurnTranscripts();
     this.emit({ type: 'modelTurnStarted' });
     this.touch();
-  }
-
-  /** Receipt, no transcript text: how much audio still arrived after a barge-in, before the next episode. */
-  private reportPostFlush(): void {
-    const ms = this.postFlushMs;
-    if (ms === undefined) return;
-    this.postFlushMs = undefined;
-    hostLogEvent({ event: 'gptlive_post_flush_audio_ms', ms: Math.round(ms) });
   }
 
   /** Receipt, once per session: each provider frame name this adapter has no rule for, and how often it came. */
@@ -1080,7 +983,7 @@ class Session implements LiveVoiceSession {
         this.receipt('response.created', { responseKey: this.responseKeyOf(responseId) }, {
           createdAt: this.clock.now(), ...(responseId === undefined ? {} : { providerResponseId: responseId }),
         });
-        this.clearInputEpisode(false);
+        this.clearInputEpisode();
         this.endTurnTranscripts('app_model_start');
         this.delegatedOutstanding = true;
         this.generation += 1;
@@ -1332,7 +1235,7 @@ class Session implements LiveVoiceSession {
       return;
     }
     if ((disposition === 'moderation' || SPEECH_CUT_ERROR.test(`${type} ${errorCode}`)) && this.generation !== this.muted) {
-      this.clearInputEpisode(false);
+      this.clearInputEpisode();
       this.generation += 1;
       this.muted = this.generation;
       // The host flushes its queue on `interrupted`; future audio is still forwarded, never latched off.
@@ -1396,7 +1299,7 @@ class Session implements LiveVoiceSession {
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
-          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(); }
+          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(false); }
         }
         if (error && this.checkpoint()) {
           if (pcmBytes && this.isReady) this.dropUpstream('write_error', socket); else this.onError(error);
@@ -1635,36 +1538,103 @@ class Session implements LiveVoiceSession {
     const frame = JSON.stringify({ type: 'session.input_audio.append', audio: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64') });
     this.micPending.push({ frame, bytes: pcm.byteLength });
     this.micPendingBytes += Buffer.byteLength(frame);
+    this.sampleCaptured += Buffer.byteLength(frame);
     if (!this.flushMic()) fail(this.terminal?.code ?? 'not_ready');
   }
 
   /**
    * Send what the uplink can take and shed the rest from the front (3o). The capture path never waits: the queue
    * is bounded by UPLINK_SHED_BYTES plus one frame, and the oldest frames go first so the newest speech wins.
+   * W3: a shed is one contiguous run down to the low-water mark, so the wire carries runs, never thin islands.
    */
-  private flushMic(): boolean {
+  private flushMic(sample = true): boolean {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) { this.micPending = []; this.micPendingBytes = 0; return !this.terminal; }
-    while (this.micPending.length > 1 && socket.bufferedAmount + this.micPendingBytes > UPLINK_SHED_BYTES) {
-      const shed = this.micPending.shift()!;
-      this.micPendingBytes -= Buffer.byteLength(shed.frame);
-      this.shedBytes += Buffer.byteLength(shed.frame);
+    const now = this.clock.now();
+    const open = socket !== undefined && socket.readyState === WebSocket.OPEN;
+    const buffered = socket?.bufferedAmount ?? 0;
+    if (!open) {
+      // W3: every frame lost because the socket is not open is counted, in its own field and in the share.
+      for (const queued of this.micPending) { const bytes = Buffer.byteLength(queued.frame); this.notOpenBytes += bytes; this.sampleDiscarded += bytes; }
+      this.micPending = []; this.micPendingBytes = 0;
+    } else {
+      if (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_BYTES) {
+        // W3: the whole queued stretch goes, oldest first, and only the newest frame is kept. One frame per
+        // arrival is what made 20 ms islands; a stretch at a time is what leaves the frames after it consecutive.
+        // A socket pinned at the cap can only take a third of the capture, so the stretch dropped has to be at
+        // least half the cap for the delivered run to be long enough to hear as speech.
+        while (this.micPending.length > 1) {
+          const shed = this.micPending.shift()!;
+          const bytes = Buffer.byteLength(shed.frame);
+          this.micPendingBytes -= bytes;
+          this.shedBytes += bytes;
+          this.sampleDiscarded += bytes;
+        }
+        this.shedRuns += 1;
+      }
+      while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
+        const next = this.micPending.shift()!;
+        this.micPendingBytes -= Buffer.byteLength(next.frame);
+        if (!this.write(next.frame, next.bytes)) return false;
+      }
+      this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
+      this.watchUpstreamStall(socket);
     }
-    while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
-      const next = this.micPending.shift()!;
-      this.micPendingBytes -= Buffer.byteLength(next.frame);
-      if (!this.write(next.frame, next.bytes)) return false;
-    }
-    this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
-    // Every mic frame is a liveness observation, including a frame this uplink could not take.
-    this.watchUpstreamStall(socket);
-    const now = Date.now();
-    if (this.shedBytes && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
+    // The bytes the socket took out of its own buffer since the last flush: acceptance, never delivery. The level
+    // is read after the writes, so a flush nested in a write callback records the same socket state, not a guess.
+    const accepted = open && this.lastBufferedAt !== undefined ? Math.max(0, this.lastBuffered - buffered) : 0;
+    if (!sample) return !this.terminal;
+    this.sampleUplink(now, accepted, open, open ? socket.bufferedAmount : buffered);
+    this.evaluateConnection(now);
+    if ((this.shedBytes || this.notOpenBytes) && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
       this.shedReportedAt = now;
-      hostLogEvent({ event: 'uplink_shed', bytes: this.shedBytes, bufferedPeak: this.shedPeak });
-      this.shedBytes = 0; this.shedPeak = 0;
+      hostLogEvent({ event: 'uplink_shed', bytes: this.shedBytes, bufferedPeak: this.shedPeak, shedRuns: this.shedRuns,
+        drainBytesPerSec: this.drainBytesPerSec, notOpenBytes: this.notOpenBytes });
+      this.shedBytes = 0; this.shedPeak = 0; this.shedRuns = 0; this.notOpenBytes = 0;
     }
     return !this.terminal;
+  }
+
+  /** Record what this flush interval captured, discarded and the socket accepted, then start the next interval. */
+  private sampleUplink(now: number, accepted: number, open: boolean, buffered: number): void {
+    this.uplinkSamples.push({ at: now, captured: this.sampleCaptured, discarded: this.sampleDiscarded, accepted,
+      backlogged: open && buffered >= UPLINK_SHED_BYTES });
+    this.sampleCaptured = 0;
+    this.sampleDiscarded = 0;
+    this.lastBuffered = buffered;
+    this.lastBufferedAt = now;
+  }
+
+  /** W3: weak when over a fifth of the capture was discarded or the backlog never fell below the cap; ok after
+   *  five quiet seconds. One source feeds the caption and the watchdog's terminal code. */
+  private evaluateConnection(now: number): void {
+    const samples = this.uplinkSamples;
+    while (samples.length && samples[0]!.at < now - CONNECTION_WINDOW_MS) samples.shift();
+    const oldest = samples[0]?.at;
+    let captured = 0, discarded = 0, accepted = 0, pinned = samples.length > 0;
+    for (const sample of samples) {
+      captured += sample.captured; discarded += sample.discarded; accepted += sample.accepted;
+      if (!sample.backlogged) pinned = false;
+    }
+    const span = Math.max(1, now - (oldest ?? now));
+    this.drainBytesPerSec = Math.round(accepted * 1_000 / span);
+    // Both arms need a whole window: one lost frame in a half-filled window is a 100% share and would make the
+    // caption cry wolf on the first reconnect of a healthy call.
+    const covered = oldest !== undefined && now - oldest >= CONNECTION_WINDOW_MS;
+    for (const sample of samples) if (sample.discarded > 0 || sample.backlogged) this.lastUplinkLossAt = sample.at;
+    if (covered && captured > 0 && discarded / captured > CONNECTION_WEAK_SHARE) this.markUplinkLoss(now);
+    else if (covered && pinned) this.markUplinkLoss(now);
+    else if (this.connectionQuality === 'weak' && (this.lastUplinkLossAt === undefined || now - this.lastUplinkLossAt >= CONNECTION_OK_MS)) {
+      this.connectionQuality = 'ok';
+      hostLogEvent({ event: 'connection_quality', quality: 'ok', uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000) });
+    }
+  }
+
+  private markUplinkLoss(now: number): void {
+    if (this.connectionQuality !== 'weak') {
+      this.connectionQuality = 'weak';
+      hostLogEvent({ event: 'connection_quality', quality: 'weak', uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000) });
+    }
+    this.connectionWeakAt = now;
   }
 
   sendText(input: { text: string }): void {
@@ -1712,12 +1682,13 @@ class Session implements LiveVoiceSession {
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
-    this.clearInputEpisode(false);
+    this.clearInputEpisode();
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
+    // A closed session has no speaking stretch: no silence check is still owed to the turn it was in.
+    if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     // 3r B: a closed session retires its calls and delegations, so a late answer reaches no new one.
     this.retireCalls();
     this.discardHeadStart();
-    this.reportPostFlush();
     this.reportUnknownFrames();
     this.secret = '';
     this.readiness.reject(new LiveVoiceError(code));

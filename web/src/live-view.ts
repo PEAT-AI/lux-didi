@@ -63,7 +63,16 @@ export function liveLabel(live: LiveCurrent | undefined): string {
     return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
   }
   if (connectingBeforeFirstSpeech(live)) return 'Connecting';
-  return liveStateLabel(live?.state ?? 'idle');
+  const state = live?.state ?? 'idle';
+  // W3: reconnecting and error keep their own words; the uplink measurement only speaks for a call that is up.
+  if (state === 'rebuilding' || state === 'error') return liveStateLabel(state);
+  const connection = live?.connection;
+  if (state === 'ended' && connection?.endedCode === 'uplink_starved') return 'Call ended: the internet upload was too weak for voice';
+  if (state !== 'ended' && connection?.quality === 'weak') {
+    // The figure is the bytes the socket drained, so it is an upload rate, never a claim about delivery.
+    return `Weak internet, Naya may not hear you clearly${connection.uploadKbps === undefined ? '' : ` (upload about ${connection.uploadKbps} kbit/s)`}`;
+  }
+  return liveStateLabel(state);
 }
 
 /** After this long a pending call adds its elapsed seconds to the activity line. */

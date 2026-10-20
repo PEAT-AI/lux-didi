@@ -89,6 +89,9 @@ export interface LivePageProjection {
   jobs?: PendingLiveJob[];
   memory?: LiveMemoryProjection;
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
+  /** W3: the adapter's own uplink measurement. `uploadKbps` is what the socket drained, never delivery, and
+   *  `endedCode` names the terminal that blamed the internet, so the caption can say why the call ended. */
+  connection?: { quality: 'ok' | 'weak'; uploadKbps?: number; endedCode?: 'uplink_starved' };
   entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal' | 'researchProgress'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; textJoin?: 'append' | 'words'; finished?: boolean; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] }; progress?: ResearchProgressView }[];
   cursor: number;
   /** The tool steps of the turn in flight, newest last. In memory only: a settled session keeps none,

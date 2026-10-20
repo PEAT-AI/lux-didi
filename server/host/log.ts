@@ -320,11 +320,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_upstream_queue', bufferedBytes: value.bufferedBytes };
   }
   if (value.event === 'uplink_shed') {
-    // Closed shape (3o): mic frame bytes shed from the front of the uplink queue, and the peak backlog of the
-    // window. One record per UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
-    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak'])) return;
-    if (!isSafeCount(value.bytes) || !isSafeCount(value.bufferedPeak)) return;
-    return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak };
+    // Closed shape (3o, W3): mic frame bytes shed from the front of the uplink queue, the peak backlog of the
+    // window, how many contiguous runs went, the bytes the socket drained per second and the frames lost while
+    // the socket was not open. One record per UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
+    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak', 'shedRuns', 'drainBytesPerSec', 'notOpenBytes'])) return;
+    if (!isSafeCount(value.bytes) || !isSafeCount(value.bufferedPeak) || !isSafeCount(value.shedRuns)) return;
+    if (!isSafeCount(value.drainBytesPerSec) || !isSafeCount(value.notOpenBytes)) return;
+    return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak, shedRuns: value.shedRuns,
+      drainBytesPerSec: value.drainBytesPerSec, notOpenBytes: value.notOpenBytes };
+  }
+  if (value.event === 'connection_quality') {
+    // Closed shape (W3): one record when the adapter's own uplink measurement flips between ok and weak, with
+    // the drained upload as counts only. The words the owner reads are never in the log.
+    if (!closedKeys(value, ['event', 'quality', 'uploadKbps'])) return;
+    if (value.quality !== 'ok' && value.quality !== 'weak') return;
+    if (!isSafeCount(value.uploadKbps)) return;
+    return { event: 'connection_quality', quality: value.quality, uploadKbps: value.uploadKbps };
   }
   if (value.event === 'live_stall') {
     // The same recovery path owns inbound silence and bounded outbound no-progress. Each receipt carries only the
@@ -436,19 +447,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.chars) || !isSafeCount(value.bytes)) return;
     return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
   }
-  if (value.event === 'gptlive_flush') {
-    // N1: the measured output gap that proved the server yielded, alongside what was cut.
-    if (!closedKeys(value, ['event', 'words', 'queuedMs', 'yieldGapMs'])) return;
-    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs) || !isSafeCount(value.yieldGapMs)) return;
-    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs, yieldGapMs: value.yieldGapMs };
-  }
-  if (value.event === 'gptlive_no_flush') {
-    // N1: one record per owner episode that cut nothing, in a closed reason set, never the transcript.
-    if (!closedKeys(value, ['event', 'reason', 'words'])) return;
-    if (!isSafeMember(value.reason, ['server_continued', 'queue_empty'])) return;
-    if (!isSafeCount(value.words) || value.words < 1) return;
-    return { event: 'gptlive_no_flush', reason: value.reason, words: value.words };
-  }
   if (value.event === 'gptlive_unknown_frame') {
     // N1: an unread provider frame name, counted once per session. Bounded to a protocol token, never a body.
     if (!closedKeys(value, ['event', 'type', 'count'])) return;
@@ -460,11 +458,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
     if (!isSafeCount(value.idleMs) || value.drained !== true) return;
     return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true };
-  }
-  if (value.event === 'gptlive_post_flush_audio_ms' || value.event === 'gptlive_post_flush_dropped_ms') {
-    if (!closedKeys(value, ['event', 'ms'])) return;
-    if (!isSafeCount(value.ms)) return;
-    return { event: value.event, ms: value.ms };
   }
   if (value.event === 'live_provider_error') {
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;

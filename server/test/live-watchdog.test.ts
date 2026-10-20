@@ -12,6 +12,7 @@ import { createLiveSessionOwner, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RES
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
+import type { LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm } from './live-voice-fixture.js';
 
 const NOW = 1_700_000_000_000;
@@ -41,15 +42,28 @@ class DeadlineClock {
 interface Live {
   owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; liveSessionId: string;
   emit(event: FakeLiveVoiceEvent): Promise<void>; sendAudio(): void; advance(ms: number): Promise<void>;
+  /** The owner's injected clock, so a test can date a weak spell against the watchdog's own interval. */
+  now(): number;
 }
 
+/** The uplink measurement a test plays back through the adapter's existing diagnostics port (W3). */
+type MeasuredConnection = { quality: 'ok' | 'weak'; weakAt?: number };
+
 /** Open one owner session on the fake port with an injected clock, and capture the 3j receipts. */
-async function openLive(t: TestContext, overrides: { limits?: Record<string, number>; capabilities?: Parameters<typeof fakeLiveVoicePort>[0] } = {}): Promise<Live> {
+async function openLive(t: TestContext, overrides: { limits?: Record<string, number>; capabilities?: Parameters<typeof fakeLiveVoicePort>[0]; connection?: () => MeasuredConnection } = {}): Promise<Live> {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-watchdog-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
   const scheduler = new DeadlineClock();
   const fake = fakeLiveVoicePort(overrides.capabilities ?? {});
+  // The fake port measures nothing; a test that needs a connection quality reports it the way an adapter does.
+  const port = overrides.connection === undefined ? fake.port : {
+    capabilities: fake.port.capabilities,
+    open: (liveRequest: Parameters<LiveVoicePort['open']>[0], liveControl: Parameters<LiveVoicePort['open']>[1]) => {
+      const opened = fake.port.open(liveRequest, liveControl);
+      return { ...opened, diagnostics: () => ({ connection: overrides.connection!() }) } as unknown as LiveVoiceSession;
+    },
+  } as LiveVoicePort;
   const profile = validateLiveProfile({
     provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
     route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
@@ -62,12 +76,12 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
     if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
+  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `watchdog-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
   await attachment.ready;
   return {
-    owner, fake, receipts, liveSessionId: session.liveSessionId,
+    owner, fake, receipts, liveSessionId: session.liveSessionId, now: () => scheduler.now,
     emit: async event => { fake.emit(event); await flush(); },
     sendAudio: () => attachment.sendAudio({ pcm }),
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await flush(); },
@@ -137,6 +151,42 @@ test('a second mute inside the window settles the call honestly instead of loopi
   assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed', 'a second mute inside the window settles');
   assert.equal(terminalCode(live), 'model_unresponsive');
   assert.equal(live.fake.sessionsOpened, 2, 'a second mute inside the window opens no third session');
+});
+
+// W3 requirement 3: a mute that happened on a weak uplink is the internet's fault, not the model's.
+test('a weak uplink inside the watched wait settles uplink_starved instead of blaming the model', async t => {
+  let quality: 'ok' | 'weak' = 'ok';
+  let clockNow = () => 0;
+  const live = await openLive(t, { connection: () => ({ quality, ...(quality === 'weak' ? { weakAt: clockNow() } : {}) }) });
+  clockNow = live.now;
+  await ownerTurnEnd(live);
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.equal(terminalCode(live), undefined, 'the first recovery is not a terminal');
+  await flush();
+  await ownerTurnEnd(live);
+  quality = 'weak';
+  await until(live, () => phases(live).includes('settled'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed');
+  assert.equal(terminalCode(live), 'uplink_starved', 'the link was weak during the wait the watchdog judged');
+  const page = live.owner.current();
+  assert.equal(page.connection?.endedCode, 'uplink_starved', 'and the live projection names the reason the call ended');
+});
+
+test('a weak spell before the watched wait does not relabel a later model timeout', async t => {
+  let quality: 'ok' | 'weak' = 'ok';
+  let weakAt: number | undefined;
+  let clockNow = () => 0;
+  const live = await openLive(t, { connection: () => ({ quality, ...(quality === 'weak' ? { weakAt: clockNow() } : weakAt === undefined ? {} : { weakAt }) }) });
+  clockNow = live.now;
+  await ownerTurnEnd(live);
+  quality = 'weak';
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  weakAt = live.now() - 1_000;
+  quality = 'ok';
+  await flush();
+  await ownerTurnEnd(live);
+  await until(live, () => phases(live).includes('settled'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.equal(terminalCode(live), 'model_unresponsive', 'the wait being judged was healthy');
 });
 
 test('idle measures silence, so it fires with mic frames flowing and no speech, and live_turn_open is recorded', async t => {

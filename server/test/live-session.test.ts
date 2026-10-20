@@ -4753,7 +4753,7 @@ for (const route of ['typed', 'selector'] as const) test(`progress recovery: ${r
   h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the six-second speech interval');
   h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a result cannot cause a six-second repeat');
   // W4: the turn's only lookup has answered, so no line may claim one is still running.
-  h.advance(2_000); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a finished lookup is not progress');
+  h.advance(2_000); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, `a finished lookup is not progress: ${JSON.stringify(fake.commentary)}`);
   h.owner.revoke(session.liveSessionId);
 });
 

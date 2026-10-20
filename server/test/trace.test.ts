@@ -592,7 +592,7 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     try {
       assert.deepEqual(counts(again), { ...seeded, trace_event: 2, trace_playback: 2 }, 'reopening an already-migrated store keeps every row');
       assert.equal(traceVersion(again), TRACE_SCHEMA_VERSION);
-      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), 2,
+      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), TRACE_SCHEMA_VERSION,
         'one ledger row per applied version, so the migration ran once');
     } finally { again.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

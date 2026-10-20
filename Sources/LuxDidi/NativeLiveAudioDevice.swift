@@ -581,6 +581,8 @@ struct NativeLiveInterruptionSample: Sendable {
     /// The segment the app is reporting: one playback run, from the first chunk to its drain or flush.
     private var playbackSegment = 0
     private var segmentActive = false
+    /// One `playback.audible` per segment: the first chunk that crosses the audibility threshold.
+    private var segmentAudible = false
     private var terminatedSegment = 0
     /// One positive short gap between audible buffers, for the native-live.log line.
     var onSpeechGap: ((NativePlaybackArrival) -> Void)?
@@ -1230,7 +1232,11 @@ struct NativeLiveInterruptionSample: Sendable {
         let level = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
         let audible = level >= 0.00316227766
         let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs(), audible: audible, level: level)
-        if newSegment { playbackSegment += 1; segmentActive = true; emitReceipt(.received, segment: playbackSegment) }
+        if newSegment {
+            playbackSegment += 1; segmentActive = true; segmentAudible = false
+            emitReceipt(.received, segment: playbackSegment)
+        }
+        if audible, !segmentAudible { segmentAudible = true; emitReceipt(.audible, segment: playbackSegment) }
         if arrival.speechGap { playback.speechGaps += 1; onSpeechGap?(arrival) }
         outputOrb.append(pcm)
         if audible { lastModelAudioAt = now() }

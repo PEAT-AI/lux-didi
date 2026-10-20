@@ -87,11 +87,9 @@ const UPLOAD_NO_PROGRESS_MS = 30_000;
 const UPLINK_SHED_BYTES = 48 * 1024;
 /** The shed receipt is bounded to one host.log record per window (3o). */
 const UPLINK_SHED_RECEIPT_MS = 10_000;
-/** W3: the queue is shed down to this mark, so what reaches the model is runs of consecutive frames, never
- *  isolated 20 ms islands, and the newest speech is still what wins. A quarter of the cap is what keeps a
- *  surviving run from being cut by the next shed before the socket has drained it: at the owner's 3:1 oversupply
- *  half the cap would leave a run of eight frames, and the wire would thin again. */
-const UPLINK_SHED_LOW_BYTES = UPLINK_SHED_BYTES / 4;
+/** W3: the queue is shed down to this mark and the socket is refilled back to the cap from it, so what reaches
+ *  the model is runs of consecutive frames, never isolated 20 ms islands, and the newest speech still wins. */
+const UPLINK_SHED_LOW_BYTES = UPLINK_SHED_BYTES / 2;
 /** W3: connection quality is the adapter's own read of the link, over the last three measured seconds. */
 const CONNECTION_WINDOW_MS = 3_000;
 /** Over a fifth of the captured mic bytes discarded in the window is a weak link (the owner's link: 25% loss). */
@@ -1695,9 +1693,11 @@ class Session implements LiveVoiceSession {
           this.sampleDiscarded += bytes;
         }
         this.shedRuns += 1;
-        if (this.shedRuns < 6 && now < 1_100_000) console.log('DBGSHED', now, this.micPending.length, this.micPendingBytes, socket.bufferedAmount);
       }
-      while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
+      // The socket is refilled to the cap only once it has drained to the low-water mark, so its buffer takes
+      // one contiguous run at a time instead of one frame per freed slot.
+      const room = socket.bufferedAmount < UPLINK_SHED_LOW_BYTES ? UPLINK_SHED_BYTES : 0;
+      while (this.micPending.length && socket.bufferedAmount < room) {
         const next = this.micPending.shift()!;
         this.micPendingBytes -= Buffer.byteLength(next.frame);
         if (!this.write(next.frame, next.bytes)) return false;

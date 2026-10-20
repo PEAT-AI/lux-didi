@@ -1473,20 +1473,20 @@ describe('openai gpt-live turn states', () => {
     assert.ok(measured >= 290 && measured <= 350, `about 319 kbit/s of drain, got ${measured}`);
   });
 
-  // W3-R2(a): a link that loses only a seventh of the capture is not weak, so the caption never cries wolf.
-  test('a link that sheds a seventh of the capture stays ok', async t => {
+  // W3-R2(a): the trigger's lower side, a link that keeps up but loses one frame in seven to a short
+  // reconnect, is not weak: the caption must not cry wolf on a healthy call.
+  test('a link that loses a seventh of the capture to a short reconnect stays ok', async t => {
     const clock = new FakeClock();
     const { socket, session } = await fakeReady(t, { clock });
     socket.trackBuffer = true;
     const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
-    for (let index = 0; index < 500; index += 1) {
-      // 5,645 B of headroom every five frames is 56.5 KB/s: the buffer dips below the cap, so this is a link
-      // that keeps up while dropping about 15% of the frames.
-      if (index % 5 === 0) socket.drain(5_645);
+    for (let index = 0; index < 300; index += 1) {
+      socket.drain(4_000); // the link keeps up: no backlog, nothing shed
+      socket.readyState = index % 20 < 3 ? 2 : 1; // three frames in twenty land while the socket is reconnecting
       session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
       clock.advance(20);
     }
-    assert.equal(connection()?.quality, 'ok', 'a seventh of the capture is under the weak share');
+    assert.equal(connection()?.quality, 'ok', 'a seventh of the capture lost is under the weak share');
   });
 
   // W3 requirement 1: the wire carries runs of consecutive frames, never 20 ms islands, and the receipt says

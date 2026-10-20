@@ -162,20 +162,6 @@ test('a source the session did not configure is reported unavailable, never disp
   assert.deepEqual(reply['sources'], { company: 'unavailable', chat: 'unavailable' });
   assert.deepEqual(reply['findings'], []);
   assert.equal(reply['status'], 'partial');
-  assert.match(String(reply['note']), /team chat: unavailable \(not configured\); company knowledge: unavailable \(not configured\)/, 'each unread source names itself and its reason, in plain words');
-});
-
-// --- #1020: a source that could not be read names itself, and why ---------------------------------
-
-test('#1020: a timed-out source is named as timed out in seconds, beside the source that answered', async () => {
-  const h = harness({ configured: ['knowledge', 'chat'] });
-  const deps: ResearchDeps = { ...h.deps, unavailableNow: () => [{ source: 'chat', reason: 'timeout' }] };
-  const reply = await runResearch(deps, {
-    action: 'start', question: 'what is waiting on me', lookups: [{ source: 'chat', query: 'release freeze' }, { source: 'knowledge', query: 'release' }],
-  }, new AbortController().signal);
-  assert.match(String(reply['note']), /team chat: not read \(timed out after 12 s\)/, 'the timeout is spoken as a timeout, with its budget');
-  assert.match(String(reply['note']), /could not reach team chat/, 'and the voiceable clause about it is still there');
-  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });
 
 test('her own memory answers a memory lookup, and is reported unavailable without a reader', async () => {

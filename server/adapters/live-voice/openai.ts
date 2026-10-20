@@ -88,8 +88,10 @@ const UPLINK_SHED_BYTES = 48 * 1024;
 /** The shed receipt is bounded to one host.log record per window (3o). */
 const UPLINK_SHED_RECEIPT_MS = 10_000;
 /** W3: the queue is shed down to this mark, so what reaches the model is runs of consecutive frames, never
- *  isolated 20 ms islands, and the newest speech is still what wins. */
-const UPLINK_SHED_LOW_BYTES = UPLINK_SHED_BYTES / 2;
+ *  isolated 20 ms islands, and the newest speech is still what wins. A quarter of the cap is what keeps a
+ *  surviving run from being cut by the next shed before the socket has drained it: at the owner's 3:1 oversupply
+ *  half the cap would leave a run of eight frames, and the wire would thin again. */
+const UPLINK_SHED_LOW_BYTES = UPLINK_SHED_BYTES / 4;
 /** W3: connection quality is the adapter's own read of the link, over the last three measured seconds. */
 const CONNECTION_WINDOW_MS = 3_000;
 /** Over a fifth of the captured mic bytes discarded in the window is a weak link (the owner's link: 25% loss). */
@@ -1673,7 +1675,6 @@ class Session implements LiveVoiceSession {
     const now = this.clock.now();
     const open = socket !== undefined && socket.readyState === WebSocket.OPEN;
     const buffered = socket?.bufferedAmount ?? 0;
-    let written = 0;
     if (!open) {
       // W3: every frame lost because the socket is not open is counted, in its own field and in the share.
       for (const queued of this.micPending) { const bytes = Buffer.byteLength(queued.frame); this.notOpenBytes += bytes; this.sampleDiscarded += bytes; }
@@ -1697,14 +1698,14 @@ class Session implements LiveVoiceSession {
         const next = this.micPending.shift()!;
         this.micPendingBytes -= Buffer.byteLength(next.frame);
         if (!this.write(next.frame, next.bytes)) return false;
-        written += Buffer.byteLength(next.frame);
       }
       this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
       this.watchUpstreamStall(socket);
     }
-    // The bytes the socket took out of its own buffer since the last flush: acceptance, never delivery.
+    // The bytes the socket took out of its own buffer since the last flush: acceptance, never delivery. The level
+    // is read after the writes, so a flush nested in a write callback records the same socket state, not a guess.
     const accepted = open && this.lastBufferedAt !== undefined ? Math.max(0, this.lastBuffered - buffered) : 0;
-    this.sampleUplink(now, accepted, open, buffered + written);
+    this.sampleUplink(now, accepted, open, open ? socket.bufferedAmount : buffered);
     this.evaluateConnection(now);
     if ((this.shedBytes || this.notOpenBytes) && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
       this.shedReportedAt = now;

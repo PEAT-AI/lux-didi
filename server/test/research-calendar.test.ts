@@ -208,6 +208,8 @@ test('calendar R4: real selector JSON parsing preserves named windows and refuse
   for (const window of ['Wednesday this week', 'next Wednesday', 'this week', 'whenever', 42, undefined]) {
     const h = fixture([event(21), event(28)]);
     h.deps.timeZone = 'UTC';
+    // W2: one configured source has nothing to select, so a selector round needs a second source.
+    h.deps.configured = ['calendar', 'mail'];
     h.deps.selector = createGeminiSelector({ generate: async () => ({
       status: 'complete', text: JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 1 } }),
       providerContent: { role: 'model', parts: [] }, reason: 'synthetic', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null },

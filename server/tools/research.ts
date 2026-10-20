@@ -1644,7 +1644,8 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     const pending = [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight);
     if (pending.length === 0) break;
     const reads = pending.slice(0, RESEARCH.maxOps - run.ops);
-    const calls: IntentSubCall[] = reads.map((read, n) => ({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
+    // W2: the connector plans inside this run's remaining source budget, never its own 40 s constant.
+    const calls: IntentSubCall[] = reads.map((read, n) => ({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt } }));
     const listScope = !run.calendarScopeAttempted && calls.length < RESEARCH.maxOps - run.ops;
     if (listScope) { calls.push({ key: 'calendarScope', name: INTERNAL.calendars, args: { maxResults: 20 } }); run.calendarScopeAttempted = true; }
     if (!evidenceAllowed(deps, run, signal)) break;
@@ -2250,17 +2251,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       let usedFallbackThisRound = false;
       let narrowed: CandidateKind[] | undefined;
       // A single-source hint pins the whole run to that one source, so the selector is never called,
-      // in any round: once the source is read there is nothing left to select.
-      if (hint.length === 1) {
-        const source = hint[0]!;
-        narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
-        if (driver === undefined) driver = 'single-source-hint';
+      // in any round: once the source is read there is nothing left to select. W2: one configured source
+      // is the same situation, so it takes the same deterministic path (#473).
+      const singleSource = hint.length === 1 ? hint[0] : configured.length === 1 ? configured[0] : undefined;
+      if (singleSource !== undefined) {
+        narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === singleSource);
+        if (driver === undefined) driver = hint.length === 1 ? 'single-source-hint' : 'fallback';
       }
       const candidatesForSelector = narrowed ?? offerable;
       if (narrowed !== undefined) {
         // Outcome 6: one certain source is deterministic; skip the selector call entirely.
         selection = fallbackSelection(question || run.direction || '', configured, now());
-      } else if (deps.selector === undefined) {
+      } else if (deps.selector === undefined || run.questionClass === 'quick_fact') {
+        // W2: a run the first round already classified quick_fact needs no second opinion (#473).
         fallbackUsed = true;
         usedFallbackThisRound = true;
         selection = fallbackSelection(question || run.direction || '', configured, now());

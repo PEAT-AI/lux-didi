@@ -27,6 +27,14 @@ const CREDENTIAL_CODES = new Set([
   'credential-insufficient-scope',
   'credential-revoked',
   'credential-refresh-failed',
+  // The pinned-account helper (lux-cli E2) refuses with these; both spellings are accepted so a
+  // code is never mistaken for an untyped failure. The message around a code is never read.
+  'credential-missing-env',
+  'credential_missing',
+  'account_mismatch',
+  'account-mismatch',
+  'identity_unverified',
+  'identity-unverified',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

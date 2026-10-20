@@ -289,8 +289,8 @@ const googleDescriptor: ConnectorDescriptor = {
   status: googleStatus,
   identity(policy) {
     return googleFamily(policy.toolNames) === 'calendar'
-      ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues }
-      : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues };
+      ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
+      : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
   },
 };
 

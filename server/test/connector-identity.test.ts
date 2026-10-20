@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
-  calendarIdentityValues, classifyIdentity, gmailIdentityValues, identityAction, identityMatch,
+  calendarIdentityValues, classifyIdentity, gmailIdentityValues, helperErrorCode, identityAction, identityMatch,
   mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity,
   type IdentityProof, type IdentitySource,
 } from '../connectors/identity.js';
@@ -53,6 +53,19 @@ test('classifyIdentity proves a value, matches the owner, and leaves an unset ow
   assert.deepEqual(empty, { proven: false, match: null, value: null });
   const refused = classifyIdentity({ state: 'refused', reason: 'source-unavailable' }, gmail, [OWNER]);
   assert.deepEqual(refused, { proven: false, match: null, value: null });
+  // A closed helper code survives into the proof; free text never becomes a code.
+  assert.deepEqual(classifyIdentity({ state: 'refused', reason: 'account_mismatch' }, gmail, [OWNER]), { proven: false, match: null, value: null, code: 'account_mismatch' });
+  const coded = classifyIdentity(evidence({ content: [{ type: 'text', text: 'identity_unverified: the refresh returned no id_token' }], isError: true }), gmail, [OWNER]);
+  assert.deepEqual(coded, { proven: false, match: null, value: null, code: 'identity_unverified' });
+});
+
+test('helperErrorCode reads only a closed code out of an error envelope, never an address or a path', () => {
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true }), 'account_mismatch');
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'credential-missing: LUX_GOOGLE_MCP_TOKEN is not set' }], isError: true }), 'credential_missing');
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: JSON.stringify({ error: 'identity_unverified' }) }], isError: true }), 'identity_unverified');
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'provider-failure: http 500' }], isError: true }), undefined);
+  assert.equal(helperErrorCode({ content: [{ type: 'text', text: 'refused for owner@example.test with /owner/token.json' }], isError: true }), undefined);
+  assert.equal(helperErrorCode({ data: { emailAddress: OWNER } }), undefined);
 });
 
 test('identityAction offers a proof, refuses a mismatch and keeps an unproven connector usable', () => {
@@ -60,6 +73,10 @@ test('identityAction offers a proof, refuses a mismatch and keeps an unproven co
   assert.equal(identityAction({ proven: true, match: null, value: OWNER }), 'offer');
   assert.equal(identityAction({ proven: true, match: false, value: OTHER }), 'refuse');
   assert.equal(identityAction({ proven: false, match: null, value: null }), 'unproven');
+  // A strict source (Google) refuses an unproven identity instead of publishing an unverified read.
+  assert.equal(identityAction({ proven: false, match: null, value: null }, true), 'refuse');
+  assert.equal(identityAction({ proven: true, match: true, value: OWNER }, true), 'offer');
+  assert.equal(identityAction({ proven: true, match: false, value: OTHER }, true), 'refuse');
 });
 
 test('a proof failure (throw or timeout) is unproven, never a refusal', async () => {
@@ -97,7 +114,7 @@ test('projectIdentity returns a closed shape, dropping anything unvalidated', ()
 // Real refusal wiring: one fake Gmail endpoint, the real host compose path, synthetic identities only.
 const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 
-async function gmailHost(email: string) {
+async function gmailHost(email: string, options: { profile?: { content: unknown[]; isError?: boolean }; ownerIdentity?: string | null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
@@ -106,7 +123,7 @@ async function gmailHost(email: string) {
     jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
       ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
       : message.method === 'tools/list' ? { tools }
-      : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ emailAddress: email }) }] } : {},
+      : message.method === 'tools/call' ? (options.profile ?? { content: [{ type: 'text', text: JSON.stringify({ emailAddress: email }) }] }) : {},
   };
   const endpoint = createServer(async (req, res) => {
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
@@ -118,7 +135,7 @@ async function gmailHost(email: string) {
   endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
   const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
   const url = `http://127.0.0.1:${address.port}/gmail`;
-  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: options.ownerIdentity === undefined ? OWNER : options.ownerIdentity ?? undefined, endpoints: [
     { id: 'gmail', connector: 'google', transport: 'streamable-http', url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
   ] }), { mode: 0o600 });
   const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
@@ -148,4 +165,23 @@ test('a proven match keeps the connector and logs only the booleans', async () =
   assert.equal(reports[0]!.reasonCode, undefined);
   assert.deepEqual(reports[0]!.identity, { proven: true, match: true, value: OWNER.toUpperCase() });
   assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
+});
+
+test('a helper identity refusal refuses Google even with no owner identity configured, naming only the closed code', async () => {
+  // lux-didi #495: unproven identity is never a published connector, so an unverified account can
+  // never return an empty mailbox that reads as "no mail". Neither the address nor a path is spoken.
+  const { reports } = await gmailHost(OWNER, {
+    ownerIdentity: null,
+    profile: { content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true },
+  });
+  assert.equal(reports[0]!.state, 'error');
+  assert.equal(reports[0]!.reasonCode, 'account_mismatch');
+  assert.equal(reports[0]!.identity?.proven, false);
+  assert.equal(JSON.stringify(reports[0]).includes(OWNER), false, 'no address in the report');
+});
+
+test('a profile with no identity value refuses a strict Google connector as identity_unverified', async () => {
+  const { reports } = await gmailHost(OWNER, { ownerIdentity: null, profile: { content: [{ type: 'text', text: JSON.stringify({ messagesTotal: 0 }) }] } });
+  assert.equal(reports[0]!.state, 'error');
+  assert.equal(reports[0]!.reasonCode, 'identity_unverified');
 });

@@ -1456,6 +1456,39 @@ describe('openai gpt-live turn states', () => {
     assert.ok(transitions.every(safeEvent), 'the host log whitelist accepts the quality record');
   });
 
+  // W3-R2(a): the measured regime, four tenths of the capture shed over three seconds with the socket
+  // backlogged but not pinned, is the case the owner's link actually ran.
+  test('a link that sheds four tenths of the capture reads weak at its own rate', async t => {
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
+    for (let index = 0; index < 300; index += 1) {
+      socket.drain(797); // 39.9 KB/s accepted against the 66.4 KB/s capture: about 40% discarded
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'weak', 'two fifths of the capture did not reach the wire');
+    const measured = Number(connection()?.uploadKbps);
+    assert.ok(measured >= 290 && measured <= 350, `about 319 kbit/s of drain, got ${measured}`);
+  });
+
+  // W3-R2(a): a link that loses only a seventh of the capture is not weak, so the caption never cries wolf.
+  test('a link that sheds a seventh of the capture stays ok', async t => {
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
+    for (let index = 0; index < 500; index += 1) {
+      // 5,645 B of headroom every five frames is 56.5 KB/s: the buffer dips below the cap, so this is a link
+      // that keeps up while dropping about 15% of the frames.
+      if (index % 5 === 0) socket.drain(5_645);
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'ok', 'a seventh of the capture is under the weak share');
+  });
+
   // W3 requirement 1: the wire carries runs of consecutive frames, never 20 ms islands, and the receipt says
   // how many runs went and how fast the socket was draining.
   test('a slow uplink sheds whole runs of the oldest frames and reports the run count and the drain', async t => {

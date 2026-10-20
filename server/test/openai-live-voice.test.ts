@@ -157,7 +157,7 @@ describe('openai gpt-live adapter', () => {
     assert.equal(instructions, `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}\n\n${NAYA_BACKEND_PROCEDURE}`);
     assert.ok(instructions.indexOf(OPENAI_BACKEND_TEMPLATE) < instructions.indexOf(NAYA_BACKEND_PROCEDURE), 'the template comes first and the procedure follows it');
     assert.equal(instructions.includes('Delegation policy'), false, 'the voice-side delegation policy never reaches the backend');
-    assert.ok(instructions.includes('widen once to the next most likely layer'), 'the lookup procedure reaches the executing model');
+    assert.ok(instructions.includes('put independent source lookups in one research plan so the host can run them concurrently'), 'the lookup procedure reaches the executing model');
   });
 
   test('S4A-R1: a backendProcedure is appended under a blank line, and the voice parts stay byte-identical', async t => {

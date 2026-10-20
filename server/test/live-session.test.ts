@@ -4180,7 +4180,9 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   // `research` is the only lookup the production model is declared, so this is the reachable path (review F2).
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  // W1's first answer settles a run that has findings, so the held work must be the source the line
+  // names: the chat read itself stays pending, and the turn really does have work in flight at 6 s.
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held, mattermostWork: () => held });
   const { session } = await openPort(h, 'research-progress');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();

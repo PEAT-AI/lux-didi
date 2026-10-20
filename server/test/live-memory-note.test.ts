@@ -164,6 +164,19 @@ test('a note keeping the owner\'s own preference verb still stores', async t => 
   assert.equal((await remember(store, 'Rob prefers short answers in the morning')).remembered, true);
 });
 
+test('a short ordinary note stores against the preference the owner stated', async t => {
+  // The owner's defect: a two-word-ish note was refused because "prefers" is not "prefer". The
+  // polarity verb decides direction, not support, so it must not dilute the ratio either.
+  const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
+  assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
+});
+
+test('that same short note is still refused when it flips the preference', async t => {
+  // The paired guard: with the verb out of the ratio the support is 1 of 1, so only polarity refuses.
+  const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob hates tea'), { remembered: false, code: 'owner_text_mismatch' });
+});
+
 test('a session with no owner transcription reports the transcript was never final', async t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
   assert.deepEqual(await remember(store, 'Rob prefers tea and the crossword'), { remembered: false, code: 'owner_transcript_not_final' });

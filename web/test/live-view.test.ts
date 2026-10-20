@@ -1171,11 +1171,11 @@ test('D6: the main window paints the orb through the shared debounce, never a ra
 
 // W3 requirement 4: when the internet is the reason the owner is told, in the existing caption text.
 test('a weak uplink is named in the caption, and an uplink-starved end names the internet, not the model', () => {
-  const listening: LiveCurrent = { state: 'listening', cursor: 0, entries: [] };
-  const withConnection = (connection: unknown, state: LiveCurrent['state'] = 'listening') => ({ ...listening, state, connection } as LiveCurrent);
+  const speaking: LiveCurrent = { state: 'speaking', cursor: 1, entries: [{ seq: 1, kind: 'outputTranscription', text: 'Hi there' }] };
+  const withConnection = (connection: unknown, state: LiveCurrent['state'] = 'speaking') => ({ ...speaking, state, connection } as LiveCurrent);
   assert.equal(liveLabel(withConnection({ quality: 'weak', uploadKbps: 380 })), 'Weak internet, Naya may not hear you clearly (upload about 380 kbit/s)');
-  assert.equal(liveLabel(withConnection({ quality: 'ok', uploadKbps: 380 })), 'Listening', 'a healthy link says nothing new');
-  assert.equal(liveLabel(listening), 'Listening');
+  assert.equal(liveLabel(withConnection({ quality: 'ok', uploadKbps: 380 })), 'Speaking', 'a healthy link says nothing new');
+  assert.equal(liveLabel(speaking), 'Speaking');
   assert.equal(liveLabel(withConnection({ quality: 'weak' })), 'Weak internet, Naya may not hear you clearly', 'no number when none was measured');
   assert.equal(liveLabel(withConnection({ quality: 'weak', uploadKbps: 380 }, 'rebuilding')), 'Reconnecting to the voice service', 'reconnecting keeps its own words');
   assert.equal(liveLabel(withConnection({ quality: 'weak', uploadKbps: 12, endedCode: 'uplink_starved' }, 'ended')), 'Call ended: the internet upload was too weak for voice');

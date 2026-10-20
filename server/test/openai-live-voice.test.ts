@@ -1438,7 +1438,7 @@ describe('openai gpt-live turn states', () => {
     const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
     for (let index = 0; index < 150; index += 1) {
       socket.drain(400); // 400 B per 20 ms frame is 20 KB/s, well under the 66.4 KB/s the capture demands
-      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
       clock.advance(20);
     }
     assert.equal(connection()?.quality, 'weak', 'more than a fifth of the captured bytes were discarded');
@@ -1446,7 +1446,7 @@ describe('openai gpt-live turn states', () => {
     assert.ok(measured >= 140 && measured <= 180, `about 160 kbit/s of drain, got ${measured}`);
     for (let index = 0; index < 260; index += 1) {
       socket.drain(4_000);
-      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
       clock.advance(20);
     }
     assert.equal(connection()?.quality, 'ok', 'five quiet seconds make it ok again');
@@ -1464,7 +1464,7 @@ describe('openai gpt-live turn states', () => {
     const level = (index: number) => 500 + 50 * index;
     for (let index = 0; index < 500; index += 1) {
       socket.drain(400);
-      session.sendAudio({ pcm: pcm16(480, level(index)), dataClass: 'ordinary' });
+      session.sendAudio({ pcm: pcm16(320, level(index)), dataClass: 'ordinary' });
       clock.advance(20);
     }
     const arrived: number[] = [];

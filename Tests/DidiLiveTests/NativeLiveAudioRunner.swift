@@ -349,6 +349,22 @@ private func checkFormatChangeRebuild() throws {
     print("PASS weak-ref dealloc and audio_release_leak")
 }
 
+// #476/V10: one audio_released per audio_owned. One release is one line, never a device line beside
+// the owner's line for the same release.
+@MainActor private func checkOneReleaseRecord() throws {
+    let journal = NativeAudioJournal(fileURL: nil)
+    let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("a1-release-" + UUID().uuidString), journal: journal)
+    let device = NativeLiveAudioDevice(owner: owner, journal: journal, deviceState: { _ in false })
+    try owner.acquire(holder: ObjectIdentifier(device))
+    device.releaseForTesting()
+    let names = journal.events.map(\.name)
+    try audioRequire(names.filter { $0 == "audio_owned" }.count == 1, "one audio_owned for the lease, got \(names)")
+    try audioRequire(names.filter { $0 == "audio_released" }.count == 1,
+                     "one audio_released per audio_owned, got \(names)")
+    print("PASS one audio_released per audio_owned; hardware=false")
+}
+
 // OUTCOME 7: a start failure tears down, releases the flock, and never retries in session.
 @MainActor private func checkStartFailureCircuitBreaker() async throws {
     guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
@@ -784,6 +800,12 @@ private func checkPrimaryChannelConversion() throws {
             return
         }
 
+        if CommandLine.arguments.dropFirst().contains("--one-release-only") {
+            do { try checkOneReleaseRecord() }
+            catch { FileHandle.standardError.write(Data("One release record: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--playback-state-only") {
             do { try await checkPlaybackSilenceState() }
             catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
@@ -833,6 +855,8 @@ private func checkPrimaryChannelConversion() throws {
         }
         do { try await checkPlaybackAudibleReceipt() }
         catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
+        do { try checkOneReleaseRecord() }
+        catch { FileHandle.standardError.write(Data("One release record: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
         catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }

@@ -1326,10 +1326,11 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         engine = nil; player = nil
         if weakEngine != nil { log("audio_release_leak", ["reason": "engine_retained"]) }
+        // #476: the owner writes the one audio_released for the lease it held. A device line beside it
+        // made every release two identical records in audio.log.
         owner.release(holder: ObjectIdentifier(self))
         isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
         inputBands = .silent; outputOrb.reset()
         audioReleaseCount += 1
-        log("audio_released", ["reason": "release"])
     }
 }

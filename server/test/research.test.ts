@@ -1150,3 +1150,77 @@ test('research 469: stopped known continuation fails while retained delivery rem
   assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
   assert.equal(calls, 2); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
 });
+
+// --- W2: the selector never sits on the critical path -------------------------------------------
+
+function countingSelector(output: SelectorOutput, tick: () => void): ResearchSelector {
+  return { async select() { tick(); return output; } };
+}
+
+test('a routed run never calls the selector: the model already named the lookups', async () => {
+  let selects = 0;
+  const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
+  await runResearch(h.deps, { action: 'start', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
+  assert.equal(selects, 0, 'routed lookups are the decision: no selector round runs');
+  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the routed lookup is still read');
+});
+
+test('one configured source never pays a selector round', async () => {
+  let selects = 0;
+  const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
+  h.deps.configured = ['mail'];
+  const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  assert.equal(selects, 0, 'with one source there is nothing to select');
+  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the one source is still read');
+  assert.match(JSON.stringify(reply['findings']), /evidence/);
+});
+
+test('a quick_fact continuation reads deterministically: no second selector round runs', async () => {
+  let selects = 0;
+  const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }, () => { selects += 1; });
+  const h = harness({ selector: quick });
+  const first = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  assert.equal(selects, 1);
+  const readsBefore = h.executed.length;
+  await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']), direction: 'and the invoice from the plumber' }, new AbortController().signal);
+  assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
+  assert.ok(h.executed.length > readsBefore, 'the continuation still reads what it knows it needs');
+});
+
+test('a selector round runs beside the reads the run already needs, so the turn costs the slower one', async () => {
+  // A fake clock: the selector answers at 6 s, the calendar read lands at 4 s. Serial would spend 10 s.
+  let at = 0;
+  const order: string[] = [];
+  let answerSelector: (output: SelectorOutput) => void = () => {};
+  const slow: ResearchSelector = {
+    async select() { order.push('selector-start'); return await new Promise<SelectorOutput>(resolve => { answerSelector = resolve; }); },
+  };
+  const h = harness({
+    selector: slow,
+    now: () => at,
+    execute: async (subs: readonly IntentSubCall[]) => {
+      for (const call of subs) order.push(`read:${call.name}`);
+      at += 4_000;
+      return subs.map(call => sub(call.name, 'evidence', true, call.key));
+    },
+  });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  await settle();
+  assert.deepEqual(order.slice(0, 2), ['selector-start', 'read:gcal_list'], 'the read starts while the selector is still deciding');
+  assert.equal(h.logs.length, 0, 'the turn is still running, waiting on the slower of the two');
+  at = 6_000;
+  answerSelector({ questionClass: 'cross_source', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } });
+  await running;
+  await settle();
+  assert.equal(h.logs[0]!.elapsedMs, 6_000, 'elapsed is the slower of selector and read, never their sum');
+  assert.equal(order.filter(entry => entry.startsWith('read:gcal_list')).length, 1, 'the calendar is read once, the selector does not re-read it');
+});
+
+test('a selector round still delivers every source the selector chose', async () => {
+  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'deploy freeze' }], pUseful: { chat_search: 1 } });
+  const h = harness({ selector });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team say about the deploy freeze' }, new AbortController().signal);
+  const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
+  assert.ok(sources.includes('chat'), 'the selector pick is still delivered');
+  assert.ok(h.executed.some(call => JSON.stringify(call.args).includes('deploy freeze')), 'the selector query is the one read');
+});

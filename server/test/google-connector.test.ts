@@ -153,7 +153,7 @@ test('a merged calendar read stops at its own budget and names the calendars it 
   const data = dataOf(result);
   const events = data['events'] as Record<string, unknown>[];
   assert.deepEqual(events.map(event => event['id']), ['e-primary'], 'the calendar read before the budget keeps its event');
-  assert.deepEqual(data['partial'], { unread: 3 }, 'the calendars the read did not reach are named, never dropped');
+  assert.deepEqual(data['partial'], { unread: 3, calendars: ['Beta', 'Gamma', 'Delta'] }, 'the calendars the read did not reach are named, never dropped');
 });
 
 test('a default gmail_list asks the child for exactly the digest cap, so the upstream per-message metadata fetch count is the digest cap not ten', async () => {
@@ -501,9 +501,48 @@ test('a calendar read returns the primary and counts the calendars the deadline 
   setTimeout(() => controller.abort(), 3_600);
   const result = await run;
   const data = dataOf(result);
-  assert.deepEqual(data['partial'], { unread: 9 }, 'the nine calendars the deadline cut off are named, not dropped');
+  assert.deepEqual(data['partial'], { unread: 9, calendars: Array.from({ length: 9 }, (_, i) => `Other ${i}`) }, 'the nine calendars the deadline cut off are named, not dropped');
   const events = data['events'] as Record<string, unknown>[];
   assert.equal(events.some(event => event['id'] === 'event-primary' && event['calendar'] === 'Me'), true, 'the primary calendar is always returned');
+});
+
+// --- W2: the caller's remaining source budget bounds the fan-out ---------------------------------
+
+/** The absolute source deadline a caller passes, the field behaviour 1 adds to the read input. */
+function budgeted(input: GcalListInput, deadlineAt: number): GcalListInput {
+  return { ...input, deadlineAt } as GcalListInput;
+}
+
+test('a caller-budgeted calendar read keeps every calendar it can reach inside that budget', async () => {
+  const ids = ['primary', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+  const fake = fakeCalendarPort({
+    calendars: ids.map((id, n) => ({ id, summary: n === 0 ? 'Mine' : id.toUpperCase(), ...(n === 0 ? { primary: true } : {}) })),
+    eventsFor: id => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }),
+    // The audit's shape, compressed to keep the test short: primary 0.6 s, eight others 0.5 to 3 s.
+    delayFor: id => (id === 'primary' ? 60 : 50 + 10 * (ids.indexOf(id) - 1)),
+  });
+  const started = Date.now();
+  const result = await (await calendarReader(fake.port)).gcalList(budgeted({}, Date.now() + 1_000));
+  const elapsed = Date.now() - started;
+  const data = dataOf(result);
+  assert.equal((data['events'] as unknown[]).length, ids.length, 'every calendar inside the budget is read, concurrently not serially');
+  assert.equal(data['partial'], undefined, 'nothing was cut off, so nothing is reported unread');
+  assert.ok(elapsed <= 1_000, `the read finished inside the caller budget: ${elapsed}`);
+});
+
+test('a hanging calendar returns at the caller deadline, with the rest and that one named unread', async () => {
+  const fake = fakeCalendarPort({
+    calendars: [{ id: 'primary', summary: 'Me', primary: true }, { id: 'b', summary: 'Beta' }, { id: 'c', summary: 'Gamma' }],
+    eventsFor: id => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }),
+    delayFor: id => (id === 'c' ? 1_200 : 60),
+  });
+  const started = Date.now();
+  const result = await (await calendarReader(fake.port)).gcalList(budgeted({}, Date.now() + 500));
+  const elapsed = Date.now() - started;
+  const data = dataOf(result);
+  assert.deepEqual((data['events'] as Record<string, unknown>[]).map(event => event['id']), ['e-primary', 'e-b'], 'the calendars read inside the budget keep their events');
+  assert.deepEqual(data['partial'], { unread: 1, calendars: ['Gamma'] }, 'the calendar the budget cut off is named, never dropped');
+  assert.ok(elapsed >= 400 && elapsed <= 900, `the read returned at the caller deadline: ${elapsed}`);
 });
 
 // 339: the warm context's calendar digest. One bounded primary-calendar read, local host time, no

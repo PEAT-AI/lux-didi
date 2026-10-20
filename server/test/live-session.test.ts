@@ -30,6 +30,7 @@ import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -1255,7 +1256,9 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.ok(current.liveSessions.every(row => row['resumption_handle'] === null && row['connection_generation'] === 0));
   assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
-  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
+  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation,
+    diagnostic_metadata_state: _dm, diagnostic_content_state: _dc, native_receipt_state: _nr, diagnostic_failures: _df,
+    diagnostic_last_reason: _dl, diagnostic_unattributed_transcripts: _du, diagnostic_clock_domain: _dcd, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {
@@ -1554,7 +1557,8 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
     import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
-    const store = new Store(${JSON.stringify(dir)}, liveMigrations);
+    import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
+    const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
     const owner = createLiveSessionOwner({ store, profile: validateLiveProfile(${JSON.stringify(profileInput({ unusedMs: 20 }))}),
       now: () => clock, voice: { open() { throw new Error('unexpected provider open'); } },
@@ -1575,7 +1579,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   assert.equal(code, 1);
   assert.match(stderr, /LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE/);
   assert.match(stdout, /^[a-f0-9-]{36}$/);
-  const store = new Store(dir, liveMigrations);
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
   t.after(() => store.close());
   assert.equal(store.transaction(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [stdout]))?.['lifecycle'], 'accepted');
   assert.equal(store.transaction(tx => tx.all('SELECT * FROM live_journal')).length, 0);
@@ -3109,13 +3113,19 @@ test('a terminal Live session schedules distillation without awaiting it and rec
   assert.ok(String(row['memory_provenance']).includes('injectedSummaryIds'));
 });
 
+/** Session memory v1: a summary is injectable only from a recorded history session with matching provenance. */
+function seedSummary(tx: Parameters<typeof summaries.insertSummary>[0], liveSessionId: string, summary: string, endedAt: number, ownerId: string, now: number): void {
+  recordHistorySession(tx, liveSessionId, ownerId, ['ordinary'], [], now);
+  summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary, endedAt, now, dataClass: 'ordinary', sourceRevision: 1 });
+}
+
 test('the earlier-conversations section fills the space under the target in a real session', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
   h.store.transaction(tx => {
-    for (let i = 0; i < 20; i++) summaries.insertSummary(tx, { liveSessionId: `synthetic-past-${String(i).padStart(2, '0')}`, status: 'complete',
-      summary: `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, endedAt: NOW - i * 3_600_000, now: NOW });
+    for (let i = 0; i < 20; i++) seedSummary(tx, `synthetic-past-${String(i).padStart(2, '0')}`,
+      `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, NOW - i * 3_600_000, h.store.assistantId, NOW);
   });
   const session = h.owner.create({ idempotencyKey: 'summary-budget', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
@@ -3358,10 +3368,8 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   const detachPlanSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'opener_plan') plans.push(record); } });
   t.after(() => detachPlanSink());
   h.store.transaction(tx => {
-    summaries.insertSummary(tx, { liveSessionId: 'synthetic-shared-loop', status: 'complete', summary: 'The owner said the tax form is still to be filed.',
-      endedAt: NOW - 3_600_000, now: NOW });
-    summaries.insertSummary(tx, { liveSessionId: 'synthetic-accountant-loop', status: 'complete', summary: 'The owner said he still has to call the accountant.',
-      endedAt: NOW - 7_200_000, now: NOW });
+    seedSummary(tx, 'synthetic-shared-loop', 'The owner said the tax form is still to be filed.', NOW - 3_600_000, h.store.assistantId, NOW);
+    seedSummary(tx, 'synthetic-accountant-loop', 'The owner said he still has to call the accountant.', NOW - 7_200_000, h.store.assistantId, NOW);
   });
   const snapshot = (liveSessionId: string): string => {
     const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
@@ -3718,7 +3726,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3812,7 +3820,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3843,7 +3851,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-owner-speech');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3872,7 +3880,7 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   const scheduler = new DeadlineClock();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
@@ -4067,7 +4075,7 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   // `research` is the only lookup the production model is declared, so this is the reachable path (review F2).
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'research-progress');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();

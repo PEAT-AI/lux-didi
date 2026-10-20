@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2023,7 +2023,7 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          this.#sendThinking(handle, event.calls.filter(call => call.name !== RESEARCH_TOOL_NAME));
+          this.#sendThinking(handle, event.calls);
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
@@ -2326,6 +2326,8 @@ export class LiveSessionOwner {
       const parsed = parseResearch(call.args);
       if (!parsed.ok) {
         hostLogEvent({ event: 'research_refused', state: 'refused', sequence: event.sequence, reason: parsed.reason, ...parsed.shape });
+        // R9/W0-R1: the refused call leaves its run receipt too, so a refusal is never invisible in the run log.
+        hostLogEvent(refusedResearchRunLog());
         response = researchRepair(parsed.reason);
       } else {
         try {
@@ -2738,7 +2740,7 @@ export class LiveSessionOwner {
       if (transcription) {
         const turnId = handle.connection.turnId;
         if (turnId !== undefined) {
-          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,'',journalId]); }
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,text ?? '',journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }

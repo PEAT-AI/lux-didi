@@ -443,8 +443,11 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
   return { utterances, callResults, journalText, promptSnapshots };
 }
 
+/** Whether the table's own DDL declares the column. The Store authorizer admits sqlite_master and
+ * denies a pragma, and a v2 live_journal simply has no tool_json to name. */
 function columnExists(exec: TraceExec, table: string, column: string): boolean {
-  return exec.all(`SELECT 1 AS present FROM pragma_table_info(?) WHERE name=?`, [table, column]).length > 0;
+  const ddl = exec.all("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table])[0]?.['sql'];
+  return typeof ddl === 'string' && new RegExp(`(^|[^A-Za-z0-9_])${column}([^A-Za-z0-9_]|$)`).test(ddl);
 }
 
 function tableExists(exec: TraceExec, table: string): boolean {

@@ -654,6 +654,10 @@ export interface RunState {
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
+  /** #1020: the moment the call answered ahead of its readers, so a later cut is logged partial, not failed. */
+  answeredAt?: number;
+  /** #1020: the owner's zone, so a calendar coverage line names the days the owner lives in. */
+  timeZone?: string;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
   progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
@@ -1195,7 +1199,7 @@ function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string
   const shown = lines.slice(0, RESEARCH.calendarLines);
   const notRead = calendarNotRead(results);
   if (!shown.length) return { text: '', source: 'calendar', lines: [], total: 0 };
-  return { text: `calendar: ${shown.length} of ${lines.length} shown\n${shown.join('\n')}${notRead ? `\n${notRead}` : ''}`, source: 'calendar', lines: shown, total: lines.length };
+  return { text: `calendar: ${shown.length} of ${Math.max(lines.length, shown.length)} shown\n${shown.join('\n')}${notRead ? `\n${notRead}` : ''}`, source: 'calendar', lines: shown, total: Math.max(lines.length, shown.length) };
 }
 
 /**
@@ -1310,7 +1314,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   if (!shown.length) return { text: '', source, lines: [], total: 0 };
   const label = SOURCE_LABEL[source ?? 'knowledge'];
   const cutLine = cutLineOf(results);
-  return { text: `${label}: ${shown.length} of ${total} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total };
+  return { text: `${label}: ${shown.length} of ${Math.max(total, shown.length)} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total: Math.max(total, shown.length) };
 }
 
 
@@ -1371,6 +1375,63 @@ interface ReplyFinding { source: string; text: string; chars: number }
  * Q1-R0 packing: a count line plus telegraphic lines per source, at least one line per source with
  * hits, then fill by recency; omitted calendar events remain in the current authorized run.
  */
+/** #1020 behaviour 1: the plain words a source's failure gets, never a bare code and never silence. */
+const REASON_WORDS: Record<string, string> = {
+  not_configured: 'not configured',
+  not_signed_in: 'not signed in',
+  unresolved_window: 'could not resolve that date or window',
+  history_unavailable: 'unavailable',
+  history_reference_unavailable: 'unavailable',
+  cancelled: 'the run stopped before it was read',
+};
+const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
+const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
+
+/**
+ * #1020 behaviour 1: every source this run failed, timed out or never read names itself, and why, in one
+ * plain line, so the model cannot voice the surviving sources as if the read had been complete.
+ */
+function sourceTroubleLine(run: RunState): string | undefined {
+  const parts: string[] = [];
+  for (const [source, label] of SOURCE_LABELS) {
+    if (run.sourcesDone.has(source)) continue;
+    const cut = run.cutShort.has(source);
+    if (!cut && !run.sourcesFailed.has(source)) continue;
+    const code = run.unavailableReasons.get(source);
+    if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
+    else parts.push(`${label}: unavailable (${(code !== undefined ? REASON_WORDS[code] ?? code.replace(/_/gu, ' ') : undefined) ?? 'no answer'})`);
+  }
+  return parts.length === 0 ? undefined : parts.join('; ');
+}
+
+/** A covered day in the owner's zone, so a coverage line reads like the calendar the owner saw. */
+const coveredDay = (ms: number, zone: string | undefined): string => {
+  try { return new Intl.DateTimeFormat('en-GB', { ...(zone !== undefined ? { timeZone: zone } : {}), weekday: 'short', day: 'numeric', month: 'short' }).format(ms); }
+  catch { return new Date(ms).toISOString().slice(0, 10); }
+};
+
+/**
+ * #1020 behaviour 2: a calendar answer states the window it actually read, so a one-day read is never spoken
+ * as "the rest of the week is clear", and the partiality of a cut or paged read is never left implicit.
+ */
+function calendarCoverageLine(run: RunState): string | undefined {
+  if (run.calendar.size === 0) return undefined;
+  const spans: [number, number][] = [];
+  for (const read of run.calendar.values()) {
+    const from = Date.parse(String(read.args['timeMin'])), to = Date.parse(String(read.args['timeMax']));
+    if (Number.isFinite(from) && Number.isFinite(to) && to > from) spans.push([from, to]);
+  }
+  if (spans.length === 0) return undefined;
+  const from = Math.min(...spans.map(([at]) => at)), to = Math.max(...spans.map(([, at]) => at));
+  const window = coveredDay(from, run.timeZone) === coveredDay(to - 1, run.timeZone)
+    ? `${coveredDay(from, run.timeZone)} only`
+    : `${coveredDay(from, run.timeZone)} to ${coveredDay(to - 1, run.timeZone)}`;
+  const partial = [...run.calendar.values()].some(read => read.failed || read.unread > 0 || read.nextPageToken !== undefined || !read.exhausted);
+  return partial
+    ? `calendar: covers ${window}, and part of that window was not read; nothing outside it was read`
+    : `calendar: covers ${window}; nothing outside it was read`;
+}
+
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, limit);
   if (bodyReply) return bodyReply;
@@ -1386,7 +1447,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
   for (const read of run.calendar.values()) for (const [key, event] of read.events) calendarEvents.set(key, event);
   const remaining = [...calendarEvents].filter(([key]) => !run.calendarDelivered.has(key)).sort(([, a], [, b]) => a.start.localeCompare(b.start));
-  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: remaining.slice(0, 8).map(([, event]) => event.line), total: calendarEvents.size });
+  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: remaining.slice(0, 8).map(([, event]) => event.line), total: Math.max(calendarEvents.size, remaining.slice(0, 8).length) });
   const calendarReads = [...run.calendar.values()];
   const calendarPending = remaining.length > 8 || calendarReads.some(read => !read.failed && !read.exhausted);
   const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || read.upstreamIncomplete || !read.exhausted) || remaining.length > 8;
@@ -1417,10 +1478,16 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
   const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source))
     .map(([, label]) => `My ${label} read was cut short before it finished, so I say what I have and ask one precise follow-up.`);
+  // #1020: the coverage line and the named failures ride with the clauses the model voices, so a partial
+  // read is never a sentence the model has to infer from a count or from silence.
+  const coverage = calendarCoverageLine(run);
+  const trouble = sourceTroubleLine(run);
   const clauses = [
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
     ...cutShort,
     ...searchedNothing,
+    ...(coverage !== undefined ? [coverage] : []),
+    ...(trouble !== undefined ? [trouble] : []),
   ];
   if (run.unavailableReasons.get('calendar') === 'unresolved_window') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   const note = clauses.length === 0 ? undefined : clauses.join(' ');
@@ -1438,7 +1505,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       ...(run.mailCursorRequested ? { cursor: run.mailCursorRequested } : {}),
     } : {};
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
-      .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${group.total} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
+      .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
     return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
@@ -1891,9 +1958,12 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     const sources: JsonObject = {};
     for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
     const answered = outcomes.some(outcome => outcome.lines.length > 0);
+    // #472: a run cut after its first answer still delivered that answer, so its outcome is partial, never
+    // failed; only a cut run that answered nothing is a real failure.
+    const delivered = answered || run.answeredAt !== undefined || first.at !== undefined;
     const cut = signal.aborted || run.stopped || run.cancelled;
-    const status = cut ? 'stopped' : (answered ? 'answered' : 'partial');
-    runStatus = cut ? 'failed' : (answered ? 'answered' : 'partial');
+    const status = cut ? (delivered ? 'partial' : 'stopped') : (answered ? 'answered' : 'partial');
+    runStatus = cut ? (delivered ? 'partial' : 'failed') : (answered ? 'answered' : 'partial');
     runStop = cut ? 'cancelled' : (answered ? 'answered' : 'insufficient');
     deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
@@ -2001,6 +2071,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     if (Array.isArray(page['hits'])) for (const hit of page['hits']) if (isRecord(hit) && typeof hit['snippet'] === 'string') first.seen.add(lineKey(hit['snippet']));
   }
   first.at = deps.now();
+  view.run.answeredAt = first.at;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
   return { ...reply, pending };
@@ -2073,6 +2144,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     run = resumed;
   }
   run.direction = call.direction ?? run.direction;
+  run.timeZone = deps.timeZone;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
   const executeSource = deps.execute, emitProgress = deps.emit;
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);

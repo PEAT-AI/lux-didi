@@ -30,6 +30,7 @@ import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -3100,13 +3101,19 @@ test('a terminal Live session schedules distillation without awaiting it and rec
   assert.ok(String(row['memory_provenance']).includes('injectedSummaryIds'));
 });
 
+/** Session memory v1: a summary is injectable only from a recorded history session with matching provenance. */
+function seedSummary(tx: Parameters<typeof summaries.insertSummary>[0], liveSessionId: string, summary: string, endedAt: number, ownerId: string, now: number): void {
+  recordHistorySession(tx, liveSessionId, ownerId, ['ordinary'], [], now);
+  summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary, endedAt, now, dataClass: 'ordinary', sourceRevision: 1 });
+}
+
 test('the earlier-conversations section fills the space under the target in a real session', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
   h.store.transaction(tx => {
-    for (let i = 0; i < 20; i++) summaries.insertSummary(tx, { liveSessionId: `synthetic-past-${String(i).padStart(2, '0')}`, status: 'complete',
-      summary: `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, endedAt: NOW - i * 3_600_000, now: NOW });
+    for (let i = 0; i < 20; i++) seedSummary(tx, `synthetic-past-${String(i).padStart(2, '0')}`,
+      `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, NOW - i * 3_600_000, h.store.assistantId, NOW);
   });
   const session = h.owner.create({ idempotencyKey: 'summary-budget', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
@@ -3349,10 +3356,8 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   const detachPlanSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'opener_plan') plans.push(record); } });
   t.after(() => detachPlanSink());
   h.store.transaction(tx => {
-    summaries.insertSummary(tx, { liveSessionId: 'synthetic-shared-loop', status: 'complete', summary: 'The owner said the tax form is still to be filed.',
-      endedAt: NOW - 3_600_000, now: NOW });
-    summaries.insertSummary(tx, { liveSessionId: 'synthetic-accountant-loop', status: 'complete', summary: 'The owner said he still has to call the accountant.',
-      endedAt: NOW - 7_200_000, now: NOW });
+    seedSummary(tx, 'synthetic-shared-loop', 'The owner said the tax form is still to be filed.', NOW - 3_600_000, h.store.assistantId, NOW);
+    seedSummary(tx, 'synthetic-accountant-loop', 'The owner said he still has to call the accountant.', NOW - 7_200_000, h.store.assistantId, NOW);
   });
   const snapshot = (liveSessionId: string): string => {
     const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;

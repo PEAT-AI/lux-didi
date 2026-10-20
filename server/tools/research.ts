@@ -1612,7 +1612,8 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     if (parent.aborted || run.cancelled || run.stopped) { invalidateEvidence(run); break; }
     if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
     // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
-    const retried = calls.map((_, index) => index).filter(index => !results[index]?.ok);
+    // A native page that failed is terminal for its source, so only a first page is retried.
+    const retried = calls.map((_, index) => index).filter(index => !results[index]?.ok && !calls[index]!.args['pageToken']);
     if (retried.length > 0) {
       try {
         const again = await deps.execute(retried.map(index => calls[index]!), signal);
@@ -1888,7 +1889,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         queryChars: outcome.lookup.query.length, queryAuthor: 'routed',
       });
       const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
-      if (outcome.source !== 'memory') run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
+      // Own memory is a finding too, so a memory layer that settles first is a real first answer.
+      run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
       if (outcome.source === 'memory') {
         if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
         else if (outcome.outcome === 'timeout') run.cutShort.add('memory');

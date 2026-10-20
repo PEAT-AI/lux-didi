@@ -436,19 +436,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.chars) || !isSafeCount(value.bytes)) return;
     return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
   }
-  if (value.event === 'gptlive_flush') {
-    // N1: the measured output gap that proved the server yielded, alongside what was cut.
-    if (!closedKeys(value, ['event', 'words', 'queuedMs', 'yieldGapMs'])) return;
-    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs) || !isSafeCount(value.yieldGapMs)) return;
-    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs, yieldGapMs: value.yieldGapMs };
-  }
-  if (value.event === 'gptlive_no_flush') {
-    // N1: one record per owner episode that cut nothing, in a closed reason set, never the transcript.
-    if (!closedKeys(value, ['event', 'reason', 'words'])) return;
-    if (!isSafeMember(value.reason, ['server_continued', 'queue_empty'])) return;
-    if (!isSafeCount(value.words) || value.words < 1) return;
-    return { event: 'gptlive_no_flush', reason: value.reason, words: value.words };
-  }
   if (value.event === 'gptlive_unknown_frame') {
     // N1: an unread provider frame name, counted once per session. Bounded to a protocol token, never a body.
     if (!closedKeys(value, ['event', 'type', 'count'])) return;
@@ -460,11 +447,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
     if (!isSafeCount(value.idleMs) || value.drained !== true) return;
     return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true };
-  }
-  if (value.event === 'gptlive_post_flush_audio_ms' || value.event === 'gptlive_post_flush_dropped_ms') {
-    if (!closedKeys(value, ['event', 'ms'])) return;
-    if (!isSafeCount(value.ms)) return;
-    return { event: value.event, ms: value.ms };
   }
   if (value.event === 'live_provider_error') {
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;

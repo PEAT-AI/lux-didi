@@ -157,9 +157,9 @@ protocol has no input buffer commit, clear or output-audio-done frame: the serve
 taking (`server/adapters/live-voice/openai.ts`). The adapter therefore derives both
 boundaries itself, and never drops an output frame doing it.
 
-- No permanent frame dropping. Every valid `session.output_audio.delta` of an open session is
-  forwarded at 24 kHz, and an input transcript event can never silence future output audio. The
-  one exception is bounded and never latches: see "A cut answer does not replay" below.
+- No frame dropping at all. Every valid `session.output_audio.delta` of an open session is
+  forwarded at 24 kHz, and an input transcript event can never silence future output audio. There
+  is no drop window, because nothing local ever cuts her: see "No local interference" below.
 - Think time. `gpt-live-1` sends no generation-start event on a plain turn, so when an input
   episode ends with no assistant audio playing or held the adapter synthesizes the pair the host
   needs: the owner's input transcript finished and a `modelTurnStarted`. The host maps that to
@@ -169,29 +169,21 @@ boundaries itself, and never drops an output frame doing it.
   modelled playback has drained, the adapter emits `waitingForInput` true: the host leaves
   SPEAKING for LISTENING there instead of waiting out the 2000 ms synthesized `turnComplete`,
   which stays the semantic end of the turn. New audio before that completion re-enters SPEAKING.
-- A cut answer does not replay. After a barge-in flush the frames of the answer the owner cut
-  keep arriving; they are dropped until the output stream shows a gap of 400 ms
-  (`POST_FLUSH_GAP_MS`) or 2500 ms have passed since the flush (`POST_FLUSH_DROP_LIMIT_MS`),
-  whichever comes first, and then forwarded again. With the yield rule below a flush only ever
-  follows a server that stopped sending, so what lands in this window is the straggler tail of
-  the cut answer. The window is bounded, so it cannot latch, and it reports
-  `gptlive_post_flush_dropped_ms` {ms} once when it ends.
-- Barge-in. The server decides. The adapter emits `interrupted`, once per input episode, only
-  when assistant audio is queued or playing (the modelled playback queue below) and no output
-  delta has arrived for 350 ms (`SERVER_YIELD_GAP_MS`) since the newest of the episode's first
-  word and the last output delta. One word is enough, so a one-word "stop" over an answer the
-  server has already finished sending is obeyed; a stream that keeps arriving is a backchannel
-  or background speech the server chose to talk over, and nothing is cut. Field session
-  82ab994a is why: a local two-word rule flushed 61 times in 70 episodes, 0.17 s after the first
-  transcribed word, and threw away 32 percent of the session while the server never stopped and
-  resumed after each cut. An input episode ends after 700 ms with no input-transcript delta
-  (`INPUT_EPISODE_QUIET_MS`), which resets the assembled transcript and re-arms the
-  once-per-episode latch, so the deltas of one word count as one word. The host flushes its
-  native playback queue on `interrupted`.
+- No local interference. The adapter never emits `interrupted` because of an input transcript
+  delta or a gap in the provider's output stream, and never flushes her playback for one, so what
+  the server already sent plays out in order and no syllable of it is dropped (ruling W1-R1,
+  2026-10-20). The provider stops generating on real speech by itself, and the host flushes its
+  native playback queue only on an `interrupted` the adapter emits for a provider error. An owner
+  word is journaled as an input transcript and nothing more; an input episode ends after 700 ms
+  with no input-transcript delta (`INPUT_EPISODE_QUIET_MS`), which is what closes the plain-turn
+  journal pair of "Think time" above. Field sessions 82ab994a and the 2026-10-20 06:26:04 call
+  are why: a 350 ms output-quiet check fired on one transcribed word or on an ordinary 517 to
+  1512 ms gap in her own audio and cut her mid-reply, including cutting her 830 ms into a reply
+  her own earlier words had started.
 - Head start. gpt-live-1 sends output audio at about 1x real time and the native jitter buffer is 80 ms, so the
   first audio of each speaking stretch is held and forwarded as one event once it holds 300 ms of audio
   (`HEAD_START_MS`) or 300 ms of clock time have passed, whichever comes first; after that every delta passes
-  through. A barge-in, a provider error or a close discards the hold, and held audio counts as playback to be cut.
+  through. A provider error or a close discards the hold, and held audio counts as playback to be cut.
 - Delegated calls. The host answers each delegated call on its own, so the adapter records each answer and sends
   one `function_call_output` per pending call of the turn plus a single `response.create` when the last one arrives.
   A call id the turn never delegated is a `protocol_error`.
@@ -203,23 +195,23 @@ boundaries itself, and never drops an output frame doing it.
   speaking.
 - Playback drain. No native playback-drained signal reaches the host, so the adapter models the
   queue from forwarded PCM: 24 kHz s16 mono is 48,000 bytes per second, appended behind whatever
-  is still queued and reset by a flush or a provider error.
-- Receipts, metadata only and never transcript text: `gptlive_flush` {words, queuedMs,
-  yieldGapMs}, where the gap is the measured output silence that proved the server had yielded;
-  `gptlive_no_flush` {reason, words} once per episode that cut nothing, with the reason
-  `server_continued` or `queue_empty`; `gptlive_unknown_frame` {type, count} once per session
-  for each provider frame name the adapter has no rule for, which is how a yield or cancel
+  is still queued and reset by a provider error.
+- Receipts, metadata only and never transcript text: `gptlive_unknown_frame` {type, count} once
+  per session for each provider frame name the adapter has no rule for, which is how a cancel
   signal the server may already send would show up; `gptlive_turn_complete` {idleMs, drained};
-  `gptlive_post_flush_audio_ms` {ms} for the audio still received after a barge-in before the
-  next input episode; and `openai_instructions_size` {chars, bytes} at session start, which
-  proves in a log that the instructions were not cut. Empty and whitespace-only input
-  transcript deltas carry no word: they start no episode and never flush.
+  and `openai_instructions_size` {chars, bytes} at session start, which proves in a log that the
+  instructions were not cut. Empty and whitespace-only input transcript deltas carry no word and
+  start no episode.
 - The wrapper instructions additionally carry OpenAI's live prompting lines "Do not treat a
   cough, music, or nearby conversation as a new request." and "Keep listening while the owner
   pauses to think."
 
-### Pending interruption check
+### No interruption check
 
-GPT Live input episodes close after 700 ms without nonempty transcription. An already scheduled 350 ms output-quiet check may finish once after closure, within another 350 ms. New audible output at or beyond closure cancels that pending check; digital-silent fill and whitespace do not. New input, a new backend response or session termination retires the old token. Every callback checks its episode, socket and generation. Local windows use monotonic time.
+There is no local interruption check: the adapter holds no output-quiet timer for owner speech, so no
+scheduled check can finish after an input episode closes (ruling W1-R1). Input episodes close after 700 ms
+without nonempty transcription, and a new input, a new backend response or session termination retires the
+episode token. Every callback still checks its episode, socket and generation. Local windows use monotonic
+time.
 
-At an equal clock tick, an already processed speech frame cancels the check; a frame processed after a completed flush cannot reverse it. These event semantics do not establish acoustic owner identification or honk rejection. No energy or word-count rule identifies the speaker. Run `node server/test/interruption-schedule-runtime.mjs` after compiling server to exercise 21 actual-adapter schedules without provider or audio hardware.
+These event semantics do not establish acoustic owner identification or honk rejection. No energy or word-count rule identifies the speaker, and the adapter has no word-count rule to run.

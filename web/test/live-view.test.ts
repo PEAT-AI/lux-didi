@@ -550,7 +550,7 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
     let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
     let callback!:()=>void,ownerReset!:(reason:string)=>void,version={},scheduled=0,liveTimerArmed=false;
     const paints:unknown[]=[];
-    const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,
+    const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,orbSurfaceVisible:()=>true,
       livePoll:original,live:original.live,pollLiveView,AbortSignal,clearTimeout:()=>{},authorityVersion:()=>version,
       readGeneration:0,controller:undefined,busy:false,readBusy:false,pairingBusy:false,connectionsBusy:false,schedulePoll:()=>{},
       fetchLive:async()=>{await gate;if(kind==='authority'||kind==='offline-failure')throw new Error('synthetic unavailable');return {...original.live,entries:[]};},

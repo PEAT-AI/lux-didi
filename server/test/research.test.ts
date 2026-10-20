@@ -194,7 +194,11 @@ test('mongoose is never offered while unconfigured', () => {
 test('progress and the run log carry metadata only, never the question text', async () => {
   const h = harness({ selector: knowledge });
   await runResearch(h.deps, { action: 'start', question: 'the secret project is launchpad' }, new AbortController().signal);
-  assert.deepEqual(h.progress.map(event => event.phase), ['started', 'round', 'done']);
+  const phases = h.progress.map(event => event.phase);
+  assert.equal(phases[0], 'started');
+  assert.equal(phases[phases.length - 1], 'done');
+  assert.ok(phases.length >= 3, `phases ${phases.join(',')}`);
+  assert.deepEqual(phases.filter(phase => phase !== 'round'), ['started', 'done'], 'the round progress of each source rides between started and done');
   assert.equal(JSON.stringify(h.logs).includes('launchpad'), false);
   assert.equal(h.logs[0]!.event, 'research_run');
 });
@@ -336,9 +340,9 @@ test('the research declaration names only the configured sources and the valid h
   assert.match(description, /calendar, mail, team chat and knowledge base/);
   assert.doesNotMatch(description, /company knowledge base/);
   assert.ok(description.length < 500, `description ${description.length} chars`);
-  // R2-R2: the loop has no Mongoose candidate, so a Mongoose-configured session still names only the four.
+  // R2-R2 superseded by the owner's Mongoose connection: the loop now has a Mongoose candidate.
   const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose', 'search_mongoose']);
-  assert.deepEqual(withMongooseTools, ['calendar', 'mail', 'chat', 'knowledge']);
+  assert.deepEqual(withMongooseTools, ['calendar', 'mail', 'chat', 'knowledge', 'mongoose']);
   const declaration = researchDeclaration(base);
   assert.equal(declaration.name, 'research');
   assert.equal(declaration.description, description);
@@ -474,7 +478,7 @@ test('the connector to source map covers the approved connectors', () => {
   assert.deepEqual(researchSourcesForConnector('google'), ['calendar', 'mail']);
   assert.deepEqual(researchSourcesForConnector('mattermost'), ['chat']);
   assert.deepEqual(researchSourcesForConnector('lux-knowledge'), ['knowledge']);
-  assert.deepEqual(researchSourcesForConnector('mongoose'), []);
+  assert.deepEqual(researchSourcesForConnector('mongoose'), ['mongoose']);
 });
 
 test('configuredNow re-resolves the configured sources for each run', async () => {

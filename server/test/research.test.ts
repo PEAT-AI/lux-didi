@@ -1180,14 +1180,16 @@ test('one configured source never pays a selector round', async () => {
 });
 
 test('a quick_fact continuation reads deterministically: no second selector round runs', async () => {
-  // B1: the fixture must prove the deterministic path still reads, so the direction names a second
-  // configured source and the test observes the read and the credit, not just the missing selector.
+  // B1: the skip removes the selector round, so the fixture must show the deterministic path still
+  // reads and credits the source the direction names. The first round settles quick_fact and stops
+  // with rounds left, so the continuation is the round that has to read without the selector.
   let selects = 0;
-  const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }, () => { selects += 1; });
-  const h = harness({ selector: quick, executeText: MERGED_CALENDAR });
+  const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'stop_answer' }], pUseful: { mail_search: 0.9 } }, () => { selects += 1; });
+  const h = harness({ selector: quick });
   const scheduler = new ResearchScheduler(h.deps);
   const first = await scheduler.call({ action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   assert.equal(selects, 1);
+  assert.equal(first['canContinue'], true, 'the first round leaves a continuation open');
   const readsBefore = h.executed.length;
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');

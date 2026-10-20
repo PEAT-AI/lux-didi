@@ -926,12 +926,10 @@ export class LiveSessionOwner {
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
-      // M2: what the standing section did with its own budget, once per build. Counts and one size only:
-      // how many whole notes fit, how many the cap left out, and the section's characters. Never text.
-      if (composed.standing.selected + composed.standing.omitted > 0) {
-        hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
-          omitted: composed.standing.omitted, chars: composed.standing.chars });
-      }
+      // M2: what the standing section did with its own budget, once per build, including the build that
+      // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
+      hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
+        omitted: composed.standing.omitted, chars: composed.standing.chars });
       // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
       // only: the state it reached, how many events rode it and how old it was at this start.
       this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),

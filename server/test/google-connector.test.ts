@@ -21,7 +21,7 @@ import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope 
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
-import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
+import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, identityRefusal, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -220,9 +220,18 @@ test('a typed credential error becomes a configured/auth-needed status, never an
     assert.equal(result.state, 'tool-error');
     if (result.state !== 'tool-error') throw new Error('not a tool error');
     const status = googleToolStatus(result);
-    assert.deepEqual(status, { state: 'configured', reason: 'auth needed: run gcal --auth' });
+    assert.deepEqual(status, { state: 'configured', reason: 'auth needed: run lux-google-mcp authorize --family calendar' });
     assert.equal(credentialFailure('credential-missing: no token'), true);
     assert.equal(credentialFailure('provider-failure: http 500'), false);
+    // The helper's own identity refusal is a named error, never a credentials prompt: the owner has to
+    // know the account is wrong, and the answer carries the code only, no address and no token path.
+    assert.equal(identityRefusal('account_mismatch: the credential belongs to another account'), true);
+    assert.equal(identityRefusal('identity_unverified: no id_token'), true);
+    assert.equal(identityRefusal('credential-missing: LUX_GOOGLE_MCP_TOKEN is not set'), false);
+    const refused = googleToolStatus({ ...result, decodedResult: { content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }] } } as typeof result);
+    assert.deepEqual(refused, { state: 'error', reason: 'identity refused: account_mismatch' });
+    assert.equal(JSON.stringify(refused).includes('@'), false, 'no address in the status');
+    assert.equal(JSON.stringify(refused).includes('/'), false, 'no path in the status');
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
@@ -349,10 +358,10 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     assert.equal(failed.status, 'completed');
     const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
     assert.equal(flipped?.state, 'configured');
-    assert.equal(flipped?.error, 'auth needed: run gcal --auth');
+    assert.equal(flipped?.error, 'auth needed: run lux-google-mcp authorize --family calendar');
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
-    assert.match(String(stored.response['text']), /auth needed: run gcal --auth/);
+    assert.match(String(stored.response['text']), /auth needed: run lux-google-mcp authorize --family calendar/);
 
     const intentTwo: ToolCallIntent = { ...intent, executionId: 'run:1:1', callId: 'call-2' };
     assert.equal(runtime.owner.journal.intent(intentTwo), 'fresh');

@@ -342,7 +342,9 @@ export async function composeMcpRuntime(options: {
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;
       let identity: IdentityProof | undefined;
-      if (identitySource && descriptor && expectedIdentities.length) {
+      // A strict source probes even when no owner identity is configured: Google's helper pins its own
+      // account, so the no-comparison policy must not publish an unverified read (lux-didi #495).
+      if (identitySource && descriptor && (expectedIdentities.length > 0 || identitySource.strict === true)) {
         registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource, tools: discovery.tools });
         try {
           const reader = descriptor.createReader({ port: sourcePort, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
@@ -367,7 +369,7 @@ export async function composeMcpRuntime(options: {
           return { retryable: false };
         }
       } else if (identitySource && expectedIdentities.length === 0) {
-        // No owner identity configured: the explicit no-comparison policy, never a failed proof.
+        // No owner identity configured and a non-strict source: the explicit no-comparison policy.
         options.identityLog?.(entry.connector, true, null);
       }
       if (stale()) return { retryable: false };

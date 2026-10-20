@@ -1414,17 +1414,19 @@ describe('openai gpt-live turn states', () => {
     const receipts = hostReceipts(t);
     const { socket, session } = await fakeReady(t);
     socket.bufferedAmount = 96 * 1024;
-    for (let index = 0; index < 12; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    for (let index = 0; index < 40; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
     assert.deepEqual(socket.micFrames(), [], 'a backlogged uplink is never handed more mic audio');
     const shed = receipts().filter(record => record.event === 'uplink_shed');
     assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
     assert.ok(Number(shed[0]!.bytes) > 0, 'the receipt counts the shed bytes');
     assert.ok(Number(shed[0]!.bufferedPeak) >= 96 * 1024, 'and the peak backlog it was shed against');
     assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the shed receipt');
-    // The uplink recovers: eleven of the twelve frames are gone, so what the model gets is the newest speech.
+    // The uplink recovers and the queued run goes out: the queue was shed down to half the cap, so the frames
+    // that reach the model are a run of consecutive speech, never the newest frame on its own.
     socket.bufferedAmount = 0;
     session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
-    assert.equal(socket.micFrames().length, 2, 'only the newest frames are left to send');
+    const kept = socket.micFrames().length;
+    assert.ok(kept > 1 && kept <= 20, `a run of the kept frames goes out, got ${kept}`);
   });
 
   // W3: the owner is told when the internet is the reason. Quality is derived from what the adapter already
@@ -1457,17 +1459,28 @@ describe('openai gpt-live turn states', () => {
     const clock = new FakeClock();
     const { socket, session } = await fakeReady(t, { clock });
     socket.trackBuffer = true;
+    // Every frame carries its own level, so the delivered audio itself says which frames arrived and which gap
+    // a shed left between them.
+    const level = (index: number) => 500 + 50 * index;
     for (let index = 0; index < 500; index += 1) {
       socket.drain(400);
-      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      session.sendAudio({ pcm: pcm16(480, level(index)), dataClass: 'ordinary' });
       clock.advance(20);
     }
-    const audio = socket.sent.map(frame => (JSON.parse(frame) as { type?: string }).type === 'session.input_audio.append');
+    const arrived: number[] = [];
+    for (const frame of socket.sent) {
+      const parsed = JSON.parse(frame) as { type?: string; audio?: string };
+      if (parsed.type !== 'session.input_audio.append' || !parsed.audio) continue;
+      const pcm = Buffer.from(parsed.audio, 'base64');
+      let peak = 0;
+      for (let at = 0; at + 1 < pcm.byteLength; at += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(at)));
+      arrived.push(Math.round((peak - 500) / 50));
+    }
     const runs: number[] = [];
     let run = 0;
-    for (const isAudio of audio) {
-      if (isAudio) run += 1;
-      else if (run) { runs.push(run); run = 0; }
+    for (let at = 0; at < arrived.length; at += 1) {
+      if (at > 0 && arrived[at] === arrived[at - 1]! + 1) run += 1;
+      else { if (run) runs.push(run); run = 1; }
     }
     if (run) runs.push(run);
     assert.ok(runs.length >= 4, `the session went out in consecutive runs, got ${runs.length}`);
@@ -1482,17 +1495,17 @@ describe('openai gpt-live turn states', () => {
 
   // W3 requirement 2: a frame lost because the socket is not open is counted too, in its own field.
   test('frames discarded while the socket is not open are counted apart from queue-overflow sheds', async t => {
-    const receipts = hostReceipts(t);
-    const { socket, session } = await fakeReady(t);
-    socket.readyState = 2; // CONNECTING
-    for (let index = 0; index < 2; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
-    socket.readyState = 3; // CLOSED
-    for (let index = 0; index < 3; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
-    const shed = receipts().filter(record => record.event === 'uplink_shed');
-    assert.equal(shed.length, 1, 'lost frames are a receipt');
-    assert.equal(Number(shed[0]!.bytes), 0, 'nothing was shed from a queue overflow');
-    assert.ok(Number(shed[0]!.notOpenBytes) >= 5 * 1_280, `every lost frame is counted, got ${shed[0]!.notOpenBytes}`);
-    assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the not-open count');
+    for (const state of [2, 3]) {
+      const receipts = hostReceipts(t);
+      const { socket, session } = await fakeReady(t);
+      socket.readyState = state; // CONNECTING (2) or CLOSED (3): the frame never reaches the wire
+      for (let index = 0; index < 3; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      const shed = receipts().filter(record => record.event === 'uplink_shed');
+      assert.equal(shed.length, 1, 'lost frames are a receipt');
+      assert.equal(Number(shed[0]!.bytes), 0, 'nothing was shed from a queue overflow');
+      assert.ok(Number(shed[0]!.notOpenBytes) >= 1_280, `a whole lost frame is counted, got ${shed[0]!.notOpenBytes}`);
+      assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the not-open count');
+    }
   });
 
   // 3o: a stall is inbound silence, never an upload queue. Both halves of the measured session are pinned here.

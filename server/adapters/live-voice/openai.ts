@@ -1680,7 +1680,10 @@ class Session implements LiveVoiceSession {
       this.micPending = []; this.micPendingBytes = 0;
     } else {
       if (this.micPending.length > 1 && socket.bufferedAmount + this.micPendingBytes > UPLINK_SHED_BYTES) {
-        while (this.micPending.length > 1 && socket.bufferedAmount + this.micPendingBytes > UPLINK_SHED_LOW_BYTES) {
+        // W3: one contiguous run of the oldest frames down to the low-water mark, so the frames that follow are
+        // consecutive speech rather than every other 20 ms frame. Triggered by the whole queue, priced on the
+        // queued bytes alone: a pinned socket cannot shrink, so a total-queue low-water mark would thin the queue.
+        while (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_LOW_BYTES) {
           const shed = this.micPending.shift()!;
           const bytes = Buffer.byteLength(shed.frame);
           this.micPendingBytes -= bytes;

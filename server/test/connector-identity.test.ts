@@ -187,7 +187,7 @@ test('a proven match keeps the connector and logs only the booleans', async () =
   assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
 });
 
-test('one proof per connector account per boot, and no diagnostic capture at start', async () => {
+test('one proof per connector endpoint per boot, and no diagnostic capture at start', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-once-'));
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
@@ -216,8 +216,9 @@ test('one proof per connector account per boot, and no diagnostic capture at sta
   });
   endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
   const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
-  // Two endpoints of one Google account: a mailbox and a calendar. The audit found both proving the
-  // same account at every start (H19), and both wire calls also armed a context_absent capture (#479).
+  // Two endpoints of one Google account: a mailbox and a calendar. H19 proves each endpoint once per
+  // boot, because a strict source proves its own tool and seat, and both wire calls also armed a
+  // context_absent capture (#479).
   await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
     { id: 'mail', connector: 'google', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/mail`, account: 'synthetic', resource: 'mail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
     { id: 'calendar', connector: 'google', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/calendar`, account: 'synthetic', resource: 'calendar', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
@@ -235,7 +236,8 @@ test('one proof per connector account per boot, and no diagnostic capture at sta
         .map(line => JSON.parse(line) as Record<string, unknown>);
       assert.equal(lines.filter(line => line.event === 'connector_identity' && line.connector === 'google').length, 1, 'one identity proof for the account, not one per endpoint');
       assert.deepEqual(lines.filter(line => line.event === 'tool_diagnostic_capture'), [], 'a start arms no diagnostic capture at all');
-      assert.equal(calls.filter(name => name === 'gmail_get_profile' || name === 'calendar_list_calendars').length, 1, 'the identity read happened once');
+      assert.equal(calls.filter(name => name === 'gmail_get_profile').length, 1, 'the mailbox proved its own identity once');
+      assert.equal(calls.filter(name => name === 'calendar_list_calendars').length, 1, 'the calendar proved its own identity once');
     } finally { await host.close(); }
   } finally {
     endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done()));

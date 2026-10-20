@@ -371,9 +371,11 @@ export async function composeMcpRuntime(options: {
           // identity call is slow under host load is proven rather than wrongly marked unproven and
           // fail-closed; a connector that never answers still times out at the call deadline and stays
           // uncallable.
-          // H19: one proof per boot per connector account, so a mailbox and a calendar on the same
-          // account prove that account once instead of reading the identity twice at every start.
-          const proofKey = `${entry.connector}\u0000${policy.endpoint.account ?? entry.id}`;
+          // H19 with D2's strict per-endpoint source: a proof belongs to one endpoint of one account.
+          // Sharing it across a mailbox and a calendar of one account made the second endpoint inherit
+          // a proof of the other family's tool, so a strict source refused it (or raced the first
+          // endpoint's proof). Each endpoint proves itself once per boot.
+          const proofKey = `${entry.id}\u0000${policy.endpoint.account ?? ''}`;
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
             // The receipt belongs to the read that happened, so a reused proof writes no second line.

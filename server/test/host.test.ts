@@ -845,7 +845,9 @@ test('POST api/v1/live/prewarm answers the receipt and refuses a body field', as
     const asked = await fetch(url, { method: 'POST', headers, body: '{}' });
     assert.equal(asked.status, 200);
     const answered = await asked.json() as { data: unknown };
-    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false });
+    // WarmPrewarmReceipt carries the assembly reason as a required field (server/live/index.ts), and
+    // an unconfigured Live answers `unconfigured`, as the owner-prewarm test above asserts.
+    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' });
     const unknown = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ digest: 'x' }) });
     assert.equal(unknown.status, 400, 'the body is closed: it names no field');
     const read = await fetch(url, { method: 'GET', headers });

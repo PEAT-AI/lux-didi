@@ -305,7 +305,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind <> 'ready' ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();
     for (const row of rows) bySession.set(String(row.live_session_id), [...(bySession.get(String(row.live_session_id)) ?? []), row]);
-    const cleared = ['ls-summarised', 'ls-gave-up', 'ls-forgotten', 'ls-live'].filter(id => bySession.get(id)!.every(row => row.text === null && row.tool_json === null));
+    const cleared = ['ls-summarised', 'ls-gave-up', 'ls-forgotten', 'ls-live'].filter(id => bySession.get(id)!.every(row => row.text === null && row.tool_json === null)).sort();
     assert.deepEqual(cleared, ['ls-forgotten', 'ls-gave-up', 'ls-summarised'], 'a session still owed a summary keeps its text');
     for (const id of ['ls-unsummarised', 'ls-no-model', 'ls-deadline']) {
       assert.deepEqual(bySession.get(id)!.map(row => row.text), [`owner words ${id}`, null], `${id} still has to be distilled`);

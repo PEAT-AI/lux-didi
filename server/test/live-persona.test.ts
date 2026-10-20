@@ -785,7 +785,7 @@ test('the standing section fits more of a 29-note corpus of median 210 character
   const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
   const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
   assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
-  assert.ok(composed.selectedIds.length >= 11, `${composed.selectedIds.length} whole notes fit`);
+  assert.equal(composed.selectedIds.length, 11, 'eleven whole notes of median 210 characters fit');
   assert.ok(composed.omitted.length > 0, 'the cap still bounds the section');
 });
 

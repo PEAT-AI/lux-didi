@@ -12,6 +12,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { createDispatchOwner } from '../tools/dispatch.js';
+import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
@@ -701,6 +703,59 @@ test('a host writes no debug journal under any data dir or config dir', async ()
     await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'no journal root under the data dir');
     await assert.rejects(stat(join(dir, 'other-install', 'debug')), /ENOENT/, 'nothing is written beside the borrowed config dir');
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+// #487: the retired JSONL debug journal is unread and unremoved on 4282b639 (282 files, 8.2 MB of transcripts).
+// One bounded start-up step removes exactly `<dataDir>/debug` and logs one byte-counted receipt; the second
+// start finds nothing and logs nothing.
+test('a start removes the retired debug journal once and logs one byte-counted receipt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-debug-retired-'));
+  const dataDir = join(dir, 'state');
+  const journal = join(dataDir, 'debug', '2026-10-17');
+  await mkdir(journal, { recursive: true, mode: 0o700 });
+  await writeFile(join(journal, 'session-a.jsonl'), 'x'.repeat(700));
+  await writeFile(join(journal, 'session-b.jsonl'), 'y'.repeat(300));
+  await writeFile(join(dataDir, 'keep-me.txt'), 'kept');
+  try {
+    const first = await startHost({ dataDir, webRoot, port: 0 });
+    const receipts = async (): Promise<Record<string, unknown>[]> =>
+      (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'debug_journal_removed');
+    try {
+      await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the retired journal is gone');
+      assert.equal(await readFile(join(dataDir, 'keep-me.txt'), 'utf8'), 'kept', 'nothing else in the data dir is touched');
+      assert.deepEqual(await receipts(), [{ event: 'debug_journal_removed', bytes: 1000 }], 'one receipt carries the byte count');
+    } finally { await first.close(); }
+
+    const second = await startHost({ dataDir, webRoot, port: 0 });
+    try {
+      assert.equal((await receipts()).length, 1, 'a second start finds no journal and writes no second receipt');
+    } finally { await second.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// #479 / H4: a call made with no tool context (the start-up connector probes) used to arm a diagnostic
+// capture, so every start wrote four `context_absent` and four `wire_observed_context_absent` receipts,
+// three of them byte-identical. Capture is now armed only when a real run context exists.
+test('a tool call with no run context captures no diagnostic and writes no coverage row', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-no-context-'));
+  const store = new Store(dir, [...toolsMigrations]);
+  try {
+    const captured: string[] = [];
+    const port = {
+      async call() { return { state: 'completed' as const, content: [{ type: 'text' as const, text: 'ok' }], isError: false }; },
+    };
+    const owner = createDispatchOwner({
+      store, port: port as never, ownerId: store.assistantId,
+      current: () => true, failure: reason => { captured.push(reason); },
+    });
+    const result = await owner.port.call({ toolName: 'gmail_get_profile', arguments: {}, connectionId: 'gmail', class: 'ordinary' } as never);
+    assert.equal((result as { state?: string }).state, 'completed', 'the probe still reaches the connector');
+    assert.deepEqual(captured, [], 'no diagnostic capture without a context');
+    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM tool_dispatch_coverage')!.n)), 0, 'no coverage row without a context');
+    owner.reuse(undefined);
+    assert.deepEqual(captured, [], 'reuse without a context captures nothing either');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('the installed app config dir is refused with one line naming --data-dir, and supervision lifts it', () => {

@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
+import { liveMigrations } from '../live/schema.js';
 import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
@@ -245,9 +246,74 @@ test('pruneTraceContent is scoped to the two content tables', () => {
     recordUtterance(store, { turnId: 't1', role: 'model', at: T0, final: true, text: 'hello' });
     recordCallResult(store, { callKey: 'c1', text: 'r'.repeat(20_000) });
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 40 * 86_400_000));
-    assert.deepEqual(pruned, { utterances: 1, callResults: 1 });
+    assert.deepEqual(pruned, { utterances: 1, callResults: 1, journalText: 0, promptSnapshots: 0 });
     assert.equal(counts(store).trace_turn, 1);
     assert.equal(counts(store).trace_call, 1);
+  });
+});
+
+// Retention rule (lux 90269): content pruned at 30 days, metadata kept. A live session that ended
+// before the cutoff keeps its row, its kind, its byte count and its outcome, and loses only the
+// owner text: journal text, journal tool payload and the accepted prompt snapshot.
+test('pruneTraceContent clears live session text that ended before the cutoff and keeps the metadata', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
+  const day = 86_400_000, endedAt = T0 + 1 * day, liveAt = T0 + 31 * day, now = T0 + 60 * day;
+  try {
+    const store = new Store(dir, [...liveMigrations]);
+    const seed = (id: string, terminalAt: number | null, at: number): void => {
+      store.transaction(tx => {
+        tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+            client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
+            journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, accepted_prompt_snapshot)
+          VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?,0,0,'attached',?,?,?,?,?)`,
+          [id, store.assistantId, store.authorityEpoch, `key-${id}`, `fp-${id}`, 'client', `audit-${id}`, 'profile', 'prompt',
+            terminalAt === null ? 'active' : 'terminal', 2, terminalAt === null ? null : 'complete', terminalAt, at, at,
+            JSON.stringify({ ownerText: `accepted words ${id}` })]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?)",
+          [id, 'inputTranscription', `owner words ${id}`, 1, 9, at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, tool_json, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?)",
+          [id, 'toolCall', null, 1, JSON.stringify({ name: 'search', args: { query: `owner words ${id}` } }), 9, at]);
+      });
+    };
+    seed('ls-ended', endedAt, endedAt);
+    seed('ls-live', null, liveAt);
+
+    const pruned = store.transaction(tx => pruneTraceContent(tx, now));
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 2, promptSnapshots: 1 });
+
+    const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes, arrived_at FROM live_journal ORDER BY live_session_id, journal_id"));
+    assert.deepEqual(rows.map(row => [row.live_session_id, row.text, row.tool_json]), [
+      ['ls-ended', null, null], ['ls-ended', null, null],
+      ['ls-live', 'owner words ls-live', null],
+      ['ls-live', null, JSON.stringify({ name: 'search', args: { query: 'owner words ls-live' } })],
+    ], 'the ended session keeps its rows and loses its text; the live session keeps both');
+    assert.equal(rows[0]!.payload_bytes, 9, 'the byte count is metadata and stays');
+    assert.equal(rows[0]!.arrived_at, endedAt);
+
+    const sessions = store.transaction(tx => tx.all('SELECT live_session_id, lifecycle, terminal_outcome, accepted_prompt_snapshot FROM live_sessions ORDER BY live_session_id'));
+    assert.deepEqual(sessions.map(row => [row.live_session_id, row.lifecycle, row.terminal_outcome, row.accepted_prompt_snapshot]), [
+      ['ls-ended', 'terminal', 'complete', null],
+      ['ls-live', 'active', null, JSON.stringify({ ownerText: 'accepted words ls-live' })],
+    ]);
+
+    const again = store.transaction(tx => pruneTraceContent(tx, now));
+    assert.deepEqual(again, { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// H16: the boot prune must be an index search, never a full scan of a content table that grows
+// with every turn. The statements here are the prune predicates from pruneTraceContent.
+test('the prune deletes run as index searches', () => {
+  withStore(store => {
+    const plan = store.transaction(tx => [
+      ...tx.all('EXPLAIN QUERY PLAN DELETE FROM trace_utterance WHERE at < ?', [T0]),
+      ...tx.all('EXPLAIN QUERY PLAN DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [T0]),
+    ].map(row => String(row.detail)));
+    assert.deepEqual(plan.filter(detail => /^SCAN (trace_utterance|trace_call)\b/.test(detail)), [], 'no content table is scanned');
+    assert.ok(plan.some(detail => detail.includes('trace_utterance_at')), `trace_utterance(at) is searched: ${plan.join(' | ')}`);
+    assert.ok(plan.some(detail => detail.includes('trace_call_intent_at')), `trace_call(intent_at) is searched: ${plan.join(' | ')}`);
   });
 });
 

@@ -653,6 +653,34 @@ private func checkPrimaryChannelConversion() throws {
     print("PASS actual write silence/speech queue-head state and all timing PCM conserved; hardware=false")
 }
 
+// H13/V7 (#476): the receipt that says the owner actually heard her. The first chunk of an assistant
+// playback segment that becomes audible sends one `playback.audible` for that segment, and only one.
+@MainActor private func checkPlaybackAudibleReceipt() async throws {
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+    device.playbackDriverForTesting = driver
+    var receipts: [NativePlaybackReceipt] = []
+    device.onPlaybackReceipt = { receipts.append($0) }
+    let quiet = Data(count: 4800)
+    let speech = [Int16](repeating: 5000, count: 2400).withUnsafeBytes { Data($0) }
+    try await device.write(quiet)
+    try audioRequire(!receipts.contains { $0.kind == .audible },
+                     "silence under the audibility threshold never claims playback.audible")
+    try await device.write(speech)
+    let audible = receipts.filter { $0.kind == .audible }
+    try audioRequire(audible.count == 1, "the first audible chunk of a segment sends one playback.audible")
+    try audioRequire(audible.first?.segmentSeq == receipts.first?.segmentSeq,
+                     "the audible receipt names the segment the next receipts name")
+    try await device.write(speech)
+    try audioRequire(receipts.filter { $0.kind == .audible }.count == 1,
+                     "one audible receipt per segment, never one per audible chunk")
+    let wire = audible.first?.json ?? ""
+    try audioRequire(wire.contains("\"receipt\":\"audible\"") && wire.contains("segment_seq"),
+                     "the audible receipt is the closed receipt frame, ids only")
+    try audioRequire(!wire.lowercased().contains("text") && !wire.contains("pcm"),
+                     "the audible receipt carries no owner audio or text")
+    print("PASS first audible chunk of a segment sends one playback.audible receipt; hardware=false")
+}
+
 @MainActor private func checkPlaybackOverflowContinuation() async throws {
     let full = Data(count: NativePlaybackQueue.overflowFrames * 2)
     for externalMute in [false, true] {
@@ -750,6 +778,12 @@ private func checkPrimaryChannelConversion() throws {
             return
         }
 
+        if CommandLine.arguments.dropFirst().contains("--playback-audible-only") {
+            do { try await checkPlaybackAudibleReceipt() }
+            catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--playback-state-only") {
             do { try await checkPlaybackSilenceState() }
             catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
@@ -797,6 +831,8 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Format change: \(error)") }
             return
         }
+        do { try await checkPlaybackAudibleReceipt() }
+        catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
         catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }

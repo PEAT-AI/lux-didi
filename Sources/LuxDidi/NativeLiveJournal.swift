@@ -42,11 +42,13 @@ struct NativeLiveRms: Sendable {
 enum NativeLiveInterruptionPhase: String, Sendable { case pre, post }
 
 /// One playback receipt the app forwards to the host over the live socket the call already holds:
-/// the six moments of one segment, each stamped with the process clock and the app's launch identity.
+/// the seven moments of one segment, each stamped with the process clock and the app's launch identity.
 /// A closed vocabulary, ids and counts only: never audio, text, a device label or a provider payload.
 struct NativePlaybackReceipt: Sendable, Equatable {
     enum Kind: String, Sendable, CaseIterable {
-        case received, enqueued, started, drained, interrupted, terminated
+        /// The first chunk of the segment that crossed the audibility threshold: the moment the owner
+        /// could hear her, which the host records as `playback.audible` (#476, H13/V7).
+        case received, enqueued, started, audible, drained, interrupted, terminated
     }
     let kind: Kind
     let segmentSeq: Int

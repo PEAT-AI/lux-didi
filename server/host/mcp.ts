@@ -205,6 +205,9 @@ export async function composeMcpRuntime(options: {
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
 
   const eligible = new Map<string, { session: number; revision: number }>();
+  // Endpoints parked at `not_signed_in`: a login writes the credential, and the next recover()
+  // connects them, so the owner never restarts the host to finish a sign-in (R9).
+  const needsSignIn = new Set<string>();
   const bursts = new Map<string, { session: number; token: number | undefined }>();
   const flights = new Map<string, Promise<void>>();
   const recoverEndpoint = (id: string): Promise<void> => {
@@ -282,9 +285,11 @@ export async function composeMcpRuntime(options: {
       // no failing probe is logged at every launch: one typed status, and the next connect after a
       // login (the app refreshes the connector then) probes it for real.
       if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
+        needsSignIn.add(entry.id);
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
         return { retryable: false };
       }
+      needsSignIn.delete(entry.id);
       try { if (!stored) readMcpCredential(configDir, entry.credentialRef); }
       catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
@@ -445,7 +450,22 @@ export async function composeMcpRuntime(options: {
       connector: connectors.get(report.id) ?? report.id })) }),
     start: () => (startPromise ??= run()),
     refresh: async () => { startPromise = undefined; await run(); },
-    recover: async () => { await Promise.all([...eligible.keys()].map(recoverEndpoint)); },
+    recover: async () => {
+      // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
+      // again with a new generation, exactly as a first connect would (R9).
+      await Promise.all([...needsSignIn].map(async id => {
+        const entry = active.find(candidate => candidate.id === id);
+        if (closed || entry === undefined || entry.credentialRef === undefined) return;
+        const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
+        if (!stored) return;
+        needsSignIn.delete(id);
+        const token = (generations.get(id) ?? 0) + 1;
+        generations.set(id, token);
+        registry.suspend(id);
+        await settle(entry, token, 'refresh').catch(() => { /* the per-connector report already carries the failure */ });
+      }));
+      await Promise.all([...eligible.keys()].map(recoverEndpoint));
+    },
     close: () => { closed = true; for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } eligible.clear(); bursts.clear(); const closing = port.close(); return Promise.all([closing, ...flights.values()]).then(() => {}); },
   };
   if (options.deferConnectors !== true) await composition.start();

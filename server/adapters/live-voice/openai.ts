@@ -1738,7 +1738,7 @@ class Session implements LiveVoiceSession {
     const span = Math.max(1, now - (oldest ?? now));
     this.drainBytesPerSec = Math.round(accepted * 1_000 / span);
     const covered = oldest !== undefined && now - oldest >= CONNECTION_WINDOW_MS;
-    if (now > 1_000_000 && now < 1_100_000 && now % 1000 === 20) console.log('DBGQ', now, captured, discarded, pinned, covered, this.connectionQuality, this.shedBytes, this.notOpenBytes, this.shedRuns, this.micPending.length);
+    if (now > 1_000_000 && now < 1_100_000 && now % 1000 === 20) console.log('DBGQ', this.diagnostic.audioCalls, captured, discarded, pinned, this.connectionQuality, this.shedRuns);
     for (const sample of samples) if (sample.discarded > 0 || sample.backlogged) this.lastUplinkLossAt = sample.at;
     if (captured > 0 && discarded / captured > CONNECTION_WEAK_SHARE) this.markUplinkLoss(now);
     else if (pinned && covered) this.markUplinkLoss(now);

@@ -358,11 +358,23 @@ test('a duplicate receipt frame is deduped, not recorded twice', () => {
   });
 });
 
+test('a native audible receipt is accepted and lands as the segment first audible time (W6-R1 ASK-1)', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    assert.equal(forward(store, frame('received', 1, T0 + 201), { turnId: 't1' }).duplicate, false);
+    assert.equal(forward(store, frame('audible', 2, T0 + 950), { turnId: 't1' }).duplicate, false);
+    const row = store.transaction(tx => tx.get('SELECT audible_at FROM trace_playback WHERE playback_key=?', [`${SESSION}:${INSTANCE}:1`]))!;
+    assert.equal(row['audible_at'], T0 + 950, 'the app\'s own first-audible-chunk receipt is recorded');
+    const kinds = store.transaction(tx => tx.all('SELECT kind FROM trace_event WHERE source=? ORDER BY seq', ['native']).map(row => row['kind']));
+    assert.deepEqual(kinds, ['playback.received', 'playback.audible']);
+  });
+});
+
 test('a frame with an unknown or free-text field is refused by a typed code', () => {
   const base = { type: 'playback_receipt', receipt: 'drained', segment_seq: 1, source_instance_id: INSTANCE, source_seq: 1, mono_ms: 1, wall_ms: 2 };
   for (const [label, raw, code] of [
     ['free text', { ...base, note: 'the owner said something' }, 'unknown_field'],
-    ['unknown receipt', { ...base, receipt: 'audible' }, 'unknown_receipt'],
+    ['unknown receipt', { ...base, receipt: 'played' }, 'unknown_receipt'],
     ['string count', { ...base, source_seq: '1' }, 'invalid_field'],
     ['missing clock', { ...base, wall_ms: undefined, mono_ms: undefined }, 'missing_field'],
   ] as const) {

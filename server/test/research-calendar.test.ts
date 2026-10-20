@@ -337,7 +337,7 @@ test('#1020: a paged calendar read never claims more shown than total, and a cut
 test('every calendar read carries the run remaining source budget as an absolute deadline', async () => {
   const h = fixture([event(19)]);
   await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
-  const reads = h.calls.filter(call => call['name'] === 'gcal_list');
+  const reads = h.calls.filter(call => call['name'] === 'calendar_list_events');
   assert.ok(reads.length > 0, 'the run read the calendar');
   for (const call of reads) assert.equal(call['deadlineAt'], fixedNow + 12_000, 'the connector is bounded by the caller budget, never by the 40 s constant');
 });

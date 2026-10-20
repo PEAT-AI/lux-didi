@@ -192,7 +192,7 @@ test('one proof per connector account per boot, and no diagnostic capture at sta
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
   const families = {
-    mail: ['gmail_get_profile', 'gmail_list', 'gmail_read'],
+    mail: ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'],
     calendar: ['calendar_list_calendars', 'calendar_list_events'],
   } as const;
   const calls: string[] = [];

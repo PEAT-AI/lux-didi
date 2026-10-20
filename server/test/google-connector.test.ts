@@ -292,7 +292,7 @@ test('the owner composes the google tool table and a Live-shaped gmail_search_me
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
     const definitions = owner.definitions('run');
-    // gmail_read carries a remote body, so the owner also admits the local body continuation the run may use.
+    // gmail_read_message carries a remote body, so the owner also admits the local body continuation the run may use.
     assert.deepEqual(definitions.map(definition => definition.name).sort(), [...GOOGLE_TOOLS, 'read_received_body'].sort());
     assert.equal(definitions.some(definition => definition.name === 'gmail_send'), false);
 

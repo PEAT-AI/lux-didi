@@ -5112,7 +5112,7 @@ test('W6/H22: a research receipt names the call it answers', async t => {
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
   const h = await harness(t, { tools: true, calendar: true,
-    calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary', summary: 'Main' }] } : { events: [{ id: 'calendar-event-0', start: '2023-11-15T10:00:00Z', summary: 'Synthetic event 0' }] } });
+    calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary', summary: 'Main' }] } : { events: [{ id: 'calendar-event-0', start: '2023-11-15T10:00:00Z', summary: 'Synthetic event 0' }] } });
   const { attachment } = await attached(h, 'research-receipt-call');
   await settleLiveTool(h, 'research-window', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
 

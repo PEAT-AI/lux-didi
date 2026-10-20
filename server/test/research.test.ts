@@ -1228,7 +1228,7 @@ test('a routed run never calls the selector: the model already named the lookups
   const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
   await runResearch(h.deps, { action: 'start', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
   assert.equal(selects, 0, 'routed lookups are the decision: no selector round runs');
-  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the routed lookup is still read');
+  assert.ok(h.executed.some(call => call.name === 'gmail_search_messages'), 'the routed lookup is still read');
 });
 
 test('one configured source never pays a selector round', async () => {
@@ -1256,7 +1256,7 @@ test('a quick_fact continuation reads deterministically: no second selector roun
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
   const reads = h.executed.slice(readsBefore);
-  assert.ok(reads.some(call => call.name === 'gcal_list'), `the continuation reads the source its direction names: ${JSON.stringify(reads)}`);
+  assert.ok(reads.some(call => call.name === 'calendar_list_events'), `the continuation reads the source its direction names: ${JSON.stringify(reads)}`);
   assert.equal((next['unchecked'] as string[]).includes('calendar'), false, 'and the reply credits the source it read');
 });
 

@@ -95,6 +95,19 @@ import Foundation
                   "every lifecycle record is stamped with the clock time it happened")
         } catch { check(false, "journal sequence threw \(error)") }
 
+        // 5. #477: one audio journal per process. A second adopt hands back the journal in use, so the
+        // caller wires its device to that one instead of opening a second writer on audio.log.
+        do {
+            let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("a1-adopt-\(UUID().uuidString)")
+            let file = directory.appendingPathComponent("audio.log")
+            let first = NativeAudioJournal(fileURL: file), second = NativeAudioJournal(fileURL: file)
+            let owner = AudioOwner(lockFileURL: tempLockURL())
+            check(owner.adopt(journal: first) === first, "the first journal is adopted")
+            check(owner.adopt(journal: second) === first, "a second adopt returns the journal in use")
+            check(owner.journal === first, "the second journal never becomes the owner's writer")
+        }
+
         exit(failures == 0 ? 0 : 1)
     }
 }

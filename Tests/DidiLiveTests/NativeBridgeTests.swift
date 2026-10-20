@@ -167,6 +167,21 @@ import SwiftUI
         let logged = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
         check(logged.contains("native_bridge_unknown_message") && logged.contains("totallyUnknown"),
               "unknown type is logged to native-live.log")
+        // #476 (W7-R1): every native-live.log line is stamped, this one included: the same ISO time with
+        // fractional seconds, monotonic clock, launch identity and sequence the journals write.
+        let record = (logged.data(using: .utf8)).flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        } ?? nil
+        let stamp = record?["timestamp"] as? String
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        check(stamp != nil && stamp?.contains(".") == true && fractional.date(from: stamp ?? "") != nil,
+              "the bridge diagnostic carries a fractional ISO timestamp, got \(String(describing: stamp))")
+        check(record?["mono_ms"] is Int && record?["source_seq"] is Int
+              && record?["source_instance_id"] as? String == NativeLogClock.shared.sourceInstanceID,
+              "the bridge diagnostic carries the process clock and the launch identity")
+        check(record?["event"] as? String == "native_bridge_unknown_message" && record?["type"] as? String == "totallyUnknown",
+              "the bridge diagnostic keeps its closed event and type, got \(record?.keys.sorted() ?? [])")
         try? FileManager.default.removeItem(at: logURL)
 
         print(failures == 0 ? "NATIVE-BRIDGE TESTS PASS" : "NATIVE-BRIDGE TESTS FAILED \(failures)")

@@ -1,5 +1,24 @@
 import Foundation
 
+/// A two-party rendezvous: both test writers reach the append call at the same instant, so the
+/// interleaving that a seek-then-write append cannot survive happens on every round.
+final class TwoPartyBarrier: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var arrived = 0
+    private var generation = 0
+    func wait() {
+        condition.lock()
+        let mine = generation
+        arrived += 1
+        if arrived >= 2 {
+            generation &+= 1; arrived = 0; condition.broadcast()
+        } else {
+            while generation == mine { condition.wait() }
+        }
+        condition.unlock()
+    }
+}
+
 /// Fake-seam proofs for the closed native-live end reasons, their timestamps, and the
 /// diagnostics snapshot fields. No audio device, no supervisor and no network are started.
 @main struct NativeLiveJournalTests {
@@ -183,6 +202,44 @@ import Foundation
                 "the receipt frame is the closed shape, got \(wire.keys.sorted())")
             expect(wire["receipt"] as? String == "interrupted", "the receipt names its moment")
             expect((jsonObject(first.json) ?? [:])["reason"] == nil, "no reason is invented for a plain receipt")
+        }
+
+        // 6. #477: two writers appending to one log produce whole lines: no torn record, none lost.
+        // The barrier makes both writers seek at the same instant every round, which is exactly the
+        // interleaving a seek-then-write append cannot survive and an O_APPEND append always does.
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("native-journal-two-writers-\(UUID().uuidString)")
+            let file = directory.appendingPathComponent("two-writers.log")
+            let rounds = 200
+            let barrier = TwoPartyBarrier()
+            let done = DispatchGroup()
+            for writer in 0..<2 {
+                DispatchQueue.global().async(group: done) {
+                    var log = NativeLogFile(file)
+                    for index in 0..<rounds {
+                        barrier.wait()
+                        let record = ["writer": writer, "index": index,
+                                      "pad": String(repeating: "p", count: 96)]
+                        let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+                        log.append((data ?? Data()) + Data([10]))
+                    }
+                }
+            }
+            done.wait()
+            let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            var parsed = Set<String>()
+            var torn = 0
+            for line in text.split(separator: "\n") {
+                guard let object = jsonObject(String(line)), let writer = object["writer"] as? Int,
+                      let index = object["index"] as? Int, object["pad"] as? String != nil else { torn += 1; continue }
+                parsed.insert("\(writer):\(index)")
+            }
+            expect(text.split(separator: "\n").count == rounds * 2,
+                   "two writers keep \(rounds * 2) lines, got \(text.split(separator: "\n").count)")
+            expect(torn == 0, "every appended line is one whole JSON record, got \(torn) torn")
+            expect(parsed.count == rounds * 2, "no record is overwritten, got \(parsed.count) distinct")
+            try? FileManager.default.removeItem(at: directory)
         }
 
         if failures == 0 { print("NATIVE-LIVE-JOURNAL PASS") } else { print("NATIVE-LIVE-JOURNAL FAIL \(failures)") }

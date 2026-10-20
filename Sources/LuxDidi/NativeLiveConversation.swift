@@ -70,9 +70,10 @@ enum State: String, CaseIterable {
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
         // Production wiring: a real audio journal in the app's logs dir, shared by the owner
-        // and the device so every lifecycle record lands in audio.log with a timestamp.
+        // and the device so every lifecycle record lands in audio.log with a timestamp. The owner keeps
+        // the first journal, so a second conversation reuses it instead of opening a second writer.
         let journal = logsDirectory.map { NativeAudioJournal(fileURL: $0.appendingPathComponent("audio.log")) }
-        if let journal { AudioOwner.shared.adopt(journal: journal) }
+            .map { AudioOwner.shared.adopt(journal: $0) }
         let device = audioDevice ?? NativeLiveAudioDevice(journal: journal); self.device = device
         coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
         device.onOutput = { [weak self] speaking in

@@ -3031,6 +3031,8 @@ test('R9: a research call refused at dispatch writes one failed run receipt', as
   assert.equal(runs.length, 1, 'the refused call leaves exactly one run receipt');
   assert.equal(runs[0]!.status, 'failed');
   assert.equal(runs[0]!.stopReason, 'refused');
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.match(String(result?.tool?.markdown ?? ''), /^research: refused \([a-z_]+\)$/, 'a refused call names its reason in the projection, never a bare research: error');
 });
 
 test('F6: three tool calls in one model message run concurrently and return three responses in order', async t => {
@@ -3065,6 +3067,9 @@ test('F6-R1: a successful research call is journaled completed, not error', asyn
   await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
   const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
   assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
+  const markdown = String(result?.tool?.markdown ?? '');
+  assert.match(markdown, /^research: completed, (findings from [a-z ]+|no findings)/, 'the settled projection records what the provider was sent, never a bare status');
+  assert.ok(markdown.length <= 240, `the projection stays bounded (${markdown.length} chars)`);
 });
 test('F4: a pending research call is journalled as called, never error', async t => {
   const h = await harness(t, { tools: true, calendar: true });
@@ -4795,5 +4800,5 @@ test('research 469: known stopped run projects error and retained no-wire delive
   const partial = await call('partial', { action: 'start', question: 'Synthetic unavailable calendar', lookups: [{ source: 'calendar', query: 'today' }] });
   assert.equal(partial.response['status'], 'partial'); assert.equal(partial.response['error'], undefined); assert.equal(partial.projection.status, 'completed');
   assert.equal(h.calls.length, 1); assert.deepEqual(h.owner.current().steps ?? [], []);
-  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error', sources: [] } });
+  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error (continuation_unavailable)', sources: [] } });
 });

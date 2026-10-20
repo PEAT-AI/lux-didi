@@ -1150,3 +1150,38 @@ test('research 469: stopped known continuation fails while retained delivery rem
   assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
   assert.equal(calls, 2); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
 });
+
+// --- #472: a run cut after its first answer is partial, never failed ------------------------------
+
+test('#472: a run cancelled after its first answer is logged partial and still hands over what landed later', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      if (subs[0]!.name === 'search_knowledge') await gate.promise;
+      return subs.map(call => sub(call.name, '## Release 3x\nlate findings land here', true, call.key));
+    },
+  });
+  const late: ResearchLateFindings[] = [];
+  let reading: Promise<void> | undefined;
+  h.deps.late = entry => { late.push(entry); };
+  h.deps.background = done => { reading = done; };
+  const controller = new AbortController();
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did he ask me to remember',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, controller.signal);
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const answered = await call;
+  assert.equal(answered['status'], 'partial', 'the owner received an answer');
+  // The host closes the delegation after that answer: the run is cut while its second reader is open.
+  controller.abort();
+  gate.resolve();
+  await reading;
+  const run = h.logs.filter(entry => entry.event === 'research_run').at(-1);
+  assert.equal(run?.stopReason, 'cancelled', 'the run was cut, not completed');
+  assert.equal(run?.status, 'partial', 'a run that delivered an answer is partial, never failed');
+});

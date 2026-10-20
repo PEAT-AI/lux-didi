@@ -550,7 +550,7 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
     let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
     let callback!:()=>void,ownerReset!:(reason:string)=>void,version={},scheduled=0,liveTimerArmed=false;
     const paints:unknown[]=[];
-    const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,
+    const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,orbSurfaceVisible:()=>true,
       livePoll:original,live:original.live,pollLiveView,AbortSignal,clearTimeout:()=>{},authorityVersion:()=>version,
       readGeneration:0,controller:undefined,busy:false,readBusy:false,pairingBusy:false,connectionsBusy:false,schedulePoll:()=>{},
       fetchLive:async()=>{await gate;if(kind==='authority'||kind==='offline-failure')throw new Error('synthetic unavailable');return {...original.live,entries:[]};},
@@ -561,7 +561,7 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
       mutate:(action:()=>Promise<void>)=>{context.mutation=action().then(()=>context.render());},
       connectedView:{reset:()=>{},detach:()=>{}},connections:[],connectionsStale:false,statusUnavailable:false,status:{},
       sessions:[],entries:[],session:undefined,plan:undefined,recall:undefined,recent:[],connection:'Connected'};
-    createContext(context);runInContext(poll+(kind==='logout'?authority:'')+resetSource,context);
+    createContext(context);runInContext(asScript(poll+(kind==='logout'?authority:'')+resetSource),context);
     const pending=context.pollLive();assert.equal(context.liveBusy,true);
     callback();if(kind==='logout')await context.mutation;
     const reset=context.livePoll;assert.notEqual(reset,original);
@@ -576,6 +576,9 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
 }
 
 
+/** main.ts is TypeScript: the slices are transpiled before the vm sees them, as the orb helper already does. */
+const asScript = (source: string) => transpileModule(source, { compilerOptions: { target: ScriptTarget.ES2020 } }).outputText;
+
 test('manual Live refresh cancels the scheduled handle before held logout', async () => {
   const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
   const poll=source.slice(source.indexOf('async function pollLive(){'),source.indexOf('async function pollConnections(){'));
@@ -584,11 +587,11 @@ test('manual Live refresh cancels the scheduled handle before held logout', asyn
   const gate=new Promise<void>(resolve=>{release=resolve;});
   const version={};
   const projection:LiveCurrent={state:'listening',since:'synthetic-timer-session',cursor:0,entries:[]};
-  const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,
+  const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,orbSurfaceVisible:()=>true,
     livePoll:{live:projection},live:projection,liveDelay,pollLiveView,AbortSignal,authorityVersion:()=>version,
     setTimeout:(fn:()=>void,delay:number)=>{const handle=++id;timers.set(handle,{fn,delay});return handle;},
     clearTimeout:(handle:number)=>{timers.delete(handle);},fetchLive:async()=>{await gate;return projection;},paintLive:()=>{}};
-  createContext(context);runInContext(poll+schedule,context);
+  createContext(context);runInContext(asScript(poll+schedule),context);
   context.scheduleLive();assert.equal(timers.size,1);
   const pending=context.pollLive();assert.equal(context.liveBusy,true);
   const timerCountDuringManualPoll=timers.size;
@@ -1097,7 +1100,7 @@ function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | u
   const line = (marker: string) => { const start = source.indexOf(marker); assert.ok(start > 0, marker); return source.slice(start, source.indexOf('\n', start)); };
   const between = (from: string, to: string) => { const start = source.indexOf(from), end = source.indexOf(to, start); assert.ok(start > 0 && end > start, `${from} .. ${to}`); return source.slice(start, end); };
   const context: any = {
-    connection: 'Ready', pairingRequired: false,
+    connection: 'Ready', pairingRequired: false, miniRoute: false, orbSurfaceVisible: () => true,
     live: projection ? { state: projection, cursor: 0, entries: [] } : undefined,
     liveMachine: { view: { ...initialLiveView(), state: machine, error: extra.stateError } },
     liveVoiceState, liveLabel: (current: LiveCurrent) => liveLabel(current), busy: false, error: undefined,
@@ -1167,4 +1170,16 @@ test('D6: the main window paints the orb through the shared debounce, never a ra
   assert.match(source, /orbReveal\.request\(orbState\(\), at\)/, 'every paint requests through it');
   assert.match(source, /orbReveal\.settled\(at\)/, 'and paints only the settled state');
   assert.equal(source.includes('appliedOrbState=next;orb?.setState(next)'), false, 'no un-debounced set remains');
+});
+
+// W3 requirement 4: when the internet is the reason the owner is told, in the existing caption text.
+test('a weak uplink is named in the caption, and an uplink-starved end names the internet, not the model', () => {
+  const speaking: LiveCurrent = { state: 'speaking', cursor: 1, entries: [{ seq: 1, kind: 'outputTranscription', text: 'Hi there' }] };
+  const withConnection = (connection: unknown, state: LiveCurrent['state'] = 'speaking') => ({ ...speaking, state, connection } as LiveCurrent);
+  assert.equal(liveLabel(withConnection({ quality: 'weak', uploadKbps: 380 })), 'Weak internet, Naya may not hear you clearly (upload about 380 kbit/s)');
+  assert.equal(liveLabel(withConnection({ quality: 'ok', uploadKbps: 380 })), 'Speaking', 'a healthy link says nothing new');
+  assert.equal(liveLabel(speaking), 'Speaking');
+  assert.equal(liveLabel(withConnection({ quality: 'weak' })), 'Weak internet, Naya may not hear you clearly', 'no number when none was measured');
+  assert.equal(liveLabel(withConnection({ quality: 'weak', uploadKbps: 380 }, 'rebuilding')), 'Reconnecting to the voice service', 'reconnecting keeps its own words');
+  assert.equal(liveLabel(withConnection({ quality: 'weak', uploadKbps: 12, endedCode: 'uplink_starved' }, 'ended')), 'Call ended: the internet upload was too weak for voice');
 });

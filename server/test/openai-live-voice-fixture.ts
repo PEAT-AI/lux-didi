@@ -130,6 +130,9 @@ export class FakeSocket extends EventEmitter {
   bufferedAmount = 0;
   readonly sent: string[] = [];
   completeWrites = true;
+  /** When set, a send fills the socket buffer and `drain` empties it, so the adapter's own acceptance
+   *  accounting sees a socket that holds what it was handed until the link takes it away. */
+  trackBuffer = false;
   private readonly pendingWriteCallbacks: ((error?: Error) => void)[] = [];
   pings = 0;
   /** A live peer answers a ping; a dead one does not, which is what the 8 s silence rule measures. */
@@ -141,8 +144,11 @@ export class FakeSocket extends EventEmitter {
       return parsed.type === 'session.input_audio.append' && parsed.audio ? [Buffer.from(parsed.audio, 'base64').byteLength] : [];
     });
   }
+  /** The link takes this many bytes out of the socket buffer, at whatever rate the test chooses. */
+  drain(bytes: number) { this.bufferedAmount = Math.max(0, this.bufferedAmount - bytes); }
   send(frame: string, callback?: (error?: Error) => void) {
     this.sent.push(frame);
+    if (this.trackBuffer) this.bufferedAmount += Buffer.byteLength(frame);
     if (!callback) return;
     if (this.completeWrites) callback();
     else this.pendingWriteCallbacks.push(callback);

@@ -87,6 +87,12 @@ const UPLOAD_NO_PROGRESS_MS = 30_000;
 const UPLINK_SHED_BYTES = 48 * 1024;
 /** The shed receipt is bounded to one host.log record per window (3o). */
 const UPLINK_SHED_RECEIPT_MS = 10_000;
+/** W3: connection quality is the adapter's own read of the link, over the last three measured seconds. */
+const CONNECTION_WINDOW_MS = 3_000;
+/** Over a fifth of the captured mic bytes discarded in the window is a weak link (the owner's link: 25% loss). */
+const CONNECTION_WEAK_SHARE = 0.2;
+/** Five quiet seconds, with no discard and no pinned backlog, make it ok again. */
+const CONNECTION_OK_MS = 5_000;
 const QUEUE_LOG_BYTES = 64 * 1024;
 const QUEUE_LOG_INTERVAL_MS = 1_000;
 /** Turn taking: the owner's input episode ends after this much quiet on the input transcript. The episode closes
@@ -393,7 +399,22 @@ class Session implements LiveVoiceSession {
   private micPendingBytes = 0;
   private shedBytes = 0;
   private shedPeak = 0;
+  private shedRuns = 0;
+  private notOpenBytes = 0;
   private shedReportedAt: number | undefined;
+  /** One uplink sample per mic flush (W3): what the interval captured, what it discarded, and the bytes the
+   *  socket took out of its buffer. Quality and the drain rate are read from these, never from delivery. */
+  private uplinkSamples: { at: number; captured: number; discarded: number; accepted: number; backlogged: boolean }[] = [];
+  private sampleCaptured = 0;
+  private sampleDiscarded = 0;
+  private lastBuffered = 0;
+  private lastBufferedAt: number | undefined;
+  private connectionQuality: 'ok' | 'weak' = 'ok';
+  /** The last sample that carried a discard or a pinned backlog: the five quiet seconds are counted from it. */
+  private lastUplinkLossAt: number | undefined;
+  /** The last moment the link was observed weak: the watchdog compares it with the wait it is judging. */
+  private connectionWeakAt: number | undefined;
+  private drainBytesPerSec = 0;
   /** Head starts re-armed after a drain in the current turn (3o receipt `playback_rearm`). */
   private playbackRearms = 0;
   private awaitingPong = false;
@@ -499,7 +520,9 @@ class Session implements LiveVoiceSession {
     outputAudioFrames: 0, outputAudioPCMBytes: 0,
     outputAudioAfterInitialTurnFrames: 0, outputAudioAfterInitialTurnPCMBytes: 0,
   };
-  readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic });
+  readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic,
+    connection: { quality: this.connectionQuality, uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000),
+      ...(this.connectionWeakAt === undefined ? {} : { weakAt: this.connectionWeakAt }) } });
 
   constructor(private readonly settings: Settings, private readonly start: string,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number) {
@@ -1276,7 +1299,7 @@ class Session implements LiveVoiceSession {
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
-          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(); }
+          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; if (this.micPending.length) this.flushMic(false); }
         }
         if (error && this.checkpoint()) {
           if (pcmBytes && this.isReady) this.dropUpstream('write_error', socket); else this.onError(error);
@@ -1515,36 +1538,103 @@ class Session implements LiveVoiceSession {
     const frame = JSON.stringify({ type: 'session.input_audio.append', audio: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64') });
     this.micPending.push({ frame, bytes: pcm.byteLength });
     this.micPendingBytes += Buffer.byteLength(frame);
+    this.sampleCaptured += Buffer.byteLength(frame);
     if (!this.flushMic()) fail(this.terminal?.code ?? 'not_ready');
   }
 
   /**
    * Send what the uplink can take and shed the rest from the front (3o). The capture path never waits: the queue
    * is bounded by UPLINK_SHED_BYTES plus one frame, and the oldest frames go first so the newest speech wins.
+   * W3: a shed is one contiguous run down to the low-water mark, so the wire carries runs, never thin islands.
    */
-  private flushMic(): boolean {
+  private flushMic(sample = true): boolean {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) { this.micPending = []; this.micPendingBytes = 0; return !this.terminal; }
-    while (this.micPending.length > 1 && socket.bufferedAmount + this.micPendingBytes > UPLINK_SHED_BYTES) {
-      const shed = this.micPending.shift()!;
-      this.micPendingBytes -= Buffer.byteLength(shed.frame);
-      this.shedBytes += Buffer.byteLength(shed.frame);
+    const now = this.clock.now();
+    const open = socket !== undefined && socket.readyState === WebSocket.OPEN;
+    const buffered = socket?.bufferedAmount ?? 0;
+    if (!open) {
+      // W3: every frame lost because the socket is not open is counted, in its own field and in the share.
+      for (const queued of this.micPending) { const bytes = Buffer.byteLength(queued.frame); this.notOpenBytes += bytes; this.sampleDiscarded += bytes; }
+      this.micPending = []; this.micPendingBytes = 0;
+    } else {
+      if (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_BYTES) {
+        // W3: the whole queued stretch goes, oldest first, and only the newest frame is kept. One frame per
+        // arrival is what made 20 ms islands; a stretch at a time is what leaves the frames after it consecutive.
+        // A socket pinned at the cap can only take a third of the capture, so the stretch dropped has to be at
+        // least half the cap for the delivered run to be long enough to hear as speech.
+        while (this.micPending.length > 1) {
+          const shed = this.micPending.shift()!;
+          const bytes = Buffer.byteLength(shed.frame);
+          this.micPendingBytes -= bytes;
+          this.shedBytes += bytes;
+          this.sampleDiscarded += bytes;
+        }
+        this.shedRuns += 1;
+      }
+      while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
+        const next = this.micPending.shift()!;
+        this.micPendingBytes -= Buffer.byteLength(next.frame);
+        if (!this.write(next.frame, next.bytes)) return false;
+      }
+      this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
+      this.watchUpstreamStall(socket);
     }
-    while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
-      const next = this.micPending.shift()!;
-      this.micPendingBytes -= Buffer.byteLength(next.frame);
-      if (!this.write(next.frame, next.bytes)) return false;
-    }
-    this.shedPeak = Math.max(this.shedPeak, socket.bufferedAmount + this.micPendingBytes);
-    // Every mic frame is a liveness observation, including a frame this uplink could not take.
-    this.watchUpstreamStall(socket);
-    const now = Date.now();
-    if (this.shedBytes && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
+    // The bytes the socket took out of its own buffer since the last flush: acceptance, never delivery. The level
+    // is read after the writes, so a flush nested in a write callback records the same socket state, not a guess.
+    const accepted = open && this.lastBufferedAt !== undefined ? Math.max(0, this.lastBuffered - buffered) : 0;
+    if (!sample) return !this.terminal;
+    this.sampleUplink(now, accepted, open, open ? socket.bufferedAmount : buffered);
+    this.evaluateConnection(now);
+    if ((this.shedBytes || this.notOpenBytes) && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
       this.shedReportedAt = now;
-      hostLogEvent({ event: 'uplink_shed', bytes: this.shedBytes, bufferedPeak: this.shedPeak });
-      this.shedBytes = 0; this.shedPeak = 0;
+      hostLogEvent({ event: 'uplink_shed', bytes: this.shedBytes, bufferedPeak: this.shedPeak, shedRuns: this.shedRuns,
+        drainBytesPerSec: this.drainBytesPerSec, notOpenBytes: this.notOpenBytes });
+      this.shedBytes = 0; this.shedPeak = 0; this.shedRuns = 0; this.notOpenBytes = 0;
     }
     return !this.terminal;
+  }
+
+  /** Record what this flush interval captured, discarded and the socket accepted, then start the next interval. */
+  private sampleUplink(now: number, accepted: number, open: boolean, buffered: number): void {
+    this.uplinkSamples.push({ at: now, captured: this.sampleCaptured, discarded: this.sampleDiscarded, accepted,
+      backlogged: open && buffered >= UPLINK_SHED_BYTES });
+    this.sampleCaptured = 0;
+    this.sampleDiscarded = 0;
+    this.lastBuffered = buffered;
+    this.lastBufferedAt = now;
+  }
+
+  /** W3: weak when over a fifth of the capture was discarded or the backlog never fell below the cap; ok after
+   *  five quiet seconds. One source feeds the caption and the watchdog's terminal code. */
+  private evaluateConnection(now: number): void {
+    const samples = this.uplinkSamples;
+    while (samples.length && samples[0]!.at < now - CONNECTION_WINDOW_MS) samples.shift();
+    const oldest = samples[0]?.at;
+    let captured = 0, discarded = 0, accepted = 0, pinned = samples.length > 0;
+    for (const sample of samples) {
+      captured += sample.captured; discarded += sample.discarded; accepted += sample.accepted;
+      if (!sample.backlogged) pinned = false;
+    }
+    const span = Math.max(1, now - (oldest ?? now));
+    this.drainBytesPerSec = Math.round(accepted * 1_000 / span);
+    // Both arms need a whole window: one lost frame in a half-filled window is a 100% share and would make the
+    // caption cry wolf on the first reconnect of a healthy call.
+    const covered = oldest !== undefined && now - oldest >= CONNECTION_WINDOW_MS;
+    for (const sample of samples) if (sample.discarded > 0 || sample.backlogged) this.lastUplinkLossAt = sample.at;
+    if (covered && captured > 0 && discarded / captured > CONNECTION_WEAK_SHARE) this.markUplinkLoss(now);
+    else if (covered && pinned) this.markUplinkLoss(now);
+    else if (this.connectionQuality === 'weak' && (this.lastUplinkLossAt === undefined || now - this.lastUplinkLossAt >= CONNECTION_OK_MS)) {
+      this.connectionQuality = 'ok';
+      hostLogEvent({ event: 'connection_quality', quality: 'ok', uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000) });
+    }
+  }
+
+  private markUplinkLoss(now: number): void {
+    if (this.connectionQuality !== 'weak') {
+      this.connectionQuality = 'weak';
+      hostLogEvent({ event: 'connection_quality', quality: 'weak', uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000) });
+    }
+    this.connectionWeakAt = now;
   }
 
   sendText(input: { text: string }): void {

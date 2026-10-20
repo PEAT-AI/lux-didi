@@ -1319,17 +1319,138 @@ describe('openai gpt-live turn states', () => {
     const receipts = hostReceipts(t);
     const { socket, session } = await fakeReady(t);
     socket.bufferedAmount = 96 * 1024;
-    for (let index = 0; index < 12; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    for (let index = 0; index < 40; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
     assert.deepEqual(socket.micFrames(), [], 'a backlogged uplink is never handed more mic audio');
     const shed = receipts().filter(record => record.event === 'uplink_shed');
     assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
     assert.ok(Number(shed[0]!.bytes) > 0, 'the receipt counts the shed bytes');
     assert.ok(Number(shed[0]!.bufferedPeak) >= 96 * 1024, 'and the peak backlog it was shed against');
     assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the shed receipt');
-    // The uplink recovers: eleven of the twelve frames are gone, so what the model gets is the newest speech.
+    // The uplink recovers and the queued run goes out: the queue was shed down to half the cap, so the frames
+    // that reach the model are a run of consecutive speech, never the newest frame on its own.
     socket.bufferedAmount = 0;
     session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
-    assert.equal(socket.micFrames().length, 2, 'only the newest frames are left to send');
+    const kept = socket.micFrames().length;
+    assert.ok(kept > 1, `a run of the kept frames goes out, got ${kept}`);
+  });
+
+  // W3: the owner is told when the internet is the reason. Quality is derived from what the adapter already
+  // measures (capture against discards, persistent backlog), and the upload figure is what the socket drained.
+  test('a link that drains 20 KB/s reads weak with the measured upload, and ok again after 5 s of health', async t => {
+    const receipts = hostReceipts(t);
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
+    for (let index = 0; index < 160; index += 1) {
+      socket.drain(400); // 400 B per 20 ms frame is 20 KB/s, well under the 66.4 KB/s the capture demands
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'weak', 'more than a fifth of the captured bytes were discarded');
+    const measured = Number(connection()?.uploadKbps);
+    assert.ok(measured >= 140 && measured <= 180, `about 160 kbit/s of drain, got ${measured}`);
+    for (let index = 0; index < 260; index += 1) {
+      socket.drain(20_000); // the link keeps up again: the socket buffer stays well below the cap
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'ok', 'five quiet seconds make it ok again');
+    const transitions = receipts().filter(record => record.event === 'connection_quality');
+    assert.ok(transitions.length >= 2, 'one host record per transition, never per frame');
+    assert.ok(transitions.every(safeEvent), 'the host log whitelist accepts the quality record');
+  });
+
+  // W3-R2(a): the measured regime, four tenths of the capture shed over three seconds with the socket
+  // backlogged but not pinned, is the case the owner's link actually ran.
+  test('a link that sheds four tenths of the capture reads weak at its own rate', async t => {
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
+    for (let index = 0; index < 300; index += 1) {
+      socket.drain(797); // 39.9 KB/s accepted against the 66.4 KB/s capture: about 40% discarded
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'weak', 'two fifths of the capture did not reach the wire');
+    const measured = Number(connection()?.uploadKbps);
+    assert.ok(measured >= 290 && measured <= 350, `about 319 kbit/s of drain, got ${measured}`);
+  });
+
+  // W3-R2(a): the trigger's lower side, a link that keeps up but loses one frame in seven to a short
+  // reconnect, is not weak: the caption must not cry wolf on a healthy call.
+  test('a link that loses a seventh of the capture to a short reconnect stays ok', async t => {
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
+    for (let index = 0; index < 300; index += 1) {
+      socket.drain(20_000); // the link keeps up: the socket buffer stays far below the cap
+      socket.readyState = index % 20 < 3 ? 2 : 1; // three frames in twenty land while the socket is reconnecting
+      session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'ok', 'a seventh of the capture lost is under the weak share');
+  });
+
+  // W3 requirement 1: the wire carries runs of consecutive frames, never 20 ms islands, and the receipt says
+  // how many runs went and how fast the socket was draining.
+  test('a slow uplink sheds whole runs of the oldest frames and reports the run count and the drain', async t => {
+    const receipts = hostReceipts(t);
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    // Every frame carries its own level, so the delivered audio itself says which frames arrived and which gap
+    // a shed left between them.
+    const level = (index: number) => 500 + 50 * index;
+    for (let index = 0; index < 500; index += 1) {
+      socket.drain(400);
+      session.sendAudio({ pcm: pcm16(320, level(index)), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    const arrived: number[] = [];
+    for (const frame of socket.sent) {
+      const parsed = JSON.parse(frame) as { type?: string; audio?: string };
+      if (parsed.type !== 'session.input_audio.append' || !parsed.audio) continue;
+      const pcm = Buffer.from(parsed.audio, 'base64');
+      let peak = 0;
+      for (let at = 0; at + 1 < pcm.byteLength; at += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(at)));
+      arrived.push(Math.round((peak - 500) / 50));
+    }
+    const runs: number[] = [];
+    let run = 0;
+    for (let at = 0; at < arrived.length; at += 1) {
+      if (at > 0 && arrived[at] === arrived[at - 1]! + 1) run += 1;
+      else { if (run) runs.push(run); run = 1; }
+    }
+    if (run) runs.push(run);
+    // The last run is cut off by the end of the capture, not by a shed: only the runs a shed closed are judged.
+    const closed = runs.slice(0, -1);
+    assert.ok(closed.length >= 4, `the session went out in consecutive runs, got ${closed.length}`);
+    assert.ok(Math.min(...closed) >= 10, `no delivered run is thinner than ten frames, shortest ${Math.min(...closed)} of ${closed.join(',')}`);
+    const shed = receipts().filter(record => record.event === 'uplink_shed');
+    assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
+    assert.ok(Number(shed[0]!.shedRuns) >= 1, 'the receipt counts shed runs, not shed frames');
+    assert.ok(Number(shed[0]!.bytes) >= Number(shed[0]!.shedRuns) * 1_280, 'and each run is whole frames, not thin ones');
+    const drain = Number(shed[0]!.drainBytesPerSec);
+    assert.ok(drain >= 15_000 && drain <= 25_000, `about 20 KB/s accepted, got ${drain}`);
+    assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the widened shed receipt');
+  });
+
+  // W3 requirement 2: a frame lost because the socket is not open is counted too, in its own field.
+  test('frames discarded while the socket is not open are counted apart from queue-overflow sheds', async t => {
+    for (const state of [2, 3]) {
+      const receipts = hostReceipts(t);
+      const { socket, session } = await fakeReady(t);
+      socket.readyState = state; // CONNECTING (2) or CLOSED (3): the frame never reaches the wire
+      for (let index = 0; index < 3; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      const shed = receipts().filter(record => record.event === 'uplink_shed');
+      assert.equal(shed.length, 1, 'lost frames are a receipt');
+      assert.equal(Number(shed[0]!.bytes), 0, 'nothing was shed from a queue overflow');
+      assert.ok(Number(shed[0]!.notOpenBytes) >= 1_280, `a whole lost frame is counted, got ${shed[0]!.notOpenBytes}`);
+      assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the not-open count');
+    }
   });
 
   // 3o: a stall is inbound silence, never an upload queue. Both halves of the measured session are pinned here.

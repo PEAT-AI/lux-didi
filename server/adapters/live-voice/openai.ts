@@ -1694,9 +1694,9 @@ class Session implements LiveVoiceSession {
         }
         this.shedRuns += 1;
       }
-      // The socket is refilled to the cap only once it has drained to the low-water mark, so its buffer takes
-      // one contiguous run at a time instead of one frame per freed slot.
-      const room = socket.bufferedAmount < UPLINK_SHED_LOW_BYTES ? UPLINK_SHED_BYTES : 0;
+      // A congested queue refills the socket only once it has drained to the low-water mark, so the buffer takes
+      // one contiguous run at a time instead of one frame per freed slot. A queue inside the cap writes freely.
+      const room = this.micPendingBytes > UPLINK_SHED_BYTES && socket.bufferedAmount >= UPLINK_SHED_LOW_BYTES ? 0 : UPLINK_SHED_BYTES;
       while (this.micPending.length && socket.bufferedAmount < room) {
         const next = this.micPending.shift()!;
         this.micPendingBytes -= Buffer.byteLength(next.frame);

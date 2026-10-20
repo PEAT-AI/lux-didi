@@ -1489,7 +1489,8 @@ describe('openai gpt-live turn states', () => {
     assert.ok(Math.min(...closed) >= 10, `no delivered run is thinner than ten frames, shortest ${Math.min(...closed)} of ${closed.join(',')}`);
     const shed = receipts().filter(record => record.event === 'uplink_shed');
     assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
-    assert.ok(Number(shed[0]!.shedRuns) >= 2, 'the receipt counts shed runs, not shed frames');
+    assert.ok(Number(shed[0]!.shedRuns) >= 1, 'the receipt counts shed runs, not shed frames');
+    assert.ok(Number(shed[0]!.bytes) >= Number(shed[0]!.shedRuns) * 1_280, 'and each run is whole frames, not thin ones');
     const drain = Number(shed[0]!.drainBytesPerSec);
     assert.ok(drain >= 15_000 && drain <= 25_000, `about 20 KB/s accepted, got ${drain}`);
     assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the widened shed receipt');

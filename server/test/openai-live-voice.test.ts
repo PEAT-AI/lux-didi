@@ -1486,7 +1486,7 @@ describe('openai gpt-live turn states', () => {
     // The last run is cut off by the end of the capture, not by a shed: only the runs a shed closed are judged.
     const closed = runs.slice(0, -1);
     assert.ok(closed.length >= 4, `the session went out in consecutive runs, got ${closed.length}`);
-    assert.ok(Math.min(...closed) >= 10, `no delivered run is thinner than ten frames, shortest ${Math.min(...closed)}`);
+    assert.ok(Math.min(...closed) >= 10, `no delivered run is thinner than ten frames, shortest ${Math.min(...closed)} of ${closed.join(',')}`);
     const shed = receipts().filter(record => record.event === 'uplink_shed');
     assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
     assert.ok(Number(shed[0]!.shedRuns) >= 2, 'the receipt counts shed runs, not shed frames');

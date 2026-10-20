@@ -1411,11 +1411,13 @@ const coveredDay = (ms: number, zone: string | undefined): string => {
 };
 
 /**
- * #1020 behaviour 2: a calendar answer states the window it actually read, so a one-day read is never spoken
- * as "the rest of the week is clear", and the partiality of a cut or paged read is never left implicit.
+ * #1020 behaviour 2: a calendar answer states the window it actually covered, so a read whose events sit in
+ * one day of a wider request is never spoken as "the rest of the week is clear", and the partiality of a cut
+ * or paged read is never left implicit. A clean read that covers its whole request adds no line.
  */
 function calendarCoverageLine(run: RunState): string | undefined {
   if (run.calendar.size === 0) return undefined;
+  const zone = run.timeZone;
   const spans: [number, number][] = [];
   for (const read of run.calendar.values()) {
     const from = Date.parse(String(read.args['timeMin'])), to = Date.parse(String(read.args['timeMax']));
@@ -1423,13 +1425,16 @@ function calendarCoverageLine(run: RunState): string | undefined {
   }
   if (spans.length === 0) return undefined;
   const from = Math.min(...spans.map(([at]) => at)), to = Math.max(...spans.map(([, at]) => at));
-  const window = coveredDay(from, run.timeZone) === coveredDay(to - 1, run.timeZone)
-    ? `${coveredDay(from, run.timeZone)} only`
-    : `${coveredDay(from, run.timeZone)} to ${coveredDay(to - 1, run.timeZone)}`;
+  const span = (a: number, b: number): string => coveredDay(a, zone) === coveredDay(b, zone) ? `${coveredDay(a, zone)} only` : `${coveredDay(a, zone)} to ${coveredDay(b, zone)}`;
+  const requested = span(from, to - 1);
+  const starts = [...run.calendar.values()].flatMap(read => [...read.events.values()].map(event => Date.parse(event.start))).filter(at => Number.isFinite(at) && at >= from && at < to);
+  const covered = starts.length === 0 ? undefined : span(Math.min(...starts), Math.max(...starts));
+  const narrower = covered !== undefined && (coveredDay(Math.min(...starts), zone) !== coveredDay(from, zone) || coveredDay(Math.max(...starts), zone) !== coveredDay(to - 1, zone));
   const partial = [...run.calendar.values()].some(read => read.failed || read.unread > 0 || read.nextPageToken !== undefined || !read.exhausted);
-  return partial
-    ? `calendar: covers ${window}, and part of that window was not read; nothing outside it was read`
-    : `calendar: covers ${window}; nothing outside it was read`;
+  if (narrower) return `calendar: covers ${covered}; the rest of ${requested} was NOT read${partial ? ', and part of that window was not read either' : ''}`;
+  if (partial) return `calendar: covers ${covered ?? requested}, and part of ${requested} was not read`;
+  if (run.calendarScope?.partial === true) return `calendar: covers ${covered ?? requested}, but the calendar list was not fully read`;
+  return undefined;
 }
 
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false): JsonObject {

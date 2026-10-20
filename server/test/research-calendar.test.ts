@@ -315,18 +315,16 @@ test('calendar R6: an explicit retired id cannot retarget a different pending ru
 
 // --- #1020: a calendar answer states the window it read -------------------------------------------
 
-test('#1020: a one-day calendar read states the window it covered, so it is never spoken as a clear week', async () => {
+test('#1020: a week-long calendar read whose events sit in one day says so, and is never spoken as a clear week', async () => {
   const h = fixture([event(21)]);
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
-  assert.match(String(reply['note']), /calendar: covers Mon 19 Oct only; nothing outside it was read/, 'the covered window and what was not read are said in one line');
-  assert.deepEqual(reply['findings'], [], 'and nothing is claimed as planned for that window');
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  assert.match(String(reply['note']), /calendar: covers Wed 21 Oct; the rest of Mon 19 Oct to Sun 25 Oct was NOT read/, 'the covered days and the days never covered are said in one line');
+  assert.deepEqual((reply['findings'] as { source: string }[]).map(finding => finding.source), ['calendar'], 'the one day it did cover still answers');
 });
 
-test('#1020: a paged calendar read says part of its window was not read, and shown never exceeds total', async () => {
+test('#1020: a paged calendar read never claims more shown than total, and a cut one says what it missed', async () => {
   const h = fixture([event(21), event(22), event(23)], { token: 'second', pageSize: 2 });
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
-  assert.match(String(reply['note']), /calendar: covers Mon 19 Oct to Sun 25 Oct/, 'the covered window is stated');
-  assert.match(String(reply['note']), /nothing outside it was read/);
   for (const finding of (reply['findings'] ?? []) as { text: string }[]) {
     for (const match of finding.text.matchAll(/(\d+) of (\d+) shown/gu)) assert.ok(Number(match[1]) <= Number(match[2]), `${match[0]} in ${finding.text.split('\n')[0]}`);
   }

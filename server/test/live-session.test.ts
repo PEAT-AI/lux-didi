@@ -3068,7 +3068,7 @@ test('F6-R1: a successful research call is journaled completed, not error', asyn
   const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
   assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
   const markdown = String(result?.tool?.markdown ?? '');
-  assert.match(markdown, /^research: completed, (findings from [a-z ]+|no findings)/, 'the settled projection records what the provider was sent, never a bare status');
+  assert.match(markdown, /^research: completed, (findings from [a-z ]+(, [a-z ]+)*|no findings)/, 'the settled projection records what the provider was sent, never a bare status');
   assert.ok(markdown.length <= 240, `the projection stays bounded (${markdown.length} chars)`);
 });
 test('F4: a pending research call is journalled as called, never error', async t => {

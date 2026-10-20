@@ -4804,11 +4804,12 @@ test('W6/H12: a second owner utterance closes the open turn as superseded and na
   const { session, attachment } = await attached(h, 'supersede-turn');
   // An utterance opens a turn; the finished frame ends that utterance, not the turn, because the
   // provider has not sent turnComplete yet. The next utterance therefore arrives while it is open.
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
   h.f.send({ serverContent: { inputTranscription: { text: 'first question' } } });
-  await drain(h, session.liveSessionId, 1);
+  await drain(h, session.liveSessionId, baseline + 1);
   h.f.send({ serverContent: { inputTranscription: { text: '', finished: true } } });
   h.f.send({ serverContent: { inputTranscription: { text: 'second question' } } });
-  await drain(h, session.liveSessionId, 3);
+  await drain(h, session.liveSessionId, baseline + 3);
   const turns = h.store.transaction(tx => tx.all(
     'SELECT turn_id, turn_index, closed_at, close_reason, supersedes_turn_id FROM trace_turn WHERE live_session_id=? ORDER BY turn_index',
     [session.liveSessionId]));
@@ -4824,8 +4825,9 @@ test('W6/H12: a second owner utterance closes the open turn as superseded and na
 test('W6/H12: a session that ends closes its last turn, so no normal turn is left open', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'session-end-turn');
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
   h.f.send({ serverContent: { inputTranscription: { text: 'only question' } } });
-  await drain(h, session.liveSessionId, 1);
+  await drain(h, session.liveSessionId, baseline + 1);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
   const turns = h.store.transaction(tx => tx.all('SELECT close_reason, closed_at FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
@@ -4835,8 +4837,9 @@ test('W6/H12: a session that ends closes its last turn, so no normal turn is lef
 test('W6/H13: a playback receipt names the turn and the response open when its first chunk went out', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'playback-attribution');
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
   h.f.send({ serverContent: { inputTranscription: { text: 'how long was that call' } } });
-  await drain(h, session.liveSessionId, 1);
+  await drain(h, session.liveSessionId, baseline + 1);
   const open = h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_turn WHERE live_session_id=? AND closed_at IS NULL', [session.liveSessionId]))!;
   const turnId = String(open['turn_id']);
   const responseKey = scopedTraceKey(session.liveSessionId, 'e0', 'response', 'resp-fixture');
@@ -4848,10 +4851,6 @@ test('W6/H13: a playback receipt names the turn and the response open when its f
   attachment.playbackReceipt(frame('received', 1));
   attachment.playbackReceipt(frame('enqueued', 2));
   attachment.playbackReceipt(frame('started', 3));
-  const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM trace_event WHERE live_session_id=? ORDER BY seq', [session.liveSessionId]).map(row => row['kind']));
-  assert.deepEqual(kinds, ['playback.received', 'playback.enqueued', 'playback.started'], 'DEBUGKINDS');
-  const keys = h.store.transaction(tx => tx.all('SELECT playback_key, source_instance_id, segment_seq FROM trace_playback WHERE live_session_id=?', [session.liveSessionId]));
-  assert.deepEqual(keys, [`WANTED:${session.liveSessionId}:inst-e2:1`], 'DEBUGKEYS');
   const row = h.store.transaction(tx => tx.get('SELECT turn_id, response_key, received_at FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-e2:1`]))!;
   assert.equal(row['turn_id'], turnId, 'the segment is tied to the turn that was open when its first chunk was sent');
   assert.equal(row['response_key'], responseKey, 'and to the response that was current then');

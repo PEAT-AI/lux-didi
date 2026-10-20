@@ -720,7 +720,8 @@ test('a start removes the retired debug journal once and logs one byte-counted r
     const first = await startHost({ dataDir, webRoot, port: 0 });
     const receipts = async (): Promise<Record<string, unknown>[]> =>
       (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
-        .map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'debug_journal_removed');
+        .map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'debug_journal_removed')
+        .map(line => ({ bytes: line.bytes, event: line.event }));
     try {
       await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the retired journal is gone');
       assert.equal(await readFile(join(dataDir, 'keep-me.txt'), 'utf8'), 'kept', 'nothing else in the data dir is touched');

@@ -13,7 +13,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
-import { identityAction, proveIdentity, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
+import { identityAction, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -358,8 +358,8 @@ export async function composeMcpRuntime(options: {
         if (identityAction(identity, identitySource.strict === true) === 'refuse') {
           // A strict source refuses an unproven identity too. The reason code is a closed helper code,
           // so the reply names the source without ever carrying the account or a token path.
-          const code: 'identity_mismatch' | IdentityErrorCode = identity.match === false ? 'identity_mismatch' : identity.code ?? 'identity_unverified';
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `identity-${code === 'identity_mismatch' ? 'mismatch' : 'unproven'}`, reasonCode: code, identity });
+          const code = refusalCode(identity);
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
           return { retryable: false };
         }
         if (!identity.proven) {

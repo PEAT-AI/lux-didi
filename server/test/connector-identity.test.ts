@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
-  calendarIdentityValues, classifyIdentity, gmailIdentityValues, helperErrorCode, identityAction, identityMatch,
+  calendarIdentityValues, classifyIdentity, gmailIdentityValues, helperErrorCode, identityAction, identityMatch, refusalCode,
   mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity,
   type IdentityProof, type IdentitySource,
 } from '../connectors/identity.js';
@@ -114,7 +114,7 @@ test('projectIdentity returns a closed shape, dropping anything unvalidated', ()
 // Real refusal wiring: one fake Gmail endpoint, the real host compose path, synthetic identities only.
 const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 
-async function gmailHost(email: string, options: { profile?: { content: unknown[]; isError?: boolean } } = {}) {
+async function gmailHost(email: string) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
@@ -123,7 +123,7 @@ async function gmailHost(email: string, options: { profile?: { content: unknown[
     jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
       ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
       : message.method === 'tools/list' ? { tools }
-      : message.method === 'tools/call' ? (options.profile ?? { content: [{ type: 'text', text: JSON.stringify({ emailAddress: email }) }] }) : {},
+      : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ emailAddress: email }) }] } : {},
   };
   const endpoint = createServer(async (req, res) => {
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
@@ -167,21 +167,23 @@ test('a proven match keeps the connector and logs only the booleans', async () =
   assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
 });
 
-test('a helper identity refusal refuses Google with the closed code, never an unverified empty read', async () => {
+test('a helper identity refusal refuses a strict source with its closed code, never an unverified read', () => {
   // lux-didi #495: an unproven identity is never a published connector, so the helper's refusal
   // cannot become an empty mailbox that reads as "no mail". Neither the address nor a path is spoken.
-  const { reports } = await gmailHost(OWNER, {
-    profile: { content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true },
-  });
-  assert.equal(reports[0]!.state, 'error');
-  assert.equal(reports[0]!.reasonCode, 'account_mismatch');
-  assert.equal(reports[0]!.identity?.proven, false);
-  assert.equal(JSON.stringify(reports[0]).includes(OWNER), false, 'no address in the report');
+  const gmail: IdentitySource = { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
+  const refusal = classifyIdentity(evidence({ content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true }), gmail, [OWNER]);
+  assert.deepEqual(refusal, { proven: false, match: null, value: null, code: 'account_mismatch' });
+  assert.equal(identityAction(refusal, true), 'refuse');
+  assert.equal(identityAction(refusal), 'unproven', 'a non-strict source keeps its no-comparison policy');
+  assert.equal(refusalCode(refusal), 'account_mismatch');
+  assert.equal(JSON.stringify(refusal).includes(OWNER), false, 'no address in the report');
 });
 
-test('a profile with no identity value refuses a strict Google connector as identity_unverified', async () => {
-  const { reports } = await gmailHost(OWNER, { profile: { content: [{ type: 'text', text: JSON.stringify({ messagesTotal: 0 }) }] } });
-  assert.equal(reports[0]!.state, 'error');
-  assert.equal(reports[0]!.reasonCode, 'identity_unverified');
-  assert.deepEqual(reports[0]!.identity, { proven: false, match: null, value: null });
+test('an unproven strict proof refuses as identity_unverified, and a mismatch keeps its own code', () => {
+  const gmail: IdentitySource = { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
+  const unproven = classifyIdentity(evidence({ messagesTotal: 0 }), gmail, [OWNER]);
+  assert.deepEqual(unproven, { proven: false, match: null, value: null });
+  assert.equal(identityAction(unproven, true), 'refuse');
+  assert.equal(refusalCode(unproven), 'identity_unverified');
+  assert.equal(refusalCode({ proven: true, match: false, value: OTHER }), 'identity_mismatch');
 });

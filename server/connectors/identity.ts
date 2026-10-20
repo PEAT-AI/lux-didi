@@ -142,6 +142,12 @@ export function identityAction(proof: IdentityProof, strict = false): IdentityAc
   return proof.proven ? 'offer' : 'unproven';
 }
 
+/** The closed reason code a refusal is reported under: a mismatch is its own code, and any other
+ * refusal names the helper's code, defaulting to identity_unverified. Never free text. */
+export function refusalCode(proof: IdentityProof): 'identity_mismatch' | IdentityErrorCode {
+  return proof.match === false ? 'identity_mismatch' : proof.code ?? 'identity_unverified';
+}
+
 /**
  * Run one connector identity probe under a short timeout. A throw, a timeout, a refused call or an
  * empty value set is unproven, never a refusal: the connector stays usable and is shown unverified.

@@ -129,7 +129,7 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
   const turnRows = read.all('SELECT * FROM trace_turn WHERE live_session_id=? ORDER BY turn_index, opened_at', [liveSessionId]);
   const responses = read.all('SELECT * FROM trace_response WHERE live_session_id=? ORDER BY created_at, response_key', [liveSessionId]).map(responseView);
   const continuations = continuationDecisions(read, liveSessionId);
-  const stageRows = read.all("SELECT call_key,kind,at,mono_ms,clock_domain FROM trace_event WHERE live_session_id=? AND kind IN ('call.intent','call.executed','call.completed','call.output_prepared','call.output_written') ORDER BY seq",[liveSessionId]);
+  const stageRows = read.all("SELECT call_key,kind,at,mono_ms,clock_domain FROM trace_event WHERE live_session_id=? AND kind IN ('call.intent','call.executed','call.output_prepared','call.output_written') ORDER BY seq",[liveSessionId]);
   const coverageRow = read.get("SELECT name FROM sqlite_schema WHERE type='table' AND name='live_sessions'")
     ? read.get('SELECT diagnostic_metadata_state,diagnostic_content_state,native_receipt_state,diagnostic_failures,diagnostic_last_reason,diagnostic_unattributed_transcripts FROM live_sessions WHERE live_session_id=?',[liveSessionId]) : undefined;
   const coverage = coverageRow ? { metadata: str(coverageRow.diagnostic_metadata_state) ?? 'unknown',content: str(coverageRow.diagnostic_content_state) ?? 'unknown',native: str(coverageRow.native_receipt_state) ?? 'unknown',failureCountLowerBound: num(coverageRow.diagnostic_failures),lastReason: str(coverageRow.diagnostic_last_reason),unassociatedTranscriptRows: num(coverageRow.diagnostic_unattributed_transcripts) } : undefined;
@@ -137,7 +137,7 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
     .map(call => {
       const decided = call.responseKey === null ? undefined : continuations.get(call.responseKey);
       const stages = stageRows.filter(row => row.call_key === call.callKey).map(row => ({ kind: String(row.kind),at: Number(row.at),monoMs: Number(row.mono_ms),clockDomain: str(row.clock_domain) }));
-      const start = stages.find(row => row.kind === 'call.executed'),end = stages.find(row => row.kind === 'call.completed');
+      const start = stages.find(row => row.kind === 'call.executed'),end = stages.find(row => row.kind === 'call.output_written');
       const executionMs = start?.clockDomain && start.clockDomain === end?.clockDomain && end.monoMs >= start.monoMs ? end.monoMs-start.monoMs : null;
       return { ...call,stages,executionMs,continuationAt: decided?.at ?? null,continuationOutcome: decided?.outcome ?? null };
     });
@@ -225,8 +225,11 @@ function gapsFor(track: TurnTrack): TraceGap[] {
 
   const answered = responses.some(response => response.status === 'completed');
   const audible = playback.some(segment => segment.audibleAt !== null);
+  // Until the app reports playback.audible, a segment that started is unknown audibility, not absent:
+  // the gap would otherwise fire on every answered turn and drown the real ones (#451 H13).
+  const audibilityUnknown = playback.some(segment => segment.startedAt !== null);
   const silent = turn.outcome === 'no_response' || turn.outcome === 'failed';
-  if (answered && !audible && !silent) {
+  if (answered && !audible && !audibilityUnknown && !silent) {
     add('no_audible_output', 'playback.audible_at or turn outcome silent/no_response',
       'a completed answer never became audible', {});
   }
@@ -319,7 +322,7 @@ export function renderTimeline(report: TimelineReport): string {
     for (const c of track.calls) {
       lines.push(`  call ${c.callKey} ${c.name} response=${orDash(c.responseKey)} intent=${wall(c.intentAt)} executed=${wall(c.executedAt)}`
         + ` prepared=${wall(c.outputPreparedAt)} written=${wall(c.outputWrittenAt)} outcome=${c.outcome}`
-        + ` ms=${c.ms ?? '-'} argsChars=${c.argsChars} resultChars=${c.resultChars ?? '-'}`
+        + ` ms=${c.ms ?? '-'} executionMs=${c.executionMs ?? '-'} argsChars=${c.argsChars} resultChars=${c.resultChars ?? '-'}`
         + ` continuation=${wall(c.continuationAt)}${c.continuationOutcome === null ? '' : `:${c.continuationOutcome}`}`);
     }
     for (const p of track.playback) lines.push(playbackLine(p));

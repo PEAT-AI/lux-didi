@@ -19,7 +19,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, recordCallResult, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -198,7 +198,8 @@ const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waiti
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
-/** #451 Q8: one status definition for a tool call. `error` only when the result carries nothing usable. */
+/** #451 Q8: one status definition for a tool call. `error` only when the result carries nothing usable,
+ *  so a call whose answer arrived is never recorded as failed because part of it did not. */
 export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
   const error = response['error'];
   if (error === undefined) return 'completed';
@@ -1268,12 +1269,43 @@ export class LiveSessionOwner {
    */
   #playbackReceipt(handle: ActiveSession, frame: string): void {
     try {
-      recordPlaybackReceipt(this.#store, handle.liveSessionId, parsePlaybackReceipt(frame));
+      const receipt = parsePlaybackReceipt(frame);
+      recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle));
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
       this.#diagnosticFailure(handle,'native_receipt_rejected');
     }
+  }
+
+  /**
+   * #451 V7/Q6: a playback segment is tied to the turn and the response that were open when its first
+   * chunk went out, so a truncation can be read against the answer it cut. The host knows the turn
+   * directly and the response through the trace row it recorded for that turn; when neither is open
+   * the attribution stays empty rather than guessed.
+   */
+  /**
+   * #451 H14: the result content of one call, in the content table the diagnostic timeline reads, written
+   * on the same path that wrote tool_calls.result_json. One call, one row; trace retention prunes it.
+   */
+  #callResult(handle: ActiveSession, callId: string, response: JsonObject | undefined, markdown: string | undefined): void {
+    const text = response === undefined || Object.keys(response).length === 0 ? markdown ?? '' : JSON.stringify(response);
+    if (text.length === 0) return;
+    try {
+      recordCallResult(this.#store, { callKey: scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', callId), text });
+    } catch (error) {
+      hostLogEvent({ event: 'live_trace_rejected', kind: 'call.result', code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+    }
+  }
+
+  #playbackAttribution(handle: ActiveSession): { turnId?: string; responseKey?: string } {
+    const turnId = handle.connection.turnId;
+    if (turnId === undefined) return {};
+    const row = this.#store.transaction(tx => tx.get(
+      'SELECT response_key FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at DESC, response_key DESC LIMIT 1',
+      [handle.liveSessionId, turnId]));
+    const responseKey = row?.['response_key'];
+    return { turnId, ...(typeof responseKey === 'string' ? { responseKey } : {}) };
   }
 
   #armIdle(handle: ActiveSession, remainingMs: number): void {
@@ -1605,18 +1637,23 @@ export class LiveSessionOwner {
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
+    const connection = handle.connection;
+    // #451 H12: a second owner utterance arrives before the provider's turnComplete, so the turn it
+    // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.
+    const supersedes = connection.turnId;
+    if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
     this.#cancelProgress(handle);
     handle.progressSentAt = undefined;
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
     handle.liveStepItems.clear();
-    const connection = handle.connection;
     connection.turnIndex += 1;
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
     this.#receipt(handle, 'turn.opened', { turnId }, {
       origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
+      ...(supersedes === undefined ? {} : { supersedesTurnId: supersedes }),
       ...(connection.turnIndex > 1 ? { attributionUncertain: true } : {}),
     });
   }
@@ -2650,12 +2687,16 @@ export class LiveSessionOwner {
     }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
+      // #451 Q8: the status the journal carries is the one definition of how the result settled, so a
+      // call whose result carries content can never be described as failed.
+      const status = journalToolStatus(responses[index]?.response ?? {});
       // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
       // the ceiling settled keeps that status, because "timed out" is what happened and "failed" would hide it.
       if (handle.exec.has(id) && handle.exec.get(id)?.status !== 'timeout') {
-        if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
+        if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: status === 'completed' ? 'done' : 'failed' });
       }
-      if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
+      if (handle.pendingCallIds.has(id)) publish('toolResult', { ...projection, status, ...(handle.bargeInCallIds.has(id) ? { code: 'after_barge_in' } : {}) });
+      this.#callResult(handle, id, responses[index]?.response, projection.markdown);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
       const started = handle.callStartedAt.get(call.id);

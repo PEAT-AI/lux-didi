@@ -627,6 +627,10 @@ interface MailRead {
   args: JsonObject; messages: Map<string, MailMessage>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   received: number; invalid: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** A connector answer that carried text but no page envelope is one read, kept whole. */
+  plain?: string;
+  /** The connector's own failure code, kept so the sub-call log names the real reason. */
+  code?: string;
 }
 type RemoteBody = Extract<HostEvidenceRef, { kind: 'remote-body' }>;
 interface ReceivedBody { evidence: RemoteBody; binding: ToolResultBinding; source: SourceKind; offset: number }
@@ -645,6 +649,8 @@ interface CalendarRead {
   args: JsonObject; events: Map<string, RetainedCalendarEvent>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** The connector's own failure code, kept so the sub-call log names the real reason. */
+  code?: string;
 }
 export interface RunState {
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
@@ -884,7 +890,10 @@ function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMEN
 
 /** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
 export function parseResearch(args: unknown): ParsedResearch {
-  const record = isRecord(args) ? args : {};
+  const given = isRecord(args) ? args : {};
+  // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
+  const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
+    ? { ...given, sources: given['sources'][0] as string } : given;
   const action = record['action'];
   const shape: ResearchArgumentShape = {
     action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
@@ -895,25 +904,25 @@ export function parseResearch(args: unknown): ParsedResearch {
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
   if (shape.unknownFieldCount) return refuse('unknown_fields');
-  if (!Object.hasOwn(args, 'action')) return refuse('action_missing');
+  if (!Object.hasOwn(record, 'action')) return refuse('action_missing');
   if (action !== 'start' && action !== 'continue' && action !== 'stop') return refuse('action_invalid');
   for (const [key, reason] of [['question', 'question_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
-    if (Object.hasOwn(args, key) && typeof args[key] !== 'string') return refuse(reason);
+    if (Object.hasOwn(record, key) && typeof record[key] !== 'string') return refuse(reason);
   }
-  if (args['question'] !== undefined && optionalString(args['question']) === undefined) return refuse('question_required');
-  if (args['researchId'] !== undefined && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
-  if (action === 'start' && optionalString(args['question']) === undefined) return refuse('question_required');
-  if (action !== 'start' && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
-  if (Object.hasOwn(args, 'cursor')) {
-    if (typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128) return refuse('cursor_type');
+  if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
+  if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
+  if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  if (Object.hasOwn(record, 'cursor')) {
+    if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
     if (action !== 'continue') return refuse('cursor_action');
-    if (Object.hasOwn(args, 'lookups')) return refuse('cursor_lookups_conflict');
+    if (Object.hasOwn(record, 'lookups')) return refuse('cursor_lookups_conflict');
   }
-  if (Object.hasOwn(args, 'lookups')) {
+  if (Object.hasOwn(record, 'lookups')) {
     if (action === 'stop') return refuse('lookups_stop');
-    if (!Array.isArray(args['lookups'])) return refuse('lookups_type');
-    if (args['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
-    for (const entry of args['lookups']) {
+    if (!Array.isArray(record['lookups'])) return refuse('lookups_type');
+    if (record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    for (const entry of record['lookups']) {
       if (!isRecord(entry)) return refuse('lookup_type');
       if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
       if (typeof entry['source'] !== 'string' || !(LOOKUP_SOURCES as readonly string[]).includes(entry['source'])) return refuse('lookup_source');
@@ -927,7 +936,7 @@ export function parseResearch(args: unknown): ParsedResearch {
       }
     }
   }
-  return { ok: true, call: args as unknown as ResearchCall };
+  return { ok: true, call: record as unknown as ResearchCall };
 }
 
 export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
@@ -936,6 +945,15 @@ export function researchRepair(reason: ResearchRefusalReason): JsonObject {
   return {
     error: 'invalid_research_arguments', state: 'refused', reason,
     guidance: 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+  };
+}
+
+/** R9: a call refused before dispatch still leaves exactly one run receipt, in the run line's own shape. */
+export function refusedResearchRunLog(): ResearchRunLog {
+  return {
+    event: 'research_run', researchId: newResearchId(), questionClass: 'cross_source', rounds: 0, perRound: [],
+    stopReason: 'refused', status: 'failed', ops: 0, sources: [], elapsedMs: 0, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 0, unchecked: [], canContinue: false, findingChars: [],
   };
 }
 
@@ -1402,7 +1420,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const cursorPage = run.mailCursorRequested ? run.mailCursors.get(run.mailCursorRequested) : undefined;
   const mailRemaining = cursorPage?.ids.length ? allMailRemaining.filter(([key]) => cursorPage.ids.includes(key)) : allMailRemaining;
   const mailReads = [...run.mail.values()];
-  if (mailRemaining.length) groups.push({ source: 'mail', label: 'mail messages', lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
+  if (mailRemaining.length) groups.push({ source: 'mail', label: SOURCE_LABEL.mail, lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
   const mailUpstream = mailReads.some(read => !read.failed && !read.exhausted);
   const mailIncomplete = mailReads.some(read => read.failed || read.upstreamIncomplete || read.invalid > 0 || [...read.messages.values()].some(message => message.bodyTruncated));
   if ((mailIncomplete || mailUpstream || mailRemaining.length > 8) && status === 'answered') status = 'partial';
@@ -1605,10 +1623,30 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     catch { for (const read of reads) { read.inflight = false; read.failed = true; } if (signal.aborted) run.cutShort.add('mail'); break; }
     if (parent.aborted || run.cancelled || run.stopped) { invalidateEvidence(run); break; }
     if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
+    // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
+    // A native page that failed is terminal for its source, so only a first page is retried.
+    const retried = calls.map((_, index) => index).filter(index => !results[index]?.ok && !calls[index]!.args['pageToken']);
+    if (retried.length > 0) {
+      try {
+        const again = await deps.execute(retried.map(index => calls[index]!), signal);
+        retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
+      } catch { /* the first answer stands */ }
+    }
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.mailPage || deps.authorizeEvidence && !result.binding) { read.failed = true; return; }
+      if (!result?.ok || deps.authorizeEvidence && !result.binding) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      // A search that answered with text but no page envelope is still that search's answer: each tagged
+      // line is one message, so the follow-up read and the reply carry it like any other page.
+      if (!result.mailPage) {
+        for (const line of itemLines(result.text).filter(entry => entry.startsWith('- '))) {
+          const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
+          if (id && !read.messages.has(id)) read.messages.set(id, { id, threadId: '', internalDate: '', line, bodyTruncated: false });
+        }
+        if (read.messages.size === 0) read.plain = [read.plain, result.text].filter(Boolean).join('\n');
+        read.exhausted = true;
+        return;
+      }
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.mailPage;
@@ -1665,7 +1703,17 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.calendarPage || (deps.authorizeEvidence && !result.binding)) { read.failed = true; return; }
+      if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      // A calendar answer with text but no page envelope is still that source's answer: each tagged
+      // line is one event, so the brief fan-out and the reply carry it like any other page.
+      if (!result.calendarPage) {
+        for (const [index, line] of itemLines(result.text).filter(entry => entry.startsWith('- ')).entries()) {
+          const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
+          read.events.set(id ? `${id}:${line}` : JSON.stringify([read.args, read.nextPageToken ?? null, index]), { id: id ?? '', start: line.slice(2).split(',')[0]!.trim(), line, bodyTruncated: false });
+        }
+        read.exhausted = true;
+        return;
+      }
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.calendarPage;
@@ -1854,7 +1902,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         queryChars: outcome.lookup.query.length, queryAuthor: 'routed',
       });
       const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
-      if (outcome.source !== 'memory') run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
+      // Own memory is a finding too, so a memory layer that settles first is a real first answer.
+      run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
       if (outcome.source === 'memory') {
         if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
         else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
@@ -2083,6 +2132,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   };
   const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
   let invocation = 0;
+  /** The host's step sink threw on this run: a host fault the prime read's own catch must not read as an empty source. */
+  let stepSinkFailed = false;
   deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
@@ -2096,7 +2147,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
       return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
     });
-    for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); }
+    try { for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); } }
+    catch (error) { stepSinkFailed = true; throw error; }
     update();
     let ended = false;
     const finish = (results: readonly IntentSubResult[], errorCode?: 'failed' | 'timeout' | 'cancelled'): void => {
@@ -2241,7 +2293,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const remainingMs = deadlineAt - now();
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch(() => [] as IntentSubResult[]);
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch((error: unknown) => {
+            if (stepSinkFailed) throw error;
+            return [] as IntentSubResult[];
+          });
         }
       }
 
@@ -2402,7 +2457,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             return calendarCalls.map(call => {
               const read = run.calendar.get(JSON.stringify(call.args));
               const text = read ? [...read.events.values()].map(event => event.line).join('\n') : '';
-              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0 };
+              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0, ...(read?.code ? { code: read.code } : {}) };
             });
           };
           const mailResults = async (): Promise<IntentSubResult[]> => {
@@ -2411,8 +2466,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const reads = mailCalls.map(call => mailRead(run, call.args));
             await collectMail(deps, run, readSignal, Math.min(readDeadlineMs, deadlineAt - now()), now);
             return mailCalls.map((call, n) => {
-              const read = reads[n]!, text = [...read.messages.values()].map(message => message.line).join('\n');
-              return { key: call.key, name: call.name, ok: read.messages.size > 0 || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0 };
+              const read = reads[n]!;
+              const text = [...read.messages.values()].map(message => message.line).concat(read.plain ? [read.plain] : []).join('\n');
+              return { key: call.key, name: call.name, ok: read.messages.size > 0 || Boolean(read.plain) || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0, ...(read.code ? { code: read.code } : {}) };
             });
           };
           let results: IntentSubResult[];

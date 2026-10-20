@@ -138,16 +138,18 @@ export function projectIdentity(value: unknown): IdentityProof | undefined {
 
 /**
  * One identity proof per boot per connector account (H19): two endpoints of the same account, a
- * mailbox and a calendar for example, prove the same account once, never twice. Only a proven result
+ * mailbox and a calendar for example, prove the same account once, never twice. Endpoints connect
+ * concurrently, so the in-flight promise is what is shared, not only its result. Only a proven proof
  * is kept, so an unproven connector probes again on the next connect and a later login is picked up.
  */
 export function identityProofMemo(): (key: string, probe: () => Promise<IdentityProof>) => Promise<IdentityProof> {
-  const proven = new Map<string, IdentityProof>();
-  return async (key, probe) => {
-    const kept = proven.get(key);
-    if (kept !== undefined) return kept;
-    const proof = await probe();
-    if (proof.proven) proven.set(key, proof);
-    return proof;
+  const attempts = new Map<string, Promise<IdentityProof>>();
+  return (key, probe) => {
+    const running = attempts.get(key);
+    if (running !== undefined) return running;
+    const attempt = probe().then(proof => { if (!proof.proven) attempts.delete(key); return proof; },
+      (error: unknown) => { attempts.delete(key); throw error; });
+    attempts.set(key, attempt);
+    return attempt;
   };
 }

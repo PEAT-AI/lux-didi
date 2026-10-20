@@ -103,6 +103,11 @@ test('the identity memo proves one account once and retries an unproven connecto
   assert.equal(probes, 1, 'the second endpoint of one account reuses the first proof');
   await once('google\u0000other', probe);
   assert.equal(probes, 2, 'a different account is proved for itself');
+  // Endpoints connect concurrently, so two simultaneous endpoints of one account must share the
+  // in-flight probe, not merely its result.
+  const [first, second] = await Promise.all([once('google\u0000acc', probe), once('google\u0000acc', probe)]);
+  assert.deepEqual([first, second], [{ proven: true, match: true, value: OWNER }, { proven: true, match: true, value: OWNER }]);
+  assert.equal(probes, 2, 'a concurrent pair still probes once');
   const unproven = async (): Promise<IdentityProof> => { probes += 1; return { proven: false, match: null, value: null }; };
   await once('mattermost\u0000acc', unproven);
   await once('mattermost\u0000acc', unproven);

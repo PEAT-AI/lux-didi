@@ -346,6 +346,49 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
   }
 });
 
+// W8 retention meets the live journal migration: a Store still at v2 keeps the narrow live_journal
+// with no tool_json, and v3 renames the wider live_journal_extended into its place. The boot pruner
+// must clear the tool payload on the migrated journal and must not guess a column a v2 Store lacks.
+test('a prune over a migrated v3 journal clears the tool payload the migration moved into place', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-migrated-'));
+  const day = 86_400_000, endedAt = T0 + 1 * day, now = T0 + 60 * day;
+  try {
+    const v2 = new Store(dir, [...domainMigrations, ...liveMigrations.filter(migration => migration.version < 3)]);
+    v2.transaction(tx => {
+      tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+          client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
+          journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,2,0,0,'attached','complete',?,?,?)`,
+        [SESSION, v2.assistantId, v2.authorityEpoch, 'key-migrated', 'fp-migrated', 'client', 'audit-migrated', 'profile', 'prompt',
+          endedAt, endedAt, endedAt]);
+      tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,11,?)",
+        [SESSION, 'inputTranscription', 'owner words', endedAt]);
+      tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,NULL,1,0,?)",
+        [SESSION, 'toolCall', endedAt]);
+    });
+    // A v2 store has no tool_json to clear, and the pruner must not fail on the column it cannot see.
+    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 });
+    v2.close();
+
+    const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+    try {
+      store.transaction(tx => {
+        // The owner's real journal carries the tool payload the migration moved to the wider table.
+        tx.run("UPDATE live_journal SET tool_json=? WHERE kind='toolCall'", [JSON.stringify({ name: 'search', args: { query: 'owner words' } })]);
+        tx.run(`INSERT INTO conversation_summaries (id, live_session_id, status, summary, ended_at, model, input_chars,
+            input_truncated, injected_summary_ids, retry_count, error_code, created_at, skip_reason)
+          VALUES (?,?,?,?,?,?,?,0,'[]',0,NULL,?,NULL)`, ['sum-migrated', SESSION, 'complete', 'a summary', endedAt, 'm', 11, endedAt]);
+      });
+      const pruned = store.transaction(tx => pruneTraceContent(tx, now));
+      assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
+      const rows = store.transaction(tx => tx.all("SELECT kind, text, tool_json FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [SESSION]));
+      assert.deepEqual(rows.map(row => [row['kind'], row['text'], row['tool_json']]), [['inputTranscription', null, null], ['toolCall', null, null]]);
+    } finally { store.close(); }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // H16: the boot prune must be an index search, never a full scan of a content table that grows with
 // every turn. The statements here are the prune predicates from pruneTraceContent.
 test('the prune deletes and scans run as index searches', () => {

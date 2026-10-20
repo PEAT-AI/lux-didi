@@ -434,9 +434,17 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
   // 1200 ms wait as 0 and lose the continuity event while `payload_bytes` still claimed the bytes.
   const journalText = prunable === null ? 0
     : exec.run(`UPDATE live_journal SET text=NULL WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable}`, [cutoff])
-      + exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff]);
+      // `tool_json` arrives with the v3 live_journal, which is the renamed live_journal_extended; a Store
+      // still at v2 keeps the narrower journal, so the tool payload pass is skipped rather than guessed.
+      + (columnExists(exec, 'live_journal', 'tool_json')
+        ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
+        : 0);
   const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
   return { utterances, callResults, journalText, promptSnapshots };
+}
+
+function columnExists(exec: TraceExec, table: string, column: string): boolean {
+  return exec.all(`SELECT 1 AS present FROM pragma_table_info(?) WHERE name=?`, [table, column]).length > 0;
 }
 
 function tableExists(exec: TraceExec, table: string): boolean {

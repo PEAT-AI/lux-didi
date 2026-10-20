@@ -519,8 +519,10 @@ const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
 /** The clause carrying most of the note's words: that clause is the claim the note restates. */
 function dominantClause(text: string, words: ReadonlySet<string>): string {
   const hits = (part: string): number => tokens(part).filter(word => words.has(word)).length;
-  return text.split(MEMORY_CLAUSE_BREAK).map(part => part.trim()).filter(Boolean)
-    .reduce((best, part) => hits(part) > hits(best) ? part : best, text);
+  const parts = text.split(MEMORY_CLAUSE_BREAK).map(part => part.trim()).filter(Boolean);
+  let best = parts[0] ?? text;
+  for (const part of parts.slice(1)) if (hits(part) > hits(best)) best = part;
+  return best;
 }
 /** The note's content words: lower-cased tokens without stop words, framing or two-letter noise. */
 const contentWords = (text: string): string[] => tokens(text)

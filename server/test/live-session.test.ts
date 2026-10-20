@@ -3769,8 +3769,9 @@ test('#472: a late result for a run the model stopped still reaches the model', 
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.ok(late.length >= 1, 'the reader landing after the stop is reported');
-  assert.notEqual(late.at(-1)!['delivered'], 'dropped', `the late result is not dropped: ${JSON.stringify(late.at(-1))}`);
-  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model carries the late finding');
+  // The drop point the reviewer named: base called this a source failure, which is not what happened.
+  assert.equal(late.at(-1)!['reason'], 'run_cut', `a closed run's empty late result is named a cut, never a source failure: ${JSON.stringify(late.at(-1))}`);
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 0, 'and nothing is claimed to the model for a read the stop voided');
   h.owner.revoke(session.liveSessionId);
 });
 

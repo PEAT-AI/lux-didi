@@ -750,7 +750,8 @@ test('standing memory sits after owner lore and before # Memory, and never rides
 
 test('the standing section keeps its own budget and reports each omission as budget', () => {
   const note = (index: number) => standingRecord(`standing-${String(index).padStart(2, '0')}`, `Fixture standing note ${index} `.repeat(6), 'open');
-  const records = Array.from({ length: 12 }, (_, index) => note(index));
+  // Twenty notes: the compact render fits more of them, so the corpus has to grow to reach the cap.
+  const records = Array.from({ length: 20 }, (_, index) => note(index));
   const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
   const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
   assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);

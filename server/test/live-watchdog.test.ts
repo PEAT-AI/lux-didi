@@ -168,6 +168,8 @@ test('a weak uplink inside the watched wait settles uplink_starved instead of bl
   await until(live, () => phases(live).includes('settled'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed');
   assert.equal(terminalCode(live), 'uplink_starved', 'the link was weak during the wait the watchdog judged');
+  const page = live.owner.current();
+  assert.equal(page.connection?.endedCode, 'uplink_starved', 'and the live projection names the reason the call ended');
 });
 
 test('a weak spell before the watched wait does not relabel a later model timeout', async t => {

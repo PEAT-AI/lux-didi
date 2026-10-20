@@ -1432,6 +1432,7 @@ describe('openai gpt-live turn states', () => {
   // W3: the owner is told when the internet is the reason. Quality is derived from what the adapter already
   // measures (capture against discards, persistent backlog), and the upload figure is what the socket drained.
   test('a link that drains 20 KB/s reads weak with the measured upload, and ok again after 5 s of health', async t => {
+    const receipts = hostReceipts(t);
     const clock = new FakeClock();
     const { socket, session } = await fakeReady(t, { clock });
     socket.trackBuffer = true;
@@ -1450,6 +1451,9 @@ describe('openai gpt-live turn states', () => {
       clock.advance(20);
     }
     assert.equal(connection()?.quality, 'ok', 'five quiet seconds make it ok again');
+    const transitions = receipts().filter(record => record.event === 'connection_quality');
+    assert.ok(transitions.length >= 2, 'one host record per transition, never per frame');
+    assert.ok(transitions.every(safeEvent), 'the host log whitelist accepts the quality record');
   });
 
   // W3 requirement 1: the wire carries runs of consecutive frames, never 20 ms islands, and the receipt says

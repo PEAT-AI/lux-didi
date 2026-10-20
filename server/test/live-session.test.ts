@@ -3744,7 +3744,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
 // #472 at the drop point the reviewer named: a run the model has closed is no longer "current", and base
 // dropped its late result at index.ts:2379 before the delivery authority was ever asked. The reader returns
 // lines after the stop, so the model must receive them.
-test('#472: a late result for a run the model stopped still reaches the model', async t => {
+test('#472: a late result for a run the model stopped is named a cut, never a source failure', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());

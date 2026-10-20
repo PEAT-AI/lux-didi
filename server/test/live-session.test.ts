@@ -3779,6 +3779,11 @@ test('#472: a late result for a run the model stopped is named a cut, never a so
   assert.ok(late.length >= 1, 'the reader landing after the stop is reported');
   // The drop point the reviewer named: base called this a source failure, which is not what happened.
   assert.equal(late.at(-1)!['reason'], 'run_cut', `a closed run's empty late result is named a cut, never a source failure: ${JSON.stringify(late.at(-1))}`);
+  // W1-R8: the drop point's own word has to survive the journal whitelist, or the honest reason is
+  // never written down and the line reads as an unexplained silence.
+  const journal = safeEvent(late.at(-1));
+  assert.ok(journal, 'the cut receipt passes the host log whitelist, so it lands in the journal');
+  assert.equal(journal['reason'], 'run_cut', 'and the journal keeps the reason the drop point named');
   assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 0, 'and nothing is claimed to the model for a read the stop voided');
   h.owner.revoke(session.liveSessionId);
 });

@@ -3760,7 +3760,11 @@ test('#472: a late result for a run the model stopped still reaches the model', 
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
   assert.deepEqual(reply['pending'], ['chat'], `the first answer names the reader still open: ${JSON.stringify(reply).slice(0, 300)}`);
   // The model closes the run itself while the chat reader is still open: the run is no longer current.
-  await settleLiveTool(h, 'ls2', 'research', { action: 'stop', researchId: String(reply['researchId']) });
+  const beforeStop = fake.toolResponses.length;
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls2', name: 'research', args: { action: 'stop', researchId: String(reply['researchId']) } }] });
+  for (let n = 0; n < 1000 && fake.toolResponses.length === beforeStop; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, beforeStop + 1, 'the stop call is answered');
+  assert.equal((fake.toolResponses.at(-1)![0]!.response as Record<string, unknown>)['status'], 'stopped', 'the run is closed before its reader lands');
   release();
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');

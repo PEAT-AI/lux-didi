@@ -1955,7 +1955,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const source = batch[0]?.source;
         if (source) {
           first.reading.delete(source);
-          lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId);
+          lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId, signal.aborted || run.cancelled || run.stopped);
         }
       }));
     } finally {
@@ -2021,7 +2021,7 @@ interface FirstAnswerState {
 const lineKey = (line: string): string => line.trim().toLowerCase().replace(/\s+/gu, ' ');
 
 /** R6: what this source returned that the first reply did not already say. Never an invented line. */
-function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId: string, source: SourceKind, ms: number, lines: readonly string[], ok: boolean, runId?: number): void {
+function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId: string, source: SourceKind, ms: number, lines: readonly string[], ok: boolean, runId?: number, cut = false): void {
   if (first.at === undefined || first.delivered.has(source)) return;
   first.delivered.add(source);
   const items: string[] = [];
@@ -2047,7 +2047,7 @@ function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId:
     const entry = [...run.calendar.values()].flatMap(read => [...read.events]).find(([key, event]) => event.line === item && !run.calendarDelivered.has(key) && !calendarKeys.includes(key));
     if (entry) calendarKeys.push(entry[0]);
   }
-  deps.late?.({ researchId, ...(runId !== undefined ? { runId } : {}), ...(source === 'calendar' ? { calendarKeys } : {}), ...(mailKeys.length ? { mailKeys } : {}), source, ms, items, ok, ...(run !== undefined && (run.cancelled || run.stopped) ? { cut: true } : {}) });
+  deps.late?.({ researchId, ...(runId !== undefined ? { runId } : {}), ...(source === 'calendar' ? { calendarKeys } : {}), ...(mailKeys.length ? { mailKeys } : {}), source, ms, items, ok, ...(cut || (run !== undefined && (run.cancelled || run.stopped)) ? { cut: true } : {}) });
 }
 
 /**
@@ -2552,7 +2552,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
             first.reading.delete(part.source);
-            lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId);
+            lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId, signal.aborted || run.cancelled || run.stopped);
           }
           // A source that answered counts as read, so an empty result is never re-offered as pending.
           if (results.some(result => result.ok)) run.readKinds.add(kind);

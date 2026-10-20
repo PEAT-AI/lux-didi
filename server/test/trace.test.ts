@@ -298,8 +298,9 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     seed('ls-live', null, liveAt, null);
 
     const pruned = store.transaction(tx => pruneTraceContent(tx, now));
-    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 4, promptSnapshots: 5 },
-      'four ended sessions are done with their transcript; every ended session loses its snapshot');
+    // Three ended sessions are done with their transcript, and each clears two rows (the transcript
+    // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 6, promptSnapshots: 6 });
 
     const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind <> 'ready' ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();

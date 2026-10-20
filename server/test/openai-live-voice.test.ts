@@ -1437,7 +1437,7 @@ describe('openai gpt-live turn states', () => {
     const { socket, session } = await fakeReady(t, { clock });
     socket.trackBuffer = true;
     const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
-    for (let index = 0; index < 150; index += 1) {
+    for (let index = 0; index < 160; index += 1) {
       socket.drain(400); // 400 B per 20 ms frame is 20 KB/s, well under the 66.4 KB/s the capture demands
       session.sendAudio({ pcm: pcm16(320), dataClass: 'ordinary' });
       clock.advance(20);

@@ -533,9 +533,12 @@ function dominantClause(text: string, words: ReadonlySet<string>): string {
   for (const part of parts.slice(1)) if (hits(part) > hits(best)) best = part;
   return best;
 }
-/** The note's content words: lower-cased tokens without stop words, framing or two-letter noise. */
+/** The note's content words: lower-cased tokens without stop words, framing or two-letter noise.
+ * The preference and polarity verbs are excluded on purpose: they decide direction through feel(),
+ * and counting them in the ratio refused a short honest note whose ask used another tense. */
 const contentWords = (text: string): string[] => tokens(text)
-  .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word));
+  .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word)
+    && !MEMORY_AFFIRM.has(word) && !MEMORY_DENY.has(word));
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
   // The note is the model's clean paraphrase; the owner's own words are only the support for it.

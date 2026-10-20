@@ -2144,7 +2144,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     run = resumed;
   }
   run.direction = call.direction ?? run.direction;
-  run.timeZone = deps.timeZone;
+  if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
   const executeSource = deps.execute, emitProgress = deps.emit;
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);

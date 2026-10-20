@@ -513,6 +513,15 @@ const MEMORY_NEGATORS = new Set(['not', 'never', 'no', 'cannot', 'cant', 'dont',
   'wont', 'without', 'dislike', 'dislikes', 'hate', 'hates']);
 const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 const negated = (text: string): boolean => tokens(text).some(word => MEMORY_NEGATORS.has(word));
+// Polarity belongs to the clause that carries the note's words, not to the whole turn: the same turn can
+// affirm "short answers in the morning" and then say "no meetings before nine".
+const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
+/** The clause carrying most of the note's words: that clause is the claim the note restates. */
+function dominantClause(text: string, words: ReadonlySet<string>): string {
+  const hits = (part: string): number => tokens(part).filter(word => words.has(word)).length;
+  return text.split(MEMORY_CLAUSE_BREAK).map(part => part.trim()).filter(Boolean)
+    .reduce((best, part) => hits(part) > hits(best) ? part : best, text);
+}
 /** The note's content words: lower-cased tokens without stop words, framing or two-letter noise. */
 const contentWords = (text: string): string[] => tokens(text)
   .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word));
@@ -538,6 +547,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const windowSupported = words.filter(word => windowSpoken.has(word));
   const windowRatio = words.length ? windowSupported.length / words.length : 0;
   // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
+  const wordSet = new Set(words);
   const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
   let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; negated: boolean } | undefined;
   for (let end = turns.length - 1; end >= 0 && !ask; end--) {
@@ -548,7 +558,8 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
       const supported = words.filter(word => spoken.has(word));
       const ratio = words.length ? supported.length / words.length : 0;
       if (ratio < MEMORY_SUPPORT_RATIO) continue;
-      ask = { turn: turns[end]!, ratio, supported: supported.length, negated: turns.slice(first, end + 1).some(turn => negated(turn.text)) };
+      ask = { turn: turns[end]!, ratio, supported: supported.length,
+        negated: negated(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
       break;
     }
   }
@@ -562,7 +573,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // A note copied word for word from one utterance names that utterance, whatever the span search found.
   for (let index = turns.length - 1; index >= 0; index--) {
     if (!normalized(turns[index]!.text).includes(pointer)) continue;
-    ask = { turn: turns[index]!, ratio: 1, supported: words.length, negated: negated(turns[index]!.text) };
+    ask = { turn: turns[index]!, ratio: 1, supported: words.length, negated: negated(dominantClause(turns[index]!.text, wordSet)) };
     break;
   }
   if (!ask) {
@@ -574,12 +585,12 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const metrics = { ratio: ask.ratio, supported: ask.supported };
   // Every content word spoken still says nothing about polarity: "does not want" against "wants" is the
   // opposite claim, so a flip is refused with the same code and supportRatio 1 that makes it debuggable.
-  if (negated(noteText.replace(MEMORY_FRAMING_LEAD, '')) !== ask.negated) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
+  if (negated(dominantClause(noteText.replace(MEMORY_FRAMING_LEAD, ''), wordSet)) !== ask.negated) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
   const utterance = ask.turn.text.trim();
   if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, metrics);
-  // One entry per note, not per utterance: a second, different note from the same ask is its own memory,
-  // while the same note twice is still already_remembered.
-  const externalId = `${liveSessionId}:${ask.turn.seq}:${createHash('sha256').update(pointer).digest('hex').slice(0, 16)}`;
+  // One entry per owner utterance: the source identity is the canonical `session:journal-sequence` that
+  // the domain's deletion tombstone matches, so a note is keyed by the utterance, not by its own text.
+  const externalId = `${liveSessionId}:${ask.turn.seq}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
   if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };

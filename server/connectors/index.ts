@@ -230,7 +230,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
 };
 
 function googleFamily(toolNames: readonly string[]): GoogleFamily {
-  return toolNames.some(name => name.startsWith('gcal_')) ? 'calendar' : 'gmail';
+  return toolNames.some(name => name.startsWith('calendar_')) ? 'calendar' : 'gmail';
 }
 function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot {
   const projection = projectGoogleResult(port, evidence);

@@ -31,7 +31,7 @@ const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
 /** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
 const LATE_DELIVERIES = ['commentary', 'thinking', 'dropped'];
-const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'session_closed', 'no_thinking_channel',
+const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',
   'no_commentary_channel', 'already_spoken', 'window_elapsed', 'owner_speaking', 'new_question', 'answer_playing', 'send_failed'];
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.

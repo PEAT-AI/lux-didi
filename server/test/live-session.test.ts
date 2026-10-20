@@ -3036,6 +3036,8 @@ test('R9: a research call refused at dispatch writes one failed run receipt', as
   assert.equal(runs.length, 1, 'the refused call leaves exactly one run receipt');
   assert.equal(runs[0]!.status, 'failed');
   assert.equal(runs[0]!.stopReason, 'refused');
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.match(String(result?.tool?.markdown ?? ''), /^research: refused \([a-z_]+\)$/, 'a refused call names its reason in the projection, never a bare research: error');
 });
 
 test('F6: three tool calls in one model message run concurrently and return three responses in order', async t => {
@@ -3070,6 +3072,16 @@ test('F6-R1: a successful research call is journaled completed, not error', asyn
   await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
   const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
   assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
+  const markdown = String(result?.tool?.markdown ?? '');
+  assert.match(markdown, /^research: completed, (findings from [a-z ]+(, [a-z ]+)*|no findings)/, 'the settled projection records what the provider was sent, never a bare status');
+  assert.ok(markdown.length <= 240, `the projection stays bounded (${markdown.length} chars)`);
+});
+test('#1020: a refused research call names its reason in the settled projection', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'research-refused-projection');
+  await settleLiveTool(h, 'bad1', 'research', { action: 'not_an_action' });
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.match(String(result?.tool?.markdown ?? ''), /^research: refused \([a-z_]+\)$/, 'a refused call names its reason, never a bare research: error');
 });
 test('F4: a pending research call is journalled as called, never error', async t => {
   const h = await harness(t, { tools: true, calendar: true });
@@ -3735,6 +3747,74 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late[0]!['delivered'], 'commentary', 'a quiet turn hears it once');
   assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model is always told');
   assert.deepEqual(fake.commentary.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// #472 at the drop point the reviewer named: a run the model has closed is no longer "current", and base
+// dropped its late result at index.ts:2379 before the delivery authority was ever asked. The reader returns
+// lines after the stop, so the model must receive them.
+test('#472: a late result for a run the model stopped is named a cut, never a source failure', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-stopped-472');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the first answer names the reader still open: ${JSON.stringify(reply).slice(0, 300)}`);
+  // The model closes the run itself while the chat reader is still open: the run is no longer current.
+  const beforeStop = fake.toolResponses.length;
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls2', name: 'research', args: { action: 'stop', researchId: String(reply['researchId']) } }] });
+  for (let n = 0; n < 1000 && fake.toolResponses.length === beforeStop; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, beforeStop + 1, 'the stop call is answered');
+  assert.equal((fake.toolResponses.at(-1)![0]!.response as Record<string, unknown>)['status'], 'stopped', 'the run is closed before its reader lands');
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.ok(late.length >= 1, 'the reader landing after the stop is reported');
+  // The drop point the reviewer named: base called this a source failure, which is not what happened.
+  assert.equal(late.at(-1)!['reason'], 'run_cut', `a closed run's empty late result is named a cut, never a source failure: ${JSON.stringify(late.at(-1))}`);
+  // W1-R8: the drop point's own word has to survive the journal whitelist, or the honest reason is
+  // never written down and the line reads as an unexplained silence.
+  const journal = safeEvent(late.at(-1));
+  assert.ok(journal, 'the cut receipt passes the host log whitelist, so it lands in the journal');
+  assert.equal(journal['reason'], 'run_cut', 'and the journal keeps the reason the drop point named');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 0, 'and nothing is claimed to the model for a read the stop voided');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// #472: the delivery half. A source that lands after the first answer must reach the model through the
+// later-findings path while the session is live, and a calendar answer supplies the first answer here so
+// the assertion stands on a source the base suite serves (the memory-backed R6 cases are base-red).
+test('#472: a late source result reaches the model while the session is live', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-delivery-472');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1, 'one receipt for the source that landed later');
+  assert.equal(late[0]!['source'], 'chat');
+  assert.notEqual(late[0]!['delivered'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model carries the late finding');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4804,7 +4884,7 @@ test('research 469: known stopped run projects error and retained no-wire delive
   const partial = await call('partial', { action: 'start', question: 'Synthetic unavailable calendar', lookups: [{ source: 'calendar', query: 'today' }] });
   assert.equal(partial.response['status'], 'partial'); assert.equal(partial.response['error'], undefined); assert.equal(partial.projection.status, 'completed');
   assert.equal(h.calls.length, 1); assert.deepEqual(h.owner.current().steps ?? [], []);
-  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error', sources: [] } });
+  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error (continuation_unavailable)', sources: [] } });
 });
 
 test('W6/H12: a second owner utterance closes the open turn as superseded and names it on the next', async t => {

@@ -28,7 +28,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -36,7 +36,7 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
   const joined: string[] = [];
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
-    configured: CONFIGURED,
+    configured: opts.configured ?? CONFIGURED,
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
       return subs.map(call => call.name === 'gcal_list' && opts.executeText === MERGED_CALENDAR
@@ -1153,4 +1153,66 @@ test('research 469: stopped known continuation fails while retained delivery rem
   const cancelled = await scheduler.call({ action: 'continue', researchId: cancelledId }, signal);
   assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
   assert.equal(calls, 2); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
+});
+
+// --- #472: a run cut after its first answer is partial, never failed ------------------------------
+
+test('#472: a run cancelled after its first answer is logged partial and still hands over what landed later', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    memory: () => ({ lines: ['he asked me to remember the dentist on Friday'], text: 'ignored', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      if (subs[0]!.name === 'search_knowledge') await gate.promise;
+      return subs.map(call => sub(call.name, '## Release 3x\nlate findings land here', true, call.key));
+    },
+  });
+  const late: ResearchLateFindings[] = [];
+  let reading: Promise<void> | undefined;
+  h.deps.late = entry => { late.push(entry); };
+  h.deps.background = done => { reading = done; };
+  const controller = new AbortController();
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did he ask me to remember',
+    lookups: [{ source: 'memory', query: 'dentist' }, { source: 'knowledge', query: 'release' }],
+  }, controller.signal);
+  await tick();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const answered = await call;
+  assert.equal(answered['status'], 'partial', 'the owner received an answer');
+  // The host closes the delegation after that answer: the run is cut while its second reader is open.
+  controller.abort();
+  gate.resolve();
+  await reading;
+  const run = h.logs.filter(entry => entry.event === 'research_run').at(-1);
+  assert.equal(run?.stopReason, 'cancelled', 'the run was cut, not completed');
+  assert.equal(run?.status, 'partial', 'a run that delivered an answer is partial, never failed');
+  // Cast: the flag is what this commit adds, so the assertion must compile against base product code too.
+  const knowledge = late.filter(entry => entry.source === 'knowledge').at(-1) as (ResearchLateFindings & { cut?: boolean }) | undefined;
+  assert.equal(knowledge?.cut, true, `the cut run's late event says it was a cut, not a source failure: ${JSON.stringify(late)}`);
+});
+
+// --- #1020 behaviour 1: what the model is told about the sources it could not read ---------------
+
+test('#1020: a source that was not configured is named with its reason in the note the model voices', async () => {
+  const h = harness({ configured: ['knowledge'], execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? '### Release scope (DECISION | 2026-10-17) [id 12]' : 'evidence', true, call.key)) });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'who is on my team',
+    lookups: [{ source: 'company', query: 'team structure' }, { source: 'chat', query: 'team' }, { source: 'knowledge', query: 'team' }],
+  }, new AbortController().signal);
+  assert.match(String(reply['note']), /team chat: unavailable \(not configured\); company knowledge: unavailable \(not configured\)/, 'each unread source names itself and its reason, in plain words');
+  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'and the findings that did land sit in the same reply');
+});
+
+test('#1020: a timed-out source is named as timed out, in seconds, beside the source that answered', async () => {
+  const h = harness({ configured: ['knowledge', 'chat'], execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? '### Release scope (DECISION | 2026-10-17) [id 12]' : 'evidence', true, call.key)) });
+  const deps: ResearchDeps = { ...h.deps, unavailableNow: () => [{ source: 'chat', reason: 'timeout' }] };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what is waiting on me',
+    lookups: [{ source: 'chat', query: 'release freeze' }, { source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal);
+  assert.match(String(reply['note']), /team chat: not read \(timed out after 12 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
+  assert.match(String(reply['note']), /could not reach team chat/, 'and the voiceable clause about it is still there');
+  assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });

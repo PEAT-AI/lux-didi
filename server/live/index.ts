@@ -241,6 +241,30 @@ function stepSourceOf(name: string): string {
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary a progress line names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
+/** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
+const RESEARCH_PROJECTION_CHARS = 240;
+
+/**
+ * #1020 behaviour 4: the settled projection records what the provider was sent, in plain words, bounded:
+ * the sources that answered, then the note the model was told to voice. A failure names its reason code
+ * and a refusal names its reason, so a journal line is never a bare `research: error`.
+ */
+function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
+  const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
+  const detail = (): string => {
+    if (status === 'error') {
+      const reason = text(response['reason']) ?? text(response['error']) ?? 'failed';
+      return text(response['state']) === 'refused' ? `refused (${reason})` : `error (${reason})`;
+    }
+    const findings = Array.isArray(response['findings']) ? response['findings'] as JsonObject[] : [];
+    const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
+    const note = text(response['note']);
+    const head = sources.length > 0 ? `findings from ${sources.join(', ')}` : 'no findings';
+    return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
+  };
+  const line = `research: ${detail()}`;
+  return line.length <= RESEARCH_PROJECTION_CHARS ? line : `${line.slice(0, RESEARCH_PROJECTION_CHARS - 3)}...`;
+}
 /** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
 function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
 
@@ -2375,7 +2399,7 @@ export class LiveSessionOwner {
       // Research failures carry `error`; partial, stopped and retained replies may complete successfully.
       const completed = entry.response['error'] === undefined;
       const status: 'completed' | 'error' = completed ? 'completed' : 'error';
-      projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });
+      projections.push({ name: entry.name, status, markdown: entry.name === RESEARCH_TOOL_NAME ? researchProjection(entry.response, status) : `research: ${status}`, sources: [] });
     }
     return { responses, projections };
   }
@@ -2408,9 +2432,13 @@ export class LiveSessionOwner {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
-    if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    // #472: a cut run's empty late event is a cut, not a source failure, and the receipt must say so.
+    if (event.items.length === 0) return drop(event.cut === true ? 'run_cut' : event.ok ? 'no_new_findings' : 'source_failed');
     {
-      if (!handle.researchLedger.evidenceCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
+      // #472: a run cancelled after it answered is still this session's run, and the answer's own evidence is
+      // the authority that matters. The lifecycle state is not a second permission gate, so a late source is
+      // ruled out only by `authorizeDelivery` below, which is the check that can actually refuse it.
+      if (handle.researchLedger.find(event.researchId) === undefined || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
       try {
         if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.evidenceBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
       } catch { return drop('result_denied'); }

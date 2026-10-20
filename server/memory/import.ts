@@ -284,9 +284,9 @@ const noteShape = /^kind:(fact|preference|task) topic:(\S+) status:(current|date
 const statusRank: Record<MemoryStatus, number> = { open: 0, current: 1, dated: 2 };
 
 /**
- * The standing-memory set: ordinary imported notes, ranked by importance, then
- * status (open, current, dated), then newest capture. Entry id breaks ties, so
- * the order never depends on uuid order.
+ * The standing-memory set: ordinary imported notes, ranked by status (open, current, dated),
+ * then importance, then newest capture. A current note therefore always precedes a dated one,
+ * and entry id breaks ties, so the order never depends on uuid order.
  */
 export function listStandingMemory(tx: Transaction): StandingMemoryItem[] {
   const items: StandingMemoryItem[] = [];
@@ -307,6 +307,6 @@ export function listStandingMemory(tx: Transaction): StandingMemoryItem[] {
       kind: note[1] as MemoryKind, topic: note[2]!, importance: Number(note[4]),
     });
   }
-  return items.sort((a, b) => b.importance - a.importance || statusRank[a.status] - statusRank[b.status]
+  return items.sort((a, b) => statusRank[a.status] - statusRank[b.status] || b.importance - a.importance
     || (a.capturedAt < b.capturedAt ? 1 : a.capturedAt > b.capturedAt ? -1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }

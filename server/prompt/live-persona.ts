@@ -697,7 +697,9 @@ export function composeLiveSessionInstruction(input: {
   readonly earlierConversations?: string;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
-}): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean } {
+}): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean;
+  /** M2: what the standing section did with its budget, for the build's own receipt. Counts only. */
+  readonly standing: { readonly selected: number; readonly omitted: number; readonly chars: number } } {
   const baseMarker = `${NAYA_LIVE_BASE}${separator}`;
   const baseAt = input.text.indexOf(baseMarker);
   // The head block, the owner style and the overlay precede the public base, in that order; the accent block
@@ -785,13 +787,15 @@ export function composeLiveSessionInstruction(input: {
   }
   // The earlier-conversations section yields before the note sections: it is added only when it fits over them.
   const standing: string[] = [];
+  let standingOmitted = 0;
   for (const item of standingRecords) {
-    const rendered = `<standing-memory-record>\n${JSON.stringify({ id: item.id, text: item.text, status: item.status, capturedAt: item.capturedAt })}\n</standing-memory-record>`;
+    const rendered = `[${item.id}] ${item.text}`;
     const standingChars = [STANDING_MEMORY_PREFACE, ...standing, rendered].join(separator).length;
-    if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) omitted.push({ id: item.id, reason: 'budget' });
+    if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
     else { standing.push(rendered); selectedIds.push(item.id); }
   }
   const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= input.trustedChars;
   const chosen = entries(records, earlierIncluded ? earlier : undefined, standing).filter(entry => entry.text.length);
-  return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlierIncluded };
+  return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlierIncluded,
+    standing: { selected: standing.length, omitted: standingOmitted, chars: standing.length ? [STANDING_MEMORY_PREFACE, ...standing].join(separator).length : 0 } };
 }

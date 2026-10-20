@@ -101,9 +101,99 @@ test('a note the owner marked private stays refused', async t => {
   assert.deepEqual(await remember(store, 'the mint is Friday'), { remembered: false, code: 'private_memory_unsupported' });
 });
 
+test('a third-person paraphrase of one owner sentence is stored', async t => {
+  // The owner never says their own name: "Rob" and "prefers" are framing the note adds, not content.
+  const store = liveSession(t, [{ text: 'i take tea first thing, tea and the crossword', finished: true }]);
+  const result = await remember(store, 'Rob prefers tea and the crossword');
+  assert.equal(result.remembered, true, 'the note\'s content words are the owner\'s own');
+});
+
+test('an ask split across two consecutive owner turns is stored', async t => {
+  // Neither turn reaches 60 percent alone: two of five words is 40 percent in each, four in the union.
+  const store = liveSession(t, [
+    { text: 'remember the plumber comes on tuesday', finished: true },
+    { text: 'and there is a ladder and a wrench ready', finished: true },
+  ]);
+  const result = await remember(store, 'the plumber brings a ladder and a wrench on tuesday');
+  assert.equal(result.remembered, true, 'the union of the window\'s turns supports the note');
+});
+
+test('a note combining words from no owner turn is still refused', async t => {
+  const store = liveSession(t, [
+    { text: 'remember the plumber comes on tuesday', finished: true },
+    { text: 'and there is a ladder and a wrench ready', finished: true },
+  ]);
+  assert.deepEqual(await remember(store, 'the dentist needs a passport in lisbon'), { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a note that negates what the owner affirmed is refused', async t => {
+  // Every content word is spoken, but the claim is the opposite one: the ratio cannot see polarity.
+  const store = liveSession(t, [{ text: 'i want the tuesday plumber to come with a ladder', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob does not want the tuesday plumber to come with a ladder'),
+    { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a note stitched from two non-adjacent turns is refused', async t => {
+  // One ask spans adjacent turns, never a turn and another one three turns later.
+  const store = liveSession(t, [
+    { text: 'remember the plumber comes on tuesday', finished: true },
+    { text: 'i will be out of the house most of the day', finished: true },
+    { text: 'the bins go out on thursday evening', finished: true },
+    { text: 'and there is a ladder and a wrench ready', finished: true },
+  ]);
+  assert.deepEqual(await remember(store, 'the plumber brings a ladder and a wrench on tuesday'),
+    { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
+});
+
+test('a note that turns the owner\'s love into hate is refused', async t => {
+  // The polarity verb is the word the note must be supported by, so it cannot be framing.
+  const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob hates brussels sprouts'), { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a contracted negation in the owner\'s ask is read as negation', async t => {
+  // "don't" tokenizes to don and t; a negation the reader cannot see is a flip it cannot refuse.
+  const store = liveSession(t, [{ text: "i don't want the tuesday plumber to come with a ladder", finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob wants the tuesday plumber to come with a ladder'),
+    { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a note keeping the owner\'s own preference verb still stores', async t => {
+  // The positive control: retaining the verb must not make an honest paraphrase fail.
+  const store = liveSession(t, [{ text: 'i prefer short answers in the morning', finished: true }]);
+  assert.equal((await remember(store, 'Rob prefers short answers in the morning')).remembered, true);
+});
+
+test('a short ordinary note stores against the preference the owner stated', async t => {
+  // The owner's defect: a two-word-ish note was refused because "prefers" is not "prefer". The
+  // polarity verb decides direction, not support, so it must not dilute the ratio either.
+  const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
+  assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
+});
+
+test('the same short note stores when the owner stated it without a preference verb', async t => {
+  // The reviewer's second acceptance payload: "just tea for me first thing" says nothing about
+  // preference, so the note's verb must not be refused for want of a matching one.
+  const store = liveSession(t, [{ text: 'just tea for me first thing', finished: true }]);
+  assert.equal((await remember(store, 'Rob prefers tea')).remembered, true);
+});
+
+test('that same short note is still refused when it flips the preference', async t => {
+  // The paired guard: with the verb out of the ratio the support is 1 of 1, so only polarity refuses.
+  const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob hates tea'), { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a session with no owner transcription reports the transcript was never final', async t => {
+  const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob prefers tea and the crossword'), { remembered: false, code: 'owner_transcript_not_final' });
+});
+
 test('the memory_note receipt is a closed shape of counts and no text', async () => {
-  assert.deepEqual(safeEvent({ event: 'memory_note', remembered: false, code: 'owner_text_mismatch', words: 4, supportRatio: 0.25 }),
-    { event: 'memory_note', remembered: false, code: 'owner_text_mismatch', words: 4, supportRatio: 0.25 });
-  assert.equal(safeEvent({ event: 'memory_note', remembered: true, code: 'remembered', words: 4, supportRatio: 1, text: 'mint is Friday' }), undefined, 'no note text');
-  assert.equal(safeEvent({ event: 'memory_note', remembered: true, code: 'remembered', words: 4, supportRatio: 2 }), undefined, 'a ratio is a share');
+  const receipt = { event: 'memory_note', remembered: false, code: 'owner_text_mismatch', words: 4, supported: 1, supportRatio: 0.25, turns: 2 };
+  assert.deepEqual(safeEvent(receipt), receipt, 'the refusal is debuggable from counts alone');
+  assert.equal(safeEvent({ ...receipt, text: 'mint is Friday' }), undefined, 'no note text');
+  assert.equal(safeEvent({ ...receipt, supportRatio: 2 }), undefined, 'a ratio is a share');
+  assert.equal(safeEvent({ event: 'memory_note', remembered: false, code: 'owner_text_mismatch', words: 4, supportRatio: 0.25 }), undefined,
+    'the window turn count is part of the receipt');
 });

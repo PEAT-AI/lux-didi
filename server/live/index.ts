@@ -534,26 +534,51 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
   'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
   'him', 'she', 'need', 'want', 'get', 'got', 'does', 'did', 'please', 'remember', 'note', 'keep', 'mind', 'naya', 'because',
   'before', 'after', 'over', 'under', 'very', 'much', 'more', 'most', 'only', 'own', 'same', 'such', 'too', 'now']);
-const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-/** The note's content words: lower-cased tokens without stop words or two-letter noise. */
-const contentWords = (text: string): string[] => tokens(text).filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word));
-/** How much of the note one owner turn supports: the share of its content words the turn speaks. */
-function supportRatio(note: string, turn: string): number {
-  const words = contentWords(note);
-  if (!words.length) return 0;
-  const spoken = new Set(tokens(turn));
-  return words.filter(word => spoken.has(word)).length / words.length;
+// Third-person framing is not note content: "Rob prefers", "he wants" and "the owner" say who the
+// note is about, and the owner never speaks their own name. Only the SUBJECT is dropped: the verb stays
+// a content word, because the verb is the word that says which way the owner feels.
+const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
+const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
+// Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
+const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
+  'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
+const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
+  'wasnt', 'wont', 'without', 'dislike', 'dislikes', 'hate', 'hates']);
+/** Affirms or denies; undefined when the clause says neither, so an ordinary note is never refused. */
+function feel(text: string): 'affirm' | 'deny' | undefined {
+  const words = tokens(text);
+  if (words.some(word => MEMORY_DENY.has(word))) return 'deny';
+  if (words.some(word => MEMORY_AFFIRM.has(word))) return 'affirm';
+  return undefined;
 }
-
+// Support must be ONE ask: the turns carrying the note's words have to be adjacent, because a note
+// stitched from two turns apart is nobody's sentence. Three turns is one ask, a question and its
+// clarification; a wider span is a different topic.
+const MEMORY_SPAN_TURNS = 3;
+// A contraction is one word: "don't" must read as the negator it is, so apostrophes go before tokens.
+const tokens = (text: string): string[] => text.toLowerCase().replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+// Polarity belongs to the clause that carries the note's words, not to the whole turn: the same turn can
+// affirm "short answers in the morning" and then say "no meetings before nine".
+const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
+/** The clause carrying most of the note's words: that clause is the claim the note restates. */
+function dominantClause(text: string, words: ReadonlySet<string>): string {
+  const hits = (part: string): number => tokens(part).filter(word => words.has(word)).length;
+  const parts = text.split(MEMORY_CLAUSE_BREAK).map(part => part.trim()).filter(Boolean);
+  let best = parts[0] ?? text;
+  for (const part of parts.slice(1)) if (hits(part) > hits(best)) best = part;
+  return best;
+}
+/** The note's content words: lower-cased tokens without stop words, framing or two-letter noise.
+ * The preference and polarity verbs are excluded on purpose: they decide direction through feel(),
+ * and counting them in the ratio refused a short honest note whose ask used another tense. */
+const contentWords = (text: string): string[] => tokens(text)
+  .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word)
+    && !MEMORY_AFFIRM.has(word) && !MEMORY_DENY.has(word));
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
   // The note is the model's clean paraphrase; the owner's own words are only the support for it.
   const noteText = String(args.text).replace(command, '').replace(/\s+/g, ' ').trim();
-  const words = contentWords(noteText);
-  const receipt = (result: JsonObject, support: number): JsonObject => {
-    hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'), words: words.length, supportRatio: Math.round(support * 1000) / 1000 });
-    return result;
-  };
+  const words = contentWords(noteText.replace(MEMORY_FRAMING_LEAD, ''));
   // A bounded journal window, assembled into owner turns, not provider/model arguments.
   const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND arrived_at>=? ORDER BY journal_id DESC LIMIT ?", [liveSessionId, now - MEMORY_WINDOW_MS, MEMORY_WINDOW_ROWS]).reverse();
   const turns: { seq: number; text: string }[] = [];
@@ -565,35 +590,67 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // The model's tool call is the intent: the latest partial turn is owner speech too, because the
   // provider may never set the finished flag before the call arrives.
   if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
-  const pointer = normalized(noteText);
-  if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' }, 0);
-  // The supporting turn is one recent owner turn: it holds the note's words, or enough of them.
-  let turn: { seq: number; text: string } | undefined;
-  let support = 0;
-  for (let index = turns.length - 1; index >= 0 && !turn; index--) {
-    const candidate = turns[index]!;
-    const ratio = supportRatio(noteText, candidate.text);
-    if (normalized(candidate.text).includes(pointer)) { turn = candidate; support = 1; }
-    else if (ratio >= MEMORY_SUPPORT_RATIO) { turn = candidate; support = ratio; }
+  // The window's own support, for a refusal that has no ask to report: how much of the note any turn
+  // in the window carries at all.
+  const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text)));
+  const windowSupported = words.filter(word => windowSpoken.has(word));
+  const windowRatio = words.length ? windowSupported.length / words.length : 0;
+  // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
+  const wordSet = new Set(words);
+  const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
+  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; feels: 'affirm' | 'deny' | undefined } | undefined;
+  for (let end = turns.length - 1; end >= 0 && !ask; end--) {
+    for (let width = 1; width <= MEMORY_SPAN_TURNS && end - width + 1 >= 0; width++) {
+      const first = end - width + 1;
+      const spoken = new Set<string>();
+      for (let index = first; index <= end; index++) for (const word of turnTokens[index]!) spoken.add(word);
+      const supported = words.filter(word => spoken.has(word));
+      const ratio = words.length ? supported.length / words.length : 0;
+      if (ratio < MEMORY_SUPPORT_RATIO) continue;
+      ask = { turn: turns[end]!, ratio, supported: supported.length,
+        feels: feel(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
+      break;
+    }
   }
-  if (!turn) {
+  const receipt = (result: JsonObject, metrics = { ratio: windowRatio, supported: windowSupported.length }): JsonObject => {
+    hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'),
+      words: words.length, supported: metrics.supported, supportRatio: Math.round(metrics.ratio * 1000) / 1000, turns: turns.length });
+    return result;
+  };
+  const pointer = normalized(noteText);
+  if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
+  // A note copied word for word from one utterance names that utterance, whatever the span search found.
+  for (let index = turns.length - 1; index >= 0; index--) {
+    if (!normalized(turns[index]!.text).includes(pointer)) continue;
+    ask = { turn: turns[index]!, ratio: 1, supported: words.length, feels: feel(dominantClause(turns[index]!.text, wordSet)) };
+    break;
+  }
+  if (!ask) {
     // An older turn is outside the window rather than unfinished; only a session with no owner
     // speech at all reports that the transcript was never final.
-    const spoken = tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]);
-    return receipt({ remembered: false, code: spoken ? 'owner_text_mismatch' : 'owner_transcript_not_final' }, 0);
+    const speech = tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]);
+    return receipt({ remembered: false, code: speech ? 'owner_text_mismatch' : 'owner_transcript_not_final' });
   }
-  const utterance = turn.text.trim();
-  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, support);
-  const externalId = `${liveSessionId}:${turn.seq}`;
+  const metrics = { ratio: ask.ratio, supported: ask.supported };
+  // Every content word spoken still says nothing about polarity: "does not want" against "wants", or
+  // "hates" against "love", is the opposite claim. One side denying where the other does not is a flip,
+  // in either direction, and it is refused with the same code and supportRatio 1 that makes it visible.
+  const noteFeels = feel(dominantClause(noteText.replace(MEMORY_FRAMING_LEAD, ''), wordSet));
+  if (noteFeels !== ask.feels && (noteFeels === 'deny' || ask.feels === 'deny')) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
+  const utterance = ask.turn.text.trim();
+  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, metrics);
+  // One entry per owner utterance: the source identity is the canonical `session:journal-sequence` that
+  // the domain's deletion tombstone matches, so a note is keyed by the utterance, not by its own text.
+  const externalId = `${liveSessionId}:${ask.turn.seq}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
-  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, support);
+  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };
   const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  return receipt({ remembered: true, entryId: entry.id }, support);
+  return receipt({ remembered: true, entryId: entry.id }, metrics);
 }
 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */
@@ -907,6 +964,10 @@ export class LiveSessionOwner {
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      // M2: what the standing section did with its own budget, once per build, including the build that
+      // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
+      hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
+        omitted: composed.standing.omitted, chars: composed.standing.chars });
       // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
       // only: the state it reached, how many events rode it and how old it was at this start.
       this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),

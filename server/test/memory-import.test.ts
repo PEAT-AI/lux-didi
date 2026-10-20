@@ -170,9 +170,16 @@ test('the standing section is ranked, deterministic and omits the lowest notes f
   } finally { store.close(); }
 
   assert.equal(ranked.length, 30);
+  // M11: a status group leads, so a current note is never displaced by a dated note of higher importance.
+  const statusOrder = { open: 0, current: 1, dated: 2 } as const;
   for (let index = 1; index < ranked.length; index += 1) {
-    assert.ok(ranked[index - 1]!.importance >= ranked[index]!.importance, 'importance desc');
+    const before = ranked[index - 1]!;
+    const after = ranked[index]!;
+    assert.ok(statusOrder[before.status] <= statusOrder[after.status], `status group holds at ${index}`);
+    if (before.status === after.status) assert.ok(before.importance >= after.importance, `importance desc inside ${before.status}`);
   }
+  assert.ok(ranked.findIndex(item => item.status === 'current') < ranked.findIndex(item => item.status === 'dated'),
+    'a current note is ranked before a dated one');
   assert.equal(first.text, second.text, 'composition is deterministic');
   const section = first.sections.find(entry => entry.id === 'standing-memory');
   assert.ok(section, 'the standing-memory section is composed');

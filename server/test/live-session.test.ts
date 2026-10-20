@@ -4876,8 +4876,9 @@ test('W6/H14: a completed tool call writes its result content row through record
 
 test('W6/Q8: one status definition, so an error result is the only thing the journal calls error', () => {
   assert.equal(journalToolStatus({ error: 'tool_result_denied' }), 'error',
-    'a result that is only an error is an error');
-  assert.equal(journalToolStatus({ error: 'partial', findings: [{ text: 'a source answered' }] }), 'completed',
-    'a result that carries content is completed even when it also names a partial failure');
-  assert.equal(journalToolStatus({ findings: [{ text: 'a source answered' }] }), 'completed');
+    'an error result is an error status');
+  assert.equal(journalToolStatus({ error: 'continuation_unavailable', researchId: 'r1', findings: [], canContinue: false }), 'error',
+    'a reply that names a failure is a failure, whatever else it carries');
+  assert.equal(journalToolStatus({ status: 'partial', researchId: 'r1', findings: [{ text: 'a source answered' }] }), 'completed',
+    'a reply that carries an answer is completed: error is never inferred from anywhere else');
 });

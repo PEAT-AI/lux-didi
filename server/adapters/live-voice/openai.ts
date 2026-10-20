@@ -1726,7 +1726,7 @@ class Session implements LiveVoiceSession {
    *  five quiet seconds. One source feeds the caption and the watchdog's terminal code. */
   private evaluateConnection(now: number): void {
     const samples = this.uplinkSamples;
-    while (samples.length && samples[0]!.at <= now - CONNECTION_WINDOW_MS) samples.shift();
+    while (samples.length && samples[0]!.at < now - CONNECTION_WINDOW_MS) samples.shift();
     const oldest = samples[0]?.at;
     let captured = 0, discarded = 0, accepted = 0, pinned = samples.length > 0;
     for (const sample of samples) {

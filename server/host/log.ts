@@ -229,14 +229,25 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
   }
   if (value.event === 'memory_note') {
-    // Closed shape: whether the note was saved, its code, the note's content word count and the share
-    // of those words one owner turn supported. Never the note text.
-    if (Object.keys(value).sort().join(',') !== ['event', 'remembered', 'code', 'words', 'supportRatio'].sort().join(',')) return;
+    // Closed shape: whether the note was saved, its code, the note's content word count, how many of
+    // those words the window's owner turns carried, and how many turns the window held. Never text.
+    if (!closedKeys(value, ['event', 'remembered', 'code', 'words', 'supported', 'supportRatio', 'turns'])) return;
     if (typeof value.remembered !== 'boolean') return;
     if (typeof value.code !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.code)) return;
     if (!Number.isSafeInteger(value.words) || Number(value.words) < 0 || Number(value.words) > 10_000) return;
+    if (!Number.isSafeInteger(value.supported) || Number(value.supported) < 0 || Number(value.supported) > Number(value.words)) return;
     if (typeof value.supportRatio !== 'number' || !Number.isFinite(value.supportRatio) || value.supportRatio < 0 || value.supportRatio > 1) return;
-    return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supportRatio: value.supportRatio };
+    if (!Number.isSafeInteger(value.turns) || Number(value.turns) < 0 || Number(value.turns) > 10_000) return;
+    return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supported: value.supported, supportRatio: value.supportRatio, turns: value.turns };
+  }
+  if (value.event === 'standing_memory_selection') {
+    // Counts and one size only: how many whole notes the build selected and left out, and the section's
+    // character size. Never a note id or any text.
+    if (!closedKeys(value, ['event', 'selected', 'omitted', 'chars'])) return;
+    for (const key of ['selected', 'omitted', 'chars'] as const) {
+      if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
+    }
+    return { event: 'standing_memory_selection', selected: value.selected, omitted: value.omitted, chars: value.chars };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.

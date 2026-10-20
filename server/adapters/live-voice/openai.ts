@@ -87,9 +87,6 @@ const UPLOAD_NO_PROGRESS_MS = 30_000;
 const UPLINK_SHED_BYTES = 48 * 1024;
 /** The shed receipt is bounded to one host.log record per window (3o). */
 const UPLINK_SHED_RECEIPT_MS = 10_000;
-/** W3: the queue is shed down to this mark and the socket is refilled back to the cap from it, so what reaches
- *  the model is runs of consecutive frames, never isolated 20 ms islands, and the newest speech still wins. */
-const UPLINK_SHED_LOW_BYTES = UPLINK_SHED_BYTES / 2;
 /** W3: connection quality is the adapter's own read of the link, over the last three measured seconds. */
 const CONNECTION_WINDOW_MS = 3_000;
 /** Over a fifth of the captured mic bytes discarded in the window is a weak link (the owner's link: 25% loss). */
@@ -1681,11 +1678,11 @@ class Session implements LiveVoiceSession {
       this.micPending = []; this.micPendingBytes = 0;
     } else {
       if (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_BYTES) {
-        // W3: one contiguous run of the oldest frames down to the low-water mark, so the frames that follow are
-        // consecutive speech rather than every other 20 ms frame. The trigger and the mark are the queued bytes:
-        // a socket pinned at the cap cannot shrink, so pricing the shed on the whole queue would drop a frame per
-        // arrival and hand back exactly the islands this replaces.
-        while (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_LOW_BYTES) {
+        // W3: the whole queued stretch goes, oldest first, and only the newest frame is kept. One frame per
+        // arrival is what made 20 ms islands; a stretch at a time is what leaves the frames after it consecutive.
+        // A socket pinned at the cap can only take a third of the capture, so the stretch dropped has to be at
+        // least half the cap for the delivered run to be long enough to hear as speech.
+        while (this.micPending.length > 1) {
           const shed = this.micPending.shift()!;
           const bytes = Buffer.byteLength(shed.frame);
           this.micPendingBytes -= bytes;
@@ -1694,10 +1691,7 @@ class Session implements LiveVoiceSession {
         }
         this.shedRuns += 1;
       }
-      // A congested queue refills the socket only once it has drained to the low-water mark, so the buffer takes
-      // one contiguous run at a time instead of one frame per freed slot. A queue inside the cap writes freely.
-      const room = this.micPendingBytes > UPLINK_SHED_BYTES && socket.bufferedAmount >= UPLINK_SHED_LOW_BYTES ? 0 : UPLINK_SHED_BYTES;
-      while (this.micPending.length && socket.bufferedAmount < room) {
+      while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
         const next = this.micPending.shift()!;
         this.micPendingBytes -= Buffer.byteLength(next.frame);
         if (!this.write(next.frame, next.bytes)) return false;

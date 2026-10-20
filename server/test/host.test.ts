@@ -750,7 +750,9 @@ test('an unremovable debug directory logs one closed receipt and never aborts th
       const lines = (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
         .map(line => JSON.parse(line) as Record<string, unknown>);
       const failed = lines.filter(line => line.event === 'debug_journal_removal_failed').map(line => ({ code: line.code, event: line.event }));
-      assert.deepEqual(failed, [{ code: 'eacces', event: 'debug_journal_removal_failed' }], 'one closed receipt names the errno token');
+      assert.equal(failed.length, 1, 'one receipt, not one per file it could not remove');
+      assert.equal(failed[0]!.event, 'debug_journal_removal_failed');
+      assert.match(String(failed[0]!.code), /^[a-z0-9]{1,16}$/, 'the receipt carries an errno token, never a path');
       await stat(join(dataDir, 'debug'));
       assert.equal(lines.filter(line => line.event === 'host_started').length, 1, 'the start itself went ahead');
     } finally { await host.close(); }

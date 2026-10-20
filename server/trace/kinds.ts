@@ -57,7 +57,7 @@ export const EVENT_KINDS = [
   'turn.opened', 'turn.closed', 'turn.summary',
   'delegation.created',
   'response.created', 'response.observed', 'response.terminal',
-  'call.intent', 'call.executed', 'call.completed', 'call.output_prepared', 'call.output_written',
+  'call.intent', 'call.executed', 'call.output_prepared', 'call.output_written',
   'continuation.decided',
   'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
   'playback.drained', 'playback.interrupted', 'playback.terminated',

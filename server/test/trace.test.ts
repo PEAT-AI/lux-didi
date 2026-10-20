@@ -8,7 +8,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
-import { liveTracePort, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { domainMigrations } from '../domain/schema.js';
+import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { TRACE_SCHEMA_VERSION } from '../trace/kinds.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -254,11 +256,13 @@ test('pruneTraceContent is scoped to the two content tables', () => {
 test('scripts/didi-timeline reads SQL only and prints the timeline and the metadata export', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
   try {
-    const store = new Store(dir, []);
+    const store = new Store(dir, [...domainMigrations]);
     openTurn(store, 't1', 1, T0);
     completedResponse(store, 'r1', 't1', T0 + 100);
     reply(store, 'p1', 't1', 'r1', T0 + 200, T0 + 900);
     recordUtterance(store, { turnId: 't1', role: 'model', at: T0 + 250, final: true, text: 'SECRET-OWNER-WORDS' });
+    // --content is gated on the session's own current history evidence, so the fixture records it.
+    store.transaction(tx => tx.run('INSERT INTO history_sessions(live_session_id,owner_id,data_class,revision,created_at) VALUES(?,?,?,1,?)', [SESSION, 'owner-fixture', 'ordinary', T0]));
     store.close();
 
     const script = join(repoRoot, 'scripts', 'didi-timeline');
@@ -272,8 +276,11 @@ test('scripts/didi-timeline reads SQL only and prints the timeline and the metad
     assert.match(text, /turn 1 \(t1\) origin=owner/);
     assert.ok(!text.includes('SECRET-OWNER-WORDS'));
 
+    // --content asks, and the gate answers truthfully: this fixture is a trace-only session with no
+    // canonical live evidence, so it is refused rather than served legacy preview rows (content.ts).
     const withContent = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--content'], { encoding: 'utf8' });
-    assert.ok(withContent.includes('SECRET-OWNER-WORDS'), '--content is the one way to see text');
+    assert.match(withContent, /content: denied reason=legacy_unavailable/);
+    assert.ok(!withContent.includes('SECRET-OWNER-WORDS'), 'a refused gate never serves text anyway');
 
     const turnOne = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir, '--turn', '1'], { encoding: 'utf8' });
     assert.match(turnOne, /^turn 1 \(t1\)/m);
@@ -303,9 +310,9 @@ test('exportMetadata selects named columns only', () => {
     recordUtterance(store, { turnId: 't1', role: 'owner', at: T0 + 1, final: true, text: 'text' });
     const exported = exportMetadata(readOf(store), SESSION);
     assert.deepEqual(Object.keys(exported.trace_turn![0]!).sort(), [
-      'attribution_uncertain', 'close_reason', 'closed_at', 'first_audible_at', 'live_session_id', 'mono_ms',
+      'attribution_uncertain', 'clock_domain', 'close_reason', 'closed_at', 'first_audible_at', 'live_session_id', 'mono_ms',
       'opened_at', 'origin', 'outcome', 'playback_drained_at', 'stall_reason', 'supersedes_turn_id', 'turn_id', 'turn_index',
-    ]);
+    ], 'the export names every metadata column the turn row carries, including its clock domain');
     assert.equal(exported.trace_utterance, undefined);
   });
 });
@@ -358,11 +365,23 @@ test('a duplicate receipt frame is deduped, not recorded twice', () => {
   });
 });
 
+test('a native audible receipt is accepted and lands as the segment first audible time (W6-R1 ASK-1)', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    assert.equal(forward(store, frame('received', 1, T0 + 201), { turnId: 't1', responseKey: 'r1' }).duplicate, false);
+    assert.equal(forward(store, frame('audible', 2, T0 + 950), { turnId: 't1', responseKey: 'r1' }).duplicate, false);
+    const row = store.transaction(tx => tx.get('SELECT audible_at FROM trace_playback WHERE playback_key=?', [`${SESSION}:${INSTANCE}:1`]))!;
+    assert.equal(row['audible_at'], T0 + 950, 'the app\'s own first-audible-chunk receipt is recorded');
+    const kinds = store.transaction(tx => tx.all('SELECT kind FROM trace_event WHERE source=? ORDER BY seq', ['native']).map(row => row['kind']));
+    assert.deepEqual(kinds, ['playback.received', 'playback.audible']);
+  });
+});
+
 test('a frame with an unknown or free-text field is refused by a typed code', () => {
   const base = { type: 'playback_receipt', receipt: 'drained', segment_seq: 1, source_instance_id: INSTANCE, source_seq: 1, mono_ms: 1, wall_ms: 2 };
   for (const [label, raw, code] of [
     ['free text', { ...base, note: 'the owner said something' }, 'unknown_field'],
-    ['unknown receipt', { ...base, receipt: 'audible' }, 'unknown_receipt'],
+    ['unknown receipt', { ...base, receipt: 'played' }, 'unknown_receipt'],
     ['string count', { ...base, source_seq: '1' }, 'invalid_field'],
     ['missing clock', { ...base, wall_ms: undefined, mono_ms: undefined }, 'missing_field'],
   ] as const) {
@@ -472,8 +491,14 @@ test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write
     const rejected: string[] = [];
     const rebuilt = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e2', onReject: code => rejected.push(code) });
     rebuilt.receipt('response.observed', { responseKey: 'r1' }, { observedAt: T0 + 10 });
-    assert.deepEqual(rejected, ['STALE_EPOCH'], 'a receipt from the socket the rebuild replaced is refused');
+    assert.deepEqual(rejected, ['UNKNOWN_ID'],
+      'a rebuilt port names its own epoch, so its key for r1 belongs to no row: refused, never written');
     assert.equal(store.transaction(tx => tx.all("SELECT kind FROM trace_event WHERE kind='response.observed'")).length, 0, 'and it writes no row');
+    // The epoch guard itself still refuses a row written under another epoch, whatever key names it.
+    const firstEpochKey = scopedTraceKey(SESSION, 'e1', 'response', 'r1');
+    assert.throws(() => record(store, 'response.observed', { liveSessionId: SESSION, connectionEpoch: 'e2', responseKey: firstEpochKey }, { observedAt: T0 + 20 }),
+      (error: unknown) => error instanceof TraceRecordError && error.code === 'STALE_EPOCH',
+      'a receipt that names a row from another epoch is refused by the epoch it carries');
   });
 });
 
@@ -555,7 +580,7 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const migrated = new Store(dir, []);
     try {
       assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
-      assert.equal(traceVersion(migrated), 2);
+      assert.equal(traceVersion(migrated), TRACE_SCHEMA_VERSION);
       const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
       assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
         'the same native sequence in another session is its own event, not a replay of ls-v1');
@@ -566,9 +591,132 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     const again = new Store(dir, []);
     try {
       assert.deepEqual(counts(again), { ...seeded, trace_event: 2, trace_playback: 2 }, 'reopening an already-migrated store keeps every row');
-      assert.equal(traceVersion(again), 2);
-      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), 2,
+      assert.equal(traceVersion(again), TRACE_SCHEMA_VERSION);
+      assert.equal(Number(again.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM runtime_migrations WHERE owner='trace'")!['n'])), TRACE_SCHEMA_VERSION,
         'one ledger row per applied version, so the migration ran once');
     } finally { again.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// W6 (#451): the call timeline tells the whole truth. Each case below is one hole the audit found
+// in the store as the host really writes it, and the fixture session at the end is the same story
+// told through `scripts/didi-timeline`'s own renderer.
+test('H15: executionMs comes from call.output_written, the stage the host really writes', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    const callKey = `call:${'a'.repeat(64)}`;
+    record(store, 'call.intent', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', callKey, monoMs: 5_000 },
+      { name: 'research', argsChars: 12, intentAt: T0 + 200 });
+    record(store, 'call.executed', { liveSessionId: SESSION, callKey, monoMs: 5_010 }, { executedAt: T0 + 210 });
+    record(store, 'call.output_written', { liveSessionId: SESSION, callKey, monoMs: 5_220 },
+      { outputWrittenAt: T0 + 420, outcome: 'completed', ms: 220, resultChars: 40 });
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.equal(report.turns[0]!.calls[0]!.executionMs, 210,
+      'the executed-to-written span is the call execution time, so no call is left without one');
+  });
+});
+
+test('H13: playback that started but never said it became audible is unknown, not absent', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't1' }, { closedAt: T0 + 2_000, closeReason: 'completed', outcome: 'answered' });
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', playbackKey: 'pb1' }, { segmentSeq: 1, receivedAt: T0 + 110 });
+    record(store, 'playback.started', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'pb1' }, { startedAt: T0 + 120 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, turnId: 't1', playbackKey: 'pb1' }, { drainedAt: T0 + 1_900 });
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(report.gaps.map(gap => gap.obligation), [],
+      'a started segment with no audible receipt is unknown audibility, so it raises no gap');
+
+    record(store, 'turn.opened', { liveSessionId: SESSION, turnId: 't2' }, { origin: 'owner', turnIndex: 2, openedAt: T0 + 3_000, monoMs: T0 + 3_000 });
+    completedResponse(store, 'r2', 't2', T0 + 3_100);
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't2' }, { closedAt: T0 + 4_000, closeReason: 'completed', outcome: 'answered' });
+    const after = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(after.gaps.map(gap => [gap.turnId, gap.obligation]), [['t2', 'no_audible_output']],
+      'a turn with no playback at all still owes audibility, so a real silence keeps its gap');
+  });
+});
+
+test('W6-3: once a session reports audibility, a started answer that never became audible is a real gap', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't1' }, { closedAt: T0 + 2_000, closeReason: 'completed', outcome: 'answered' });
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', playbackKey: 'pb1' }, { segmentSeq: 1, receivedAt: T0 + 110 });
+    record(store, 'playback.started', { liveSessionId: SESSION, playbackKey: 'pb1' }, { startedAt: T0 + 120 });
+    record(store, 'playback.audible', { liveSessionId: SESSION, playbackKey: 'pb1' }, { audibleAt: T0 + 130 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, playbackKey: 'pb1' }, { drainedAt: T0 + 1_900 });
+    openTurn(store, 't2', 2, T0 + 3_000);
+    completedResponse(store, 'r2', 't2', T0 + 3_100);
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't2' }, { closedAt: T0 + 4_000, closeReason: 'completed', outcome: 'answered' });
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't2', responseKey: 'r2', playbackKey: 'pb2' }, { segmentSeq: 2, receivedAt: T0 + 3_110 });
+    record(store, 'playback.started', { liveSessionId: SESSION, playbackKey: 'pb2' }, { startedAt: T0 + 3_120 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, playbackKey: 'pb2' }, { drainedAt: T0 + 3_900 });
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(report.gaps.map(gap => [gap.turnId, gap.obligation]), [['t2', 'no_audible_output']],
+      'the session reports audibility, so a started answer with no audible receipt is a real gap');
+  });
+});
+
+test('W6: a fixture session renders every turn closed, every playback on a turn, every call timed, no audibility gap', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
+  try {
+    const store = new Store(dir, []);
+    // A session the way #openTurn, the playback ingress and the call receipts now write it:
+    // an owner utterance that supersedes an open turn, two audible answers, one tool call, one kill.
+    record(store, 'turn.opened', { liveSessionId: SESSION, turnId: 't1' }, { origin: 'owner', turnIndex: 1, openedAt: T0, monoMs: 1_000 });
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't1' }, { closedAt: T0 + 400, closeReason: 'superseded' });
+    record(store, 'turn.opened', { liveSessionId: SESSION, turnId: 't2' }, { origin: 'owner', turnIndex: 2, openedAt: T0 + 400, monoMs: 1_400, supersedesTurnId: 't1' });
+    const r1 = { liveSessionId: SESSION, turnId: 't2', responseKey: 'resp-1' };
+    record(store, 'response.created', r1, { createdAt: T0 + 500, status: 'completed', providerResponseId: 'p-1' });
+    const callKey = `call:${'b'.repeat(64)}`;
+    record(store, 'call.intent', { ...r1, callKey, monoMs: 1_500 }, { name: 'research', argsChars: 20, intentAt: T0 + 600 });
+    record(store, 'call.executed', { liveSessionId: SESSION, callKey, monoMs: 1_510 }, { executedAt: T0 + 610 });
+    record(store, 'call.output_written', { liveSessionId: SESSION, callKey, monoMs: 1_710 },
+      { outputWrittenAt: T0 + 810, outcome: 'completed', ms: 200, resultChars: 512 });
+    record(store, 'continuation.decided', { liveSessionId: SESSION, responseKey: 'resp-1' }, { decidedAt: T0 + 900, outcome: 'sent' });
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't2' }, { closedAt: T0 + 5_000, closeReason: 'completed', outcome: 'answered' });
+    const r2 = { liveSessionId: SESSION, turnId: 't3', responseKey: 'resp-2' };
+    record(store, 'turn.opened', { liveSessionId: SESSION, turnId: 't3' }, { origin: 'owner', turnIndex: 3, openedAt: T0 + 6_000, monoMs: 7_000, supersedesTurnId: 't2' });
+    record(store, 'response.created', r2, { createdAt: T0 + 6_100, status: 'completed', providerResponseId: 'p-2' });
+    record(store, 'continuation.decided', { liveSessionId: SESSION, responseKey: 'resp-2' }, { decidedAt: T0 + 6_900, outcome: 'sent' });
+    // Playback rows land carrying the turn and the response that were open when their first chunk went out.
+    for (const [segment, turnId, responseKey, at] of [[1, 't2', 'resp-1', T0 + 2_000], [2, 't3', 'resp-2', T0 + 7_000]] as const) {
+      const playbackKey = `${SESSION}:inst-1:${segment}`;
+      record(store, 'playback.received', { liveSessionId: SESSION, turnId, responseKey, playbackKey }, { segmentSeq: segment, receivedAt: at });
+      record(store, 'playback.enqueued', { liveSessionId: SESSION, playbackKey }, { enqueuedAt: at + 10 });
+      record(store, 'playback.started', { liveSessionId: SESSION, playbackKey }, { startedAt: at + 20 });
+      record(store, 'playback.drained', { liveSessionId: SESSION, playbackKey }, { drainedAt: at + 900 });
+    }
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't3' }, { closedAt: T0 + 9_000, closeReason: 'session_end', outcome: 'answered' });
+
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(report.unattributedPlayback, [], 'every playback segment belongs to a turn');
+    assert.deepEqual(report.unattributedCalls, [], 'every call belongs to a turn');
+    assert.deepEqual(report.turns.map(track => track.turn.closeReason), ['superseded', 'completed', 'session_end'],
+      'every turn is closed with its own reason, the superseded one first');
+    assert.equal(report.turns[1]!.turn.supersedesTurnId, 't1');
+    assert.deepEqual(report.turns.flatMap(track => track.calls).map(call => call.executionMs), [200],
+      'executionMs is on the call, so no line prints ms=-');
+    assert.deepEqual(report.gaps.map(gap => gap.obligation), [], 'no systematic audibility gap drowns the real ones');
+
+    const rendered = renderTimeline(report);
+    assert.match(rendered, /turn 1 .*reason=superseded outcome=-/);
+    assert.doesNotMatch(rendered, /^turn .* reason=-/m, 'no turn line prints an empty close reason');
+    assert.doesNotMatch(rendered, /turn=none/, 'no playback line is left off a turn');
+    assert.doesNotMatch(rendered, /executionMs=-/, 'no call line is left without an execution time');
+    assert.match(rendered, /executionMs=200/);
+    assert.match(rendered, /gaps: none/);
+
+    // The surface the audit reads: the script itself, on the session the host wrote.
+    store.close();
+    const script = join(repoRoot, 'scripts', 'didi-timeline');
+    const text = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir], { encoding: 'utf8' });
+    assert.doesNotMatch(text, /^turn .* reason=-/m);
+    assert.doesNotMatch(text, /turn=none/);
+    assert.doesNotMatch(text, /executionMs=-/);
+    assert.doesNotMatch(text, /obligation=no_audible_output/);
+    assert.match(text, /gaps: none/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

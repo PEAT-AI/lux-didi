@@ -49,7 +49,6 @@ export interface TraceDetailMap {
   'response.terminal': { terminalAt: number; status: ResponseStatus; terminalReason: ResponseTerminalReason };
   'call.intent': { name: string; argsChars: number; intentAt: number; providerCallId?: string };
   'call.executed': { executedAt: number };
-  'call.completed': { completedAt: number };
   'call.output_prepared': { outputPreparedAt: number };
   'call.output_written': { outputWrittenAt: number; outcome: CallOutcome; ms: number; resultChars: number };
   /** O1b-A: the single continuation owner's decision, and why a `response.create` was skipped. */
@@ -94,7 +93,7 @@ const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'turn.opened': ['turnId'], 'turn.closed': ['turnId'], 'turn.summary': ['turnId'],
   'delegation.created': ['responseKey'],
   'response.created': ['responseKey'], 'response.observed': ['responseKey'], 'response.terminal': ['responseKey'],
-  'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.completed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
+  'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
   'playback.received': ['playbackKey'], 'playback.audible': ['playbackKey'], 'playback.enqueued': ['playbackKey'],
   'playback.started': ['playbackKey'], 'playback.drained': ['playbackKey'], 'playback.interrupted': ['playbackKey'],
   'playback.terminated': ['playbackKey'],
@@ -131,7 +130,6 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   },
   'call.intent': { name: { check: isId }, argsChars: { check: isCount }, intentAt: { check: isCount }, providerCallId: { check: isId, optional: true } },
   'call.executed': { executedAt: { check: isCount } },
-  'call.completed': { completedAt: { check: isCount } },
   'call.output_prepared': { outputPreparedAt: { check: isCount } },
   'call.output_written': { outputWrittenAt: { check: isCount }, outcome: { check: oneOf(CALL_OUTCOMES) }, ms: { check: isCount }, resultChars: { check: isCount } },
   'playback.received': { segmentSeq: { check: isCount }, receivedAt: { check: isCount } },
@@ -306,12 +304,6 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       const d = detail as TraceDetailMap['call.executed'];
       assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
       tx.run('UPDATE trace_call SET executed_at=? WHERE call_key=?', [d.executedAt, ids.callKey!]);
-      return;
-    }
-    case 'call.completed': {
-      const d = detail as TraceDetailMap['call.completed'];
-      assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
-      tx.run('UPDATE trace_call SET execution_completed_at=? WHERE call_key=?', [d.completedAt,ids.callKey!]);
       return;
     }
     case 'call.output_prepared': {

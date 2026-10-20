@@ -145,6 +145,25 @@ test('a note stitched from two non-adjacent turns is refused', async t => {
     { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
 });
 
+test('a note that turns the owner\'s love into hate is refused', async t => {
+  // The polarity verb is the word the note must be supported by, so it cannot be framing.
+  const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob hates brussels sprouts'), { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a contracted negation in the owner\'s ask is read as negation', async t => {
+  // "don't" tokenizes to don and t; a negation the reader cannot see is a flip it cannot refuse.
+  const store = liveSession(t, [{ text: "i don't want the tuesday plumber to come with a ladder", finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob wants the tuesday plumber to come with a ladder'),
+    { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a note keeping the owner\'s own preference verb still stores', async t => {
+  // The positive control: retaining the verb must not make an honest paraphrase fail.
+  const store = liveSession(t, [{ text: 'i prefer short answers in the morning', finished: true }]);
+  assert.equal((await remember(store, 'Rob prefers short answers in the morning')).remembered, true);
+});
+
 test('a session with no owner transcription reports the transcript was never final', async t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
   assert.deepEqual(await remember(store, 'Rob prefers tea and the crossword'), { remembered: false, code: 'owner_transcript_not_final' });

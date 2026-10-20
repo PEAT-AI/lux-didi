@@ -1100,7 +1100,7 @@ function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | u
   const line = (marker: string) => { const start = source.indexOf(marker); assert.ok(start > 0, marker); return source.slice(start, source.indexOf('\n', start)); };
   const between = (from: string, to: string) => { const start = source.indexOf(from), end = source.indexOf(to, start); assert.ok(start > 0 && end > start, `${from} .. ${to}`); return source.slice(start, end); };
   const context: any = {
-    connection: 'Ready', pairingRequired: false, miniRoute: false,
+    connection: 'Ready', pairingRequired: false, miniRoute: false, orbSurfaceVisible: () => true,
     live: projection ? { state: projection, cursor: 0, entries: [] } : undefined,
     liveMachine: { view: { ...initialLiveView(), state: machine, error: extra.stateError } },
     liveVoiceState, liveLabel: (current: LiveCurrent) => liveLabel(current), busy: false, error: undefined,

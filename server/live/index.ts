@@ -503,7 +503,16 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
 // note is about, and the owner never speaks their own name. Dropping it can only tighten the guard.
 const MEMORY_FRAMING_WORDS = new Set(['prefer', 'prefers', 'preferred', 'likes', 'liked', 'loves', 'wants', 'needs', 'hates', 'dislikes', 'owner', 'said', 'says']);
 const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|said|says)\b\s*/i;
+// Support must be ONE ask: the turns carrying the note's words have to be adjacent, because a note
+// stitched from two turns apart is nobody's sentence. Three turns is one ask, a question and its
+// clarification; a wider span is a different topic.
+const MEMORY_SPAN_TURNS = 3;
+// The ratio counts words, not meaning: a negated note over an unnegated ask says the opposite of what
+// the owner said, so polarity is compared separately.
+const MEMORY_NEGATORS = new Set(['not', 'never', 'no', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent', 'wasnt',
+  'wont', 'without', 'dislike', 'dislikes', 'hate', 'hates']);
 const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+const negated = (text: string): boolean => tokens(text).some(word => MEMORY_NEGATORS.has(word));
 /** The note's content words: lower-cased tokens without stop words, framing or two-letter noise. */
 const contentWords = (text: string): string[] => tokens(text)
   .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word));
@@ -523,41 +532,63 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // The model's tool call is the intent: the latest partial turn is owner speech too, because the
   // provider may never set the finished flag before the call arrives.
   if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
-  // The support is the window's union of turns: an ask spread over two utterances is still the
-  // owner's own speech, while a note the union does not carry fails the same ratio guard.
-  const spoken = new Set(turns.flatMap(turn => tokens(turn.text)));
-  const supported = words.filter(word => spoken.has(word));
-  const ratio = words.length ? supported.length / words.length : 0;
-  const receipt = (result: JsonObject): JsonObject => {
+  // The window's own support, for a refusal that has no ask to report: how much of the note any turn
+  // in the window carries at all.
+  const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text)));
+  const windowSupported = words.filter(word => windowSpoken.has(word));
+  const windowRatio = words.length ? windowSupported.length / words.length : 0;
+  // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
+  const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
+  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; negated: boolean } | undefined;
+  for (let end = turns.length - 1; end >= 0 && !ask; end--) {
+    for (let width = 1; width <= MEMORY_SPAN_TURNS && end - width + 1 >= 0; width++) {
+      const first = end - width + 1;
+      const spoken = new Set<string>();
+      for (let index = first; index <= end; index++) for (const word of turnTokens[index]!) spoken.add(word);
+      const supported = words.filter(word => spoken.has(word));
+      const ratio = words.length ? supported.length / words.length : 0;
+      if (ratio < MEMORY_SUPPORT_RATIO) continue;
+      ask = { turn: turns[end]!, ratio, supported: supported.length, negated: turns.slice(first, end + 1).some(turn => negated(turn.text)) };
+      break;
+    }
+  }
+  const receipt = (result: JsonObject, metrics = { ratio: windowRatio, supported: windowSupported.length }): JsonObject => {
     hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'),
-      words: words.length, supported: supported.length, supportRatio: Math.round(ratio * 1000) / 1000, turns: turns.length });
+      words: words.length, supported: metrics.supported, supportRatio: Math.round(metrics.ratio * 1000) / 1000, turns: turns.length });
     return result;
   };
   const pointer = normalized(noteText);
   if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
-  let turn: { seq: number; text: string } | undefined;
-  for (let index = turns.length - 1; index >= 0 && !turn; index--) {
-    if (normalized(turns[index]!.text).includes(pointer)) turn = turns[index];
+  // A note copied word for word from one utterance names that utterance, whatever the span search found.
+  for (let index = turns.length - 1; index >= 0; index--) {
+    if (!normalized(turns[index]!.text).includes(pointer)) continue;
+    ask = { turn: turns[index]!, ratio: 1, supported: words.length, negated: negated(turns[index]!.text) };
+    break;
   }
-  if (!turn && ratio >= MEMORY_SUPPORT_RATIO) turn = turns[turns.length - 1];
-  if (!turn) {
+  if (!ask) {
     // An older turn is outside the window rather than unfinished; only a session with no owner
     // speech at all reports that the transcript was never final.
     const speech = tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]);
     return receipt({ remembered: false, code: speech ? 'owner_text_mismatch' : 'owner_transcript_not_final' });
   }
-  const utterance = turn.text.trim();
-  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' });
-  const externalId = `${liveSessionId}:${turn.seq}`;
+  const metrics = { ratio: ask.ratio, supported: ask.supported };
+  // Every content word spoken still says nothing about polarity: "does not want" against "wants" is the
+  // opposite claim, so a flip is refused with the same code and supportRatio 1 that makes it debuggable.
+  if (negated(noteText.replace(MEMORY_FRAMING_LEAD, '')) !== ask.negated) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
+  const utterance = ask.turn.text.trim();
+  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, metrics);
+  // One entry per note, not per utterance: a second, different note from the same ask is its own memory,
+  // while the same note twice is still already_remembered.
+  const externalId = `${liveSessionId}:${ask.turn.seq}:${createHash('sha256').update(pointer).digest('hex').slice(0, 16)}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
-  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing });
+  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };
   const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  return receipt({ remembered: true, entryId: entry.id });
+  return receipt({ remembered: true, entryId: entry.id }, metrics);
 }
 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */

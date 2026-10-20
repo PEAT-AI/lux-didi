@@ -1443,6 +1443,7 @@ describe('openai gpt-live turn states', () => {
     }
     assert.equal(connection()?.quality, 'weak', 'more than a fifth of the captured bytes were discarded');
     const measured = Number(connection()?.uploadKbps);
+    console.log('DEBUG-connection', JSON.stringify(connection()), 'sent', socket.sent.length, 'audio', socket.micFrames().length, 'buffered', socket.bufferedAmount);
     assert.ok(measured >= 140 && measured <= 180, `about 160 kbit/s of drain, got ${measured}`);
     for (let index = 0; index < 260; index += 1) {
       socket.drain(4_000);

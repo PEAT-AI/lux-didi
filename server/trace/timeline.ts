@@ -169,7 +169,8 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
       return track;
     });
 
-  const gaps = turns.flatMap(gapsFor).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
+  const audibilityReported = playback.some(segment => segment.audibleAt !== null);
+  const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
     tools: readToolDiagnostics(read,liveSessionId,{content: options.content === true,...(options.contentAuthority ? {authority: options.contentAuthority} : {})}),
     liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
@@ -186,7 +187,7 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
  * Obligations, not stalls. A turn interrupted, superseded or intentionally silent owes
  * nothing, so it never produces a gap.
  */
-function gapsFor(track: TurnTrack): TraceGap[] {
+function gapsFor(track: TurnTrack, audibilityReported: boolean): TraceGap[] {
   const { turn, responses, calls, playback } = track;
   if (turn.closeReason === 'interrupted' || turn.closeReason === 'superseded') return [];
   if (turn.outcome === 'silent') return [];
@@ -225,9 +226,10 @@ function gapsFor(track: TurnTrack): TraceGap[] {
 
   const answered = responses.some(response => response.status === 'completed');
   const audible = playback.some(segment => segment.audibleAt !== null);
-  // Until the app reports playback.audible, a segment that started is unknown audibility, not absent:
-  // the gap would otherwise fire on every answered turn and drown the real ones (#451 H13).
-  const audibilityUnknown = playback.some(segment => segment.startedAt !== null);
+  // #451 H13 (W6-3): until the app reports playback.audible, a segment that started is unknown
+  // audibility, not absent, so the gap does not fire on every answered turn. Once any segment in the
+  // session reports audibility, silence is absence again and a real inaudible answer keeps its gap.
+  const audibilityUnknown = !audibilityReported && playback.some(segment => segment.startedAt !== null);
   const silent = turn.outcome === 'no_response' || turn.outcome === 'failed';
   if (answered && !audible && !audibilityUnknown && !silent) {
     add('no_audible_output', 'playback.audible_at or turn outcome silent/no_response',
@@ -316,7 +318,7 @@ export function renderTimeline(report: TimelineReport): string {
     for (const u of track.utterances ?? []) lines.push(`  utterance ${u.role}${u.final ? ' final' : ''} at=${wall(u.at)} ${JSON.stringify(u.text)}`);
     for (const r of track.responses) {
       lines.push(`  response ${r.responseKey} provider=${orDash(r.providerResponseId)} delegation=${orDash(r.delegationId)}`
-        + ` status=${r.status} created=${wall(r.createdAt)} terminal=${wall(r.terminalAt)} reason=${orDash(r.terminalReason)}`
+        + ` status=${r.status} created=${wall(r.createdAt)} terminal=${wall(r.terminalAt)} terminalReason=${orDash(r.terminalReason)}`
         + `${r.continuationOfResponseKey === null ? '' : ` continues=${r.continuationOfResponseKey}`}`);
     }
     for (const c of track.calls) {

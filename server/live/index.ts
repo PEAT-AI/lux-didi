@@ -18,7 +18,7 @@ import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from 
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
-import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
+import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallResult, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
@@ -315,6 +315,8 @@ interface ActiveSession {
   bargeInCallIds: Set<string>;
   /** In-flight abort handle per model call id, so a provider cancellation aborts exactly that call. */
   callAborts: Map<string, AbortController>;
+  /** #451 V7/Q6: the turn and response a playback segment was first heard in, by playback key. */
+  playbackTurns: Map<string, { turnId?: string; responseKey?: string }>;
   /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
   callStartedAt: Map<string, number>;
   speaking: boolean;
@@ -1211,7 +1213,7 @@ export class LiveSessionOwner {
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1269,7 +1271,7 @@ export class LiveSessionOwner {
   #playbackReceipt(handle: ActiveSession, frame: string): void {
     try {
       const receipt = parsePlaybackReceipt(frame);
-      recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle));
+      recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle, receipt));
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
@@ -1277,12 +1279,6 @@ export class LiveSessionOwner {
     }
   }
 
-  /**
-   * #451 V7/Q6: a playback segment is tied to the turn and the response that were open when its first
-   * chunk went out, so a truncation can be read against the answer it cut. The host knows the turn
-   * directly and the response through the trace row it recorded for that turn; when neither is open
-   * the attribution stays empty rather than guessed.
-   */
   /**
    * #451 H14: the result content of one call, in the content table the diagnostic timeline reads, written
    * on the same path that wrote tool_calls.result_json. One call, one row; trace retention prunes it.
@@ -1293,18 +1289,31 @@ export class LiveSessionOwner {
     try {
       recordCallResult(this.#store, { callKey: scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', callId), text });
     } catch (error) {
-      hostLogEvent({ event: 'live_trace_rejected', kind: 'call.result', code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+      hostLogEvent({ event: 'live_trace_rejected', kind: 'call.output_written', code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+      this.#diagnosticFailure(handle, 'trace_write_failed');
     }
   }
 
-  #playbackAttribution(handle: ActiveSession): { turnId?: string; responseKey?: string } {
+  /**
+   * #451 V7/Q6 (W6-R1 W6-2): a playback segment is tied to the turn and the response that were open when
+   * its FIRST receipt arrived, and every later receipt of the same segment reuses that attribution. A
+   * segment that starts before a close and drains after it is still read against the answer it played,
+   * and a receipt that lands during the next turn cannot be attributed to it. The response is the trace
+   * row recorded for that turn; when no turn is open nothing is guessed.
+   */
+  #playbackAttribution(handle: ActiveSession, receipt: NativePlaybackReceipt): { turnId?: string; responseKey?: string } {
+    const key = playbackKeyOf(handle.liveSessionId, receipt.sourceInstanceId, receipt.segmentSeq);
+    const known = handle.playbackTurns.get(key);
+    if (known !== undefined) return known;
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return {};
     const row = this.#store.transaction(tx => tx.get(
       'SELECT response_key FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at DESC, response_key DESC LIMIT 1',
       [handle.liveSessionId, turnId]));
     const responseKey = row?.['response_key'];
-    return { turnId, ...(typeof responseKey === 'string' ? { responseKey } : {}) };
+    const attribution = { turnId, ...(typeof responseKey === 'string' ? { responseKey } : {}) };
+    handle.playbackTurns.set(key, attribution);
+    return attribution;
   }
 
   #armIdle(handle: ActiveSession, remainingMs: number): void {

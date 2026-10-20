@@ -4858,6 +4858,28 @@ test('W6/H13: a playback receipt names the turn and the response open when its f
   await attachment.done;
 });
 
+test('W6/H13: a segment keeps the turn it started in even when its later receipts land after the close', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'playback-late-receipts');
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { inputTranscription: { text: 'first question' } } });
+  await drain(h, session.liveSessionId, baseline + 1);
+  const first = String(h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_turn WHERE live_session_id=? AND closed_at IS NULL', [session.liveSessionId]))!['turn_id']);
+  const frame = (receipt: string, seq: number): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-late', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
+  // The first receipt names the turn the segment opened in; the rest land after that turn closes.
+  attachment.playbackReceipt(frame('enqueued', 1));
+  h.f.send({ serverContent: { inputTranscription: { text: 'second question' } } });
+  await drain(h, session.liveSessionId, baseline + 2);
+  attachment.playbackReceipt(frame('received', 2));
+  attachment.playbackReceipt(frame('started', 3));
+  const row = h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-late:1`]))!;
+  assert.equal(row['turn_id'], first, 'the segment stays with the turn it started in, not the turn open when the row was written');
+  attachment.close();
+  await attachment.done;
+});
+
 test('W6/H14: a completed tool call writes its result content row through recordCallResult', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h, 'call-result-row');

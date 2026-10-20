@@ -613,6 +613,27 @@ test('H13: playback that started but never said it became audible is unknown, no
   });
 });
 
+test('W6-3: once a session reports audibility, a started answer that never became audible is a real gap', () => {
+  withStore(store => {
+    openTurn(store, 't1', 1, T0);
+    completedResponse(store, 'r1', 't1', T0 + 100);
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't1' }, { closedAt: T0 + 2_000, closeReason: 'completed', outcome: 'answered' });
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', playbackKey: 'pb1' }, { segmentSeq: 1, receivedAt: T0 + 110 });
+    record(store, 'playback.started', { liveSessionId: SESSION, playbackKey: 'pb1' }, { startedAt: T0 + 120 });
+    record(store, 'playback.audible', { liveSessionId: SESSION, playbackKey: 'pb1' }, { audibleAt: T0 + 130 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, playbackKey: 'pb1' }, { drainedAt: T0 + 1_900 });
+    openTurn(store, 't2', 2, T0 + 3_000);
+    completedResponse(store, 'r2', 't2', T0 + 3_100);
+    record(store, 'turn.closed', { liveSessionId: SESSION, turnId: 't2' }, { closedAt: T0 + 4_000, closeReason: 'completed', outcome: 'answered' });
+    record(store, 'playback.received', { liveSessionId: SESSION, turnId: 't2', responseKey: 'r2', playbackKey: 'pb2' }, { segmentSeq: 2, receivedAt: T0 + 3_110 });
+    record(store, 'playback.started', { liveSessionId: SESSION, playbackKey: 'pb2' }, { startedAt: T0 + 3_120 });
+    record(store, 'playback.drained', { liveSessionId: SESSION, playbackKey: 'pb2' }, { drainedAt: T0 + 3_900 });
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(report.gaps.map(gap => [gap.turnId, gap.obligation]), [['t2', 'no_audible_output']],
+      'the session reports audibility, so a started answer with no audible receipt is a real gap');
+  });
+});
+
 test('W6: a fixture session renders every turn closed, every playback on a turn, every call timed, no audibility gap', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
   try {

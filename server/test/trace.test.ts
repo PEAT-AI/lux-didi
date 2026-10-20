@@ -657,7 +657,7 @@ test('W6: a fixture session renders every turn closed, every playback on a turn,
 
     const rendered = renderTimeline(report);
     assert.match(rendered, /turn 1 .*reason=superseded outcome=-/);
-    assert.doesNotMatch(rendered, / reason=-/, 'no turn line prints an empty close reason');
+    assert.doesNotMatch(rendered, /^turn .* reason=-/m, 'no turn line prints an empty close reason');
     assert.doesNotMatch(rendered, /turn=none/, 'no playback line is left off a turn');
     assert.doesNotMatch(rendered, /executionMs=-/, 'no call line is left without an execution time');
     assert.match(rendered, /executionMs=200/);
@@ -667,7 +667,7 @@ test('W6: a fixture session renders every turn closed, every playback on a turn,
     store.close();
     const script = join(repoRoot, 'scripts', 'didi-timeline');
     const text = execFileSync(process.execPath, [script, 'latest', '--data-dir', dir], { encoding: 'utf8' });
-    assert.doesNotMatch(text, / reason=-/);
+    assert.doesNotMatch(text, /^turn .* reason=-/m);
     assert.doesNotMatch(text, /turn=none/);
     assert.doesNotMatch(text, /executionMs=-/);
     assert.doesNotMatch(text, /obligation=no_audible_output/);

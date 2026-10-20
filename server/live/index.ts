@@ -198,12 +198,17 @@ const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waiti
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
+/** The response keys that describe a read rather than carry its content: never a usable result. */
+const RESULT_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'error', 'status', 'reason', 'code', 'researchId', 'cursor', 'nextCursor', 'delivery', 'canContinue',
+  'alreadyDelivered', 'question', 'window', 'sources',
+]);
+
 /** #451 Q8: one status definition for a tool call. `error` only when the result carries nothing usable,
  *  so a call whose answer arrived is never recorded as failed because part of it did not. */
 export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
-  const error = response['error'];
-  if (error === undefined) return 'completed';
-  const usable = Object.entries(response).some(([key, value]) => key !== 'error'
+  if (response['error'] === undefined) return 'completed';
+  const usable = Object.entries(response).some(([key, value]) => !RESULT_METADATA_KEYS.has(key)
     && ((typeof value === 'string' && value.length > 0) || (Array.isArray(value) && value.length > 0)));
   return usable ? 'completed' : 'error';
 }

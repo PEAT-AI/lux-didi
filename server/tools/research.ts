@@ -950,7 +950,7 @@ export function refusedResearchRunLog(): ResearchRunLog {
   return {
     event: 'research_run', researchId: newResearchId(), questionClass: 'cross_source', rounds: 0, perRound: [],
     stopReason: 'refused', status: 'failed', ops: 0, sources: [], elapsedMs: 0, deadAirMs: 0, selectorMs: 0,
-    fallbackUsed: false, replyBytes: 0,
+    fallbackUsed: false, replyBytes: 0, unchecked: [], canContinue: false, findingChars: [],
   };
 }
 

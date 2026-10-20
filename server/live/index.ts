@@ -1999,7 +1999,7 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          this.#sendThinking(handle, event.calls.filter(call => call.name !== RESEARCH_TOOL_NAME));
+          this.#sendThinking(handle, event.calls);
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
@@ -2712,7 +2712,7 @@ export class LiveSessionOwner {
       if (transcription) {
         const turnId = handle.connection.turnId;
         if (turnId !== undefined) {
-          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,'',journalId]); }
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,text ?? '',journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }

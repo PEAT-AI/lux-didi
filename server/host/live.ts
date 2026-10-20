@@ -157,7 +157,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
       try {
         binding = pinProviderBinding(configDir, seedScope(profile.provider, profile.liveModelId, profile.route.dataClasses));
         profile = validateLiveProfile({ ...profile, credentialBinding: binding.identity });
-      } catch { binding = undefined; }
+      } catch (error) { if (keyPresent) throw error; binding = undefined; }
     }
     if (!researchSelector) {
       try {

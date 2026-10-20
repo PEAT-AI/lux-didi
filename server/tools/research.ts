@@ -890,7 +890,10 @@ function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMEN
 
 /** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
 export function parseResearch(args: unknown): ParsedResearch {
-  const record = isRecord(args) ? args : {};
+  const given = isRecord(args) ? args : {};
+  // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
+  const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
+    ? { ...given, sources: given['sources'][0] as string } : given;
   const action = record['action'];
   const shape: ResearchArgumentShape = {
     action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
@@ -901,25 +904,25 @@ export function parseResearch(args: unknown): ParsedResearch {
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
   if (shape.unknownFieldCount) return refuse('unknown_fields');
-  if (!Object.hasOwn(args, 'action')) return refuse('action_missing');
+  if (!Object.hasOwn(record, 'action')) return refuse('action_missing');
   if (action !== 'start' && action !== 'continue' && action !== 'stop') return refuse('action_invalid');
   for (const [key, reason] of [['question', 'question_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
-    if (Object.hasOwn(args, key) && typeof args[key] !== 'string') return refuse(reason);
+    if (Object.hasOwn(record, key) && typeof record[key] !== 'string') return refuse(reason);
   }
-  if (args['question'] !== undefined && optionalString(args['question']) === undefined) return refuse('question_required');
-  if (args['researchId'] !== undefined && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
-  if (action === 'start' && optionalString(args['question']) === undefined) return refuse('question_required');
-  if (action !== 'start' && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
-  if (Object.hasOwn(args, 'cursor')) {
-    if (typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128) return refuse('cursor_type');
+  if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
+  if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
+  if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  if (Object.hasOwn(record, 'cursor')) {
+    if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
     if (action !== 'continue') return refuse('cursor_action');
-    if (Object.hasOwn(args, 'lookups')) return refuse('cursor_lookups_conflict');
+    if (Object.hasOwn(record, 'lookups')) return refuse('cursor_lookups_conflict');
   }
-  if (Object.hasOwn(args, 'lookups')) {
+  if (Object.hasOwn(record, 'lookups')) {
     if (action === 'stop') return refuse('lookups_stop');
-    if (!Array.isArray(args['lookups'])) return refuse('lookups_type');
-    if (args['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
-    for (const entry of args['lookups']) {
+    if (!Array.isArray(record['lookups'])) return refuse('lookups_type');
+    if (record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    for (const entry of record['lookups']) {
       if (!isRecord(entry)) return refuse('lookup_type');
       if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
       if (typeof entry['source'] !== 'string' || !(LOOKUP_SOURCES as readonly string[]).includes(entry['source'])) return refuse('lookup_source');
@@ -933,7 +936,7 @@ export function parseResearch(args: unknown): ParsedResearch {
       }
     }
   }
-  return { ok: true, call: args as unknown as ResearchCall };
+  return { ok: true, call: record as unknown as ResearchCall };
 }
 
 export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
@@ -2128,6 +2131,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   };
   const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
   let invocation = 0;
+  /** The host's step sink threw on this run: a host fault the prime read's own catch must not read as an empty source. */
+  let stepSinkFailed = false;
   deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
@@ -2142,8 +2147,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
     });
     try { for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); } }
-    // A host step sink that throws is the host's fault, never the source's: the run ends, it does not read as empty.
-    catch (error) { if (error !== null && typeof error === 'object') Object.defineProperty(error, 'stepSink', { value: true }); throw error; }
+    catch (error) { stepSinkFailed = true; throw error; }
     update();
     let ended = false;
     const finish = (results: readonly IntentSubResult[], errorCode?: 'failed' | 'timeout' | 'cancelled'): void => {
@@ -2289,7 +2293,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
           knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch((error: unknown) => {
-            if ((error as { stepSink?: boolean } | null)?.stepSink === true) throw error;
+            if (stepSinkFailed) throw error;
             return [] as IntentSubResult[];
           });
         }

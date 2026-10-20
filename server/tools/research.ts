@@ -148,7 +148,7 @@ export interface ResearchLookup { source: LookupSource; query: string; history?:
 export type LookupOutcome = 'ok' | 'empty' | 'unavailable' | 'failed' | 'timeout';
 
 export interface ResearchRoutedLog {
-  event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number;
+  event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number; callKey?: string;
   ms: number[]; outcomes: LookupOutcome[];
 }
 
@@ -388,7 +388,7 @@ export function parseSelector(text: string): SelectorOutput | null {
   return { questionClass: questionClass as QuestionClass, actions, pUseful };
 }
 
-/** The real selector: the same-provider Gemini text adapter, one structured request, 2 s deadline. */
+/** The real selector: the same-provider Gemini text adapter, one structured request, its deadline is selectorDeadlineMs. */
 export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1'): ResearchSelector {
   return {
     async select(input, signal) {
@@ -627,6 +627,10 @@ interface MailRead {
   args: JsonObject; messages: Map<string, MailMessage>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   received: number; invalid: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** A connector answer that carried text but no page envelope is one read, kept whole. */
+  plain?: string;
+  /** The connector's own failure code, kept so the sub-call log names the real reason. */
+  code?: string;
 }
 type RemoteBody = Extract<HostEvidenceRef, { kind: 'remote-body' }>;
 interface ReceivedBody { evidence: RemoteBody; binding: ToolResultBinding; source: SourceKind; offset: number }
@@ -645,6 +649,8 @@ interface CalendarRead {
   args: JsonObject; events: Map<string, RetainedCalendarEvent>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** The connector's own failure code, kept so the sub-call log names the real reason. */
+  code?: string;
 }
 export interface RunState {
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
@@ -654,6 +660,12 @@ export interface RunState {
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
+  /** #451 H22: the model call this run answers, the adapter's own call id (ruling W6-R1). */
+  callKey?: string;
+  /** #1020: the moment the call answered ahead of its readers, so a later cut is logged partial, not failed. */
+  answeredAt?: number;
+  /** #1020: the owner's zone, so a calendar coverage line names the days the owner lives in. */
+  timeZone?: string;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
   progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
@@ -683,10 +695,11 @@ export class ResearchLedger {
   #last: RunState | undefined;
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
-  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number }): RunState {
+  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
     const run: RunState = {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
+      ...(input.callKey === undefined ? {} : { callKey: input.callKey }),
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
@@ -766,6 +779,15 @@ export class ResearchLedger {
 // ---------------------------------------------------------------------------------------------
 // Run
 
+/** #451 H22 (W6-R1): the model call a run answers, the adapter's own call id, which is the value
+ *  `trace_call.provider_call_id` already holds, so one call reads across host.log and the trace. */
+const callKeyOf = (run: RunState): { callKey?: string } => (run.callKey === undefined ? {} : { callKey: run.callKey });
+/** The resolved calendar window as two dates, never the query that produced it. */
+const windowDates = (window: string, now: number, timeZone: string): { windowFrom?: string; windowTo?: string } => {
+  const range = windowRange(window, now, timeZone);
+  return { windowFrom: range.timeMin.slice(0, 10), windowTo: range.timeMax.slice(0, 10) };
+};
+
 /** R6: one metadata-only line for the moment a call answered ahead of the sources still reading. */
 export interface ResearchFirstAnswer {
   event: 'research_first_answer'; researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
@@ -774,10 +796,14 @@ export interface ResearchFirstAnswer {
 /** R6: one event per source that settles after the first answer. Only what the source really returned. */
 export interface ResearchLateFindings {
   researchId: string; runId?: number; calendarKeys?: string[]; mailKeys?: string[]; source: SourceKind; ms: number; items: string[]; ok: boolean;
+  /** #472: the run was cut (cancelled or stopped) before this source settled, so silence here is a cut, not a failure. */
+  cut?: boolean;
 }
 
 export interface ResearchProgress {
   researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
+  /** #451 H22: the model call this run answers, the id `trace_call.provider_call_id` records. */
+  callKey?: string;
   sourcesDone: SourceKind[]; sourcesPending: SourceKind[]; elapsedMs: number;
 }
 export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'routed';
@@ -794,7 +820,9 @@ export interface ResearchRunLog {
 
 /** Q1: one metadata-only record per internal sub-call: counts and bytes, never the query or text. */
 export interface ResearchSubcallLog {
-  event: 'research_subcall'; researchId: string; kind: LedgerKind; tool: string; ok: boolean;
+  event: 'research_subcall'; researchId: string; kind: LedgerKind; tool: string; ok: boolean; callKey?: string;
+  /** Calendar reads only: the resolved window as two dates, never the query that produced it. */
+  windowFrom?: string; windowTo?: string;
   errorCode?: string; items: number; rawBytes: number; keptBytes: number; queryChars: number;
   queryAuthor: 'selector' | 'fallback' | 'routed';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
@@ -884,7 +912,10 @@ function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMEN
 
 /** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
 export function parseResearch(args: unknown): ParsedResearch {
-  const record = isRecord(args) ? args : {};
+  const given = isRecord(args) ? args : {};
+  // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
+  const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
+    ? { ...given, sources: given['sources'][0] as string } : given;
   const action = record['action'];
   const shape: ResearchArgumentShape = {
     action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
@@ -895,25 +926,25 @@ export function parseResearch(args: unknown): ParsedResearch {
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
   if (shape.unknownFieldCount) return refuse('unknown_fields');
-  if (!Object.hasOwn(args, 'action')) return refuse('action_missing');
+  if (!Object.hasOwn(record, 'action')) return refuse('action_missing');
   if (action !== 'start' && action !== 'continue' && action !== 'stop') return refuse('action_invalid');
   for (const [key, reason] of [['question', 'question_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
-    if (Object.hasOwn(args, key) && typeof args[key] !== 'string') return refuse(reason);
+    if (Object.hasOwn(record, key) && typeof record[key] !== 'string') return refuse(reason);
   }
-  if (args['question'] !== undefined && optionalString(args['question']) === undefined) return refuse('question_required');
-  if (args['researchId'] !== undefined && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
-  if (action === 'start' && optionalString(args['question']) === undefined) return refuse('question_required');
-  if (action !== 'start' && optionalString(args['researchId']) === undefined) return refuse('research_id_required');
-  if (Object.hasOwn(args, 'cursor')) {
-    if (typeof args['cursor'] !== 'string' || !args['cursor'].length || args['cursor'].length > 128) return refuse('cursor_type');
+  if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
+  if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
+  if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  if (Object.hasOwn(record, 'cursor')) {
+    if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
     if (action !== 'continue') return refuse('cursor_action');
-    if (Object.hasOwn(args, 'lookups')) return refuse('cursor_lookups_conflict');
+    if (Object.hasOwn(record, 'lookups')) return refuse('cursor_lookups_conflict');
   }
-  if (Object.hasOwn(args, 'lookups')) {
+  if (Object.hasOwn(record, 'lookups')) {
     if (action === 'stop') return refuse('lookups_stop');
-    if (!Array.isArray(args['lookups'])) return refuse('lookups_type');
-    if (args['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
-    for (const entry of args['lookups']) {
+    if (!Array.isArray(record['lookups'])) return refuse('lookups_type');
+    if (record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    for (const entry of record['lookups']) {
       if (!isRecord(entry)) return refuse('lookup_type');
       if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
       if (typeof entry['source'] !== 'string' || !(LOOKUP_SOURCES as readonly string[]).includes(entry['source'])) return refuse('lookup_source');
@@ -927,7 +958,7 @@ export function parseResearch(args: unknown): ParsedResearch {
       }
     }
   }
-  return { ok: true, call: args as unknown as ResearchCall };
+  return { ok: true, call: record as unknown as ResearchCall };
 }
 
 export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
@@ -936,6 +967,15 @@ export function researchRepair(reason: ResearchRefusalReason): JsonObject {
   return {
     error: 'invalid_research_arguments', state: 'refused', reason,
     guidance: 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+  };
+}
+
+/** R9: a call refused before dispatch still leaves exactly one run receipt, in the run line's own shape. */
+export function refusedResearchRunLog(): ResearchRunLog {
+  return {
+    event: 'research_run', researchId: newResearchId(), questionClass: 'cross_source', rounds: 0, perRound: [],
+    stopReason: 'refused', status: 'failed', ops: 0, sources: [], elapsedMs: 0, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 0, unchecked: [], canContinue: false, findingChars: [],
   };
 }
 
@@ -958,7 +998,7 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  conversation_history: 'memory', search_knowledge: 'knowledge', search_mongoose: 'mongoose', gcal_list: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
+  conversation_history: 'memory', search_knowledge: 'knowledge', search_mongoose: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -1195,7 +1235,7 @@ function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string
   const shown = lines.slice(0, RESEARCH.calendarLines);
   const notRead = calendarNotRead(results);
   if (!shown.length) return { text: '', source: 'calendar', lines: [], total: 0 };
-  return { text: `calendar: ${shown.length} of ${lines.length} shown\n${shown.join('\n')}${notRead ? `\n${notRead}` : ''}`, source: 'calendar', lines: shown, total: lines.length };
+  return { text: `calendar: ${shown.length} of ${Math.max(lines.length, shown.length)} shown\n${shown.join('\n')}${notRead ? `\n${notRead}` : ''}`, source: 'calendar', lines: shown, total: Math.max(lines.length, shown.length) };
 }
 
 /**
@@ -1310,7 +1350,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   if (!shown.length) return { text: '', source, lines: [], total: 0 };
   const label = SOURCE_LABEL[source ?? 'knowledge'];
   const cutLine = cutLineOf(results);
-  return { text: `${label}: ${shown.length} of ${total} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total };
+  return { text: `${label}: ${shown.length} of ${Math.max(total, shown.length)} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total: Math.max(total, shown.length) };
 }
 
 
@@ -1371,6 +1411,68 @@ interface ReplyFinding { source: string; text: string; chars: number }
  * Q1-R0 packing: a count line plus telegraphic lines per source, at least one line per source with
  * hits, then fill by recency; omitted calendar events remain in the current authorized run.
  */
+/** #1020 behaviour 1: the plain words a source's failure gets, never a bare code and never silence. */
+const REASON_WORDS: Record<string, string> = {
+  not_configured: 'not configured',
+  not_signed_in: 'not signed in',
+  unresolved_window: 'could not resolve that date or window',
+  history_unavailable: 'unavailable',
+  history_reference_unavailable: 'unavailable',
+  cancelled: 'the run stopped before it was read',
+};
+const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
+const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
+
+/**
+ * #1020 behaviour 1: every source this run failed, timed out or never read names itself, and why, in one
+ * plain line, so the model cannot voice the surviving sources as if the read had been complete.
+ */
+function sourceTroubleLine(run: RunState): string | undefined {
+  const parts: string[] = [];
+  for (const [source, label] of SOURCE_LABELS) {
+    if (run.sourcesDone.has(source)) continue;
+    const cut = run.cutShort.has(source);
+    if (!cut && !run.sourcesFailed.has(source)) continue;
+    const code = run.unavailableReasons.get(source);
+    if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
+    else parts.push(`${label}: unavailable (${(code !== undefined ? REASON_WORDS[code] ?? code.replace(/_/gu, ' ') : undefined) ?? 'no answer'})`);
+  }
+  return parts.length === 0 ? undefined : parts.join('; ');
+}
+
+/** A covered day in the owner's zone, so a coverage line reads like the calendar the owner saw. */
+const coveredDay = (ms: number, zone: string | undefined): string => {
+  try { return new Intl.DateTimeFormat('en-GB', { ...(zone !== undefined ? { timeZone: zone } : {}), weekday: 'short', day: 'numeric', month: 'short' }).format(ms); }
+  catch { return new Date(ms).toISOString().slice(0, 10); }
+};
+
+/**
+ * #1020 behaviour 2: a calendar answer states the window it actually covered, so a read whose events sit in
+ * one day of a wider request is never spoken as "the rest of the week is clear", and the partiality of a cut
+ * or paged read is never left implicit. A clean read that covers its whole request adds no line.
+ */
+function calendarCoverageLine(run: RunState): string | undefined {
+  if (run.calendar.size === 0) return undefined;
+  const zone = run.timeZone;
+  const spans: [number, number][] = [];
+  for (const read of run.calendar.values()) {
+    const from = Date.parse(String(read.args['timeMin'])), to = Date.parse(String(read.args['timeMax']));
+    if (Number.isFinite(from) && Number.isFinite(to) && to > from) spans.push([from, to]);
+  }
+  if (spans.length === 0) return undefined;
+  const from = Math.min(...spans.map(([at]) => at)), to = Math.max(...spans.map(([, at]) => at));
+  const span = (a: number, b: number): string => coveredDay(a, zone) === coveredDay(b, zone) ? `${coveredDay(a, zone)} only` : `${coveredDay(a, zone)} to ${coveredDay(b, zone)}`;
+  const requested = span(from, to - 1);
+  const starts = [...run.calendar.values()].flatMap(read => [...read.events.values()].map(event => Date.parse(event.start))).filter(at => Number.isFinite(at) && at >= from && at < to);
+  const covered = starts.length === 0 ? undefined : span(Math.min(...starts), Math.max(...starts));
+  const narrower = covered !== undefined && (coveredDay(Math.min(...starts), zone) !== coveredDay(from, zone) || coveredDay(Math.max(...starts), zone) !== coveredDay(to - 1, zone));
+  const partial = [...run.calendar.values()].some(read => read.failed || read.unread > 0 || read.nextPageToken !== undefined || !read.exhausted);
+  if (narrower) return `calendar: covers ${covered}; the rest of ${requested} was NOT read${partial ? ', and part of that window was not read either' : ''}`;
+  if (partial) return `calendar: covers ${covered ?? requested}, and part of ${requested} was not read`;
+  if (run.calendarScope?.partial === true) return `calendar: covers ${covered ?? requested}, but the calendar list was not fully read`;
+  return undefined;
+}
+
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, limit);
   if (bodyReply) return bodyReply;
@@ -1386,7 +1488,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
   for (const read of run.calendar.values()) for (const [key, event] of read.events) calendarEvents.set(key, event);
   const remaining = [...calendarEvents].filter(([key]) => !run.calendarDelivered.has(key)).sort(([, a], [, b]) => a.start.localeCompare(b.start));
-  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: remaining.slice(0, 8).map(([, event]) => event.line), total: calendarEvents.size });
+  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: remaining.slice(0, 8).map(([, event]) => event.line), total: Math.max(calendarEvents.size, remaining.slice(0, 8).length) });
   const calendarReads = [...run.calendar.values()];
   const calendarPending = remaining.length > 8 || calendarReads.some(read => !read.failed && !read.exhausted);
   const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || read.upstreamIncomplete || !read.exhausted) || remaining.length > 8;
@@ -1402,7 +1504,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const cursorPage = run.mailCursorRequested ? run.mailCursors.get(run.mailCursorRequested) : undefined;
   const mailRemaining = cursorPage?.ids.length ? allMailRemaining.filter(([key]) => cursorPage.ids.includes(key)) : allMailRemaining;
   const mailReads = [...run.mail.values()];
-  if (mailRemaining.length) groups.push({ source: 'mail', label: 'mail messages', lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
+  if (mailRemaining.length) groups.push({ source: 'mail', label: SOURCE_LABEL.mail, lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
   const mailUpstream = mailReads.some(read => !read.failed && !read.exhausted);
   const mailIncomplete = mailReads.some(read => read.failed || read.upstreamIncomplete || read.invalid > 0 || [...read.messages.values()].some(message => message.bodyTruncated));
   if ((mailIncomplete || mailUpstream || mailRemaining.length > 8) && status === 'answered') status = 'partial';
@@ -1417,10 +1519,16 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
   const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source))
     .map(([, label]) => `My ${label} read was cut short before it finished, so I say what I have and ask one precise follow-up.`);
+  // #1020: the coverage line and the named failures ride with the clauses the model voices, so a partial
+  // read is never a sentence the model has to infer from a count or from silence.
+  const coverage = calendarCoverageLine(run);
+  const trouble = sourceTroubleLine(run);
   const clauses = [
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
     ...cutShort,
     ...searchedNothing,
+    ...(coverage !== undefined ? [coverage] : []),
+    ...(trouble !== undefined ? [trouble] : []),
   ];
   if (run.unavailableReasons.get('calendar') === 'unresolved_window') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   const note = clauses.length === 0 ? undefined : clauses.join(' ');
@@ -1438,7 +1546,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       ...(run.mailCursorRequested ? { cursor: run.mailCursorRequested } : {}),
     } : {};
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
-      .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${group.total} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
+      .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
     return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
@@ -1605,10 +1713,30 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     catch { for (const read of reads) { read.inflight = false; read.failed = true; } if (signal.aborted) run.cutShort.add('mail'); break; }
     if (parent.aborted || run.cancelled || run.stopped) { invalidateEvidence(run); break; }
     if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
+    // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
+    // A native page that failed is terminal for its source, so only a first page is retried.
+    const retried = calls.map((_, index) => index).filter(index => !results[index]?.ok && !calls[index]!.args['pageToken']);
+    if (retried.length > 0) {
+      try {
+        const again = await deps.execute(retried.map(index => calls[index]!), signal);
+        retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
+      } catch { /* the first answer stands */ }
+    }
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.mailPage || deps.authorizeEvidence && !result.binding) { read.failed = true; return; }
+      if (!result?.ok || deps.authorizeEvidence && !result.binding) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      // A search that answered with text but no page envelope is still that search's answer: each tagged
+      // line is one message, so the follow-up read and the reply carry it like any other page.
+      if (!result.mailPage) {
+        for (const line of itemLines(result.text).filter(entry => entry.startsWith('- '))) {
+          const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
+          if (id && !read.messages.has(id)) read.messages.set(id, { id, threadId: '', internalDate: '', line, bodyTruncated: false });
+        }
+        if (read.messages.size === 0) read.plain = [read.plain, result.text].filter(Boolean).join('\n');
+        read.exhausted = true;
+        return;
+      }
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.mailPage;
@@ -1644,7 +1772,8 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     const pending = [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight);
     if (pending.length === 0) break;
     const reads = pending.slice(0, RESEARCH.maxOps - run.ops);
-    const calls: IntentSubCall[] = reads.map((read, n) => ({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
+    // W2: the connector plans inside this run's remaining source budget, never its own 40 s constant.
+    const calls: IntentSubCall[] = reads.map((read, n) => ({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt } }));
     const listScope = !run.calendarScopeAttempted && calls.length < RESEARCH.maxOps - run.ops;
     if (listScope) { calls.push({ key: 'calendarScope', name: INTERNAL.calendars, args: { maxResults: 20 } }); run.calendarScopeAttempted = true; }
     if (!evidenceAllowed(deps, run, signal)) break;
@@ -1664,7 +1793,17 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || !result.calendarPage || (deps.authorizeEvidence && !result.binding)) { read.failed = true; return; }
+      if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      // A calendar answer with text but no page envelope is still that source's answer: each tagged
+      // line is one event, so the brief fan-out and the reply carry it like any other page.
+      if (!result.calendarPage) {
+        for (const [index, line] of itemLines(result.text).filter(entry => entry.startsWith('- ')).entries()) {
+          const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
+          read.events.set(id ? `${id}:${line}` : JSON.stringify([read.args, read.nextPageToken ?? null, index]), { id: id ?? '', start: line.slice(2).split(',')[0]!.trim(), line, bodyTruncated: false });
+        }
+        read.exhausted = true;
+        return;
+      }
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.calendarPage;
@@ -1803,11 +1942,11 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const schedule = deps.schedule ?? scheduleTimer;
-  deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
+  deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
   // 3r R1 outcome 5: a routed read used to go silent until it returned. It now beats at the same
   // dead-air cadence as the loop, so the model and the owner hear the run is alive inside five seconds.
   const beat = (): void => {
-    deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
+    deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: Math.max(0, now() - started) });
   };
   let beatTimer: { unref(): void; cancel(): void } | undefined;
   const arm = (): void => { beatTimer = schedule(() => { beat(); arm(); }, RESEARCH.progressEveryMs); beatTimer.unref(); };
@@ -1844,7 +1983,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
       });
       logSubcall({
-        event: 'research_subcall', researchId: run.researchId, kind: outcome.kind, tool: outcome.tool,
+        event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
         ok: outcome.outcome === 'ok' || outcome.outcome === 'empty',
         ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { errorCode: outcome.outcome }),
         items: outcome.lines.length,
@@ -1853,7 +1992,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         queryChars: outcome.lookup.query.length, queryAuthor: 'routed',
       });
       const key = `routed:${outcome.lookup.source}:${outcome.lookup.query}`;
-      if (outcome.source !== 'memory') run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
+      // Own memory is a finding too, so a memory layer that settles first is a real first answer.
+      run.ledger.set(key, { kind: outcome.kind, source: outcome.source, summary: outcome.lines.join('\n'), lines: outcome.lines, total: outcome.total, ...(outcome.bodyOnly ? { bodyOnly: true } : {}) });
       if (outcome.source === 'memory') {
         if (outcome.outcome === 'ok') run.sourcesDone.add('memory');
         else if (outcome.outcome === 'timeout') run.cutShort.add('memory');
@@ -1881,7 +2021,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const source = batch[0]?.source;
         if (source) {
           first.reading.delete(source);
-          lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId);
+          lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId, signal.aborted || run.cancelled || run.stopped);
         }
       }));
     } finally {
@@ -1891,17 +2031,20 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     const sources: JsonObject = {};
     for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
     const answered = outcomes.some(outcome => outcome.lines.length > 0);
+    // #472: a run cut after its first answer still delivered that answer, so its outcome is partial, never
+    // failed; only a cut run that answered nothing is a real failure.
+    const delivered = answered || run.answeredAt !== undefined || first.at !== undefined;
     const cut = signal.aborted || run.stopped || run.cancelled;
-    const status = cut ? 'stopped' : (answered ? 'answered' : 'partial');
-    runStatus = cut ? 'failed' : (answered ? 'answered' : 'partial');
+    const status = cut ? (delivered ? 'partial' : 'stopped') : (answered ? 'answered' : 'partial');
+    runStatus = cut ? (delivered ? 'partial' : 'failed') : (answered ? 'answered' : 'partial');
     runStop = cut ? 'cancelled' : (answered ? 'answered' : 'insufficient');
-    deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
+    deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs: now() - started });
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
     reply = buildReply(run, status, configured, false, limit, sources);
     const historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
     reply = withHistoryPages(reply, historyPages);
     logRouted({
-      event: 'research_routed', researchId: run.researchId, sources: outcomes.map(outcome => outcome.lookup.source),
+      event: 'research_routed', researchId: run.researchId, ...callKeyOf(run), sources: outcomes.map(outcome => outcome.lookup.source),
       lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
     });
     return reply;
@@ -1944,7 +2087,7 @@ interface FirstAnswerState {
 const lineKey = (line: string): string => line.trim().toLowerCase().replace(/\s+/gu, ' ');
 
 /** R6: what this source returned that the first reply did not already say. Never an invented line. */
-function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId: string, source: SourceKind, ms: number, lines: readonly string[], ok: boolean, runId?: number): void {
+function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId: string, source: SourceKind, ms: number, lines: readonly string[], ok: boolean, runId?: number, cut = false): void {
   if (first.at === undefined || first.delivered.has(source)) return;
   first.delivered.add(source);
   const items: string[] = [];
@@ -1970,7 +2113,7 @@ function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId:
     const entry = [...run.calendar.values()].flatMap(read => [...read.events]).find(([key, event]) => event.line === item && !run.calendarDelivered.has(key) && !calendarKeys.includes(key));
     if (entry) calendarKeys.push(entry[0]);
   }
-  deps.late?.({ researchId, ...(runId !== undefined ? { runId } : {}), ...(source === 'calendar' ? { calendarKeys } : {}), ...(mailKeys.length ? { mailKeys } : {}), source, ms, items, ok });
+  deps.late?.({ researchId, ...(runId !== undefined ? { runId } : {}), ...(source === 'calendar' ? { calendarKeys } : {}), ...(mailKeys.length ? { mailKeys } : {}), source, ms, items, ok, ...(cut || (run !== undefined && (run.cancelled || run.stopped)) ? { cut: true } : {}) });
 }
 
 /**
@@ -2001,6 +2144,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     if (Array.isArray(page['hits'])) for (const hit of page['hits']) if (isRecord(hit) && typeof hit['snippet'] === 'string') first.seen.add(lineKey(hit['snippet']));
   }
   first.at = deps.now();
+  view.run.answeredAt = first.at;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
   return { ...reply, pending };
@@ -2041,7 +2185,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (call.action === 'stop') {
     const run = deps.ledger.stop(call.researchId);
     if (!run) return { researchId: call.researchId ?? '', status: 'stopped', findings: [], unchecked: configured, canContinue: false };
-    deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
+    deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
     const reply = buildReply(run, 'stopped', configured, false, limit);
     deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound: [], stopReason: 'stop', status: 'stopped', ops: run.ops, sources: [], elapsedMs: Math.max(0, now() - run.startedAt), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply).length, unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: false, findingChars: [] });
     return reply;
@@ -2051,7 +2195,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
-    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now() });
+    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
   } else {
     if (call.cursor !== undefined) {
       const prior = deps.ledger.find(call.researchId ?? '');
@@ -2073,15 +2217,18 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     run = resumed;
   }
   run.direction = call.direction ?? run.direction;
+  if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
   const executeSource = deps.execute, emitProgress = deps.emit;
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);
   const current = (): boolean => !run.cancelled && !run.stopped && deps.ledger.find(run.researchId) === run;
   const emit = (event: ResearchProgress): void => {
-    if (current()) emitProgress({ ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
+    if (current()) emitProgress({ ...callKeyOf(run), ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
   };
   const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
   let invocation = 0;
+  /** The host's step sink threw on this run: a host fault the prime read's own catch must not read as an empty source. */
+  let stepSinkFailed = false;
   deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
@@ -2095,7 +2242,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
       return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
     });
-    for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); }
+    try { for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); } }
+    catch (error) { stepSinkFailed = true; throw error; }
     update();
     let ended = false;
     const finish = (results: readonly IntentSubResult[], errorCode?: 'failed' | 'timeout' | 'cancelled'): void => {
@@ -2179,7 +2327,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const at = now();
     worstGapMs = Math.max(worstGapMs, at - lastHeardAt);
     lastHeardAt = at;
-    deps.emit(progress);
+    deps.emit({ ...callKeyOf(run), ...progress });
   };
 
   notify({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
@@ -2240,7 +2388,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const remainingMs = deadlineAt - now();
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch(() => [] as IntentSubResult[]);
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch((error: unknown) => {
+            if (stepSinkFailed) throw error;
+            return [] as IntentSubResult[];
+          });
         }
       }
 
@@ -2250,17 +2401,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       let usedFallbackThisRound = false;
       let narrowed: CandidateKind[] | undefined;
       // A single-source hint pins the whole run to that one source, so the selector is never called,
-      // in any round: once the source is read there is nothing left to select.
-      if (hint.length === 1) {
-        const source = hint[0]!;
-        narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
-        if (driver === undefined) driver = 'single-source-hint';
+      // in any round: once the source is read there is nothing left to select. W2: one configured source
+      // is the same situation, so it takes the same deterministic path (#473).
+      const singleSource = hint.length === 1 ? hint[0] : configured.length === 1 ? configured[0] : undefined;
+      if (singleSource !== undefined) {
+        narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === singleSource);
+        if (driver === undefined) driver = hint.length === 1 ? 'single-source-hint' : 'fallback';
       }
       const candidatesForSelector = narrowed ?? offerable;
       if (narrowed !== undefined) {
         // Outcome 6: one certain source is deterministic; skip the selector call entirely.
         selection = fallbackSelection(question || run.direction || '', configured, now());
-      } else if (deps.selector === undefined) {
+      } else if (deps.selector === undefined || run.questionClass === 'quick_fact') {
+        // W2: a run the first round already classified quick_fact needs no second opinion (#473).
         fallbackUsed = true;
         usedFallbackThisRound = true;
         selection = fallbackSelection(question || run.direction || '', configured, now());
@@ -2399,7 +2552,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             return calendarCalls.map(call => {
               const read = run.calendar.get(JSON.stringify(call.args));
               const text = read ? [...read.events.values()].map(event => event.line).join('\n') : '';
-              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0 };
+              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0, ...(read?.code ? { code: read.code } : {}) };
             });
           };
           const mailResults = async (): Promise<IntentSubResult[]> => {
@@ -2408,8 +2561,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const reads = mailCalls.map(call => mailRead(run, call.args));
             await collectMail(deps, run, readSignal, Math.min(readDeadlineMs, deadlineAt - now()), now);
             return mailCalls.map((call, n) => {
-              const read = reads[n]!, text = [...read.messages.values()].map(message => message.line).join('\n');
-              return { key: call.key, name: call.name, ok: read.messages.size > 0 || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0 };
+              const read = reads[n]!;
+              const text = [...read.messages.values()].map(message => message.line).concat(read.plain ? [read.plain] : []).join('\n');
+              return { key: call.key, name: call.name, ok: read.messages.size > 0 || Boolean(read.plain) || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0, ...(read.code ? { code: read.code } : {}) };
             });
           };
           let results: IntentSubResult[];
@@ -2473,7 +2627,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
             first.reading.delete(part.source);
-            lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId);
+            lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId, signal.aborted || run.cancelled || run.stopped);
           }
           // A source that answered counts as read, so an empty result is never re-offered as pending.
           if (results.some(result => result.ok)) run.readKinds.add(kind);
@@ -2488,12 +2642,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const calText = result?.text ?? '';
             const partial = /\[calendar read incomplete: (\d+) calendars? not read\]/.exec(calText);
             logSubcall({
-              event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,
+              event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind, tool: sub.name,
               ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
               items: result ? itemLines(result.text).length : 0,
               rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
               queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
-              ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
+              ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today'), ...windowDates(action?.window ?? 'today', now(), deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) } : {}),
               ...(partial ? { unread: Number(partial[1]) } : {}),
             });
           }

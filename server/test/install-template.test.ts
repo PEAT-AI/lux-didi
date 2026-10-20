@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, existsSync, symlinkSync, readlinkSync, copyFileSync, chmodSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { loadLiveConfig } from '../config/live.js';
-const installer = resolve('scripts/install-macos-app.sh');
+// Resolved from this file, not from the process cwd: the declared checks run with cwd 'server'.
+const installer = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'install-macos-app.sh');
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'didi-install-portable-'));
   const home = join(root, 'home'), app = join(root, 'build/Lux Didi.app');

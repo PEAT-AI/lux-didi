@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -18,8 +18,8 @@ import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from 
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
-import { IngestReject, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
+import { liveTracePort, record, recordCallResult, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -198,13 +198,27 @@ const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waiti
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
+/**
+ * #451 Q8: one status definition for a tool call, taken from the result the model was handed and never
+ * from a second place that could drift from it. `error` means the result itself is an error: this layer
+ * calls no reply failed for any other reason, which is what keeps the journal and the result agreeing.
+ */
+export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
+  return response['error'] === undefined ? 'completed' : 'error';
+}
+
 /** S4a ceiling on one non-research tool call: past it the host answers the call itself with a timeout output. */
 const TOOL_CEILING_MS = 12_000;
 /** S4a progress speech on the GPT-Live path: one speakable line about this long into an open delegation, only
- *  when nothing has been audible for PROGRESS_QUIET_MS, and never more than one every PROGRESS_INTERVAL_MS. */
+ *  when nothing has been audible for PROGRESS_QUIET_MS, and never more than one every PROGRESS_INTERVAL_MS.
+ *  W4: at most PROGRESS_LINES_PER_TURN lines a turn, and only while a call is still in flight. */
 const PROGRESS_FIRST_MS = 6_000;
 const PROGRESS_QUIET_MS = 3_000;
-const PROGRESS_INTERVAL_MS = 8_000;
+const PROGRESS_INTERVAL_MS = 6_000;
+const PROGRESS_LINES_PER_TURN = 2;
+/** W4: why a progress decision stayed silent. A closed set, because a receipt carries the reason and nothing else. */
+type ProgressSkip = 'settled' | 'no_channel' | 'budget' | 'interval' | 'no_call_in_flight' | 'owner_speaking'
+  | 'answer_playing' | 'no_content' | 'send_failed' | 'no_delegation';
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, one progress line goes out, and the S2 recovery resumes instead of rebuilding. */
 const DELEGATION_DEADLINE_MS = 25_000;
@@ -232,6 +246,30 @@ function stepSourceOf(name: string): string {
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary a progress line names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
+/** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
+const RESEARCH_PROJECTION_CHARS = 240;
+
+/**
+ * #1020 behaviour 4: the settled projection records what the provider was sent, in plain words, bounded:
+ * the sources that answered, then the note the model was told to voice. A failure names its reason code
+ * and a refusal names its reason, so a journal line is never a bare `research: error`.
+ */
+function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
+  const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
+  const detail = (): string => {
+    if (status === 'error') {
+      const reason = text(response['reason']) ?? text(response['error']) ?? 'failed';
+      return text(response['state']) === 'refused' ? `refused (${reason})` : `error (${reason})`;
+    }
+    const findings = Array.isArray(response['findings']) ? response['findings'] as JsonObject[] : [];
+    const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
+    const note = text(response['note']);
+    const head = sources.length > 0 ? `findings from ${sources.join(', ')}` : 'no findings';
+    return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
+  };
+  const line = `research: ${detail()}`;
+  return line.length <= RESEARCH_PROJECTION_CHARS ? line : `${line.slice(0, RESEARCH_PROJECTION_CHARS - 3)}...`;
+}
 /** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
 function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
 
@@ -272,6 +310,8 @@ interface ActiveSession {
   awaitingAnswer: boolean; answerAt: number | undefined;
   /** S4a progress speech and the delegation deadline that outlives the S2 watchdog window. */
   progressTimer?: ReturnType<JobTimer> | undefined; progressSentAt?: number | undefined;
+  /** W4: progress lines already spoken this turn, the count PROGRESS_LINES_PER_TURN bounds. */
+  progressLines: number;
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
@@ -306,6 +346,8 @@ interface ActiveSession {
   bargeInCallIds: Set<string>;
   /** In-flight abort handle per model call id, so a provider cancellation aborts exactly that call. */
   callAborts: Map<string, AbortController>;
+  /** #451 V7/Q6: the turn and response a playback segment was first heard in, by playback key. */
+  playbackTurns: Map<string, { turnId?: string; responseKey?: string }>;
   /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
   callStartedAt: Map<string, number>;
   speaking: boolean;
@@ -413,6 +455,8 @@ function countTurnScript(handle: ActiveSession, text: string): void {
 function resetTurnScript(handle: ActiveSession): void {
   handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
   handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0;
+  // W4: the progress budget is per turn, so a new turn speaks afresh.
+  handle.progressLines = 0;
 }
 
 /** One metadata-only record per turn. A turn with no spoken output reports nothing. */
@@ -499,26 +543,51 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
   'here', 'what', 'when', 'where', 'which', 'who', 'how', 'also', 'just', 'some', 'any', 'all', 'our', 'out', 'its', 'his', 'her',
   'him', 'she', 'need', 'want', 'get', 'got', 'does', 'did', 'please', 'remember', 'note', 'keep', 'mind', 'naya', 'because',
   'before', 'after', 'over', 'under', 'very', 'much', 'more', 'most', 'only', 'own', 'same', 'such', 'too', 'now']);
-const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-/** The note's content words: lower-cased tokens without stop words or two-letter noise. */
-const contentWords = (text: string): string[] => tokens(text).filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word));
-/** How much of the note one owner turn supports: the share of its content words the turn speaks. */
-function supportRatio(note: string, turn: string): number {
-  const words = contentWords(note);
-  if (!words.length) return 0;
-  const spoken = new Set(tokens(turn));
-  return words.filter(word => spoken.has(word)).length / words.length;
+// Third-person framing is not note content: "Rob prefers", "he wants" and "the owner" say who the
+// note is about, and the owner never speaks their own name. Only the SUBJECT is dropped: the verb stays
+// a content word, because the verb is the word that says which way the owner feels.
+const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
+const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
+// Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
+const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
+  'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
+const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
+  'wasnt', 'wont', 'without', 'dislike', 'dislikes', 'hate', 'hates']);
+/** Affirms or denies; undefined when the clause says neither, so an ordinary note is never refused. */
+function feel(text: string): 'affirm' | 'deny' | undefined {
+  const words = tokens(text);
+  if (words.some(word => MEMORY_DENY.has(word))) return 'deny';
+  if (words.some(word => MEMORY_AFFIRM.has(word))) return 'affirm';
+  return undefined;
 }
-
+// Support must be ONE ask: the turns carrying the note's words have to be adjacent, because a note
+// stitched from two turns apart is nobody's sentence. Three turns is one ask, a question and its
+// clarification; a wider span is a different topic.
+const MEMORY_SPAN_TURNS = 3;
+// A contraction is one word: "don't" must read as the negator it is, so apostrophes go before tokens.
+const tokens = (text: string): string[] => text.toLowerCase().replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+// Polarity belongs to the clause that carries the note's words, not to the whole turn: the same turn can
+// affirm "short answers in the morning" and then say "no meetings before nine".
+const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
+/** The clause carrying most of the note's words: that clause is the claim the note restates. */
+function dominantClause(text: string, words: ReadonlySet<string>): string {
+  const hits = (part: string): number => tokens(part).filter(word => words.has(word)).length;
+  const parts = text.split(MEMORY_CLAUSE_BREAK).map(part => part.trim()).filter(Boolean);
+  let best = parts[0] ?? text;
+  for (const part of parts.slice(1)) if (hits(part) > hits(best)) best = part;
+  return best;
+}
+/** The note's content words: lower-cased tokens without stop words, framing or two-letter noise.
+ * The preference and polarity verbs are excluded on purpose: they decide direction through feel(),
+ * and counting them in the ratio refused a short honest note whose ask used another tense. */
+const contentWords = (text: string): string[] => tokens(text)
+  .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word)
+    && !MEMORY_AFFIRM.has(word) && !MEMORY_DENY.has(word));
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
   // The note is the model's clean paraphrase; the owner's own words are only the support for it.
   const noteText = String(args.text).replace(command, '').replace(/\s+/g, ' ').trim();
-  const words = contentWords(noteText);
-  const receipt = (result: JsonObject, support: number): JsonObject => {
-    hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'), words: words.length, supportRatio: Math.round(support * 1000) / 1000 });
-    return result;
-  };
+  const words = contentWords(noteText.replace(MEMORY_FRAMING_LEAD, ''));
   // A bounded journal window, assembled into owner turns, not provider/model arguments.
   const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND arrived_at>=? ORDER BY journal_id DESC LIMIT ?", [liveSessionId, now - MEMORY_WINDOW_MS, MEMORY_WINDOW_ROWS]).reverse();
   const turns: { seq: number; text: string }[] = [];
@@ -530,35 +599,67 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // The model's tool call is the intent: the latest partial turn is owner speech too, because the
   // provider may never set the finished flag before the call arrives.
   if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
-  const pointer = normalized(noteText);
-  if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' }, 0);
-  // The supporting turn is one recent owner turn: it holds the note's words, or enough of them.
-  let turn: { seq: number; text: string } | undefined;
-  let support = 0;
-  for (let index = turns.length - 1; index >= 0 && !turn; index--) {
-    const candidate = turns[index]!;
-    const ratio = supportRatio(noteText, candidate.text);
-    if (normalized(candidate.text).includes(pointer)) { turn = candidate; support = 1; }
-    else if (ratio >= MEMORY_SUPPORT_RATIO) { turn = candidate; support = ratio; }
+  // The window's own support, for a refusal that has no ask to report: how much of the note any turn
+  // in the window carries at all.
+  const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text)));
+  const windowSupported = words.filter(word => windowSpoken.has(word));
+  const windowRatio = words.length ? windowSupported.length / words.length : 0;
+  // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
+  const wordSet = new Set(words);
+  const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
+  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; feels: 'affirm' | 'deny' | undefined } | undefined;
+  for (let end = turns.length - 1; end >= 0 && !ask; end--) {
+    for (let width = 1; width <= MEMORY_SPAN_TURNS && end - width + 1 >= 0; width++) {
+      const first = end - width + 1;
+      const spoken = new Set<string>();
+      for (let index = first; index <= end; index++) for (const word of turnTokens[index]!) spoken.add(word);
+      const supported = words.filter(word => spoken.has(word));
+      const ratio = words.length ? supported.length / words.length : 0;
+      if (ratio < MEMORY_SUPPORT_RATIO) continue;
+      ask = { turn: turns[end]!, ratio, supported: supported.length,
+        feels: feel(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
+      break;
+    }
   }
-  if (!turn) {
+  const receipt = (result: JsonObject, metrics = { ratio: windowRatio, supported: windowSupported.length }): JsonObject => {
+    hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'),
+      words: words.length, supported: metrics.supported, supportRatio: Math.round(metrics.ratio * 1000) / 1000, turns: turns.length });
+    return result;
+  };
+  const pointer = normalized(noteText);
+  if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
+  // A note copied word for word from one utterance names that utterance, whatever the span search found.
+  for (let index = turns.length - 1; index >= 0; index--) {
+    if (!normalized(turns[index]!.text).includes(pointer)) continue;
+    ask = { turn: turns[index]!, ratio: 1, supported: words.length, feels: feel(dominantClause(turns[index]!.text, wordSet)) };
+    break;
+  }
+  if (!ask) {
     // An older turn is outside the window rather than unfinished; only a session with no owner
     // speech at all reports that the transcript was never final.
-    const spoken = tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]);
-    return receipt({ remembered: false, code: spoken ? 'owner_text_mismatch' : 'owner_transcript_not_final' }, 0);
+    const speech = tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]);
+    return receipt({ remembered: false, code: speech ? 'owner_text_mismatch' : 'owner_transcript_not_final' });
   }
-  const utterance = turn.text.trim();
-  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, support);
-  const externalId = `${liveSessionId}:${turn.seq}`;
+  const metrics = { ratio: ask.ratio, supported: ask.supported };
+  // Every content word spoken still says nothing about polarity: "does not want" against "wants", or
+  // "hates" against "love", is the opposite claim. One side denying where the other does not is a flip,
+  // in either direction, and it is refused with the same code and supportRatio 1 that makes it visible.
+  const noteFeels = feel(dominantClause(noteText.replace(MEMORY_FRAMING_LEAD, ''), wordSet));
+  if (noteFeels !== ask.feels && (noteFeels === 'deny' || ask.feels === 'deny')) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
+  const utterance = ask.turn.text.trim();
+  if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, metrics);
+  // One entry per owner utterance: the source identity is the canonical `session:journal-sequence` that
+  // the domain's deletion tombstone matches, so a note is keyed by the utterance, not by its own text.
+  const externalId = `${liveSessionId}:${ask.turn.seq}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
-  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, support);
+  if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };
   const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  return receipt({ remembered: true, entryId: entry.id }, support);
+  return receipt({ remembered: true, entryId: entry.id }, metrics);
 }
 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */
@@ -872,6 +973,10 @@ export class LiveSessionOwner {
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      // M2: what the standing section did with its own budget, once per build, including the build that
+      // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
+      hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
+        omitted: composed.standing.omitted, chars: composed.standing.chars });
       // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
       // only: the state it reached, how many events rode it and how old it was at this start.
       this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),
@@ -1202,7 +1307,7 @@ export class LiveSessionOwner {
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), progressLines: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1259,12 +1364,50 @@ export class LiveSessionOwner {
    */
   #playbackReceipt(handle: ActiveSession, frame: string): void {
     try {
-      recordPlaybackReceipt(this.#store, handle.liveSessionId, parsePlaybackReceipt(frame));
+      const receipt = parsePlaybackReceipt(frame);
+      recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle, receipt));
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
       this.#diagnosticFailure(handle,'native_receipt_rejected');
     }
+  }
+
+  /**
+   * #451 H14: the result content of one call, in the content table the diagnostic timeline reads, written
+   * on the same path that wrote tool_calls.result_json. One call, one row; trace retention prunes it.
+   */
+  #callResult(handle: ActiveSession, callId: string, response: JsonObject | undefined, markdown: string | undefined): void {
+    const text = response === undefined || Object.keys(response).length === 0 ? markdown ?? '' : JSON.stringify(response);
+    if (text.length === 0) return;
+    try {
+      recordCallResult(this.#store, { callKey: scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', callId), text });
+    } catch (error) {
+      hostLogEvent({ event: 'live_trace_rejected', kind: 'call.output_written', code: error instanceof TraceRecordError ? error.code : 'record_failed' });
+      this.#diagnosticFailure(handle, 'trace_write_failed');
+    }
+  }
+
+  /**
+   * #451 V7/Q6 (W6-R1 W6-2): a playback segment is tied to the turn and the response that were open when
+   * its FIRST receipt arrived, and every later receipt of the same segment reuses that attribution. A
+   * segment that starts before a close and drains after it is still read against the answer it played,
+   * and a receipt that lands during the next turn cannot be attributed to it. The response is the trace
+   * row recorded for that turn; when no turn is open nothing is guessed.
+   */
+  #playbackAttribution(handle: ActiveSession, receipt: NativePlaybackReceipt): { turnId?: string; responseKey?: string } {
+    const key = playbackKeyOf(handle.liveSessionId, receipt.sourceInstanceId, receipt.segmentSeq);
+    const known = handle.playbackTurns.get(key);
+    if (known !== undefined) return known;
+    const turnId = handle.connection.turnId;
+    if (turnId === undefined) return {};
+    const row = this.#store.transaction(tx => tx.get(
+      'SELECT response_key FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at DESC, response_key DESC LIMIT 1',
+      [handle.liveSessionId, turnId]));
+    const responseKey = row?.['response_key'];
+    const attribution = { turnId, ...(typeof responseKey === 'string' ? { responseKey } : {}) };
+    handle.playbackTurns.set(key, attribution);
+    return attribution;
   }
 
   #armIdle(handle: ActiveSession, remainingMs: number): void {
@@ -1331,20 +1474,38 @@ export class LiveSessionOwner {
     return `${parts.join('; ')}.`;
   }
 
-  /** One progress line, at most one per delegation every 8 s, suppressed while the owner speaks or an answer plays. */
+  /** One progress line, at most PROGRESS_LINES_PER_TURN a turn and never two inside PROGRESS_INTERVAL_MS,
+   *  suppressed while the owner speaks or an answer plays. Every refusal is a receipt: the next audit counts the
+   *  lines and the reasons there were no more. The dead-air caller decides whether a turn has anything to say. */
   #sendProgress(handle: ActiveSession, reason: 'dead_air' | 'stalled'): boolean {
-    if (this.#settled(handle) || handle.rebuilding || !this.#progressPath(handle)) return false;
+    if (this.#settled(handle) || handle.rebuilding) return this.#progressSkip(handle, 'settled');
+    if (!this.#progressPath(handle)) return this.#progressSkip(handle, 'no_channel');
+    // W4: a dead-air line speaks only for work still in flight. The stall deadline after the answer keeps its own
+    // one line (S4a-R2 b), which is about the owed answer, not about a lookup.
+    if (reason === 'dead_air' && !this.#workInFlight(handle)) return this.#progressSkip(handle, 'no_call_in_flight');
+    if (handle.progressLines >= PROGRESS_LINES_PER_TURN) return this.#progressSkip(handle, 'budget');
     const now = this.#now();
-    if (handle.progressSentAt !== undefined && now - handle.progressSentAt < PROGRESS_INTERVAL_MS) return false;
-    if (handle.speaking) return false;
-    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return false;
-    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return false;
+    if (handle.progressSentAt !== undefined && now - handle.progressSentAt < PROGRESS_INTERVAL_MS) return this.#progressSkip(handle, 'interval');
+    if (handle.speaking) return this.#progressSkip(handle, 'owner_speaking');
+    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return this.#progressSkip(handle, 'owner_speaking');
+    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return this.#progressSkip(handle, 'answer_playing');
     const line = this.#progressLine(handle);
-    if (line === undefined) return false;
-    try { handle.session.sendCommentary!({ text: line }); } catch { return false; }
+    if (line === undefined) return this.#progressSkip(handle, 'no_content');
+    // W4: the transport answers whether the append left the wire. A refusal (no open delegation to name) is a
+    // receipt, never a claimed send, and the answer that is owed is untouched by it. A transport that answers
+    // nothing at all counts as delivered.
+    try { if (handle.session.sendCommentary!({ text: line }) === false) return this.#progressSkip(handle, 'no_delegation'); }
+    catch { return this.#progressSkip(handle, 'send_failed'); }
     handle.progressSentAt = now;
+    handle.progressLines += 1;
     hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason });
     return true;
+  }
+
+  /** W4: one receipt per refused progress decision, so silence is countable and never anonymous. */
+  #progressSkip(handle: ActiveSession, reason: ProgressSkip): false {
+    hostLogEvent({ event: 'commentary_skipped', delegationKey: this.#delegationKey(handle), reason });
+    return false;
   }
 
   /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
@@ -1391,6 +1552,8 @@ export class LiveSessionOwner {
   #armProgress(handle: ActiveSession): void {
     if (handle.progressTimer !== undefined) return;
     if (!this.#progressPath(handle)) return;
+    // W4: a turn with nothing in flight has nothing truthful to say, so no clock is armed for it.
+    if (!this.#workInFlight(handle)) return;
     handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_FIRST_MS);
     handle.progressTimer.unref?.();
   }
@@ -1398,12 +1561,22 @@ export class LiveSessionOwner {
   #progressTick(handle: ActiveSession): void {
     handle.progressTimer = undefined;
     if (this.#settled(handle) || handle.rebuilding) return;
-    // A delegation is open while its calls run and until the answer's own audio arrives.
-    if (handle.pendingCallIds.size === 0 && !handle.awaitingAnswer) return;
+    // W4: the line speaks for work still in flight. Once every call and every source of the turn has settled the
+    // turn belongs to the answer, so a tick that finds nothing running says nothing and leaves one skip receipt.
+    if (!this.#workInFlight(handle)) { this.#progressSkip(handle, 'no_call_in_flight'); return; }
     this.#sendProgress(handle, 'dead_air');
-    // The cadence is the interval, not the attempt, so a suppressed line is retried on the same 8 s beat.
+    if (this.#settled(handle)) return;
+    // The cadence is the interval, not the attempt, so a suppressed line is retried on the same 6 s beat.
     handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_INTERVAL_MS);
     handle.progressTimer.unref?.();
+  }
+
+  /** W4: what a progress line may still speak for: a call the model is waiting on, or a research source the run
+   *  is still reading after the tool answered with it pending. A finished lookup is not progress. */
+  #workInFlight(handle: ActiveSession): boolean {
+    if (handle.pendingCallIds.size > 0) return true;
+    for (const entry of handle.exec.values()) if (entry.status === 'running' || entry.status === 'queued') return true;
+    return false;
   }
 
   #cancelProgress(handle: ActiveSession): void {
@@ -1596,18 +1769,23 @@ export class LiveSessionOwner {
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
+    const connection = handle.connection;
+    // #451 H12: a second owner utterance arrives before the provider's turnComplete, so the turn it
+    // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.
+    const supersedes = connection.turnId;
+    if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
     this.#cancelProgress(handle);
     handle.progressSentAt = undefined;
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
     handle.liveStepItems.clear();
-    const connection = handle.connection;
     connection.turnIndex += 1;
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
     this.#receipt(handle, 'turn.opened', { turnId }, {
       origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
+      ...(supersedes === undefined ? {} : { supersedesTurnId: supersedes }),
       ...(connection.turnIndex > 1 ? { attributionUncertain: true } : {}),
     });
   }
@@ -1950,7 +2128,12 @@ export class LiveSessionOwner {
         const audible = event.type === 'audio' && event.audible !== false;
         // The answer's own audible audio is the one thing that clears the owed reply; progress text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
-        if (audible || event.type === 'turnComplete') this.#cancelProgress(handle);
+        if (audible || event.type === 'turnComplete') {
+          this.#cancelProgress(handle);
+          // W4: a preamble or a finished model turn is audible activity; with a call still in flight the next
+          // silence is a fresh one, so the progress clock restarts from it instead of staying cancelled.
+          if (this.#workInFlight(handle)) this.#armProgress(handle);
+        }
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           resetTurnScript(handle);
@@ -1999,7 +2182,9 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          this.#sendThinking(handle, event.calls.filter(call => call.name !== RESEARCH_TOOL_NAME));
+          // W4-R2: #sendThinking filters the research call itself and names the fan-out from it, so it is handed
+          // the whole batch; a pre-filtered list made a research-only batch look like no batch at all.
+          this.#sendThinking(handle, event.calls);
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
@@ -2206,8 +2391,8 @@ export class LiveSessionOwner {
     if (names.has('search_knowledge')) sources.push('knowledge');
     // Outcome 3: detect a source by the tool its read actually uses, never a sibling, so a calendar
     // read is never advertised when the connection only grants the calendar-list sibling.
-    if (names.has('gcal_list')) sources.push('calendar');
-    if (names.has('gmail_list')) sources.push('mail');
+    if (names.has('calendar_list_events')) sources.push('calendar');
+    if (names.has('gmail_search_messages')) sources.push('mail');
     if (names.has('mattermost_search')) sources.push('chat');
     if (names.has('search_mongoose')) sources.push('mongoose');
     // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
@@ -2258,9 +2443,9 @@ export class LiveSessionOwner {
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
-          ...(ok && call.name === 'gmail_list' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
-          ...(ok && call.name === 'gcal_list' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
-          ...(ok && call.name === 'gcal_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
+          ...(ok && call.name === 'gmail_search_messages' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
+          ...(ok && call.name === 'calendar_list_events' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
+          ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
@@ -2302,6 +2487,8 @@ export class LiveSessionOwner {
       const parsed = parseResearch(call.args);
       if (!parsed.ok) {
         hostLogEvent({ event: 'research_refused', state: 'refused', sequence: event.sequence, reason: parsed.reason, ...parsed.shape });
+        // R9/W0-R1: the refused call leaves its run receipt too, so a refusal is never invisible in the run log.
+        hostLogEvent(refusedResearchRunLog());
         response = researchRepair(parsed.reason);
       } else {
         try {
@@ -2319,7 +2506,7 @@ export class LiveSessionOwner {
       // Research failures carry `error`; partial, stopped and retained replies may complete successfully.
       const completed = entry.response['error'] === undefined;
       const status: 'completed' | 'error' = completed ? 'completed' : 'error';
-      projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });
+      projections.push({ name: entry.name, status, markdown: entry.name === RESEARCH_TOOL_NAME ? researchProjection(entry.response, status) : `research: ${status}`, sources: [] });
     }
     return { responses, projections };
   }
@@ -2352,9 +2539,13 @@ export class LiveSessionOwner {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
     const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
-    if (event.items.length === 0) return drop(event.ok ? 'no_new_findings' : 'source_failed');
+    // #472: a cut run's empty late event is a cut, not a source failure, and the receipt must say so.
+    if (event.items.length === 0) return drop(event.cut === true ? 'run_cut' : event.ok ? 'no_new_findings' : 'source_failed');
     {
-      if (!handle.researchLedger.evidenceCurrent(event.researchId) || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
+      // #472: a run cancelled after it answered is still this session's run, and the answer's own evidence is
+      // the authority that matters. The lifecycle state is not a second permission gate, so a late source is
+      // ruled out only by `authorizeDelivery` below, which is the check that can actually refuse it.
+      if (handle.researchLedger.find(event.researchId) === undefined || (event.runId !== undefined && handle.researchLedger.find(event.researchId)?.runId !== event.runId) || !this.#tools || !handle.host) return drop('result_denied');
       try {
         if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.evidenceBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
       } catch { return drop('result_denied'); }
@@ -2641,12 +2832,16 @@ export class LiveSessionOwner {
     }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
+      // #451 Q8: the status the journal carries is the one definition of how the result settled, so a
+      // call whose result carries content can never be described as failed.
+      const status = journalToolStatus(responses[index]?.response ?? {});
       // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
       // the ceiling settled keeps that status, because "timed out" is what happened and "failed" would hide it.
       if (handle.exec.has(id) && handle.exec.get(id)?.status !== 'timeout') {
-        if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: projection.status === 'completed' ? 'done' : 'failed' });
+        if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: status === 'completed' ? 'done' : 'failed' });
       }
-      if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
+      if (handle.pendingCallIds.has(id)) publish('toolResult', { ...projection, status, ...(handle.bargeInCallIds.has(id) ? { code: 'after_barge_in' } : {}) });
+      this.#callResult(handle, id, responses[index]?.response, projection.markdown);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
       const started = handle.callStartedAt.get(call.id);
@@ -2710,7 +2905,7 @@ export class LiveSessionOwner {
       if (transcription) {
         const turnId = handle.connection.turnId;
         if (turnId !== undefined) {
-          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,'',journalId]); }
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,text ?? '',journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }

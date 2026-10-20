@@ -581,6 +581,8 @@ struct NativeLiveInterruptionSample: Sendable {
     /// The segment the app is reporting: one playback run, from the first chunk to its drain or flush.
     private var playbackSegment = 0
     private var segmentActive = false
+    /// One `playback.audible` per segment: the first chunk that crosses the audibility threshold.
+    private var segmentAudible = false
     private var terminatedSegment = 0
     /// One positive short gap between audible buffers, for the native-live.log line.
     var onSpeechGap: ((NativePlaybackArrival) -> Void)?
@@ -616,7 +618,9 @@ struct NativeLiveInterruptionSample: Sendable {
     private let captureInput: AVAudioFormat?
     private let inputDevice: () -> (id: String, name: String)
     private let owner: AudioOwner
-    private let journal: NativeAudioJournal?
+    /// The one audio journal this device writes into: the owner's adopted journal when one exists, so
+    /// a second conversation can never open a second writer on audio.log (#477).
+    let journal: NativeAudioJournal?
     private let deviceState: (Bool) -> Bool
     private let now: () -> Date
     private let isBuiltInOutput: () -> Bool
@@ -1228,7 +1232,11 @@ struct NativeLiveInterruptionSample: Sendable {
         let level = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
         let audible = level >= 0.00316227766
         let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs(), audible: audible, level: level)
-        if newSegment { playbackSegment += 1; segmentActive = true; emitReceipt(.received, segment: playbackSegment) }
+        if newSegment {
+            playbackSegment += 1; segmentActive = true; segmentAudible = false
+            emitReceipt(.received, segment: playbackSegment)
+        }
+        if audible, !segmentAudible { segmentAudible = true; emitReceipt(.audible, segment: playbackSegment) }
         if arrival.speechGap { playback.speechGaps += 1; onSpeechGap?(arrival) }
         outputOrb.append(pcm)
         if audible { lastModelAudioAt = now() }
@@ -1318,10 +1326,11 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         engine = nil; player = nil
         if weakEngine != nil { log("audio_release_leak", ["reason": "engine_retained"]) }
+        // #476: the owner writes the one audio_released for the lease it held. A device line beside it
+        // made every release two identical records in audio.log.
         owner.release(holder: ObjectIdentifier(self))
         isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
         inputBands = .silent; outputOrb.reset()
         audioReleaseCount += 1
-        log("audio_released", ["reason": "release"])
     }
 }

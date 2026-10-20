@@ -27,7 +27,14 @@ const CREDENTIAL_CODES = new Set([
   'credential-insufficient-scope',
   'credential-revoked',
   'credential-refresh-failed',
+  // The pinned-account helper (lux-cli E2) refuses a missing variable with this code; both spellings
+  // are accepted so a code is never mistaken for an untyped failure. The message is never read.
+  'credential-missing-env',
+  'credential_missing',
 ]);
+
+/** The helper refuses the account itself with these codes: an identity refusal, not a missing grant. */
+const IDENTITY_REFUSAL_CODES = new Set(['account_mismatch', 'account-mismatch', 'identity_unverified', 'identity-unverified']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -74,30 +81,46 @@ export function readGooglePayload(port: McpPort, evidence: ConnectorEvidence): {
 
 /** The helper's typed credential error is a tool-error whose text starts with a stable code. */
 export function credentialFailure(text: string): boolean {
+  return CREDENTIAL_CODES.has(codeOf(text));
+}
+
+/** An identity refusal is the helper's pinned-account gate, never a missing grant. */
+export function identityRefusal(text: string): boolean {
+  return IDENTITY_REFUSAL_CODES.has(codeOf(text));
+}
+
+/** The stable leading code of one helper error text; the rest of the message is never read. */
+function codeOf(text: string): string {
   const separator = text.indexOf(':');
-  const code = (separator === -1 ? text : text.slice(0, separator)).trim();
-  return CREDENTIAL_CODES.has(code);
+  return (separator === -1 ? text : text.slice(0, separator)).trim();
 }
 
 /**
  * Status for a completed-but-failed tool call. A typed credential error maps to a visible
- * configured/auth-needed status, never an empty success. Any other failure is an error.
+ * configured/auth-needed status naming the helper's own authorize command, an identity refusal
+ * maps to a named identity error, and any other failure is an error. Never an empty success.
  */
 export function googleToolStatus(evidence: ConnectorEvidence): GoogleStatus | undefined {
   if (evidence.state === 'completed') return undefined;
   const content = decodeMcpContentText(evidence.decodedResult);
   if (!content.ok) return { state: 'error', reason: 'tool call failed; no content' };
-  return credentialFailure(content.text)
-    ? { state: 'configured', reason: 'auth needed: run gcal --auth' }
-    : { state: 'error', reason: 'tool call failed' };
+  if (identityRefusal(content.text)) return { state: 'error', reason: `identity refused: ${codeOf(content.text)}` };
+  if (credentialFailure(content.text)) return { state: 'configured', reason: `auth needed: run ${authorizeCommand(evidence)}` };
+  return { state: 'error', reason: 'tool call failed' };
+}
+
+/** The helper's own consent command for this family: a command name only, never a token path. */
+function authorizeCommand(evidence: ConnectorEvidence): string {
+  const family = typeof evidence.tool === 'string' && evidence.tool.startsWith('gmail') ? 'gmail' : 'calendar';
+  return `lux-google-mcp authorize --family ${family}`;
 }
 
 /** Rich, clean projection of one tool's decoded envelope data (see live-shape.ts). */
 export function renderGoogleTool(tool: string, data: unknown): GoogleProjection {
   const dataRecord = isRecord(data) ? data : {};
-  const shaped: ShapedResult = tool === 'gmail_list' ? shapeGmailList(dataRecord)
-    : tool === 'gmail_read' ? shapeGmailRead(dataRecord)
-    : tool === 'gcal_calendars' ? shapeGcalCalendars(dataRecord)
+  const shaped: ShapedResult = tool === 'gmail_search_messages' ? shapeGmailList(dataRecord)
+    : tool === 'gmail_read_message' ? shapeGmailRead(dataRecord)
+    : tool === 'calendar_list_calendars' ? shapeGcalCalendars(dataRecord)
     : shapeGcalList(dataRecord);
   return shaped;
 }
@@ -119,7 +142,7 @@ export function projectGoogleResult(port: McpPort, evidence: ConnectorResult): {
   if (typeof token === 'string' && data['nextPageToken'] !== undefined && data['nextPageToken'] !== token) return { ok: false, reason: 'conflicting_google_continuation' };
   if (native['complete'] !== undefined && typeof native['complete'] !== 'boolean') return { ok: false, reason: 'invalid_google_coverage' };
   const projection = renderGoogleTool(evidence.tool, { ...data, ...(typeof token === 'string' ? { nextPageToken: token } : {}), ...(native['complete'] === false ? { sourceIncomplete: true } : {}) });
-  const body = evidence.tool === 'gmail_read' ? receivedGmailBody(data) : undefined;
+  const body = evidence.tool === 'gmail_read_message' ? receivedGmailBody(data) : undefined;
   if (body !== undefined && evidence.response.state === 'available') {
     const bodyCoverage = isRecord(data['bodyCoverage']) ? data['bodyCoverage'] : {};
     const complete = typeof bodyCoverage['complete'] === 'boolean' ? bodyCoverage['complete'] : 'unknown';

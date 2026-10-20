@@ -45,7 +45,7 @@ for(const mode of ['success','empty','failure','throw','abort','timeout','stop',
 }
 for(const source of ['calendar','mail']) {
  const h=fixture(async subs=>subs.map(sub=> {
-  if(sub.name==='gcal_calendars')return result(sub,{text:'- Main [primary]'});
+  if(sub.name==='calendar_list_calendars')return result(sub,{text:'- Main [primary]'});
   const second=!!sub.args.pageToken;
   return result(sub,source==='calendar'?shapeGcalList({events:Array.from({length:second?5:8},(_,n)=>({id:`event-${second?8+n:n}`,start:'2026-10-19T14:00:00Z',summary:`Synthetic event ${second?8+n:n}`})),...(!second?{nextPageToken:'next'}:{})}):shapeGmailList({messages:Array.from({length:second?5:8},(_,n)=>({id:`mail-${second?8+n:n}`,headers:{Subject:`Synthetic mail ${second?8+n:n}`}})),...(!second?{nextPageToken:'next'}:{})}));
  }),[source]);
@@ -61,7 +61,7 @@ for(const source of ['calendar','mail']) {
 for(const source of ['calendar','mail']) {
  let page=0;
  const h=fixture(async subs=>subs.map(sub=>{
-  if(sub.name==='gcal_calendars')return result(sub,{text:'- Main [primary]',calendarScope:{received:1,partial:false}});
+  if(sub.name==='calendar_list_calendars')return result(sub,{text:'- Main [primary]',calendarScope:{received:1,partial:false}});
   page++;const more=page<9;
   return result(sub,source==='calendar'?shapeGcalList({events:[{id:`event-${page}`,start:'2026-10-19T14:00:00Z',summary:`Synthetic event ${page}`}],...(more?{nextPageToken:`page-${page}`}:{})}):shapeGmailList({messages:[{id:`mail-${page}`,headers:{Subject:`Synthetic mail ${page}`}}],...(more?{nextPageToken:`page-${page}`}:{})}));
  }),[source]);

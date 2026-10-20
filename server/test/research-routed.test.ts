@@ -15,7 +15,7 @@ const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'cha
 /** The shaped text each connector really returns, so a fixture answer becomes findings. */
 const EVIDENCE: Record<string, string> = {
   search_knowledge: '### Release 3k scope (decision | 2026-10-17) [id 123]',
-  gmail_list: '- Release notes | from: Ana | date: 2026-10-16 [id m1]',
+  gmail_search_messages: '- Release notes | from: Ana | date: 2026-10-16 [id m1]',
   mattermost_search: '- the release thread, from Ana',
   mattermost_attention: '- one question from Ana is waiting on him',
   search_mongoose: '- Plantix organisation chart',
@@ -109,7 +109,7 @@ test('a routed start skips the selector and reads every named layer at once', as
     new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('lookups did not overlap')), 1_000).unref(); }),
   ]);
   assert.equal(h.selectorCalls(), 0, 'the selector is never called on a routed start');
-  assert.deepEqual(entered, ['search_knowledge', 'gmail_list'], 'both lookups were dispatched before either was awaited');
+  assert.deepEqual(entered, ['search_knowledge', 'gmail_search_messages'], 'both lookups were dispatched before either was awaited');
   assert.equal(reply['status'], 'answered');
   assert.deepEqual(reply['sources'], { knowledge: 'ok', mail: 'ok' }, 'one combined reply with per-source status');
   const findings = reply['findings'] as { source: string; text: string }[];
@@ -137,7 +137,7 @@ test('the routed receipt names the sources, the count and per-source ms, never a
 test('a routed lookup that fails is isolated and the other layers still answer', async () => {
   const h = harness({
     execute: async (subs: readonly IntentSubCall[]) => {
-      if (subs[0]!.name === 'gmail_list') throw Error('mail_down');
+      if (subs[0]!.name === 'gmail_search_messages') throw Error('mail_down');
       return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
     },
   });
@@ -280,7 +280,7 @@ function calendarExecute(clock: { value: number }, slowMs = 0): { execute: Resea
     batches.push(subs.map(call => ({ ...call })));
     live.push(!signal.aborted);
     clock.value += slowMs;
-    return subs.map(call => call.name === 'gcal_list'
+    return subs.map(call => call.name === 'calendar_list_events'
       ? sub(call.name, CALENDAR_EVENT, true, call.key)
       : sub(call.name, CALENDAR_LIST, true, call.key));
   };
@@ -296,9 +296,9 @@ test('a routed calendar read is one bounded primary-calendar call that names wha
   }, new AbortController().signal);
   assert.equal(calendar.calls().length, 1, 'one execution for the calendar layer');
   const [read, listed] = calendar.calls()[0]!;
-  assert.equal(read!.name, 'gcal_list');
+  assert.equal(read!.name, 'calendar_list_events');
   assert.equal(read!.args['calendarId'], 'primary', 'the primary calendar only, never the 22-calendar merge');
-  assert.equal(listed!.name, 'gcal_calendars', 'the list rides along only to say what was not read');
+  assert.equal(listed!.name, 'calendar_list_calendars', 'the list rides along only to say what was not read');
   const findings = (reply['findings'] ?? []) as { source: string; text: string }[];
   const found = findings.find(finding => finding.source === 'calendar');
   assert.ok(found !== undefined, 'the calendar layer answers');
@@ -414,10 +414,10 @@ test('two calendar windows share one calendar-list read and one budget, each rep
   }, new AbortController().signal);
   assert.equal(calendar.calls().length, 1, 'one execution for both windows');
   const names = calendar.calls()[0]!.map(call => call.name);
-  assert.deepEqual(names, ['gcal_list', 'gcal_calendars', 'gcal_list'], 'the calendar list is dispatched once for both windows');
+  assert.deepEqual(names, ['calendar_list_events', 'calendar_list_calendars', 'calendar_list_events'], 'the calendar list is dispatched once for both windows');
   assert.deepEqual(h.sources.map(event => event.source), ['calendar', 'calendar']);
   assert.deepEqual(h.sources.map(event => event.outcome), ['ok', 'ok']);
-  const windows = calendar.calls()[0]!.filter(call => call.name === 'gcal_list').map(call => `${String(call.args['timeMin'])}|${String(call.args['timeMax'])}`);
+  const windows = calendar.calls()[0]!.filter(call => call.name === 'calendar_list_events').map(call => `${String(call.args['timeMin'])}|${String(call.args['timeMax'])}`);
   assert.equal(new Set(windows).size, 2, 'and each window is its own read');
   assert.ok(lookupBound('calendar', 2, RESEARCH.startDeadlineMs) === RESEARCH.sourceDeadline.calendar, 'two windows get one read budget, never two');
   const findings = (reply['findings'] ?? []) as { source: string; text: string }[];

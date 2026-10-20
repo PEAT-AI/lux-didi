@@ -143,11 +143,11 @@ for(const coldConcurrent of [false,true]){
 {
  let e;
  try{
-  const tools=[{name:'gcal_calendars',inputSchema:{type:'object',properties:{maxResults:{type:'integer'}}}},{name:'gcal_list',inputSchema:{type:'object',properties:{calendarId:{type:'string'},maxResults:{type:'integer'},timeMin:{type:'string'},timeMax:{type:'string'}}}}];
-  e=await environment({connector:'google',name:'gcal_list',args:{},tools,toolNames:tools.map(t=>t.name),source:params=>JSON.stringify({data:params.name==='gcal_calendars'?{calendars:[{id:'synthetic-primary',name:'Primary',primary:true},{id:'synthetic-other',name:'Other'}]}:{events:[{id:params.arguments.calendarId,summary:params.arguments.calendarId,start:{dateTime:'2026-10-19T09:00:00Z'}}]}})});
+  const tools=[{name:'calendar_list_calendars',inputSchema:{type:'object',properties:{maxResults:{type:'integer'}}}},{name:'calendar_list_events',inputSchema:{type:'object',properties:{calendarId:{type:'string'},maxResults:{type:'integer'},timeMin:{type:'string'},timeMax:{type:'string'}}}}];
+  e=await environment({connector:'google',name:'calendar_list_events',args:{},tools,toolNames:tools.map(t=>t.name),source:params=>JSON.stringify({data:params.name==='calendar_list_calendars'?{calendars:[{id:'synthetic-primary',name:'Primary',primary:true},{id:'synthetic-other',name:'Other'}]}:{events:[{id:params.arguments.calendarId,summary:params.arguments.calendarId,start:{dateTime:'2026-10-19T09:00:00Z'}}]}})});
   const batch=await e.run({});assert.equal(batch.error,undefined);const rows=e.rows();assert.equal(rows.length,3);
   const result=e.store.transaction(tx=>JSON.parse(tx.get('SELECT result_json FROM tool_calls').result_json));assert.equal(result.sourceDispatchRefs.length,3);assert.equal(new Set(result.sourceDispatchRefs).size,3);
-  for(const row of rows){const source=JSON.parse(row.source_json);if(row.tool_name==='gcal_list'){const args=JSON.parse(row.arguments_json);const body=JSON.parse(source.content[0].text);assert.equal(body.data.events.length,1);assert.equal(body.data.events[0].id,args.calendarId);}else assert.equal(JSON.parse(source.content[0].text).data.calendars.length,2);}
+  for(const row of rows){const source=JSON.parse(row.source_json);if(row.tool_name==='calendar_list_events'){const args=JSON.parse(row.arguments_json);const body=JSON.parse(source.content[0].text);assert.equal(body.data.events.length,1);assert.equal(body.data.events[0].id,args.calendarId);}else assert.equal(JSON.parse(source.content[0].text).data.calendars.length,2);}
   results.push({case:'composed_calendar_child_references',wireCalls:3,resultChildRefs:3,noComposedBodyAssignedToChild:true});
  }finally{await e?.close();}
 }

@@ -30,6 +30,7 @@ import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -48,10 +49,11 @@ import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
+import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
-import { fixture as openAiFixture } from './openai-live-voice-fixture.js';
+import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -224,7 +226,7 @@ async function harness(t: TestContext, overrides: {
     let calendarEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
     let calendarSdk: Server | undefined;
     let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
+    const calendarSchemas = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object' } }];
     if (overrides.calendar) {
       calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
       registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
@@ -233,7 +235,7 @@ async function harness(t: TestContext, overrides: {
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
       calendarSdk.setRequestHandler('tools/call', async req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        const raw = overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'gcal_list'
+        const raw = overrides.calendarData ? await overrides.calendarData(req.params.name, req.params.arguments ?? {}) : req.params.name === 'calendar_list_events'
           ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
           : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
         const { nextPageToken, ...data } = raw;
@@ -245,8 +247,8 @@ async function harness(t: TestContext, overrides: {
     let mailTransport: WebStandardStreamableHTTPServerTransport | undefined;
     const mailEndpoint = { id: 'mail', url: 'https://fixture.invalid/mail', account: 'synthetic-mail-account', resource: 'synthetic-mailbox' };
     const mailSchemas = [
-      { name: 'gmail_list', inputSchema: { type: 'object', properties: { q: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
-      { name: 'gmail_read', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id'], additionalProperties: false } },
+      { name: 'gmail_search_messages', inputSchema: { type: 'object', properties: { q: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
+      { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id'], additionalProperties: false } },
     ];
     if (overrides.mail) {
       registry.register(mailEndpoint); registry.enable('mail'); registry.allowEgress('mail');
@@ -309,7 +311,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.calendar && calendarEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars', 'gcal_list'], schemaDigest: canonicalToolDigest(calendarSchemas),
+        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['calendar_list_calendars', 'calendar_list_events'], schemaDigest: canonicalToolDigest(calendarSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
@@ -318,7 +320,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.mail) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mail', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...mailEndpoint, credentialRef: null }, toolNames: ['gmail_list', 'gmail_read'], schemaDigest: canonicalToolDigest(mailSchemas),
+        endpoint: { ...mailEndpoint, credentialRef: null }, toolNames: ['gmail_search_messages', 'gmail_read_message'], schemaDigest: canonicalToolDigest(mailSchemas),
         sourcePolicy: { id: 'live-mail-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 2048, maxSearchLimit: 50, maxGetIds: 3, maxEntityBytes: 65536, maxResultBytes: 65536 } });
@@ -1255,7 +1257,9 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.ok(current.liveSessions.every(row => row['resumption_handle'] === null && row['connection_generation'] === 0));
   assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
-  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
+  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation,
+    diagnostic_metadata_state: _dm, diagnostic_content_state: _dc, native_receipt_state: _nr, diagnostic_failures: _df,
+    diagnostic_last_reason: _dl, diagnostic_unattributed_transcripts: _du, diagnostic_clock_domain: _dcd, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {
@@ -1554,7 +1558,8 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
     import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
-    const store = new Store(${JSON.stringify(dir)}, liveMigrations);
+    import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
+    const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
     const owner = createLiveSessionOwner({ store, profile: validateLiveProfile(${JSON.stringify(profileInput({ unusedMs: 20 }))}),
       now: () => clock, voice: { open() { throw new Error('unexpected provider open'); } },
@@ -1575,7 +1580,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   assert.equal(code, 1);
   assert.match(stderr, /LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE/);
   assert.match(stdout, /^[a-f0-9-]{36}$/);
-  const store = new Store(dir, liveMigrations);
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
   t.after(() => store.close());
   assert.equal(store.transaction(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [stdout]))?.['lifecycle'], 'accepted');
   assert.equal(store.transaction(tx => tx.all('SELECT * FROM live_journal')).length, 0);
@@ -2668,8 +2673,8 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
 test('the calendar declarations never invite a list before an event read', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
   const descriptions = new Map(CONNECTOR_DESCRIPTORS['google']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
-  assert.match(descriptions.get('gcal_calendars')!, /Call it only when the owner asks which calendars exist; an event read needs no calendar list\./);
-  assert.match(descriptions.get('gcal_list')!, /Omit both for today in the host timezone\./);
+  assert.match(descriptions.get('calendar_list_calendars')!, /Call it only when the owner asks which calendars exist; an event read needs no calendar list\./);
+  assert.match(descriptions.get('calendar_list_events')!, /Omit both for today in the host timezone\./);
 });
 
 function toolResponseCount(h: Harness): number {
@@ -2687,15 +2692,15 @@ test('a replayed Live question reaches the connector once per allowlisted read',
   const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-replay');
   const channelId = 'abcdefghijklmnopqrstuvwxzy';
-  await settleLiveTool(h, 'c1', 'gcal_calendars', {});
-  await settleLiveTool(h, 'c2', 'gcal_calendars', {});
-  await settleLiveTool(h, 'c3', 'gcal_calendars', {});
+  await settleLiveTool(h, 'c1', 'calendar_list_calendars', {});
+  await settleLiveTool(h, 'c2', 'calendar_list_calendars', {});
+  await settleLiveTool(h, 'c3', 'calendar_list_calendars', {});
   await settleLiveTool(h, 's1', 'mattermost_search', { query: 'standup', limit: 12 });
   await settleLiveTool(h, 's2', 'mattermost_search', { query: 'standup', limit: 12 });
   await settleLiveTool(h, 'h1', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
   await settleLiveTool(h, 'h2', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
   const count = (name: string) => h.calls.filter(call => call.name === name).length;
-  assert.equal(count('gcal_calendars'), 1, 'three identical list calls reach the connector once');
+  assert.equal(count('calendar_list_calendars'), 1, 'three identical list calls reach the connector once');
   assert.equal(count('mattermost_search'), 2, 'a search is never cached');
   assert.equal(count('mattermost_get_channel_history'), 2, 'a history read is never cached');
 });
@@ -2703,22 +2708,22 @@ test('a replayed Live question reaches the connector once per allowlisted read',
 test('a new Live session starts with an empty read cache', async t => {
   const first = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(first, 'cache-session-one');
-  await settleLiveTool(first, 'o1', 'gcal_calendars', {});
-  assert.equal(first.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  await settleLiveTool(first, 'o1', 'calendar_list_calendars', {});
+  assert.equal(first.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   const second = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(second, 'cache-session-two');
-  await settleLiveTool(second, 'o2', 'gcal_calendars', {});
-  assert.equal(second.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'the second session reads the connector afresh');
+  await settleLiveTool(second, 'o2', 'calendar_list_calendars', {});
+  assert.equal(second.calls.filter(call => call.name === 'calendar_list_calendars').length, 1, 'the second session reads the connector afresh');
 });
 
 test('a cached read expires after ten minutes even inside one session', async t => {
   const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-ttl');
-  await settleLiveTool(h, 't1', 'gcal_calendars', {});
-  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  await settleLiveTool(h, 't1', 'calendar_list_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
   h.advance(10 * 60 * 1000);
-  await settleLiveTool(h, 't2', 'gcal_calendars', {});
-  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'an expired entry is read again');
+  await settleLiveTool(h, 't2', 'calendar_list_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 2, 'an expired entry is read again');
 });
 
 test('creating a second Live session supersedes the first for the owner', async t => {
@@ -2952,9 +2957,9 @@ test('the calendar intent reads events from every calendar the owner keeps', asy
   h.f.send({ toolCall: { functionCalls: [{ id: 'cal', name: 'calendar', args: {} }] } });
   for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
   assert.equal(toolResponseCount(h), 1, 'one response for the calendar intent');
-  assert.ok(h.calls.some(call => call.name === 'gcal_calendars'), 'the calendars are enumerated first');
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_calendars'), 'the calendars are enumerated first');
   const response = h.f.frames.find(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame) as { toolResponse: { functionResponses: { response: { text: string } }[] } };
-  const lists = h.calls.filter(call => call.name === 'gcal_list').map(call => (call.args as { calendarId?: string }).calendarId).sort();
+  const lists = h.calls.filter(call => call.name === 'calendar_list_events').map(call => (call.args as { calendarId?: string }).calendarId).sort();
   assert.deepEqual(lists, ['primary', 'work'], 'one event read per calendar, all calendars server-side');
   assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
 });
@@ -3031,6 +3036,8 @@ test('R9: a research call refused at dispatch writes one failed run receipt', as
   assert.equal(runs.length, 1, 'the refused call leaves exactly one run receipt');
   assert.equal(runs[0]!.status, 'failed');
   assert.equal(runs[0]!.stopReason, 'refused');
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.match(String(result?.tool?.markdown ?? ''), /^research: refused \([a-z_]+\)$/, 'a refused call names its reason in the projection, never a bare research: error');
 });
 
 test('F6: three tool calls in one model message run concurrently and return three responses in order', async t => {
@@ -3065,6 +3072,16 @@ test('F6-R1: a successful research call is journaled completed, not error', asyn
   await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
   const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
   assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
+  const markdown = String(result?.tool?.markdown ?? '');
+  assert.match(markdown, /^research: completed, (findings from [a-z ]+(, [a-z ]+)*|no findings)/, 'the settled projection records what the provider was sent, never a bare status');
+  assert.ok(markdown.length <= 240, `the projection stays bounded (${markdown.length} chars)`);
+});
+test('#1020: a refused research call names its reason in the settled projection', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'research-refused-projection');
+  await settleLiveTool(h, 'bad1', 'research', { action: 'not_an_action' });
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.match(String(result?.tool?.markdown ?? ''), /^research: refused \([a-z_]+\)$/, 'a refused call names its reason, never a bare research: error');
 });
 test('F4: a pending research call is journalled as called, never error', async t => {
   const h = await harness(t, { tools: true, calendar: true });
@@ -3097,13 +3114,19 @@ test('a terminal Live session schedules distillation without awaiting it and rec
   assert.ok(String(row['memory_provenance']).includes('injectedSummaryIds'));
 });
 
+/** Session memory v1: a summary is injectable only from a recorded history session with matching provenance. */
+function seedSummary(tx: Parameters<typeof summaries.insertSummary>[0], liveSessionId: string, summary: string, endedAt: number, ownerId: string, now: number): void {
+  recordHistorySession(tx, liveSessionId, ownerId, ['ordinary'], [], now);
+  summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary, endedAt, now, dataClass: 'ordinary', sourceRevision: 1 });
+}
+
 test('the earlier-conversations section fills the space under the target in a real session', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
   h.store.transaction(tx => {
-    for (let i = 0; i < 20; i++) summaries.insertSummary(tx, { liveSessionId: `synthetic-past-${String(i).padStart(2, '0')}`, status: 'complete',
-      summary: `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, endedAt: NOW - i * 3_600_000, now: NOW });
+    for (let i = 0; i < 20; i++) seedSummary(tx, `synthetic-past-${String(i).padStart(2, '0')}`,
+      `Synthetic past conversation ${i} about the Mongoose mint delivery window and the Friday schedule.`, NOW - i * 3_600_000, h.store.assistantId, NOW);
   });
   const session = h.owner.create({ idempotencyKey: 'summary-budget', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
@@ -3346,10 +3369,8 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   const detachPlanSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'opener_plan') plans.push(record); } });
   t.after(() => detachPlanSink());
   h.store.transaction(tx => {
-    summaries.insertSummary(tx, { liveSessionId: 'synthetic-shared-loop', status: 'complete', summary: 'The owner said the tax form is still to be filed.',
-      endedAt: NOW - 3_600_000, now: NOW });
-    summaries.insertSummary(tx, { liveSessionId: 'synthetic-accountant-loop', status: 'complete', summary: 'The owner said he still has to call the accountant.',
-      endedAt: NOW - 7_200_000, now: NOW });
+    seedSummary(tx, 'synthetic-shared-loop', 'The owner said the tax form is still to be filed.', NOW - 3_600_000, h.store.assistantId, NOW);
+    seedSummary(tx, 'synthetic-accountant-loop', 'The owner said he still has to call the accountant.', NOW - 7_200_000, h.store.assistantId, NOW);
   });
   const snapshot = (liveSessionId: string): string => {
     const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
@@ -3599,6 +3620,8 @@ test('D6: the adapter silence model between her sentences never drops the orb ou
 function progressPort() {
   const commentary: string[] = [];
   const thinking: string[] = [];
+  /** W4: whether the transport can carry a commentary at all, which the real adapter answers per delegation. */
+  let commentaryDelivered = true;
   /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
   const texts: string[] = [];
   const toolResponses: LiveToolResponse[][] = [];
@@ -3634,13 +3657,20 @@ function progressPort() {
         ready: Promise.resolve(), events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
         sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
-        sendCommentary(input: { text: string }): void { commentary.push(input.text); },
+        sendCommentary(input: { text: string }): boolean {
+          if (!commentaryDelivered) return false;
+          commentary.push(input.text);
+          return true;
+        },
         sendThinking(input: { text: string }): void { thinking.push(input.text); },
         close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
-  return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event), get sessionsOpened() { return sessionsOpened; } };
+  return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event),
+    /** W4: a transport with no open delegation refuses the append, exactly as the GPT-Live wire does. */
+    refuseCommentary: () => { commentaryDelivered = false; },
+    get sessionsOpened() { return sessionsOpened; } };
 }
 
 const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 };
@@ -3693,6 +3723,77 @@ test('progress speech is suppressed while the owner speaks', async t => {
 
 
 
+// --- W4: no long silence while a call is in flight ------------------------------------------------
+
+test('W4: a turn gets at most two progress lines, and never two inside six seconds', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // A held chat source keeps real work in flight past three beats, which no tool ceiling cuts short.
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
+  const { session } = await openPort(h, 'progress-cap');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1, 'the first line goes out about six seconds into the call');
+  h.advance(5_999); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 1, 'a second line waits the full six seconds');
+  h.advance(1); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 2, 'the second line is six seconds after the first');
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.commentary.length, 2, 'a turn never speaks a third progress line');
+  const skips = receipts.filter(entry => entry['event'] === 'commentary_skipped').map(entry => entry['reason']);
+  assert.ok(skips.includes('budget'), `the refused line leaves a receipt, not silence: ${JSON.stringify(skips)}`);
+  assert.deepEqual(fake.texts, [], 'the fake owner turn is never sent on the GPT-Live path');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('W4: no progress line once the tool result has been sent', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { session } = await openPort(h, 'progress-after-result');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'done1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the result is already with the model');
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, [], 'a turn with nothing in flight never says it is still reading');
+  assert.ok(receipts.some(entry => entry['event'] === 'commentary_skipped'), 'the decision is on the record');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('W4: a refused commentary is a receipt, never a claimed send', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'progress-refused');
+  fake.refuseCommentary();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ref1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(6_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, [], 'the transport refused it, so the owner heard nothing');
+  const refused = receipts.filter(entry => entry['event'] === 'commentary_skipped').map(entry => entry['reason']);
+  assert.ok(refused.includes('no_delegation'), `the skip names why: ${JSON.stringify(refused)}`);
+  assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'and nothing claims it was sent');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
 // --- R6: late findings reach the voice model, and are spoken only on a quiet turn -----------------
 
 /** The owner's memory answers in process and the chat read is held, so 4.5 s arrives with one source open. */
@@ -3706,7 +3807,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3729,6 +3830,74 @@ test('R6: a source that settles after the first answer is appended once, and sai
   h.owner.revoke(session.liveSessionId);
 });
 
+// #472 at the drop point the reviewer named: a run the model has closed is no longer "current", and base
+// dropped its late result at index.ts:2379 before the delivery authority was ever asked. The reader returns
+// lines after the stop, so the model must receive them.
+test('#472: a late result for a run the model stopped is named a cut, never a source failure', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-stopped-472');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the first answer names the reader still open: ${JSON.stringify(reply).slice(0, 300)}`);
+  // The model closes the run itself while the chat reader is still open: the run is no longer current.
+  const beforeStop = fake.toolResponses.length;
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls2', name: 'research', args: { action: 'stop', researchId: String(reply['researchId']) } }] });
+  for (let n = 0; n < 1000 && fake.toolResponses.length === beforeStop; n++) await settlePort();
+  assert.equal(fake.toolResponses.length, beforeStop + 1, 'the stop call is answered');
+  assert.equal((fake.toolResponses.at(-1)![0]!.response as Record<string, unknown>)['status'], 'stopped', 'the run is closed before its reader lands');
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.ok(late.length >= 1, 'the reader landing after the stop is reported');
+  // The drop point the reviewer named: base called this a source failure, which is not what happened.
+  assert.equal(late.at(-1)!['reason'], 'run_cut', `a closed run's empty late result is named a cut, never a source failure: ${JSON.stringify(late.at(-1))}`);
+  // W1-R8: the drop point's own word has to survive the journal whitelist, or the honest reason is
+  // never written down and the line reads as an unexplained silence.
+  const journal = safeEvent(late.at(-1));
+  assert.ok(journal, 'the cut receipt passes the host log whitelist, so it lands in the journal');
+  assert.equal(journal['reason'], 'run_cut', 'and the journal keeps the reason the drop point named');
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 0, 'and nothing is claimed to the model for a read the stop voided');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// #472: the delivery half. A source that lands after the first answer must reach the model through the
+// later-findings path while the session is live, and a calendar answer supplies the first answer here so
+// the assertion stands on a source the base suite serves (the memory-backed R6 cases are base-red).
+test('#472: a late source result reaches the model while the session is live', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const { session } = await openPort(h, 'late-delivery-472');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  await settlePort();
+  h.advance(4_500); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
+  const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
+  assert.deepEqual(reply['pending'], ['chat'], `the reply names the source still reading: ${JSON.stringify(reply).slice(0, 300)}`);
+  release();
+  await settlePort();
+  const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
+  assert.equal(late.length, 1, 'one receipt for the source that landed later');
+  assert.equal(late[0]!['source'], 'chat');
+  assert.notEqual(late[0]!['delivered'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
+  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model carries the late finding');
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('R6: a late finding speaks nothing over an owner who has started a new question', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
@@ -3737,7 +3906,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3768,7 +3937,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-owner-speech');
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
@@ -3797,7 +3966,7 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   const scheduler = new DeadlineClock();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { tools: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
+  const h = await harness(t, { tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
@@ -3963,12 +4132,13 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   const acked = await openPort(h, 'ack-watchdog');
   fake.emit({ type: 'toolCall', calls: [{ id: 'a1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  release();
-  await settlePort();
+  // W4: a progress line only goes out while the call is in flight, so the ack under test is spoken here.
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.commentary.length, 1, 'the progress line went out: that is the ack under test');
   assert.equal(nudges(), 0, 'the ack is not a delivery and the watchdog has not spoken yet');
-  h.advance(2_000); scheduler.runDue(); await settlePort();
+  release();
+  await settlePort();
+  h.advance(8_000); scheduler.runDue(); await settlePort();
   assert.equal(nudges(), 1, 'the watchdog still escalated after the commentary ack');
   acked.attachment.close();
   await settlePort();
@@ -3986,13 +4156,33 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   answered.attachment.close();
 });
 
+test('W4: a research-only batch still gets its silent line', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  const { session } = await openPort(h, 'research-thinking');
+  // W4-R2: the tool-call handler used to hand #sendThinking a list it had already stripped of the research call,
+  // so a batch of nothing but research looked like a batch of nothing at all and no line went out.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
+  await settlePort();
+  assert.equal(fake.thinking.length, 1, 'the research lookup reaches the silent channel');
+  assert.match(fake.thinking[0]!, /Running a lookup across your sources/, 'and the line names the fan-out, not a source');
+  release();
+  await settlePort();
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('review F1/F2: the research lookup, the one the model can call, speaks and thinks', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   // `research` is the only lookup the production model is declared, so this is the reachable path (review F2).
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  // W1's first answer settles a run that has findings, so the held work must be the source the line
+  // names: the chat read itself stays pending, and the turn really does have work in flight at 6 s.
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held, mattermostWork: () => held });
   const { session } = await openPort(h, 'research-progress');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();
@@ -4131,13 +4321,13 @@ test('fluency: cached Live metadata cannot bypass suspended or revoked connector
   for (const revoked of [false, true]) {
     const h = await harness(t, { tools: true, calendar: true });
     await attached(h, `cache-authority-${revoked}`);
-    await settleLiveTool(h, 'before', 'gcal_calendars', {});
-    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+    await settleLiveTool(h, 'before', 'calendar_list_calendars', {});
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1);
     if (revoked) h.toolRegistry!.revoke('calendar'); else h.toolRegistry!.suspend('calendar');
-    await settleLiveTool(h, 'after', 'gcal_calendars', {});
+    await settleLiveTool(h, 'after', 'calendar_list_calendars', {});
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     assert.ok(frame.toolResponse.functionResponses[0]!.response['error'], 'cached success must not outlive canonical authority');
-    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'denied cache does not dispatch');
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 1, 'denied cache does not dispatch');
   }
 });
 
@@ -4147,11 +4337,11 @@ test('fluency: demand recovery belongs to new owner input and not repeated model
   const h = await harness(t, { tools: true, calendar: true, recover: async () => { demands++; } });
   await attached(h, 'distinct-recovery-demand');
   h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic request', finished: true } } });
-  await settleLiveTool(h, 'first', 'gcal_calendars', {});
-  await settleLiveTool(h, 'model-retry', 'gcal_calendars', {});
+  await settleLiveTool(h, 'first', 'calendar_list_calendars', {});
+  await settleLiveTool(h, 'model-retry', 'calendar_list_calendars', {});
   assert.equal(demands, 1);
   h.f.send({ serverContent: { inputTranscription: { text: 'A distinct synthetic request', finished: true } } });
-  await settleLiveTool(h, 'new-request', 'gcal_calendars', {});
+  await settleLiveTool(h, 'new-request', 'calendar_list_calendars', {});
   assert.equal(demands, 2);
 });
 
@@ -4161,8 +4351,8 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     const started = deferred<void>(), finish = deferred<void>();
     const h = await harness(t, { tools: true, calendar: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
     const { session } = await attached(h, `cache-delivery-${boundary}`);
-    await settleLiveTool(h, 'prime-calendar', 'gcal_calendars', {});
-    await settleLiveTool(h, 'prime-calendar-small', 'gcal_calendars', { maxResults: 1 });
+    await settleLiveTool(h, 'prime-calendar', 'calendar_list_calendars', {});
+    await settleLiveTool(h, 'prime-calendar-small', 'calendar_list_calendars', { maxResults: 1 });
     if (boundary === 'final-microtask') {
       const gate = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
       t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof gate>) => {
@@ -4173,8 +4363,8 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     }
     const before = toolResponseCount(h);
     h.f.send({ toolCall: { functionCalls: [
-      { id: 'cached-calendar', name: 'gcal_calendars', args: {} },
-      { id: 'cached-calendar-small', name: 'gcal_calendars', args: { maxResults: 1 } },
+      { id: 'cached-calendar', name: 'calendar_list_calendars', args: {} },
+      { id: 'cached-calendar-small', name: 'calendar_list_calendars', args: { maxResults: 1 } },
       { id: 'slow', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
     ] } });
     await started.promise;
@@ -4190,8 +4380,8 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
     assert.equal(cached['text'], undefined, 'no metadata body reaches provider');
     const projections = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 100 }).fragments.filter(fragment => fragment.kind === 'toolResult');
     assert.equal(projections.at(-3)?.tool?.status, 'error', 'local receipt must deny too');
-    assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'neither completed calendar read replays');
-    const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='gcal_calendars'", [session.liveSessionId]));
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_calendars').length, 2, 'neither completed calendar read replays');
+    const rows = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='calendar_list_calendars'", [session.liveSessionId]));
     assert.deepEqual(rows.map(row => row.state), ['completed', 'completed'], 'original completed journal is unchanged');
   }
 });
@@ -4199,7 +4389,7 @@ test('fluency R2: cached metadata is denied after revocation during sibling work
 test('calendar integration: actual Google projector and Live ledger deliver every page and local remainder with original authority', async t => {
   const events = Array.from({ length: 15 }, (_, n) => ({ id: `calendar-event-${n}`, start: `2023-11-${String(14 + Math.floor(n / 5)).padStart(2, '0')}T10:00:00Z`, summary: `Synthetic event ${n}`, description: n === 0 ? 'Long description. '.repeat(40) : '' }));
   for (const revoked of [false, true]) {
-    const h = await harness(t, { tools: true, calendar: true, calendarData: (name, args) => name === 'gcal_calendars'
+    const h = await harness(t, { tools: true, calendar: true, calendarData: (name, args) => name === 'calendar_list_calendars'
       ? { calendars: [{ id: 'primary', summary: 'Main' }], nextPageToken: 'more-calendars' }
       : args['pageToken'] ? { events: events.slice(12) } : { events: events.slice(0, 12), nextPageToken: 'next-events' } });
     await attached(h, `calendar-complete-${revoked}`);
@@ -4213,7 +4403,7 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     const coverage = reply['calendarCoverage'] as Record<string, unknown>;
     assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 7);
     assert.equal(coverage['bodyTruncated'], true); assert.equal(coverage['calendarListComplete'], false);
-    const calls = h.calls.filter(call => call.name === 'gcal_list');
+    const calls = h.calls.filter(call => call.name === 'calendar_list_events');
     assert.equal(calls.length, 2);
     const first = calls[0]!.args as Record<string, unknown>, second = calls[1]!.args as Record<string, unknown>;
     assert.equal(first['calendarId'], 'primary'); assert.equal(first['timeMin'], '2023-11-12T18:30:00.000Z');
@@ -4224,19 +4414,19 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
     if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
     else { assert.match(JSON.stringify(last()['findings']), /Synthetic event 14/); assert.equal(last()['canContinue'], false); }
-    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 2, 'neither retained delivery nor denial rereads completed pages');
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }
 });
 
 test('calendar integration: revocation during a sibling await or final microtask denies retained results at publication', async t => {
   for (const boundary of ['sibling', 'final-microtask'] as const) {
     const started = deferred<void>(), finish = deferred<void>(), calendarAccepted = deferred<void>();
-    const h = await harness(t, { tools: true, calendar: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'exact-retained', start: '2023-11-15T10:00:00Z', summary: 'Calendar publication must be gated' }] } });
+    const h = await harness(t, { tools: true, calendar: true, knowledgeSearchLimit: 6, beforeTool: async () => { started.resolve(); await finish.promise; }, calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'exact-retained', start: '2023-11-15T10:00:00Z', summary: 'Calendar publication must be gated' }] } });
     await attached(h, `calendar-delivery-race-${boundary}`);
     const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
       const result = await authorize(...args);
-      if (args[1].some(binding => binding.name === 'gcal_list')) calendarAccepted.resolve();
+      if (args[1].some(binding => binding.name === 'calendar_list_events')) calendarAccepted.resolve();
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
       return result;
     });
@@ -4252,7 +4442,7 @@ test('calendar integration: revocation during a sibling await or final microtask
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied');
     assert.doesNotMatch(JSON.stringify(frame), /Calendar publication must be gated/);
-    assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+    assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
   }
 });
 
@@ -4359,13 +4549,13 @@ test('mail integration: exact native query pages and retained remainder reach la
   const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
   const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
   assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
-  const sourceCalls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(sourceCalls.length, 2);
+  const sourceCalls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(sourceCalls.length, 2);
   assert.equal((sourceCalls[0]!.args as Record<string, unknown>)['q'], 'from:sender@example.invalid subject:"precise phrase"');
   assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['pageToken'], 'private-native-mail-next');
   assert.equal((sourceCalls[1]!.args as Record<string, unknown>)['maxResults'], 8);
   await settleLiveTool(h, 'mail-next', 'research', { action: 'continue', researchId: first['researchId'], cursor: first['nextCursor'] });
   assert.match(JSON.stringify(last()['findings']), /Synthetic mail 12/); assert.equal(last()['canContinue'], false);
-  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2);
+  assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 2);
 });
 
 
@@ -4390,7 +4580,7 @@ test('mail integration: delivered consumer cursors are idempotent and Stop inval
       assert.equal(last()['alreadyDelivered'], true); assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false);
       assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8).map(message => message.id));
     }
-    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1, 'no source replay for retained, denied or repeated consumer pages');
+    assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 1, 'no source replay for retained, denied or repeated consumer pages');
   }
 });
 
@@ -4408,7 +4598,7 @@ test('mail integration: a failed dispatched native page is terminal and truthful
   const reply = last(); assert.equal(reply['status'], 'partial'); assert.equal(reply['canContinue'], false);
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 7/);
   await settleLiveTool(h, 'continue', 'research', { action: 'continue', researchId: reply['researchId'] });
-  assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 2, 'the failed native page is not replayed');
+  assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 2, 'the failed native page is not replayed');
 });
 
 
@@ -4422,7 +4612,7 @@ test('mail integration: actual selector parsing shares the native page collector
   catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;
-  const calls = h.calls.filter(call => call.name === 'gmail_list'); assert.equal(calls.length, 2);
+  const calls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(calls.length, 2);
   assert.equal((calls[0]!.args as Record<string, unknown>)['q'], 'from:selector@example.invalid');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
@@ -4436,7 +4626,7 @@ test('mail integration: revocation during a sibling await or final microtask den
     const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
       const result = await authorize(...args);
-      if (args[1].some(binding => binding.name === 'gmail_list')) mailAccepted.resolve();
+      if (args[1].some(binding => binding.name === 'gmail_search_messages')) mailAccepted.resolve();
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
       return result;
     });
@@ -4448,7 +4638,7 @@ test('mail integration: revocation during a sibling await or final microtask den
     if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Mail publication must be gated/);
-    assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+    assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 1);
   }
 });
 
@@ -4469,7 +4659,7 @@ test('mail integration: an unused cursor keeps its original message coordinates 
   assert.deepEqual(last()['deliveredMessageIds'], messages.slice(8, 16).map(message => message.id)); assert.equal(last()['nextCursor'], nextCursor); assert.deepEqual(last()['findings'], []);
   await settleLiveTool(h, 'final-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor });
   assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(16).map(message => message.id));
-  assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_list').length, 1);
+  assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 1);
 });
 
 
@@ -4481,7 +4671,7 @@ test('mail body integration: full received text continues locally once with exac
   const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
     const result = await authorize(...args);
-    const binding = args[1].find(binding => binding.name === 'gmail_read');
+    const binding = args[1].find(binding => binding.name === 'gmail_read_message');
     if (binding && result.state === 'allowed') {
       const consumed = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]);
       if (consumed.state === 'allowed' && consumed.evidence.kind === 'remote-body') received = consumed.evidence.body;
@@ -4494,7 +4684,7 @@ test('mail body integration: full received text continues locally once with exac
   };
   await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
   assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
-  const calls = h.calls.filter(call => call.name === 'gmail_read'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
+  const calls = h.calls.filter(call => call.name === 'gmail_read_message'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
   const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
   for (;;) {
     const slices = last()['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string; source: string }[];
@@ -4508,7 +4698,7 @@ test('mail body integration: full received text continues locally once with exac
     assert.equal(typeof next, 'string'); assert(++count < 30, 'continuation must make bounded progress');
     await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, cursor: next }); next = last()['nextCursor'];
   }
-  assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1, 'local body remainder must not re-fetch the message');
+  assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1, 'local body remainder must not re-fetch the message');
 });
 
 test('mail body integration: completed research Stop releases the canonical host evidence', async t => {
@@ -4516,22 +4706,22 @@ test('mail body integration: completed research Stop releases the canonical host
   const { session } = await attached(h, 'mail-stop-releases-body');
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   let captured: Parameters<typeof original> | undefined;
-  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'stop-message' } }] });
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const researchId = frame.toolResponse.functionResponses[0]!.response['researchId']; assert(captured);
-  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'allowed');
   await settleLiveTool(h, 'body-stop', 'research', { action: 'stop', researchId });
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused', 'Stop must release the actual original source ref, not just a private ledger flag');
-  assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
 test('mail body integration: immutable receipt, metadata opt-out and new-start cleanup use the real owner', async t => {
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Body identity' }, body: args['format'] === 'metadata' ? null : 'Sentence evidence. '.repeat(1600), bodyCoverage: { complete: true } }) });
   const { session } = await attached(h, 'mail-body-lifecycle');
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined;
-  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
@@ -4542,9 +4732,9 @@ test('mail body integration: immutable receipt, metadata opt-out and new-start c
   await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
   assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
   await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
-  assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 2);
-  assert.equal((h.calls.filter(call => call.name === 'gmail_read')[1]!.args as Record<string, unknown>)['format'], 'metadata');
-  assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 2);
+  assert.equal((h.calls.filter(call => call.name === 'gmail_read_message')[1]!.args as Record<string, unknown>)['format'], 'metadata');
+  assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
   await settleLiveTool(h, 'old-body-cursor', 'research', { action: 'continue', researchId, cursor: nextCursor }); assert.equal(last()['error'], 'continuation_unavailable');
 });
 
@@ -4555,7 +4745,7 @@ test('mail body integration: revocation during sibling await and final microtask
     await attached(h, `body-race-${boundary}`);
     const authorize = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
-      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'gmail_read')) mailAccepted.resolve();
+      const result = await authorize(...args); if (args[1].some(binding => binding.name === 'gmail_read_message')) mailAccepted.resolve();
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
       return result;
     });
@@ -4564,16 +4754,16 @@ test('mail body integration: revocation during sibling await and final microtask
     for (let n = 0; n < 2000 && !(entered && collected); n++) await tick(); assert(entered && collected);
     if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
-    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Revoked body evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+    assert.equal(frame.toolResponse.functionResponses[0]!.response['error'], 'tool_result_denied'); assert.doesNotMatch(JSON.stringify(frame), /Revoked body evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
   }
 });
 
 test('mail body integration: a source completion after research Stop cannot resurrect canonical evidence', async t => {
   const entered = deferred<void>(), release = deferred<void>(); const scheduler = new DeadlineClock();
-  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'ready-calendar', start: '2023-11-15T10:00:00Z', summary: 'Synthetic ready calendar event' }] }, scheduler, limits: { idleMs: 60000, sessionMs: 600000 }, mailData: async (_name, args) => { entered.resolve(); await release.promise; return { id: args['id'], headers: { Subject: 'Late stopped body' }, body: 'Never retain stopped evidence. '.repeat(1000), bodyCoverage: { complete: true } }; } });
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : { events: [{ id: 'ready-calendar', start: '2023-11-15T10:00:00Z', summary: 'Synthetic ready calendar event' }] }, scheduler, limits: { idleMs: 60000, sessionMs: 600000 }, mailData: async (_name, args) => { entered.resolve(); await release.promise; return { id: args['id'], headers: { Subject: 'Late stopped body' }, body: 'Never retain stopped evidence. '.repeat(1000), bodyCoverage: { complete: true } }; } });
   const { session } = await attached(h, 'body-stop-pending'); t.after(() => release.resolve());
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined; let siblingReady = false;
-  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gcal_list') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read') && result.state === 'allowed') captured = args; return result; });
+  t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'calendar_list_events') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
   let dispatched = false; void entered.promise.then(() => { dispatched = true; }); for (let n = 0; n < 2000 && !dispatched; n++) await tick(); assert(dispatched);
   const progress = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 500 }).fragments.find(fragment => fragment.kind === 'researchProgress'); assert(progress?.text);
@@ -4584,9 +4774,9 @@ test('mail body integration: a source completion after research Stop cannot resu
   const replies = () => h.f.frames.flatMap(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame ? (frame as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses : []);
   for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-stop'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-stop'));
   release.resolve(); for (let n = 0; n < 2000 && (!captured || !replies().some(reply => reply.id === 'pending-body-start')); n++) await tick(); assert(captured); assert(replies().some(reply => reply.id === 'pending-body-start'));
-  const binding = captured[1].find(binding => binding.name === 'gmail_read')!;
+  const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
-  assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
 test('mail body integration: actual source expiry denies local continuation without another remote read', async t => {
@@ -4594,7 +4784,7 @@ test('mail body integration: actual source expiry denies local continuation with
   const { session } = await attached(h, 'body-expiry'); let expiresAt = 0; let captured: Parameters<NonNullable<Harness['toolOwner']>['resultGate']['authorize']> | undefined;
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {
-    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'gmail_read');
+    const result = await original(...args); const binding = args[1].find(binding => binding.name === 'gmail_read_message');
     if (binding && result.state === 'allowed') { captured = args; const value = h.toolOwner!.consumeEvidence(args[0], binding, h.owner.lookupAuthority(session.liveSessionId), args[3]); if (value.state === 'allowed' && value.evidence.kind === 'remote-body') expiresAt = value.evidence.expiresAt; }
     return result;
   });
@@ -4605,15 +4795,15 @@ test('mail body integration: actual source expiry denies local continuation with
   await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
   const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(expiresAt > Date.now());
   assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
-  assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
   changedClock.mock.restore();
   await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, cursor });
-  assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1);
+  assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
 test('mail body integration: body consumption preserves simultaneous calendar evidence and its local remainder', async t => {
   const events = Array.from({ length: 12 }, (_, n) => ({ id: `body-sibling-${n}`, start: '2023-11-15T10:00:00Z', summary: `Body sibling event ${n}` }));
-  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : { events }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Mixed body' }, body: 'Mixed-source body evidence. '.repeat(600), bodyCoverage: { complete: true } }) }); await attached(h, 'mixed-body-calendar');
+  const h = await harness(t, { tools: true, mail: true, calendar: true, calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : { events }, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Mixed body' }, body: 'Mixed-source body evidence. '.repeat(600), bodyCoverage: { complete: true } }) }); await attached(h, 'mixed-body-calendar');
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
@@ -4626,7 +4816,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
     if (!last()['canContinue']) break; assert(++count < 20);
     await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['nextCursor'] } : {}) });
   }
-  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read').length, 1); assert.equal(h.calls.filter(call => call.name === 'gcal_list').length, 1);
+  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
 });
 
 test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
@@ -4669,11 +4859,10 @@ for (const route of ['typed', 'selector'] as const) test(`progress recovery: ${r
   assert.ok(progress.every(entry => !(entry['sourcesPending'] as string[]).includes('calendar')), 'configured but undispatched calendar is never pending');
   release(); for (let n = 0; n < 50 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); assert.equal(fake.toolResponses[0]![0]!.response['error'], undefined);
-  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the eight-second speech interval');
+  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the six-second speech interval');
   h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a result cannot cause a six-second repeat');
-  h.advance(1_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1);
-  h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 2, 'the existing eight-second beat is preserved');
-  assert.match(fake.commentary[1]!, /lookup is done/);
+  // W4: the turn's only lookup has answered, so no line may claim one is still running.
+  h.advance(2_000); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, `a finished lookup is not progress: ${JSON.stringify(fake.commentary)}`);
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4700,7 +4889,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   const events = Array.from({ length: 13 }, (_, n) => ({ id: `progress-event-${n}`, start: '2023-11-15T10:00:00Z', summary: `Synthetic progress event ${n}` }));
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits,
     ...(source === 'mail' ? { mail: true, mailData: (_name: string, args: Record<string, unknown>) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'next' } }
-      : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'gcal_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
+      : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
   });
   const { session } = await openPort(h, `progress-pages-${source}`);
   const args = { action: 'start', question: 'Synthetic pages', lookups: [{ source, query: source === 'calendar' ? 'week' : 'subject:synthetic' }] };
@@ -4795,5 +4984,148 @@ test('research 469: known stopped run projects error and retained no-wire delive
   const partial = await call('partial', { action: 'start', question: 'Synthetic unavailable calendar', lookups: [{ source: 'calendar', query: 'today' }] });
   assert.equal(partial.response['status'], 'partial'); assert.equal(partial.response['error'], undefined); assert.equal(partial.projection.status, 'completed');
   assert.equal(h.calls.length, 1); assert.deepEqual(h.owner.current().steps ?? [], []);
-  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error', sources: [] } });
+  assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error (continuation_unavailable)', sources: [] } });
+});
+
+test('W6/H12: a second owner utterance closes the open turn as superseded and names it on the next', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'supersede-turn');
+  // An utterance opens a turn; the finished frame ends that utterance, not the turn, because the
+  // provider has not sent turnComplete yet. The next utterance therefore arrives while it is open.
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { inputTranscription: { text: 'first question' } } });
+  await drain(h, session.liveSessionId, baseline + 1);
+  h.f.send({ serverContent: { inputTranscription: { text: '', finished: true } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'second question' } } });
+  await drain(h, session.liveSessionId, baseline + 3);
+  const turns = h.store.transaction(tx => tx.all(
+    'SELECT turn_id, turn_index, closed_at, close_reason, supersedes_turn_id FROM trace_turn WHERE live_session_id=? ORDER BY turn_index',
+    [session.liveSessionId]));
+  assert.equal(turns.length, 2, 'the second utterance is its own turn');
+  assert.equal(turns[0]!['close_reason'], 'superseded', 'the replaced turn is closed, never orphaned open');
+  assert.ok(turns[0]!['closed_at'] !== null);
+  assert.equal(turns[1]!['supersedes_turn_id'], turns[0]!['turn_id'], 'the new turn names the one it replaced');
+  assert.equal(turns[1]!['closed_at'], null, 'the new turn stays open until its own close');
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/H12: a session that ends closes its last turn, so no normal turn is left open', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'session-end-turn');
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { inputTranscription: { text: 'only question' } } });
+  await drain(h, session.liveSessionId, baseline + 1);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+  const turns = h.store.transaction(tx => tx.all('SELECT close_reason, closed_at FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.deepEqual(turns.map(turn => [turn['close_reason'], turn['closed_at'] !== null]), [['session_end', true]]);
+});
+
+test('W6/H13: a playback receipt names the turn and the response open when its first chunk went out', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'playback-attribution');
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { inputTranscription: { text: 'how long was that call' } } });
+  await drain(h, session.liveSessionId, baseline + 1);
+  const open = h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_turn WHERE live_session_id=? AND closed_at IS NULL', [session.liveSessionId]))!;
+  const turnId = String(open['turn_id']);
+  const responseKey = scopedTraceKey(session.liveSessionId, 'e0', 'response', 'resp-fixture');
+  record(h.store, 'response.created', { liveSessionId: session.liveSessionId, connectionEpoch: 'e0', turnId, responseKey },
+    { createdAt: 1_700_000_000_000, status: 'streaming', providerResponseId: 'resp-fixture' });
+  const frame = (receipt: string, seq: number): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-e2', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
+  attachment.playbackReceipt(frame('received', 1));
+  attachment.playbackReceipt(frame('enqueued', 2));
+  attachment.playbackReceipt(frame('started', 3));
+  const row = h.store.transaction(tx => tx.get('SELECT turn_id, response_key, received_at FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-e2:1`]))!;
+  assert.equal(row['turn_id'], turnId, 'the segment is tied to the turn that was open when its first chunk was sent');
+  assert.equal(row['response_key'], responseKey, 'and to the response that was current then');
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/H13: a segment keeps the turn it started in even when its later receipts land after the close', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'playback-late-receipts');
+  const baseline = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { inputTranscription: { text: 'first question' } } });
+  await drain(h, session.liveSessionId, baseline + 1);
+  const first = String(h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_turn WHERE live_session_id=? AND closed_at IS NULL', [session.liveSessionId]))!['turn_id']);
+  const frame = (receipt: string, seq: number): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-late', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
+  // The first receipt names the turn the segment opened in; the rest land after that turn closes.
+  attachment.playbackReceipt(frame('enqueued', 1));
+  h.f.send({ serverContent: { inputTranscription: { text: 'second question' } } });
+  await drain(h, session.liveSessionId, baseline + 2);
+  attachment.playbackReceipt(frame('received', 2));
+  attachment.playbackReceipt(frame('started', 3));
+  const row = h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-late:1`]))!;
+  assert.equal(row['turn_id'], first, 'the segment stays with the turn it started in, not the turn open when the row was written');
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/H14: a completed tool call writes its result content row through recordCallResult', async t => {
+  const h = await harness(t, { tools: true });
+  const { session, attachment } = await attached(h, 'call-result-row');
+  const callKey = scopedTraceKey(session.liveSessionId, 'e0', 'call', 'c1');
+  record(h.store, 'call.intent', { liveSessionId: session.liveSessionId, connectionEpoch: 'e0', callKey },
+    { name: 'search_knowledge', argsChars: 12, intentAt: 1_700_000_000_000 });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(2);
+  const rows = h.store.transaction(tx => tx.all('SELECT text, text_truncated FROM trace_call_result WHERE call_key=?', [callKey]));
+  assert.equal(rows.length, 1, 'one content row per completed call, keyed by the trace call');
+  assert.match(String(rows[0]!['text']), /Synthetic insight/, 'the model-facing result is the content that lands');
+  assert.equal(Number(rows[0]!['text_truncated']), 0);
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/Q8: one status definition, so an error result is the only thing the journal calls error', () => {
+  assert.equal(journalToolStatus({ error: 'tool_result_denied' }), 'error',
+    'an error result is an error status');
+  assert.equal(journalToolStatus({ error: 'continuation_unavailable', researchId: 'r1', findings: [], canContinue: false }), 'error',
+    'a reply that names a failure is a failure, whatever else it carries');
+  assert.equal(journalToolStatus({ status: 'partial', researchId: 'r1', findings: [{ text: 'a source answered' }] }), 'completed',
+    'a reply that carries an answer is completed: error is never inferred from anywhere else');
+});
+
+test('W6/H3: a gate held with nothing unanswered writes no deferred receipt', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => detach());
+  const { socket, session, captured } = await openAiReady(t);
+  socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
+  socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{}' } } });
+  for (let attempt = 0; attempt < 40 && !captured.events.some(event => event.type === 'toolCall'); attempt += 1) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(captured.events.some(event => event.type === 'toolCall'), 'the adapter emitted the call');
+  // The response is still open, so the turn owes a continuation, but this call has its answer: nothing is
+  // awaited, so no receipt may claim a wait (#451 H3, ruling W6-R1 ASK-3).
+  assert.equal(session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] }), 'deferred');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'continuation_deferred'), []);
+});
+
+test('W6/H22: a research receipt names the call it answers', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-research-receipts-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t, { tools: true, calendar: true,
+    calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary', summary: 'Main' }] } : { events: [{ id: 'calendar-event-0', start: '2023-11-15T10:00:00Z', summary: 'Synthetic event 0' }] } });
+  const { attachment } = await attached(h, 'research-receipt-call');
+  await settleLiveTool(h, 'research-window', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
+
+  const receipts = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n')
+    .map(line => JSON.parse(line) as Record<string, unknown>)
+    .filter(entry => entry['event'] === 'research_subcall' || entry['event'] === 'research_routed');
+  assert.ok(receipts.length > 0, 'the read left its receipts');
+  assert.deepEqual(receipts.map(entry => [entry['event'], entry['callKey']]),
+    receipts.map(entry => [entry['event'], 'research-window']),
+    'every receipt names the model call, the id trace_call.provider_call_id records');
+  assert.equal(receipts.some(entry => 'query' in entry), false, 'never the question or the query text');
+  attachment.close();
+  await attachment.done;
 });

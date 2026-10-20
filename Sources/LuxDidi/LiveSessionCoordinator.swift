@@ -198,6 +198,9 @@ public actor LiveSessionCoordinator {
     private var receiveTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
     private var operation: UInt64 = 0
+    /// One teardown per session (#476): the first close or revoke issues the Stop control and its
+    /// receipt, and every later one is a no-op, so one press cannot write two stop receipt pairs.
+    private var teardownIssued = false
     private var pendingBytes = 0
     private var pendingFrames = 0
     /// E1: whether the provider's turnComplete for the live turn arrived before a barge-in marker.
@@ -264,7 +267,7 @@ public actor LiveSessionCoordinator {
         let token = generation, op = operation
         operationTask?.cancel(); receiveTask?.cancel()
         let oldSocket = socket; socket = nil
-        intent = frozen; createKey = UUID().uuidString; sessionID = nil; grant = nil
+        intent = frozen; createKey = UUID().uuidString; sessionID = nil; grant = nil; teardownIssued = false
         pendingBytes = 0; pendingFrames = 0; inputEnded = false; reading = false; state = .checking
         await oldSocket?.cancel()
         guard current(token, op) else { return }
@@ -511,7 +514,8 @@ public actor LiveSessionCoordinator {
     public func close(trigger: LiveStopTrigger = .other) async -> LiveStopReceipt? {
         freezeCaptureDiagnostics()
         let stopRequestedAt = Date()
-        guard state != .idle, !settled else { return nil }
+        guard !teardownIssued, state != .idle, !settled else { return nil }
+        teardownIssued = true
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
             state = .outcomeUnknown(.unavailable)
@@ -542,6 +546,8 @@ public actor LiveSessionCoordinator {
     public func revoke() async {
         freezeCaptureDiagnostics()
         guard state != .idle, !settled else { return }
+        // A revoke is the other teardown of the same session: no Stop control goes out after it.
+        teardownIssued = true
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing

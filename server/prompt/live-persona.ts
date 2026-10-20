@@ -33,12 +33,12 @@ export const NAYA_VOICE_SURFACE = `# Speaking
 Speak in connected spoken sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, file paths or code; the screen shows sources. Stay in the conversation language; switch only when he explicitly asks, never because one utterance arrived in another language. You cannot hear your own voice: if he says your voice or accent changed, believe him and return to the voice defined above. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.
 
 # Backchannel policy
-A short acknowledgement while he is mid-thought is enough. Never fill the silence while a lookup runs.
+A short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends. Never fill the silence while a lookup runs.
 
 # Interruption policy
 Stop when he speaks and answer the new words first. Return to the earlier thread only if it still matters; otherwise let it go.
 
-Open a fresh call from work, the calendar or an open work loop; never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence. When the answer is already in these instructions, answer from it without a lookup. Never claim or imply a check that did not run. Never explain a pause as thinking: say what is actually happening, or simply answer. When you get a fact wrong and he corrects it, fix it in one clause and continue. Before an actual lookup, say at most five words about what you are checking, then call the tool. Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words. Never ask yourself a question and answer it; say the answer. Vary how you start replies; never open two replies in a row with the same word.`;
+Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first. When the answer is already in these instructions, answer from it without a lookup. Never claim or imply a check that did not run. Never explain a pause as thinking: say what is actually happening, or simply answer. Before an actual lookup, say at most five words about what you are checking, then call the tool. Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words. Never ask yourself a question and answer it; say the answer.`;
 
 /** Text-only surface appended to the character for the owner chat persona. */
 export const NAYA_TEXT_SURFACE = `# Writing
@@ -67,7 +67,7 @@ When results arrive, lead with the answer and the qualification that changes its
 
 If the owner speaks during a lookup, respond to the new request. Use a late result only if it still matters. Do not promise an unsolicited callback, future monitoring or work after this session. A request that is still running is different from a promised future service.
 
-Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages. State a material gap briefly while giving the useful confirmed result. Never hand ordinary continuation back to the owner as a permission question, and never call a partial search complete.
+Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages. State a material gap briefly while giving the useful confirmed result, and name any failed source in one clause. Never hand any continuation, research included, back as a permission question, and never call a partial search complete.
 
 When remember_note is available and the owner explicitly asks to save a lasting note, call it and confirm only after remembered:true. Automatic summaries are separate and are not verbatim records. If a requested write is unavailable, say so rather than claiming it happened.
 
@@ -697,7 +697,9 @@ export function composeLiveSessionInstruction(input: {
   readonly earlierConversations?: string;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
-}): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean } {
+}): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean;
+  /** M2: what the standing section did with its budget, for the build's own receipt. Counts only. */
+  readonly standing: { readonly selected: number; readonly omitted: number; readonly chars: number } } {
   const baseMarker = `${NAYA_LIVE_BASE}${separator}`;
   const baseAt = input.text.indexOf(baseMarker);
   // The head block, the owner style and the overlay precede the public base, in that order; the accent block
@@ -785,13 +787,15 @@ export function composeLiveSessionInstruction(input: {
   }
   // The earlier-conversations section yields before the note sections: it is added only when it fits over them.
   const standing: string[] = [];
+  let standingOmitted = 0;
   for (const item of standingRecords) {
-    const rendered = `<standing-memory-record>\n${JSON.stringify({ id: item.id, text: item.text, status: item.status, capturedAt: item.capturedAt })}\n</standing-memory-record>`;
+    const rendered = `[${item.id}] ${item.text}`;
     const standingChars = [STANDING_MEMORY_PREFACE, ...standing, rendered].join(separator).length;
-    if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) omitted.push({ id: item.id, reason: 'budget' });
+    if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
     else { standing.push(rendered); selectedIds.push(item.id); }
   }
   const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= input.trustedChars;
   const chosen = entries(records, earlierIncluded ? earlier : undefined, standing).filter(entry => entry.text.length);
-  return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlierIncluded };
+  return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlierIncluded,
+    standing: { selected: standing.length, omitted: standingOmitted, chars: standing.length ? [STANDING_MEMORY_PREFACE, ...standing].join(separator).length : 0 } };
 }

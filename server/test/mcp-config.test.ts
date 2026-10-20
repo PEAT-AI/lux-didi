@@ -47,7 +47,7 @@ async function localSource(t: TestContext) {
       const args = req.params.arguments ?? {};
       const ids = args['ids'] as number[] | undefined;
       const ownId = account === 'alpha' ? 101 : 202;
-      const text = req.params.name === 'gmail_list' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
+      const text = req.params.name === 'gmail_search_messages' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
         : req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
       return { content: [{ type: 'text', text }] } as never;
     });
@@ -343,8 +343,10 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
   t.after(async () => { await runtime.close(); });
   const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongo');
+  // H19: no stored mongoose credential is a not-signed-in state, not a failing probe at every start.
   assert.equal(report?.state, 'error');
-  assert.equal(report?.error, 'credential mongo missing or invalid');
+  assert.equal(report?.error, 'not_signed_in');
+  assert.equal(report?.reasonCode, 'not_signed_in');
   assert.equal(report?.tools, 0);
 });
 
@@ -408,13 +410,13 @@ async function deadlineRuntime(t: TestContext, entries: { id: string; connector:
 }
 
 test('host Google call budget admits a real slow read while every configured connector shares the endpoint deadline', async t => {
-  const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']); google.callDelay(5500);
+  const google = await localSource(t); google.catalogNames(['gmail_search_messages', 'gmail_get_profile']); google.callDelay(5500);
   const ordinary = await localSource(t); ordinary.callDelay(5500);
   const { runtime, call } = await deadlineRuntime(t, [
     { id: 'google', connector: 'google', url: google.url },
     { id: 'knowledge', connector: 'lux-knowledge', url: ordinary.url },
   ]);
-  const [result, unchanged] = await Promise.all([call('google', 'gmail_list'), call('knowledge', 'search_knowledge')]);
+  const [result, unchanged] = await Promise.all([call('google', 'gmail_search_messages'), call('knowledge', 'search_knowledge')]);
   assert.equal(result.state, 'completed'); assert.equal(google.executed, 1);
   if (result.state !== 'completed' || result.payload.state !== 'available') throw Error('missing real slow read');
   const grant = runtime.registry.currentGrant('google'); assert.ok(grant);
@@ -429,16 +431,16 @@ test('host Google call budget admits a real slow read while every configured con
   // connector, so no configured connector keeps the old five-second default.
   assert.equal(unchanged.state, 'completed'); assert.equal(ordinary.executed, 1);
   // The deadline is still a real bound: a call past it fails with the timeout code instead of completing.
-  const slow = await localSource(t); slow.catalogNames(['gmail_list', 'gmail_get_profile']);
+  const slow = await localSource(t); slow.catalogNames(['gmail_search_messages', 'gmail_get_profile']);
   const late = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: slow.url }], 500);
   slow.callDelay(2000);
-  const overdue = await late.call('google', 'gmail_list');
+  const overdue = await late.call('google', 'gmail_search_messages');
   assert.equal(overdue.state, 'unknown'); if (overdue.state === 'unknown') assert.equal(overdue.reason, 'timeout');
   assert.equal(slow.executed, 1);
 });
 
 test('host Google discovery preserves the five-second startup bound', async t => {
-  const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']);
+  const google = await localSource(t); google.catalogNames(['gmail_search_messages', 'gmail_get_profile']);
   google.beforeList(() => new Promise(() => {}));
   const began = performance.now();
   const { runtime } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
@@ -448,11 +450,11 @@ test('host Google discovery preserves the five-second startup bound', async t =>
 });
 
 test('host Google earlier cancellation fails one call and preserves frozen authority', async t => {
-  const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']); google.callDelay(5500);
+  const google = await localSource(t); google.catalogNames(['gmail_search_messages', 'gmail_get_profile']); google.callDelay(5500);
   const { runtime, call } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
   const authority = runtime.registry.currentGrant('google'); assert.ok(authority);
   const controller = new AbortController();
-  const pending = call('google', 'gmail_list', controller.signal);
+  const pending = call('google', 'gmail_search_messages', controller.signal);
   const deadline = performance.now() + 1000;
   while (google.executed === 0) { assert.ok(performance.now() < deadline); await new Promise<void>(resolve => setImmediate(resolve)); }
   const began = performance.now(); controller.abort();

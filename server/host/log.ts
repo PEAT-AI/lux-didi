@@ -31,7 +31,7 @@ const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
 /** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
 const LATE_DELIVERIES = ['commentary', 'thinking', 'dropped'];
-const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'session_closed', 'no_thinking_channel',
+const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',
   'no_commentary_channel', 'already_spoken', 'window_elapsed', 'owner_speaking', 'new_question', 'answer_playing', 'send_failed'];
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
@@ -39,6 +39,9 @@ const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_su
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
+/** W4: why a progress decision stayed silent, as a closed set (never free text, never the line itself). */
+const PROGRESS_SKIP_REASONS = ['settled', 'no_channel', 'budget', 'interval', 'no_call_in_flight', 'owner_speaking',
+  'answer_playing', 'no_content', 'send_failed', 'no_delegation'];
 /** S4a-R2 (a): how a call settled at the host ceiling, and how a late callback reported itself. A call the
  *  provider cancelled never settles at the ceiling: its own `tool_cancelled` receipt names it, with no answer. */
 const CEILING_OUTCOMES = ['timeout', 'uncertain'];
@@ -112,6 +115,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['count', 'event', 'tool'].sort().join(',')) return;
     if (!SAFE_TOKEN.test(String(value.tool)) || typeof value.count !== 'number' || !Number.isInteger(value.count) || value.count < 1 || value.count > 1_000_000) return;
     return { event: 'tool_redaction', tool: value.tool, count: value.count };
+  }
+  if (value.event === 'debug_journal_removed') {
+    // #487: the retired JSONL journal (transcripts and full instructions) is removed at start. The
+    // receipt carries the size removed and never a path, a session id or a byte of its content.
+    if (!closedKeys(value, ['bytes', 'event'])) return;
+    if (!Number.isSafeInteger(value.bytes) || (value.bytes as number) < 0) return;
+    return { event: 'debug_journal_removed', bytes: value.bytes };
+  }
+  if (value.event === 'debug_journal_removal_failed') {
+    // #487: a sweep that could not finish is one closed line with an errno token, never a path.
+    if (!closedKeys(value, ['code', 'event'])) return;
+    if (typeof value.code !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.code)) return;
+    return { event: 'debug_journal_removal_failed', code: value.code };
   }
   if (value.event === 'live_trace_rejected') {
     // O1b-A: the trace store's own receipt for a refused write: the kind and the store's typed code only,
@@ -229,14 +245,25 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
   }
   if (value.event === 'memory_note') {
-    // Closed shape: whether the note was saved, its code, the note's content word count and the share
-    // of those words one owner turn supported. Never the note text.
-    if (Object.keys(value).sort().join(',') !== ['event', 'remembered', 'code', 'words', 'supportRatio'].sort().join(',')) return;
+    // Closed shape: whether the note was saved, its code, the note's content word count, how many of
+    // those words the window's owner turns carried, and how many turns the window held. Never text.
+    if (!closedKeys(value, ['event', 'remembered', 'code', 'words', 'supported', 'supportRatio', 'turns'])) return;
     if (typeof value.remembered !== 'boolean') return;
     if (typeof value.code !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.code)) return;
     if (!Number.isSafeInteger(value.words) || Number(value.words) < 0 || Number(value.words) > 10_000) return;
+    if (!Number.isSafeInteger(value.supported) || Number(value.supported) < 0 || Number(value.supported) > Number(value.words)) return;
     if (typeof value.supportRatio !== 'number' || !Number.isFinite(value.supportRatio) || value.supportRatio < 0 || value.supportRatio > 1) return;
-    return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supportRatio: value.supportRatio };
+    if (!Number.isSafeInteger(value.turns) || Number(value.turns) < 0 || Number(value.turns) > 10_000) return;
+    return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supported: value.supported, supportRatio: value.supportRatio, turns: value.turns };
+  }
+  if (value.event === 'standing_memory_selection') {
+    // Counts and one size only: how many whole notes the build selected and left out, and the section's
+    // character size. Never a note id or any text.
+    if (!closedKeys(value, ['event', 'selected', 'omitted', 'chars'])) return;
+    for (const key of ['selected', 'omitted', 'chars'] as const) {
+      if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
+    }
+    return { event: 'standing_memory_selection', selected: value.selected, omitted: value.omitted, chars: value.chars };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
@@ -539,11 +566,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_progress') {
     // 241: run phase and source kinds only, never question text, evidence or item ids.
-    if (Object.keys(value).sort().join(',') !== ['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'].sort().join(',')) return;
+    const hasCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    const progressKeys = [...['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'], ...(hasCall ? ['callKey'] : [])];
+    if (Object.keys(value).sort().join(',') !== progressKeys.sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_progress');
     if (!isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
     if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
-    return { event: 'research_progress', researchId: value.researchId, phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
+    if (hasCall && !isSafeId(value.callKey)) return;
+    return { event: 'research_progress', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
   }
   if (value.event === 'research_run') {
     // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
@@ -595,14 +625,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
-    const keys = ['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'];
+    const routedCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : [])];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
+    if (routedCall && !isSafeId(value.callKey)) return;
     if (!isSafeCount(value.lookups)) return;
     if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
-    return { event: 'research_routed', researchId: value.researchId, sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
+    return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
   }
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was
@@ -654,7 +686,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
     const hasWindow = Object.prototype.hasOwnProperty.call(value, 'window');
     const hasUnread = Object.prototype.hasOwnProperty.call(value, 'unread');
-    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : []), ...(hasUnread ? ['unread'] : [])];
+    const hasCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
+    const hasFrom = Object.prototype.hasOwnProperty.call(value, 'windowFrom');
+    const hasTo = Object.prototype.hasOwnProperty.call(value, 'windowTo');
+    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : []), ...(hasUnread ? ['unread'] : []),
+      ...(hasCall ? ['callKey'] : []), ...(hasFrom ? ['windowFrom'] : []), ...(hasTo ? ['windowTo'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_subcall');
     if (!isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
@@ -664,7 +700,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
-    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
+    // A resolved window is two calendar dates in the id form, never a query and never an event title.
+    if (hasFrom !== hasTo) return;
+    if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;
+    if (hasCall && !isSafeId(value.callKey)) return;
+    return { event: 'research_subcall', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}), ...(hasFrom ? { windowFrom: value.windowFrom, windowTo: value.windowTo } : {}) };
   }
   if (value.event === 'conversation_summary_recovery') {
     // OUTCOME 3: the host-start recovery sweep, a count of rows re-queued and rows left for later only.
@@ -689,6 +729,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'delegationKey', 'reason'])) return;
     if (!isSafeId(value.delegationKey) || !isSafeMember(value.reason, PROGRESS_REASONS)) return;
     return { event: 'commentary_sent', delegationKey: value.delegationKey, reason: value.reason };
+  }
+  if (value.event === 'commentary_skipped') {
+    // W4: a progress line was refused. Which delegation asked, and why it stayed silent; never any text.
+    if (!closedKeys(value, ['event', 'delegationKey', 'reason'])) return;
+    if (!isSafeId(value.delegationKey) || !isSafeMember(value.reason, PROGRESS_SKIP_REASONS)) return;
+    return { event: 'commentary_skipped', delegationKey: value.delegationKey, reason: value.reason };
   }
   if (value.event === 'thinking_sent') {
     // S4a: silent context went out; the count alone, since the text is what the owner must never see in a log.

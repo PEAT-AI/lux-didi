@@ -43,8 +43,10 @@ export function createDispatchOwner(options: {
   const warn = (reason: string,scope?: DispatchScope): void => {
     try { options.failure(reason,scope); } catch { /* Capture observers cannot cancel an authorized source read. */ }
   };
-  const coverage = (kind: string, reason: string, scope?: DispatchScope): void => {
-    warn(reason,scope);
+  // `capture` is false for a call made with no run context: the audit row still records that a
+  // context-free wire call happened, but no diagnostic receipt is armed for it (#479).
+  const coverage = (kind: string, reason: string, scope?: DispatchScope, capture = true): void => {
+    if (capture) warn(reason,scope);
     try { store.transaction(tx => { tx.run('INSERT INTO tool_dispatch_coverage(id,owner_id,run_id,execution_id,kind,reason,observed_at) VALUES(?,?,?,?,?,?,?)',[randomUUID(),ownerId,scope?.call.runId ?? null,scope?.call.executionId ?? null,kind,reason,Date.now()]); }); } catch { warn('coverage_write_failed',scope); }
   };
   const access = (tx: Transaction, scope: DispatchScope): Access | null => {
@@ -60,10 +62,11 @@ export function createDispatchOwner(options: {
     if (key !== 'call') { const value = Reflect.get(target,key,target) as unknown; return typeof value === 'function' ? value.bind(target) : value; }
     return async (request: CallRequest,signal?: AbortSignal): Promise<ObservedCallResult> => {
       const state = context.getStore();
+      // #479: a call made with no run context (a start-up connector probe) is not a per-run event, so it
+      // arms no diagnostic capture; the old `context_absent` receipt was written at every start.
       if (!state) {
-        warn('context_absent');
         const result = await port.call(request,signal);
-        coverage('unattributed',mcpCallObservation(result)?.wire === 'observed' ? 'wire_observed_context_absent' : mcpCallObservation(result)?.wire === 'not_dispatched' ? 'pre_wire_context_absent' : 'dispatch_unknown_context_absent');
+        coverage('unattributed',mcpCallObservation(result)?.wire === 'observed' ? 'wire_observed_context_absent' : mcpCallObservation(result)?.wire === 'not_dispatched' ? 'pre_wire_context_absent' : 'dispatch_unknown_context_absent',undefined,false);
         return result;
       }
       const {scope} = state, p = scope.bound.policy;
@@ -117,7 +120,7 @@ export function createDispatchOwner(options: {
     run(scope,body) { return context.run({scope: freeze(structuredClone(scope)),ordinal: 0},body); },
     reuse(ref) {
       const scope = context.getStore()?.scope;
-      if (!scope) { coverage('unattributed','reuse_context_absent'); return; }
+      if (!scope) { coverage('unattributed','reuse_context_absent',undefined,false); return; }
       try { store.transaction(tx => {
         const origin = ref ? tx.get("SELECT state FROM tool_dispatches WHERE dispatch_id=? AND owner_id=?",[ref.id,ownerId]) : undefined;
         const available = origin?.state === 'completed';

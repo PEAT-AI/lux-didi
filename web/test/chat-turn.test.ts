@@ -20,7 +20,7 @@ const step = (over: Partial<ChatStep>): ChatStep => ({
 const NOW = Date.parse('2026-10-17T12:00:00Z');
 
 test('a running turn shows one quiet line per tool, in the present tense', () => {
-  const running = stepsMarkup([step({ stepId: 's1' }), step({ stepId: 's2', tool: 'gcal_list' })], false);
+  const running = stepsMarkup([step({ stepId: 's1' }), step({ stepId: 's2', tool: 'calendar_list_events' })], false);
   assert.match(running, /^<ol class="chat-steps" role="status"/);
   assert.match(running, /Searching Mattermost\.\.\./);
   assert.match(running, /Checking your calendar\.\.\./);
@@ -41,7 +41,7 @@ test('after the answer the steps fold into one summary line that expands to the 
   const steps = [
     step({ stepId: 's1', phase: 'end', resultCount: 13 }),
     step({ stepId: 's2', tool: 'mongoose_search', phase: 'end', resultCount: 4 }),
-    step({ stepId: 's3', tool: 'gcal_list', phase: 'end', resultCount: 2 }),
+    step({ stepId: 's3', tool: 'calendar_list_events', phase: 'end', resultCount: 2 }),
   ];
   assert.equal(stepsSummary(steps), 'Checked Mattermost, Mongoose and calendar');
   const folded = stepsMarkup(steps, true);
@@ -59,8 +59,8 @@ test('the answer is the only body text and its evidence is folded under it, newe
       '- lunch | alice | 2026-10-17T09:00:00Z | the release is on for friday',
       '- standup | bob | 2026-10-17T11:00:00Z | moving the sync to ten',
     ].join('\n'), sources: [{ title: 'Mattermost: moving the sync', url: 'https://mm.example.org/p/1' }] },
-    { name: 'gmail_list', markdown: '- Quarterly numbers | from: Dana | date: 2026-10-16T08:00:00Z | the deck is ready', sources: [{ title: 'Gmail: Quarterly numbers', url: 'https://mail.example.org/1' }] },
-    { name: 'gcal_list', markdown: '- 2026-10-17T14:30:00, Release review [id e1]', sources: [] },
+    { name: 'gmail_search_messages', markdown: '- Quarterly numbers | from: Dana | date: 2026-10-16T08:00:00Z | the deck is ready', sources: [{ title: 'Gmail: Quarterly numbers', url: 'https://mail.example.org/1' }] },
+    { name: 'calendar_list_events', markdown: '- 2026-10-17T14:30:00, Release review [id e1]', sources: [] },
     { name: 'search_knowledge', markdown: '### Release rhythm (PATTERN | 2026-10-10) [id 42]\nReleases ship on fridays.', sources: [] },
   ];
   const html = evidenceMarkup(evidence, NOW);
@@ -82,14 +82,14 @@ test('sources are one deduped chip row per answer, capped at three plus the coun
   const evidence: ToolEvidence[] = [
     { name: 'mattermost_search', markdown: '- chan | alice | 2026-10-17T09:00:00Z | hi', sources: [source('Mattermost: one', 'https://mm.example.org/p/1')] },
     { name: 'mattermost_get_thread', markdown: '- chan | alice | 2026-10-17T09:00:00Z | hi', sources: [source('Mattermost: one', 'https://mm.example.org/p/1'), source('Mattermost: two', 'https://mm.example.org/p/2')] },
-    { name: 'gmail_list', markdown: '- s | from: Dana | date: 2026-10-16T08:00:00Z | x', sources: [source('Gmail: three', 'https://mail.example.org/3'), source('Gmail: four', 'https://mail.example.org/4')] },
+    { name: 'gmail_search_messages', markdown: '- s | from: Dana | date: 2026-10-16T08:00:00Z | x', sources: [source('Gmail: three', 'https://mail.example.org/3'), source('Gmail: four', 'https://mail.example.org/4')] },
   ];
   const html = sourcesMarkup(evidence);
   assert.equal((html.match(/href="https:\/\/mm\.example\.org\/p\/1"/g) ?? []).length, 1, 'the same source appears once');
   assert.equal(html.match(/class="answer-source"/g)?.length, 3, 'three chips');
   assert.match(html, /class="chat-sources-more">\+1</);
   assert.equal(sourcesMarkup([], undefined), '');
-  assert.equal(/javascript:/.test(sourcesMarkup([{ name: 'gmail_list', markdown: '', sources: [{ title: 'x', url: 'javascript:alert(1)' }] }])), false);
+  assert.equal(/javascript:/.test(sourcesMarkup([{ name: 'gmail_search_messages', markdown: '', sources: [{ title: 'x', url: 'javascript:alert(1)' }] }])), false);
 });
 
 test('a partial turn says in plain words where it stopped, and offers the next action', () => {
@@ -123,10 +123,10 @@ test('a stamp becomes relative words, and an unreadable stamp renders nothing at
 });
 
 test('a mail row without a sender says unknown sender beside its relative time, never a raw stamp (F2)', () => {
-  const html = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
+  const html = evidenceMarkup([{ name: 'gmail_search_messages', markdown: '- Deck | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
   assert.doesNotMatch(html, /2026-10-16T08:00:00Z/, 'a raw ISO stamp never reaches the owner');
   assert.match(html, /chat-evidence-line">unknown sender · Deck · yesterday</, 'the sender slot says so in words, and the stamp is relative');
-  const both = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | from: Dana | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
+  const both = evidenceMarkup([{ name: 'gmail_search_messages', markdown: '- Deck | from: Dana | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
   assert.match(both, /chat-evidence-line">Dana · Deck · yesterday</);
 });
 
@@ -233,7 +233,7 @@ test('the real view composes the turn: running steps, the answer with folded evi
     await view.select('s2');
     await settle();
     api.emit({ type: 'chat_step', runId: 'run-2', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
-    api.emit({ type: 'chat_step', runId: 'run-2', stepId: 'b', tool: 'gcal_list', phase: 'start' });
+    api.emit({ type: 'chat_step', runId: 'run-2', stepId: 'b', tool: 'calendar_list_events', phase: 'start' });
     await settle();
     view.attach();
     assert.match(api.panel.innerHTML, /Searched Mattermost, 13 results/);
@@ -245,7 +245,7 @@ test('the real view composes the turn: running steps, the answer with folded evi
     await view.select('s3');
     await settle();
     api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
-    api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'b', tool: 'gcal_list', phase: 'end', resultCount: 2 });
+    api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'b', tool: 'calendar_list_events', phase: 'end', resultCount: 2 });
     await settle();
     api.emit({ type: 'snapshot', run: runOf('3', { finalEntryId: 'e2' }) });
     await settle();

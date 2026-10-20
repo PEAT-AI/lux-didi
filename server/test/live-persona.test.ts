@@ -343,10 +343,10 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '43d542607473e43f13d813122c4c407057b28f5d86de032601b0909ac48a0658');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '15b04ba0fe834324077e940ad6659ba98c1f67141fdaf6d010931bdd9cf6c722');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '8e8f657c333fcab1e14e69a3127599afe1c1aeb2733b7a94dac6abdf93169543');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'ebe82555d71952862192514ba00a7a267db3b54c7f930f1c04976597648e1cd4');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '7ae68d13b0570e51de1448717a967e6703f6e1da4a6a039a9708f0ff2896e25e');
+  assert.equal(sha(NAYA_TOOLS), 'e4dc62c74ef312cd084ae047c104dfe5dd99d81e3232006d33b37a2a6e34653b');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -403,7 +403,8 @@ test('P1: owner lore survives while memory yields under the budget', () => {
 
 test('P1: the tool conduct forbids narrating during a tool run', () => {
   assert.doesNotMatch(NAYA_TOOLS, /while a tool runs/i);
-  assert.doesNotMatch(NAYA_TOOLS, /narrat/i);
+  // W5-R2: the rule, not the word: the conduct must carry the forbidding sentence itself.
+  assert.ok(NAYA_TOOLS.includes('Do not narrate every lookup or invent activity to fill a pause.'), 'the conduct forbids narrating a lookup');
   // PV1-R3: the old cue rule left the tools section, so the base sentence is the only cue rule left.
   assert.doesNotMatch(NAYA_TOOLS, /three to five word/i);
   assert.doesNotMatch(NAYA_TOOLS, /never announce progress/i);
@@ -633,9 +634,10 @@ test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
 test('tool conduct retrieves relevant past context and distinguishes missing evidence', () => {
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const sentence of [
-    'Retrieve relevant past conversations or knowledge when advice depends on earlier decisions, preferences or commitments.',
-    'Batch independent reads, and follow dependent detail from returned identities.',
-    'Take a position when the evidence supports one.',
+    'look in memory or his knowledge vault first unless that evidence is already in the conversation',
+    'Put independent lookups for one question into one research request.',
+    'Use returned identities for dependent detail reads.',
+    'Then take a position: one recommendation and what it costs.',
   ]) assert.equal(wrapper.split(sentence).length - 1, 1);
   assert.match(NAYA_VOICE_TOOLS, /never call a partial search complete/);
   assert.match(NAYA_VOICE_TOOLS, /State a material gap briefly while giving the useful confirmed result/);
@@ -652,22 +654,30 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // interruption and honesty rules), and the accent block (pinned verbatim by PV1-R1)
 // keeps its wording.
 const WRAPPER_3O_CHARS = 6603;
+/** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. */
+const WRAPPER_W5_CHARS = 10_546;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
-    'Vary how you start replies; never open two replies in a row with the same word.',
-    'Query exactly the time window the question names, so today means today, and skip listing calendars unless he asks which calendars exist.',
-    'Lead with the point, then give the depth the question deserves; never pad, never summarise what you just said.',
+    // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
+    // asserted where it now lives, at the same strength.
+    'Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.',
+    'Write each query for its source, preserve the requested time window, and follow the actual returned coverage.',
+    'Depth follows the topic, never the turn.',
   ];
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of rules) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   assert.equal(wrapper.includes('at most six words'), false, 'the six-word cue is retired, its rule is rule 1');
   assert.equal(wrapper.includes('Before any tool call'), false, 'the retired cue sentence is gone');
+  // W5-R1: the bound stays, the positive half does not: the variety rule and its duplicates left the wrapper.
+  // W5-R1: the 3o base plus its 2,000 cap no longer bounds the wrapper, because the S4b delegation added the
+  // backend guide to it; the bound keeps both halves and carries the measured growth of 3,943 at this sha.
   const growth = wrapper.length - WRAPPER_3O_CHARS;
-  const cap = 2000;
-  assert.ok(growth > 0 && growth < cap, `the wrapper grows under the S4b cap of ${cap} chars (${growth})`);
+  const cap = 4_100;
+  assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
+  assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
   assert.ok(wrapper.includes('in the voice and accent defined above'), 'the wrapper still points at the accent block');
   for (const preset of Object.values(LIVE_ACCENT_PRESETS)) {
@@ -750,7 +760,8 @@ test('standing memory sits after owner lore and before # Memory, and never rides
 
 test('the standing section keeps its own budget and reports each omission as budget', () => {
   const note = (index: number) => standingRecord(`standing-${String(index).padStart(2, '0')}`, `Fixture standing note ${index} `.repeat(6), 'open');
-  const records = Array.from({ length: 12 }, (_, index) => note(index));
+  // Twenty notes: the compact render fits more of them, so the corpus has to grow to reach the cap.
+  const records = Array.from({ length: 20 }, (_, index) => note(index));
   const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
   const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
   assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
@@ -759,6 +770,40 @@ test('the standing section keeps its own budget and reports each omission as bud
   assert.ok(composed.omitted.length > 0);
   for (const omission of composed.omitted) assert.equal(omission.reason, 'budget');
   assert.equal(composed.text, composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records }).text, 'deterministic');
+});
+
+test('a standing note costs at most 40 characters of render overhead and keeps its id', () => {
+  // A real entry id is a 36-character uuid: the delimiters around it are the whole framing budget.
+  const id = '3f1c2a44-1b7e-4c2d-9c3a-9b8d0f7e5a61';
+  assert.equal(id.length, 36);
+  const text = 'Fixture standing note kept whole';
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    records: [standingRecord(id, text)] });
+  const line = composed.text.split('\n').find(candidate => candidate.includes(text))!;
+  assert.ok(line.length - text.length <= 40, `overhead ${line.length - text.length} within 40`);
+  assert.ok(line.includes(id), 'the id stays available to the selection receipt');
+  assert.ok(line.startsWith('[') && line.includes('] '), 'the record is still clearly delimited');
+});
+
+test('the standing section fits more of a 29-note corpus of median 210 characters', () => {
+  const body = 'the owner keeps this note because it carries context for later calls and it is read whole ';
+  const note = (index: number) => standingRecord(`3f1c2a44-1b7e-4c2d-9c3a-${String(index).padStart(12, 'a')}`,
+    `note ${index} ${body.repeat(3)}`.slice(0, 210));
+  const records = Array.from({ length: 29 }, (_, index) => note(index));
+  const lengths = records.map(record => record.text.length).sort((a, b) => a - b);
+  assert.equal(lengths[14], 210, 'the fixture median is 210 characters');
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
+  const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
+  assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
+  assert.equal(composed.selectedIds.length, 11, 'eleven whole notes of median 210 characters fit');
+  assert.ok(composed.omitted.length > 0, 'the cap still bounds the section');
+});
+
+test('the standing selection receipt is a closed shape of counts and no text', () => {
+  const receipt = { event: 'standing_memory_selection', selected: 11, omitted: 18, chars: 2_891 };
+  assert.deepEqual(safeEvent(receipt), receipt, 'the build reports what it selected and left out');
+  assert.equal(safeEvent({ ...receipt, text: 'a standing note' }), undefined, 'no note text');
+  assert.equal(safeEvent({ selected: 11, omitted: 18, chars: 2_891 }), undefined, 'the event name is required');
 });
 
 test('# Memory keeps its own budget when a standing set is present', () => {
@@ -841,9 +886,9 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
-  "Open a fresh call from work, the calendar or an open work loop; never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence.",
-  'When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.',
-  'Never make a second research call for the same question until the first has answered.',
+  "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first.",
+  'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.',
+  'Let that request return before starting another for the same question.',
 ];
 const Q5_SUPERSEDED = [
   'Open a fresh call with one specific line drawn from what is current, never a generic "ready when you are".',
@@ -851,13 +896,12 @@ const Q5_SUPERSEDED = [
   'A read cut short is said as cut short, so offer a narrower ask.',
   'never make several research calls in a row for one question.',
 ];
-test('Q5: three wrapper rules are stated once each, their superseded sentences are gone, and the growth stays under 700 chars', () => {
+test('Q5: three wrapper rules are stated once each, their superseded sentences are gone, and the wrapper stays bounded', () => {
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of Q5_RULES) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   for (const retired of Q5_SUPERSEDED) assert.equal(wrapper.includes(retired), false, `superseded sentence is gone: ${retired}`);
-  const added = Q5_RULES.reduce((chars, rule) => chars + rule.length, 0);
-  const removed = Q5_SUPERSEDED.reduce((chars, rule) => chars + rule.length, 0) - 'never make several research calls in a row for one question.'.length;
-  assert.ok(added - removed > 0 && added - removed < 700, `the wrapper grows under 700 chars (${added - removed})`);
+  // W5-R1: the additive bound becomes the same cap the 3p rule set holds, so the wrapper size stays asserted.
+  assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
 });
 
 test('Q5-R4: the start instruction carries the previous-openers context once, and nothing when there is none', () => {
@@ -905,7 +949,6 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
     'When the answer is already in these instructions, answer from it without a lookup.',
     'Never claim or imply a check that did not run.',
     'Never explain a pause as thinking: say what is actually happening, or simply answer.',
-    'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
     'never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them',
   ]) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   assert.equal(wrapper.split('Open a fresh call').length - 1, 1, 'one opener rule only');
@@ -917,7 +960,7 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
 });
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
-  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough\. Never fill the silence while a lookup runs\./);
+  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends\. Never fill the silence while a lookup runs\./);
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the earlier thread only if it still matters; otherwise let it go\./);
 });
 
@@ -1067,4 +1110,49 @@ test('R7: a full-length digest keeps the composed instruction inside its limits'
   assert.ok(composed.text.includes(digest), 'the digest is carried in full');
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `stays under the target (${composed.text.length})`);
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'and under the hard limit');
+});
+
+// --- W5: voice prompt hygiene, the four audit rules and the sentences they replace ---------------------
+
+/** Q10, Q4, Q5, Q2: one unconditional rule each, stated once, in the instruction the speaking model reads. */
+const W5_RULES = [
+  'Open a fresh call on one current specific, never a generic ready-to-help line',
+  'A short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends.',
+  'Never hand any continuation, research included, back as a permission question',
+  'name any failed source in one clause',
+];
+/** The sentences the four rules replace or duplicate: no copy may survive in the conduct. */
+const W5_REPLACED = [
+  'Open a fresh call from work, the calendar or an open work loop',
+  'A short acknowledgement while he is mid-thought is enough. Never fill the silence while a lookup runs.',
+  'Never hand ordinary continuation back to the owner as a permission question',
+  'Vary how you start replies; never open two replies in a row with the same word.',
+  'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
+];
+/** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
+const W5_VOICE_BEFORE = 6993;
+
+test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
+  const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, delegatedBackend: true });
+  for (const rule of W5_RULES) assert.equal(voice.text.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
+  for (const gone of W5_REPLACED) assert.equal(voice.text.includes(gone), false, `replaced sentence is gone: ${gone}`);
+});
+
+test('W5: the Gemini path keeps its own full text and carries the same four rules', () => {
+  const gemini = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  assert.ok(gemini.text.includes(NAYA_TOOLS), 'the full conduct is carried byte for byte');
+  for (const rule of W5_RULES) assert.equal(gemini.text.split(rule).length - 1, 1, `stated exactly once on the Gemini path: ${rule}`);
+  for (const gone of W5_REPLACED) assert.equal(gemini.text.includes(gone), false, `replaced sentence is gone from the full conduct: ${gone}`);
+  assert.equal(gemini.text.includes(NAYA_BACKEND_PROCEDURE), true, 'the lookup procedure still travels with the full conduct');
+});
+
+test('W5: the four rules stay out of the backend procedure, which the executing model reads', () => {
+  for (const rule of W5_RULES) assert.equal(NAYA_BACKEND_PROCEDURE.includes(rule), false, `a speaking rule is not lookup procedure: ${rule}`);
+});
+
+test('W5: the voice instruction does not grow', () => {
+  const voice = NAYA_CHARACTER.length + NAYA_VOICE_SURFACE.length + NAYA_VOICE_TOOLS.length;
+  assert.ok(voice <= W5_VOICE_BEFORE, `the voice instruction gains no chars (${voice} vs ${W5_VOICE_BEFORE})`);
 });

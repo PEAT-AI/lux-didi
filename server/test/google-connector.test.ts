@@ -21,7 +21,7 @@ import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope 
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
-import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
+import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, identityRefusal, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -75,9 +75,9 @@ function adapterOf(evidence: GoogleEvidence): McpPort {
 }
 
 test('google envelope is exactly the five read tools and the family split; a decoy write tool is outside it', () => {
-  assert.deepEqual([...GOOGLE_TOOLS], ['gmail_get_profile', 'gmail_list', 'gmail_read', 'gcal_calendars', 'gcal_list']);
-  assert.deepEqual([...GOOGLE_FAMILIES.gmail], ['gmail_get_profile', 'gmail_list', 'gmail_read']);
-  assert.deepEqual([...GOOGLE_FAMILIES.calendar], ['gcal_calendars', 'gcal_list']);
+  assert.deepEqual([...GOOGLE_TOOLS], ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events']);
+  assert.deepEqual([...GOOGLE_FAMILIES.gmail], ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message']);
+  assert.deepEqual([...GOOGLE_FAMILIES.calendar], ['calendar_list_calendars', 'calendar_list_events']);
   assert.equal((GOOGLE_TOOLS as readonly string[]).includes('gmail_send'), false);
 });
 
@@ -95,7 +95,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     payloadPorts.set(list, adapter);
     const listEnvelope = envelopeOf(list);
     assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
-    const listProjection = renderGoogleTool('gmail_list', (listEnvelope['data'] as Record<string, unknown>));
+    const listProjection = renderGoogleTool('gmail_search_messages', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
     assert.match(listProjection.text, /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> to read/);
     assert.equal(/https?:\/\//.test(listProjection.text), false, 'gmail model text holds no raw url');
@@ -108,7 +108,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const read = completed(await gmail.gmailRead({ id: 'm1', format: 'full' }));
     payloadPorts.set(read, adapter);
     const readEnvelope = envelopeOf(read);
-    const readProjection = renderGoogleTool('gmail_read', (readEnvelope['data'] as Record<string, unknown>));
+    const readProjection = renderGoogleTool('gmail_read_message', (readEnvelope['data'] as Record<string, unknown>));
     assert.equal(readProjection.partial, true);
     assert.match(readProjection.text, /subject: Synthetic subject line/);
     assert.match(readProjection.text, /body truncated|\[omitted: \d+ received characters of body omitted from this display/);
@@ -132,7 +132,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal(defaultReceived['timeMax'], '2026-10-15T00:00:00+05:30');
     const refused = await calendar.gcalList({ calendarId: 'primary', timeMin: 'not-a-window' });
     assert.equal(refused.state === 'refused' ? refused.reason : '', 'invalid-time-window');
-    const eventProjection = renderGoogleTool('gcal_list', (calendarEnvelope['data'] as Record<string, unknown>));
+    const eventProjection = renderGoogleTool('calendar_list_events', (calendarEnvelope['data'] as Record<string, unknown>));
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
     assert.equal(/https?:\/\//.test(eventProjection.text), false, 'calendar model text holds no raw url');
     assert.deepEqual(eventProjection.sources, [{ title: 'Calendar: Synthetic standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' }]);
@@ -153,10 +153,10 @@ test('a merged calendar read stops at its own budget and names the calendars it 
   const data = dataOf(result);
   const events = data['events'] as Record<string, unknown>[];
   assert.deepEqual(events.map(event => event['id']), ['e-primary'], 'the calendar read before the budget keeps its event');
-  assert.deepEqual(data['partial'], { unread: 3 }, 'the calendars the read did not reach are named, never dropped');
+  assert.deepEqual(data['partial'], { unread: 3, calendars: ['Beta', 'Gamma', 'Delta'] }, 'the calendars the read did not reach are named, never dropped');
 });
 
-test('a default gmail_list asks the child for exactly the digest cap, so the upstream per-message metadata fetch count is the digest cap not ten', async () => {
+test('a default gmail_search_messages asks the child for the batched digest cap of ten messages and renders all ten', async () => {
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();
   registry.register(config('local-stdio', 'ramp', pidFile));
@@ -167,11 +167,13 @@ test('a default gmail_list asks the child for exactly the digest cap, so the ups
     const list = completed(await gmail.gmailList({}));
     payloadPorts.set(list, adapter);
     const envelope = envelopeOf(list);
-    // The child returns one listed message per upstream metadata GET, so this count is the call count.
+    // The helper now reads the listed messages' metadata in one batched call, so the request is no
+    // longer paced by sequential round trips and the digest cap is ten.
+    assert.equal(GMAIL_LIST_MESSAGES, 10);
     assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
     const data = envelope['data'] as Record<string, unknown>;
-    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one upstream metadata GET per listed message');
-    const projection = renderGoogleTool('gmail_list', data);
+    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one batched fetch returns every listed message');
+    const projection = renderGoogleTool('gmail_search_messages', data);
     assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GMAIL_LIST_MESSAGES);
   } finally {
     await adapter.close();
@@ -218,9 +220,18 @@ test('a typed credential error becomes a configured/auth-needed status, never an
     assert.equal(result.state, 'tool-error');
     if (result.state !== 'tool-error') throw new Error('not a tool error');
     const status = googleToolStatus(result);
-    assert.deepEqual(status, { state: 'configured', reason: 'auth needed: run gcal --auth' });
+    assert.deepEqual(status, { state: 'configured', reason: 'auth needed: run lux-google-mcp authorize --family calendar' });
     assert.equal(credentialFailure('credential-missing: no token'), true);
     assert.equal(credentialFailure('provider-failure: http 500'), false);
+    // The helper's own identity refusal is a named error, never a credentials prompt: the owner has to
+    // know the account is wrong, and the answer carries the code only, no address and no token path.
+    assert.equal(identityRefusal('account_mismatch: the credential belongs to another account'), true);
+    assert.equal(identityRefusal('identity_unverified: no id_token'), true);
+    assert.equal(identityRefusal('credential-missing: LUX_GOOGLE_MCP_TOKEN is not set'), false);
+    const refused = googleToolStatus({ ...result, decodedResult: { content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }] } } as typeof result);
+    assert.deepEqual(refused, { state: 'error', reason: 'identity refused: account_mismatch' });
+    assert.equal(JSON.stringify(refused).includes('@'), false, 'no address in the status');
+    assert.equal(JSON.stringify(refused).includes('/'), false, 'no path in the status');
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
@@ -245,7 +256,7 @@ test('an ungranted tool name is refused before dispatch even when the remote lis
   }
 });
 
-test('the owner composes the google tool table and a Live-shaped gmail_list call reaches the fixture and returns projected Markdown', async () => {
+test('the owner composes the google tool table and a Live-shaped gmail_search_messages call reaches the fixture and returns projected Markdown', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-owner-'));
   const { dir: childDir, pidFile } = scratch();
   const store = new Store(join(dir, 'data'), toolsMigrations);
@@ -281,19 +292,20 @@ test('the owner composes the google tool table and a Live-shaped gmail_list call
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
     const definitions = owner.definitions('run');
-    assert.deepEqual(definitions.map(definition => definition.name).sort(), [...GOOGLE_TOOLS].sort());
+    // gmail_read_message carries a remote body, so the owner also admits the local body continuation the run may use.
+    assert.deepEqual(definitions.map(definition => definition.name).sort(), [...GOOGLE_TOOLS, 'read_received_body'].sort());
     assert.equal(definitions.some(definition => definition.name === 'gmail_send'), false);
 
     const callArgs = {};
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_list', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
     assert.equal(owner.journal.intent(intent), 'fresh');
-    const definition = definitions.find(candidate => candidate.name === 'gmail_list');
+    const definition = definitions.find(candidate => candidate.name === 'gmail_search_messages');
     assert(definition?.execute);
     const outcome = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(outcome.status, 'completed');
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
-    assert.equal(stored.response['tool'], 'gmail_list');
+    assert.equal(stored.response['tool'], 'gmail_search_messages');
     assert.match(String(stored.response['text']), /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024/);
     assert.equal(/https?:\/\//.test(String(stored.response['text'])), false, 'gmail model text holds no raw url');
     assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
@@ -338,19 +350,19 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
     live = { ...acceptance, acceptedRunHash: accepted.sha256 };
 
-    const definition = runtime.owner.definitions('run').find(candidate => candidate.name === 'gcal_list');
+    const definition = runtime.owner.definitions('run').find(candidate => candidate.name === 'calendar_list_events');
     assert(definition?.execute);
     const callArgs = { calendarId: 'primary' };
-    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gcal_list', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'calendar_list_events', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
     assert.equal(runtime.owner.journal.intent(intent), 'fresh');
     const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
     assert.equal(failed.status, 'completed');
     const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
     assert.equal(flipped?.state, 'configured');
-    assert.equal(flipped?.error, 'auth needed: run gcal --auth');
+    assert.equal(flipped?.error, 'auth needed: run lux-google-mcp authorize --family calendar');
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
-    assert.match(String(stored.response['text']), /auth needed: run gcal --auth/);
+    assert.match(String(stored.response['text']), /auth needed: run lux-google-mcp authorize --family calendar/);
 
     const intentTwo: ToolCallIntent = { ...intent, executionId: 'run:1:1', callId: 'call-2' };
     assert.equal(runtime.owner.journal.intent(intentTwo), 'fresh');
@@ -368,12 +380,12 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
 });
 
 // Fake MCP HTTP server at the real guarded-fetch seam, no listening socket or corpus.
-test('gmail_list projects an SSE MCP entity from separately decodedResult', async t => {
+test('gmail_search_messages projects an SSE MCP entity from separately decodedResult', async t => {
   const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
-  const tool = { name: 'gmail_list', inputSchema: { type: 'object' } };
+  const tool = { name: 'gmail_search_messages', inputSchema: { type: 'object' } };
   sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
-  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family: 'gmail', tool: 'gmail_list', method: 'gmail_list', account: { configured: 'synthetic', provider: null }, data: { messages: [{ id: 'sse-id', headers: { Subject: 'Synthetic SSE', From: 'sse@example.invalid', Date: 'synthetic-date' } }] } }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family: 'gmail', tool: 'gmail_search_messages', method: 'gmail_search_messages', account: { configured: 'synthetic', provider: null }, data: { messages: [{ id: 'sse-id', headers: { Subject: 'Synthetic SSE', From: 'sse@example.invalid', Date: 'synthetic-date' } }] } }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -386,7 +398,7 @@ test('gmail_list projects an SSE MCP entity from separately decodedResult', asyn
   t.after(async () => { await adapter.close(); await sdk.close(); });
   const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
   if (discovery.state !== 'discovered') throw Error('discovery failed');
-  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['gmail_list'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['gmail_search_messages'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
   const result = await createGoogleReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, family: 'gmail' } }).gmailList({ maxResults: 1 });
   assert.equal(result.state, 'completed');
   if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
@@ -407,9 +419,9 @@ async function calendarReader(port: McpPort, overrides: Partial<GoogleConfig> = 
   const registry = new McpRegistry();
   const endpoint = config('calendar-fake', 'ok', join(tmpdir(), 'calendar-fake.pid'));
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
-  const tools = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
+  const tools = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object' } }];
   const digest = registry.observed('calendar-fake', tools, registry.revision('calendar-fake'));
-  registry.approve({ endpointId: 'calendar-fake', schemaDigest: digest, toolNames: ['gcal_calendars', 'gcal_list'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  registry.approve({ endpointId: 'calendar-fake', schemaDigest: digest, toolNames: ['calendar_list_calendars', 'calendar_list_events'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
   return createGoogleReader({ port, registry, config: { endpointId: 'calendar-fake', account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, ...overrides, family: 'calendar' } });
 }
 function dataOf(result: GoogleResult): Record<string, unknown> {
@@ -419,7 +431,7 @@ function dataOf(result: GoogleResult): Record<string, unknown> {
   return envelope.data ?? {};
 }
 function fakeCalendarPort(options: { calendars: { id: string; summary: string; primary?: boolean }[]; eventsFor: (id: string, index: number) => Record<string, unknown>; delayFor?: (id: string) => number | undefined; defer?: boolean; delayMs?: number }): { port: McpPort; listArgs: Record<string, unknown>[]; peak: () => number; pending: () => number; release: () => void } {
-  const scope = { endpointId: 'calendar-fake', url: 'https://fake.invalid', schemaDigest: CALENDAR_DIGEST, toolName: 'gcal_list', generation: 1, account: ACCOUNT, resource: RESOURCE } as unknown as ResultScope;
+  const scope = { endpointId: 'calendar-fake', url: 'https://fake.invalid', schemaDigest: CALENDAR_DIGEST, toolName: 'calendar_list_events', generation: 1, account: ACCOUNT, resource: RESOURCE } as unknown as ResultScope;
   const completed = (data: unknown): CompletedResult => ({
     state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
     source: scope, coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
@@ -431,13 +443,13 @@ function fakeCalendarPort(options: { calendars: { id: string; summary: string; p
   const gates: (() => void)[] = [];
   let inFlight = 0, peak = 0, index = 0;
   const port: McpPort = {
-    discover: async () => ({ state: 'discovered', endpointId: 'calendar-fake', schemaDigest: CALENDAR_DIGEST, tools: [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }], observedAt: 0 }),
+    discover: async () => ({ state: 'discovered', endpointId: 'calendar-fake', schemaDigest: CALENDAR_DIGEST, tools: [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object' } }], observedAt: 0 }),
     visibleTools: () => [],
     whenSuspended: async () => undefined,
     close: async () => undefined,
     readSlice: () => ({ state: 'unavailable', reason: 'synthetic' }),
     async call(request, signal): Promise<CallResult> {
-      if (request.toolName === 'gcal_calendars') return completed({ calendars: options.calendars });
+      if (request.toolName === 'calendar_list_calendars') return completed({ calendars: options.calendars });
       const id = String(request.arguments['calendarId']);
       listArgs.push({ ...request.arguments });
       const at = index++;
@@ -464,7 +476,7 @@ test('a calendar read with no id resolves every selected calendar and merges, so
   assert.equal(events.length, 2, 'a shared event is deduped by id across calendars');
   assert.deepEqual(events.map(event => [event['id'], event['calendar']]), [['e-shared', 'Alpha'], ['e-later', 'Gamma']]);
   assert.deepEqual(fake.listArgs.map(args => args['calendarId']).sort(), ['a', 'b', 'c']);
-  const projection = renderGoogleTool('gcal_list', data);
+  const projection = renderGoogleTool('calendar_list_events', data);
   assert.match(projection.text, /2026-10-16T09:00:00\+05:30, Standup \| Alpha/);
   assert.match(projection.text, /2026-10-16T11:00:00\+05:30, Review \| Gamma/);
 });
@@ -501,9 +513,48 @@ test('a calendar read returns the primary and counts the calendars the deadline 
   setTimeout(() => controller.abort(), 3_600);
   const result = await run;
   const data = dataOf(result);
-  assert.deepEqual(data['partial'], { unread: 9 }, 'the nine calendars the deadline cut off are named, not dropped');
+  assert.deepEqual(data['partial'], { unread: 9, calendars: Array.from({ length: 9 }, (_, i) => `Other ${i}`) }, 'the nine calendars the deadline cut off are named, not dropped');
   const events = data['events'] as Record<string, unknown>[];
   assert.equal(events.some(event => event['id'] === 'event-primary' && event['calendar'] === 'Me'), true, 'the primary calendar is always returned');
+});
+
+// --- W2: the caller's remaining source budget bounds the fan-out ---------------------------------
+
+/** The absolute source deadline a caller passes, the field behaviour 1 adds to the read input. */
+function budgeted(input: GcalListInput, deadlineAt: number): GcalListInput {
+  return { ...input, deadlineAt } as GcalListInput;
+}
+
+test('a caller-budgeted calendar read keeps every calendar it can reach inside that budget', async () => {
+  const ids = ['primary', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+  const fake = fakeCalendarPort({
+    calendars: ids.map((id, n) => ({ id, summary: n === 0 ? 'Mine' : id.toUpperCase(), ...(n === 0 ? { primary: true } : {}) })),
+    eventsFor: id => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }),
+    // The audit's shape, compressed to keep the test short: primary 0.6 s, eight others 0.5 to 3 s.
+    delayFor: id => (id === 'primary' ? 60 : 50 + 10 * (ids.indexOf(id) - 1)),
+  });
+  const started = Date.now();
+  const result = await (await calendarReader(fake.port)).gcalList(budgeted({}, Date.now() + 1_000));
+  const elapsed = Date.now() - started;
+  const data = dataOf(result);
+  assert.equal((data['events'] as unknown[]).length, ids.length, 'every calendar inside the budget is read, concurrently not serially');
+  assert.equal(data['partial'], undefined, 'nothing was cut off, so nothing is reported unread');
+  assert.ok(elapsed <= 1_000, `the read finished inside the caller budget: ${elapsed}`);
+});
+
+test('a hanging calendar returns at the caller deadline, with the rest and that one named unread', async () => {
+  const fake = fakeCalendarPort({
+    calendars: [{ id: 'primary', summary: 'Me', primary: true }, { id: 'b', summary: 'Beta' }, { id: 'c', summary: 'Gamma' }],
+    eventsFor: id => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }),
+    delayFor: id => (id === 'c' ? 1_200 : 60),
+  });
+  const started = Date.now();
+  const result = await (await calendarReader(fake.port)).gcalList(budgeted({}, Date.now() + 500));
+  const elapsed = Date.now() - started;
+  const data = dataOf(result);
+  assert.deepEqual((data['events'] as Record<string, unknown>[]).map(event => event['id']), ['e-primary', 'e-b'], 'the calendars read inside the budget keep their events');
+  assert.deepEqual(data['partial'], { unread: 1, calendars: ['Gamma'] }, 'the calendar the budget cut off is named, never dropped');
+  assert.ok(elapsed >= 400 && elapsed <= 900, `the read returned at the caller deadline: ${elapsed}`);
 });
 
 // 339: the warm context's calendar digest. One bounded primary-calendar read, local host time, no
@@ -518,7 +569,7 @@ function digestReader(events: readonly Record<string, unknown>[] | 'refused'): D
       if (events === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
       const data = { events: [...events] };
       const evidence: GoogleEvidence = {
-        state: 'completed', tool: 'gcal_list', observedAt: 1_760_000_000_000,
+        state: 'completed', tool: 'calendar_list_events', observedAt: 1_760_000_000_000,
         decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
         source: {} as ResultScope, coverage: {} as GoogleEvidence['coverage'],
         projection: {} as GoogleEvidence['projection'], response: {} as GoogleEvidence['response'],
@@ -581,7 +632,7 @@ test('Gmail precise body read defaults to full and preserves deliberate metadata
 });
 
 for (const family of ['gmail', 'calendar'] as const) test(`Google native envelope: ${family} outer coverage cursor survives the actual SDK projector`, async t => {
-  const name = family === 'gmail' ? 'gmail_list' : 'gcal_list';
+  const name = family === 'gmail' ? 'gmail_search_messages' : 'calendar_list_events';
   const sdk = new Server({ name: 'native-google-envelope', version: '1' }, { capabilities: { tools: {} } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   sdk.setRequestHandler('tools/list', () => ({ tools: [{ name, inputSchema: { type: 'object' } }] }) as never);
@@ -617,7 +668,7 @@ test('Gmail retained evidence: actual SDK full received body is host-only and ke
     assert.equal(snapshot.response['partial'], true, 'quoted received text omitted by display cleaning remains explicit');
     assert(Number(snapshot.response['omittedCharacters']) > 20000);
     assert(retained.body.endsWith('b'.repeat(20000))); assert.match(retained.body, /Synthetic retained historical evidence/); assert.equal(retained.upstreamComplete, 'unknown'); assert.equal(retained.upstreamOmitted, 'unknown');
-    assert.equal(retained.tool, 'gmail_read'); assert.equal(retained.expiresAt, evidence.response.state === 'available' ? evidence.response.expiresAt : 0);
+    assert.equal(retained.tool, 'gmail_read_message'); assert.equal(retained.expiresAt, evidence.response.state === 'available' ? evidence.response.expiresAt : 0);
     assert(!JSON.stringify(snapshot).includes('b'.repeat(1600)), 'full body and private reference never serialize');
     assert.doesNotMatch(String(snapshot.response['text']), /final, a single message has no partial re-read/);
     const metadata = completed(await readerFor(adapter, registry, digest).gmailRead({ id: 'm1', format: 'metadata' }));

@@ -302,10 +302,19 @@ private func checkFormatChangeRebuild() throws {
     try audioRequire(conversation.device.hasJournal, "production construction wires an audio journal into the device")
     try audioRequire(AudioOwner.shared.hasJournal, "production construction adopts the journal on the owner")
     conversation.device.log("audio_test_event", ["probe": "1"])
-    let file = directory.appendingPathComponent("audio.log")
+    let file = conversation.device.journal?.fileURL ?? directory.appendingPathComponent("audio.log")
     let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
     try audioRequire(text.contains("audio_test_event") && text.contains("timestamp"),
                      "the audio journal writes a timestamped metadata line to audio.log")
+    // #477: one audio journal per process. A second conversation over the same logs directory must not
+    // open a second writer on audio.log, or two handles seek to the same end and tear each other's lines.
+    let second = NativeLiveConversation(
+        authority: (origin, { url, _ in URLRequest(url: url) }),
+        dictationIsCapturing: { false }, logsDirectory: directory)
+    try audioRequire(second.device.journal === conversation.device.journal,
+                     "a second conversation's device writes into the one adopted audio journal")
+    try audioRequire(second.device.journal === AudioOwner.shared.journal,
+                     "the device journal is the journal the owner holds")
     print("PASS production construction records timestamped audio.log metadata")
 }
 
@@ -338,6 +347,22 @@ private func checkFormatChangeRebuild() throws {
     try audioRequire(!cleanJournal.events.contains { $0.name == "audio_release_leak" },
                      "a deallocated engine does not log audio_release_leak")
     print("PASS weak-ref dealloc and audio_release_leak")
+}
+
+// #476/V10: one audio_released per audio_owned. One release is one line, never a device line beside
+// the owner's line for the same release.
+@MainActor private func checkOneReleaseRecord() throws {
+    let journal = NativeAudioJournal(fileURL: nil)
+    let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("a1-release-" + UUID().uuidString), journal: journal)
+    let device = NativeLiveAudioDevice(owner: owner, journal: journal, deviceState: { _ in false })
+    try owner.acquire(holder: ObjectIdentifier(device))
+    device.releaseForTesting()
+    let names = journal.events.map(\.name)
+    try audioRequire(names.filter { $0 == "audio_owned" }.count == 1, "one audio_owned for the lease, got \(names)")
+    try audioRequire(names.filter { $0 == "audio_released" }.count == 1,
+                     "one audio_released per audio_owned, got \(names)")
+    print("PASS one audio_released per audio_owned; hardware=false")
 }
 
 // OUTCOME 7: a start failure tears down, releases the flock, and never retries in session.
@@ -644,6 +669,34 @@ private func checkPrimaryChannelConversion() throws {
     print("PASS actual write silence/speech queue-head state and all timing PCM conserved; hardware=false")
 }
 
+// H13/V7 (#476): the receipt that says the owner actually heard her. The first chunk of an assistant
+// playback segment that becomes audible sends one `playback.audible` for that segment, and only one.
+@MainActor private func checkPlaybackAudibleReceipt() async throws {
+    let driver = PlaybackDriverFixture(), device = NativeLiveAudioDevice()
+    device.playbackDriverForTesting = driver
+    var receipts: [NativePlaybackReceipt] = []
+    device.onPlaybackReceipt = { receipts.append($0) }
+    let quiet = Data(count: 4800)
+    let speech = [Int16](repeating: 5000, count: 2400).withUnsafeBytes { Data($0) }
+    try await device.write(quiet)
+    try audioRequire(!receipts.contains { $0.kind == .audible },
+                     "silence under the audibility threshold never claims playback.audible")
+    try await device.write(speech)
+    let audible = receipts.filter { $0.kind == .audible }
+    try audioRequire(audible.count == 1, "the first audible chunk of a segment sends one playback.audible")
+    try audioRequire(audible.first?.segmentSeq == receipts.first?.segmentSeq,
+                     "the audible receipt names the segment the next receipts name")
+    try await device.write(speech)
+    try audioRequire(receipts.filter { $0.kind == .audible }.count == 1,
+                     "one audible receipt per segment, never one per audible chunk")
+    let wire = audible.first?.json ?? ""
+    try audioRequire(wire.contains("\"receipt\":\"audible\"") && wire.contains("segment_seq"),
+                     "the audible receipt is the closed receipt frame, ids only")
+    try audioRequire(!wire.lowercased().contains("text") && !wire.contains("pcm"),
+                     "the audible receipt carries no owner audio or text")
+    print("PASS first audible chunk of a segment sends one playback.audible receipt; hardware=false")
+}
+
 @MainActor private func checkPlaybackOverflowContinuation() async throws {
     let full = Data(count: NativePlaybackQueue.overflowFrames * 2)
     for externalMute in [false, true] {
@@ -741,6 +794,18 @@ private func checkPrimaryChannelConversion() throws {
             return
         }
 
+        if CommandLine.arguments.dropFirst().contains("--playback-audible-only") {
+            do { try await checkPlaybackAudibleReceipt() }
+            catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
+        if CommandLine.arguments.dropFirst().contains("--one-release-only") {
+            do { try checkOneReleaseRecord() }
+            catch { FileHandle.standardError.write(Data("One release record: \(error)\n".utf8)); exit(1) }
+            return
+        }
+
         if CommandLine.arguments.dropFirst().contains("--playback-state-only") {
             do { try await checkPlaybackSilenceState() }
             catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
@@ -788,6 +853,10 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Format change: \(error)") }
             return
         }
+        do { try await checkPlaybackAudibleReceipt() }
+        catch { FileHandle.standardError.write(Data("Playback audible: \(error)\n".utf8)); exit(1) }
+        do { try checkOneReleaseRecord() }
+        catch { FileHandle.standardError.write(Data("One release record: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackSilenceState(); try await checkPlaybackOverflowContinuation(); try await checkPlaybackGapMetrics() }
         catch { FileHandle.standardError.write(Data("Playback state: \(error)\n".utf8)); exit(1) }
         do { try await checkPlaybackMuteFence() }

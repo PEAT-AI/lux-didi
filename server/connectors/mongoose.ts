@@ -123,6 +123,17 @@ export const MONGOOSE_FAILURE_STAGES = ['credential', 'spawn', 'handshake', 'fir
 export type MongooseFailureStage = (typeof MONGOOSE_FAILURE_STAGES)[number];
 
 /**
+ * What a start does about this endpoint's stored credential (H19): a mongoose endpoint with no stored
+ * credential is simply not signed in yet, and the host says that once instead of opening the connector
+ * to fail at every launch. Every other endpoint, and a mongoose one that does hold a credential, is
+ * probed as before; a signed-in mongoose endpoint reconnects on the next connect after a login.
+ */
+export function mongooseCredentialAtStart(connector: string, storedCredential: boolean): 'probe' | 'not_signed_in' {
+  if (connector !== 'mongoose') return 'probe';
+  return storedCredential ? 'probe' : 'not_signed_in';
+}
+
+/**
  * Classify a closed adapter reason (or a discovery exception code) into the connect stage where
  * the call stopped. Local refusals and a dispatched-call failure fall to `first_call`.
  */

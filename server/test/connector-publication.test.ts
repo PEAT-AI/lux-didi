@@ -35,10 +35,10 @@ interface FakeConnector {
  * One fake Gmail MCP endpoint with deferred promises instead of sleeps. `blockConnect` holds the
  * initialize handshake; proofs await an explicit identity from the test.
  */
-async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<FakeConnector> {
+async function fakeConnector(options: { blockConnect?: boolean; autoProof?: string } = {}): Promise<FakeConnector> {
   const calls: string[] = [];
   let connectResolve!: () => void; const connectGate = new Promise<void>(resolve => { connectResolve = resolve; });
-  const tools = ['gmail_get_profile', 'gmail_list', 'gmail_read'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  const tools = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
   let readStatus = 0, discoveryStatus = 0;
   let discoveryGate: { entered(): void; pending: Promise<void> } | undefined;
   let discoveries = 0; const discoveryWaiters: Array<() => void> = [];
@@ -57,10 +57,10 @@ async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<
     if (message.method === 'tools/call') {
       const name = String(message.params?.name ?? '');
       calls.push(name);
-      if (name === 'gmail_list' && readStatus) { const status = readStatus; readStatus = 0; res.writeHead(status); res.end(); return; }
+      if (name === 'gmail_search_messages' && readStatus) { const status = readStatus; readStatus = 0; res.writeHead(status); res.end(); return; }
       if (name === 'gmail_get_profile') {
         proofs++; for (const waiter of proofWaiters.splice(0)) waiter();
-        identity = await new Promise<string>(resolveIdentity => { pendingProofs.push(resolveIdentity); });
+        identity = options.autoProof ?? await new Promise<string>(resolveIdentity => { pendingProofs.push(resolveIdentity); });
       }
     }
     const result = message.method === 'initialize' ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
@@ -90,10 +90,10 @@ async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<
   };
 }
 
-async function compose(t: TestContext, options: { ownerIdentity?: string | null; blockConnect?: boolean }) {
+async function compose(t: TestContext, options: { ownerIdentity?: string | null; blockConnect?: boolean; autoProof?: string }) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-publication-'));
   const configDir = join(dir, 'provider-config'); await mkdir(configDir, { mode: 0o700 });
-  const fake = await fakeConnector(options.blockConnect === undefined ? {} : { blockConnect: options.blockConnect });
+  const fake = await fakeConnector({ ...(options.blockConnect === undefined ? {} : { blockConnect: options.blockConnect }), ...(options.autoProof === undefined ? {} : { autoProof: options.autoProof }) });
   // A superseded generation can leave a proof POST in flight; close the composition so the adapter
   // aborts it before the fake endpoint is asked to close (F8-R3).
   t.after(async () => { await mcp.close(); await fake.close(); await rm(dir, { recursive: true, force: true }); });
@@ -108,7 +108,7 @@ async function compose(t: TestContext, options: { ownerIdentity?: string | null;
 }
 
 test('a connector round is deferred: composition returns while connect is blocked', async t => {
-  const { mcp, fake } = await compose(t, { blockConnect: true });
+  const { mcp, fake } = await compose(t, { blockConnect: true, autoProof: OWNER });
   assert.equal(mcp.connectionIds().length, 0);
   assert.equal(mcp.status().endpoints[0]!.state, 'connecting');
   const started = mcp.start();
@@ -130,7 +130,7 @@ test('pre-proof discovery exposes nothing, mismatch refuses, match publishes', a
   assert.notEqual(mcp.status().endpoints[0]!.state, 'connected');
   // Only the private identity candidate exists; no model-facing tool is callable.
   assert.deepEqual(mcp.registry.visibleTools('gmail').map(tool => tool.name), ['gmail_get_profile']);
-  assert.equal(mcp.registry.currentGrant('gmail')?.toolNames.includes('gmail_list'), false);
+  assert.equal(mcp.registry.currentGrant('gmail')?.toolNames.includes('gmail_search_messages'), false);
   assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), []);
   fake.releaseProof(0, OTHER);
   await started;
@@ -186,13 +186,28 @@ test('shutdown during a proof publishes nothing and leaves no unhandled rejectio
   assert.deepEqual(rejections, []);
 });
 
-test('no owner identity publishes after discovery under the no-comparison policy', async t => {
+test('no owner identity still probes Google, so an unproven read never publishes', async t => {
+  // lux-didi #495 and review C1: Google is a strict identity source, so the no-comparison policy does
+  // not publish it without a proof. The empty identity value is the helper's unverifiable account.
   const { mcp, fake } = await compose(t, { ownerIdentity: null });
   const started = mcp.start();
+  await fake.waitProof(1);
+  assert.notEqual(mcp.status().endpoints[0]!.state, 'connected');
+  assert.deepEqual(mcp.connectionIds(), []);
+  assert.equal(fake.calls.filter(name => name === 'gmail_get_profile').length, 1);
+  fake.releaseProof(0, '');
   await started;
+  assert.equal(mcp.status().endpoints[0]!.state, 'error');
+  assert.equal(mcp.status().endpoints[0]!.reasonCode, 'identity_unverified');
+  assert.equal(mcp.connectionIds().length, 0);
+  assert.equal(mcp.registry.currentGrant('gmail'), undefined);
+});
+
+test('no owner identity publishes a proven Google identity under the no-comparison policy', async t => {
+  const { mcp } = await compose(t, { ownerIdentity: null, autoProof: OWNER });
+  await mcp.start();
   assert.equal(mcp.status().endpoints[0]!.state, 'connected');
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
-  assert.equal(fake.calls.filter(name => name === 'gmail_get_profile').length, 0);
 });
 
 test('connectionIds is empty while a connector is verifying', async t => {
@@ -266,7 +281,7 @@ test('a refresh suspends the ready grant before the replacement publishes and re
   fake.releaseProof(0, OWNER);
   await refreshed;
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
-  assert.equal(fake.calls.includes('gmail_list'), false);
+  assert.equal(fake.calls.includes('gmail_search_messages'), false);
 });
 
 test('a failed re-verification after a refresh leaves no grant', async t => {
@@ -288,7 +303,7 @@ test('a failed re-verification after a refresh leaves no grant', async t => {
 
 
 test('fluency: startup refresh cannot auto-adopt a changed same-name catalog', async t => {
-  const { mcp, store, fake } = await compose(t, { ownerIdentity: null });
+  const { mcp, store, fake } = await compose(t, { ownerIdentity: null, autoProof: OWNER });
   await mcp.start();
   const before = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail']));
   fake.changeCatalog();
@@ -300,47 +315,47 @@ test('fluency: startup refresh cannot auto-adopt a changed same-name catalog', a
 
 
 test('fluency: host recovers exact approved transport once and never replays the failed read', async t => {
-  const { mcp, store, fake } = await compose(t, { ownerIdentity: null });
+  const { mcp, store, fake } = await compose(t, { ownerIdentity: null, autoProof: OWNER });
   await mcp.start();
   const before = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail']));
   const grant = mcp.registry.currentGrant('gmail')!;
   fake.failRead(503);
-  const failed = await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_list', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
+  const failed = await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_search_messages', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
   assert.deepEqual(failed, { state: 'unknown', reason: 'transport_unavailable' });
   assert.notEqual(mcp.status().endpoints[0]!.state, 'connected');
   for (let i = 0; i < 1000 && mcp.connectionIds().length === 0; i++) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
   assert.equal(fake.discoveryCount(), 2, 'exactly one automatic recovery discovery');
-  assert.deepEqual(fake.calls, ['gmail_list'], 'no read replay or identity probe');
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages'], 'no read replay and exactly one identity probe');
   assert.deepEqual(store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail'])), before);
-  const next = await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_list', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
+  const next = await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_search_messages', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
   assert.equal(next.state, 'completed');
-  assert.deepEqual(fake.calls, ['gmail_list', 'gmail_list']);
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages', 'gmail_search_messages']);
 });
 
 
 test('fluency: failed recovery has no recursive retry and a distinct demand can restore it', async t => {
-  const { mcp, fake } = await compose(t, { ownerIdentity: null }); await mcp.start();
+  const { mcp, fake } = await compose(t, { ownerIdentity: null, autoProof: OWNER }); await mcp.start();
   const grant = mcp.registry.currentGrant('gmail')!;
   fake.failRead(503); fake.failDiscovery(503);
-  await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_list', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
+  await mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_search_messages', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
   await mcp.recover();
   assert.equal(mcp.status().endpoints[0]!.state, 'error');
   assert.equal(fake.discoveryCount(), 2, 'failed discovery does not recurse');
-  assert.deepEqual(fake.calls, ['gmail_list']);
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages']);
   await mcp.recover();
   assert.equal(fake.discoveryCount(), 3);
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
-  assert.deepEqual(fake.calls, ['gmail_list'], 'demand recovers transport only');
+  assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages'], 'demand recovers transport only, with one identity probe');
 });
 
 test('fluency: recovery refuses changed catalog, binding, revocation and late close', async t => {
   for (const change of ['catalog', 'binding', 'revoke', 'close', 'revision'] as const) {
-    const { mcp, fake, store, configDir } = await compose(t, { ownerIdentity: null }); await mcp.start();
+    const { mcp, fake, store, configDir } = await compose(t, { ownerIdentity: null, autoProof: OWNER }); await mcp.start();
     const before = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail']));
     const grant = mcp.registry.currentGrant('gmail')!;
     const gate = fake.deferDiscovery(); fake.failRead(503);
-    const failed = mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_list', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
+    const failed = mcp.port.call({ endpointId: 'gmail', toolName: 'gmail_search_messages', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
     await gate.entered;
     const currentFlight = mcp.recover();
     let closing: Promise<void> | undefined;
@@ -354,6 +369,6 @@ test('fluency: recovery refuses changed catalog, binding, revocation and late cl
     assert.equal(mcp.connectionIds().length, 0, change);
     assert.notEqual(mcp.status().endpoints[0]!.state, 'connected', change);
     assert.deepEqual(store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail'])), before, change);
-    assert.deepEqual(fake.calls, ['gmail_list']);
+    assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages']);
   }
 });

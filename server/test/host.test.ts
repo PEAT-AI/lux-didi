@@ -12,6 +12,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { createDispatchOwner } from '../tools/dispatch.js';
+import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
@@ -461,15 +463,19 @@ for (const missingMongoose of [true, false]) {
     const config = join(dir, 'provider-config');
     await mkdir(config, { mode: 0o700 });
     const tools = [
-      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_list', 'gmail_read',
-      'gcal_calendars', 'gcal_list', 'mattermost_whoami', 'mattermost_get_channel_history',
+      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
+      'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
       'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
     ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
-    const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
+    const reply = (message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
       jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
         ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
-        : message.method === 'tools/list' ? { tools } : {},
+        : message.method === 'tools/list' ? { tools }
+        // D2: a strict Google source probes its identity before it publishes a read grant, so the fake
+        // answers the two identity tools instead of an empty envelope.
+        : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify(message.params?.name === 'calendar_list_calendars' ? { calendars: [{ id: 'owner@example.test', primary: true }] } : { emailAddress: 'owner@example.test' }) }] }
+        : {},
     };
     const endpoint = createServer(async (req, res) => {
       if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
@@ -477,7 +483,7 @@ for (const missingMongoose of [true, false]) {
       const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
       if (response && req.url && 'tools' in response.result) {
         const family = req.url.slice(1);
-        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('gcal_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('gcal_') && !['search_knowledge', 'get_insight'].includes(tool.name));
+        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('calendar_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('calendar_') && !['search_knowledge', 'get_insight'].includes(tool.name));
       }
       res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
       res.end(response ? JSON.stringify(response) : undefined);
@@ -703,6 +709,96 @@ test('a host writes no debug journal under any data dir or config dir', async ()
   } finally { await host.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+// #487: the retired JSONL debug journal is unread and unremoved on 4282b639 (282 files, 8.2 MB of transcripts).
+// One bounded start-up step removes exactly `<dataDir>/debug` and logs one byte-counted receipt; the second
+// start finds nothing and logs nothing.
+test('a start removes the retired debug journal once and logs one byte-counted receipt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-debug-retired-'));
+  const dataDir = join(dir, 'state');
+  const journal = join(dataDir, 'debug', '2026-10-17');
+  await mkdir(journal, { recursive: true, mode: 0o700 });
+  await writeFile(join(journal, 'session-a.jsonl'), 'x'.repeat(700));
+  await writeFile(join(journal, 'session-b.jsonl'), 'y'.repeat(300));
+  await writeFile(join(dataDir, 'keep-me.txt'), 'kept');
+  try {
+    const first = await startHost({ dataDir, webRoot, port: 0 });
+    const receipts = async (): Promise<Record<string, unknown>[]> =>
+      (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.event === 'debug_journal_removed')
+        .map(line => ({ bytes: line.bytes, event: line.event }));
+    try {
+      await assert.rejects(stat(join(dataDir, 'debug')), /ENOENT/, 'the retired journal is gone');
+      assert.equal(await readFile(join(dataDir, 'keep-me.txt'), 'utf8'), 'kept', 'nothing else in the data dir is touched');
+      assert.deepEqual(await receipts(), [{ event: 'debug_journal_removed', bytes: 1000 }], 'one receipt carries the byte count');
+    } finally { await first.close(); }
+
+    const second = await startHost({ dataDir, webRoot, port: 0 });
+    try {
+      assert.equal((await receipts()).length, 1, 'a second start finds no journal and writes no second receipt');
+    } finally { await second.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// Reviewer R1: a sweep the host cannot finish is one closed receipt and never a refused start. A
+// read-only directory under debug/ is the owner's file system, not a reason to keep the app closed.
+test('an unremovable debug directory logs one closed receipt and never aborts the start', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-debug-stuck-'));
+  const dataDir = join(dir, 'state');
+  const stuck = join(dataDir, 'debug', 'locked');
+  await mkdir(stuck, { recursive: true, mode: 0o700 });
+  await writeFile(join(stuck, 'session.jsonl'), 'x'.repeat(10));
+  await chmod(stuck, 0o500);
+  try {
+    const host = await startHost({ dataDir, webRoot, port: 0 });
+    try {
+      const lines = (await readFile(join(dataDir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      const failed = lines.filter(line => line.event === 'debug_journal_removal_failed').map(line => ({ code: line.code, event: line.event }));
+      assert.equal(failed.length, 1, 'one receipt, not one per file it could not remove');
+      assert.equal(failed[0]!.event, 'debug_journal_removal_failed');
+      assert.match(String(failed[0]!.code), /^[a-z0-9]{1,16}$/, 'the receipt carries an errno token, never a path');
+      await stat(join(dataDir, 'debug'));
+      assert.equal(lines.filter(line => line.event === 'host_started').length, 1, 'the start itself went ahead');
+    } finally { await host.close(); }
+  } finally {
+    await chmod(stuck, 0o700).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// #479 / H4: a call made with no tool context (the start-up connector probes) used to arm a diagnostic
+// capture, so every start wrote four `context_absent` and four `wire_observed_context_absent` receipts,
+// three of them byte-identical. The receipt is armed only with a real run context.
+//
+// R3: the red stage asserted that the call wrote no `tool_dispatch_coverage` row either. That was
+// wrong and the composition check proves it (dispatch-diagnostics-composition.integration.mjs asserts
+// the unattributed marker for a context-free wire call), so the assertion here is two-sided: no
+// capture receipt at all, and the audit row still records one unattributed call with its reason.
+// The end-to-end half lives in connector-identity.test.ts, where a real start with two endpoints on
+// one account asserts zero `tool_diagnostic_capture` lines in host.log.
+test('a tool call with no run context arms no diagnostic capture', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-no-context-'));
+  const store = new Store(dir, [...toolsMigrations]);
+  try {
+    const captured: string[] = [];
+    const port = {
+      async call() { return { state: 'completed' as const, content: [{ type: 'text' as const, text: 'ok' }], isError: false }; },
+    };
+    const owner = createDispatchOwner({
+      store, port: port as never, ownerId: store.assistantId,
+      current: () => true, failure: reason => { captured.push(reason); },
+    });
+    const result = await owner.port.call({ toolName: 'gmail_get_profile', arguments: {}, connectionId: 'gmail', class: 'ordinary' } as never);
+    assert.equal((result as { state?: string }).state, 'completed', 'the probe still reaches the connector');
+    assert.deepEqual(captured, [], 'no diagnostic capture without a context');
+    // The audit row is the other half: the context-free wire call is recorded, without a receipt.
+    const coverage = store.transaction(tx => tx.all('SELECT kind, reason, run_id FROM tool_dispatch_coverage'));
+    assert.deepEqual(coverage.map(row => [row.kind, row.reason, row.run_id]), [['unattributed', 'dispatch_unknown_context_absent', null]], 'the audit row still records the context-free call');
+    owner.reuse(undefined);
+    assert.deepEqual(captured, [], 'reuse without a context captures nothing either');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('the installed app config dir is refused with one line naming --data-dir, and supervision lifts it', () => {
   const installed = join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi', 'provider-38');
   const refusal = installedConfigDirRefusal(installed, false);
@@ -761,7 +857,9 @@ test('POST api/v1/live/prewarm answers the receipt and refuses a body field', as
     const asked = await fetch(url, { method: 'POST', headers, body: '{}' });
     assert.equal(asked.status, 200);
     const answered = await asked.json() as { data: unknown };
-    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false });
+    // WarmPrewarmReceipt carries the assembly reason as a required field (server/live/index.ts), and
+    // an unconfigured Live answers `unconfigured`, as the owner-prewarm test above asserts.
+    assert.deepEqual(answered.data, { ageBeforeMs: null, ageAfterMs: null, assembled: false, reason: 'unconfigured' });
     const unknown = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ digest: 'x' }) });
     assert.equal(unknown.status, 400, 'the body is closed: it names no field');
     const read = await fetch(url, { method: 'GET', headers });
@@ -809,7 +907,7 @@ function digestReader(events: readonly Record<string, unknown>[] | 'refused'): D
       calls.push(input);
       if (events === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
       const evidence: GoogleEvidence = {
-        state: 'completed', tool: 'gcal_list', observedAt: 1_760_000_000_000,
+        state: 'completed', tool: 'calendar_list_events', observedAt: 1_760_000_000_000,
         decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: { events: [...events] } }) }] },
         source: {} as GoogleEvidence['source'], coverage: {} as GoogleEvidence['coverage'],
         projection: {} as GoogleEvidence['projection'], response: {} as GoogleEvidence['response'],
@@ -967,10 +1065,10 @@ test('1015: a start reports the digest state the cache reached and never folds a
   } finally { await cleanup(); }
 });
 // R7: mail and calendar are both `connector: google`, so the first google endpoint is not the calendar
-// endpoint. The digest reads the endpoint whose current grant carries gcal_list.
-test('R7: the calendar digest selects the google endpoint by its gcal_list grant', () => {
+// endpoint. The digest reads the endpoint whose current grant carries calendar_list_events.
+test('R7: the calendar digest selects the google endpoint by its calendar_list_events grant', () => {
   const grant = { endpointId: 'gmail', account: 'owner@example.test', resource: 'mail', schemaDigest: 's', toolNames: ['gmail_search'], effect: 'read' as const, generation: 1 };
-  const grants: Record<string, typeof grant> = { gmail: grant, gcal: { ...grant, endpointId: 'gcal', resource: 'calendar', toolNames: ['gcal_list'] } };
+  const grants: Record<string, typeof grant> = { gmail: grant, gcal: { ...grant, endpointId: 'gcal', resource: 'calendar', toolNames: ['calendar_list_events'] } };
   const both = [{ id: 'gmail', connector: 'google' }, { id: 'gcal', connector: 'google' }];
   assert.equal(selectCalendarEndpoint(both, id => grants[id])?.endpointId, 'gcal', 'mail listed first never wins');
   assert.equal(selectCalendarEndpoint([...both].reverse(), id => grants[id])?.endpointId, 'gcal', 'and the order does not matter');

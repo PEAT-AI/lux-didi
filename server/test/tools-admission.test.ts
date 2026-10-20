@@ -20,8 +20,8 @@ import { fixture as voiceFixture } from './live-voice-fixture.js';
 
 const endpoints = [
   { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
-  { id: 'gmail', connector: 'google', tool: 'gmail_list', args: {} },
-  { id: 'calendar', connector: 'google', tool: 'gcal_calendars', args: {} },
+  { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', args: {} },
+  { id: 'calendar', connector: 'google', tool: 'calendar_list_calendars', args: {} },
   { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_whoami', args: {} },
   { id: 'mongoose', connector: 'mongoose', tool: 'get_company_profile', args: {} },
 ];

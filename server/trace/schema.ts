@@ -141,4 +141,11 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `ALTER TABLE trace_call ADD COLUMN canonical_result_sha256 TEXT`,
     `ALTER TABLE trace_utterance ADD COLUMN journal_id INTEGER`,
   ],
+}, {
+  owner: 'trace', version: 4, statements: [
+    // The boot retention prune deletes by age (H16): without these two indexes it full-scanned both
+    // content tables inside the start-up transaction, and the scan grows with every turn ever recorded.
+    `CREATE INDEX trace_utterance_at ON trace_utterance(at)`,
+    `CREATE INDEX trace_call_intent_at ON trace_call(intent_at)`,
+  ],
 }];

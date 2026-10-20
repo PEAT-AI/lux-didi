@@ -17,6 +17,39 @@ export interface IdentitySource {
   args: Record<string, unknown>;
   /** Every identity string the decoded result reports; empty when the result carries none. */
   values(decoded: unknown): string[];
+  /**
+   * Fail closed: an unproven identity refuses the connector even when no owner identity is
+   * configured (lux-didi #495). Google sets it, because the helper pins its own account and a
+   * silent unverified read is indistinguishable from an empty mailbox.
+   */
+  strict?: boolean;
+}
+
+/**
+ * The closed code set a Google helper refuses with (lux-cli E2). Only a code from this set ever
+ * reaches a spoken source reason, so neither an address nor a token path can travel with it.
+ */
+export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing'] as const;
+export type IdentityErrorCode = (typeof IDENTITY_ERROR_CODES)[number];
+
+function closedCode(token: string | undefined): IdentityErrorCode | undefined {
+  if (token === undefined) return undefined;
+  const code = token.trim().toLowerCase().replace(/-/g, '_');
+  return (IDENTITY_ERROR_CODES as readonly string[]).includes(code) ? code as IdentityErrorCode : undefined;
+}
+
+/** The helper's typed refusal code from one error envelope: never the free text around it. */
+export function helperErrorCode(decoded: unknown): IdentityErrorCode | undefined {
+  if (!isRecord(decoded)) return undefined;
+  const content = decoded['content'];
+  const first = Array.isArray(content) ? content[0] : undefined;
+  const text = isRecord(first) && typeof first['text'] === 'string' ? first['text'] : undefined;
+  if (text === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (isRecord(parsed)) return closedCode(typeof parsed['error'] === 'string' ? parsed['error'] : typeof parsed['code'] === 'string' ? parsed['code'] : undefined);
+  } catch { /* prose error: read its leading token instead */ }
+  return closedCode(/^\s*([A-Za-z][A-Za-z_-]{2,40})\s*[:\s]/.exec(text)?.[1]);
 }
 
 /** The closed identity proof the host keeps in memory: booleans for the log, the value for the local UI. */
@@ -27,6 +60,8 @@ export interface IdentityProof {
   match: boolean | null;
   /** The connector's own primary identity value, for the local UI only; never logged. */
   value: string | null;
+  /** Why the helper refused to prove an identity; a closed code, so no address or path travels. */
+  code?: IdentityErrorCode;
 }
 
 export type IdentityAction = 'offer' | 'refuse' | 'unproven';
@@ -87,18 +122,30 @@ export function mattermostIdentityValues(decoded: unknown): string[] {
 
 /** Classify one identity probe: a refused/unknown result or an empty value set is unproven. */
 export function classifyIdentity(result: ConnectorResult, source: IdentitySource, expected: readonly string[]): IdentityProof {
-  if (!('decodedResult' in result)) return { proven: false, match: null, value: null };
+  if (!('decodedResult' in result)) {
+    const code = closedCode(result.reason);
+    return code ? { proven: false, match: null, value: null, code } : { proven: false, match: null, value: null };
+  }
   const values = source.values((result as ConnectorEvidence).decodedResult);
+  const code = helperErrorCode((result as ConnectorEvidence).decodedResult);
   const value = values[0] ?? null;
-  if (value === null) return { proven: false, match: null, value: null };
+  if (value === null) return code ? { proven: false, match: null, value: null, code } : { proven: false, match: null, value: null };
   if (expected.length === 0) return { proven: true, match: null, value };
   return { proven: true, match: identityMatch(expected, values), value };
 }
 
-/** The one decision the host takes on a proof: offer the connector, refuse a mismatch, else keep it unproven. */
-export function identityAction(proof: IdentityProof): IdentityAction {
+/** The one decision the host takes on a proof: offer the connector, refuse a mismatch, else keep it
+ * unproven. A `strict` source refuses an unproven identity as well, so a proof failure never offers. */
+export function identityAction(proof: IdentityProof, strict = false): IdentityAction {
   if (proof.match === false) return 'refuse';
+  if (strict && !proof.proven) return 'refuse';
   return proof.proven ? 'offer' : 'unproven';
+}
+
+/** The closed reason code a refusal is reported under: a mismatch is its own code, and any other
+ * refusal names the helper's code, defaulting to identity_unverified. Never free text. */
+export function refusalCode(proof: IdentityProof): 'identity_mismatch' | IdentityErrorCode {
+  return proof.match === false ? 'identity_mismatch' : proof.code ?? 'identity_unverified';
 }
 
 /**
@@ -133,5 +180,24 @@ export function projectIdentity(value: unknown): IdentityProof | undefined {
   if (match !== null && typeof match !== 'boolean') return undefined;
   const raw = value['value'];
   const identityValue = typeof raw === 'string' && raw.length > 0 && raw.length <= 254 ? raw : null;
-  return { proven: value['proven'], match, value: identityValue };
+  const code = closedCode(typeof value['code'] === 'string' ? value['code'] : undefined);
+  return { proven: value['proven'], match, value: identityValue, ...(code ? { code } : {}) };
+}
+
+/**
+ * One identity proof per boot per connector account (H19): two endpoints of the same account, a
+ * mailbox and a calendar for example, prove the same account once, never twice. Endpoints connect
+ * concurrently, so the in-flight promise is what is shared, not only its result. Only a proven proof
+ * is kept, so an unproven connector probes again on the next connect and a later login is picked up.
+ */
+export function identityProofMemo(): (key: string, probe: () => Promise<IdentityProof>) => Promise<IdentityProof> {
+  const attempts = new Map<string, Promise<IdentityProof>>();
+  return (key, probe) => {
+    const running = attempts.get(key);
+    if (running !== undefined) return running;
+    const attempt = probe().then(proof => { if (!proof.proven) attempts.delete(key); return proof; },
+      (error: unknown) => { attempts.delete(key); throw error; });
+    attempts.set(key, attempt);
+    return attempt;
+  };
 }

@@ -45,7 +45,7 @@ test('the runtime block carries only the named fields, never an owner line or pr
 });
 
 test('tool and connector names map to the human group names', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_list', 'gcal_list', 'mattermost_search', 'remember_note', 'search_mongoose']),
+  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search_mongoose']),
     ['knowledge base', 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
   assert.deepEqual(connectorGroupNames('google'), ['calendar', 'mail']);
   assert.deepEqual(connectorGroupNames('mattermost'), ['team chat']);

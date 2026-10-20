@@ -10,10 +10,11 @@ struct PlaybackChunk {
 /// Drive `NativePlaybackQueue` with a schedule and report what the device would have counted.
 /// A buffer's playback ends when its audio would have played out, so the last buffer of a burst
 /// finishes (and drains the queue) before the next burst arrives.
-func replay(_ schedule: [PlaybackChunk]) -> (speechGaps: Int, starts: Int, pauses: Int) {
+func replay(_ schedule: [PlaybackChunk]) -> (speechGaps: Int, starts: Int, pauses: Int, gaps: [NativePlaybackArrival]) {
     var queue = NativePlaybackQueue()
     var ends: [Int] = []
     var speechGaps = 0, starts = 0, pauses = 0
+    var gaps: [NativePlaybackArrival] = []
     let frameRate = NativePlaybackQueue.frameRate
     for chunk in schedule {
         while let first = ends.first, first <= chunk.atMs {
@@ -21,7 +22,7 @@ func replay(_ schedule: [PlaybackChunk]) -> (speechGaps: Int, starts: Int, pause
             if queue.playedBack(atMs: first) { pauses += 1 }
         }
         let arrival = queue.arrival(frames: chunk.frames, atMs: chunk.atMs)
-        if arrival.speechGap { speechGaps += 1 }
+        if arrival.speechGap { speechGaps += 1; gaps.append(arrival) }
         if arrival.start { starts += 1 }
         let previous = ends.last ?? chunk.atMs
         ends.append(max(chunk.atMs, previous) + chunk.frames * 1000 / frameRate)
@@ -30,7 +31,7 @@ func replay(_ schedule: [PlaybackChunk]) -> (speechGaps: Int, starts: Int, pause
         ends.removeFirst()
         if queue.playedBack(atMs: first) { pauses += 1 }
     }
-    return (speechGaps, starts, pauses)
+    return (speechGaps, starts, pauses, gaps)
 }
 
 /// P2-R1: replay the way `write()` schedules audio, flushing only when the queue reaches the
@@ -94,6 +95,12 @@ func recordedSchedule() -> (schedule: [PlaybackChunk], starvedTurns: Int) {
         let result = replay(recorded.schedule)
         try require(result.speechGaps == recorded.starvedTurns,
             "recorded schedule counted \(result.speechGaps) speech gaps, expected \(recorded.starvedTurns)")
+        // H23/V11 (#476): the playback_speech_gap line reports a measured interval, not a placeholder:
+        // every counted gap is the real drain-to-arrival gap and the burst it interrupted had audio.
+        try require(result.gaps.count == result.speechGaps && result.gaps.allSatisfy { $0.dryGapMs > 0 },
+            "every counted speech gap carries a positive measured gap, got \(result.gaps.map(\.dryGapMs))")
+        try require(result.gaps.allSatisfy { $0.burstMs > 0 && $0.queuedMs > 0 },
+            "every counted gap names the burst that ran dry and the depth behind it")
 
         // Bursts with a real pause between them: the drain is a pause, not a glitch.
         let bursts = (0..<6).flatMap { turn in

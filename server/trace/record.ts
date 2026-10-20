@@ -49,7 +49,6 @@ export interface TraceDetailMap {
   'response.terminal': { terminalAt: number; status: ResponseStatus; terminalReason: ResponseTerminalReason };
   'call.intent': { name: string; argsChars: number; intentAt: number; providerCallId?: string };
   'call.executed': { executedAt: number };
-  'call.completed': { completedAt: number };
   'call.output_prepared': { outputPreparedAt: number };
   'call.output_written': { outputWrittenAt: number; outcome: CallOutcome; ms: number; resultChars: number };
   /** O1b-A: the single continuation owner's decision, and why a `response.create` was skipped. */
@@ -94,7 +93,7 @@ const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'turn.opened': ['turnId'], 'turn.closed': ['turnId'], 'turn.summary': ['turnId'],
   'delegation.created': ['responseKey'],
   'response.created': ['responseKey'], 'response.observed': ['responseKey'], 'response.terminal': ['responseKey'],
-  'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.completed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
+  'call.intent': ['callKey'], 'call.executed': ['callKey'], 'call.output_prepared': ['callKey'], 'call.output_written': ['callKey'],
   'playback.received': ['playbackKey'], 'playback.audible': ['playbackKey'], 'playback.enqueued': ['playbackKey'],
   'playback.started': ['playbackKey'], 'playback.drained': ['playbackKey'], 'playback.interrupted': ['playbackKey'],
   'playback.terminated': ['playbackKey'],
@@ -131,7 +130,6 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   },
   'call.intent': { name: { check: isId }, argsChars: { check: isCount }, intentAt: { check: isCount }, providerCallId: { check: isId, optional: true } },
   'call.executed': { executedAt: { check: isCount } },
-  'call.completed': { completedAt: { check: isCount } },
   'call.output_prepared': { outputPreparedAt: { check: isCount } },
   'call.output_written': { outputWrittenAt: { check: isCount }, outcome: { check: oneOf(CALL_OUTCOMES) }, ms: { check: isCount }, resultChars: { check: isCount } },
   'playback.received': { segmentSeq: { check: isCount }, receivedAt: { check: isCount } },
@@ -308,12 +306,6 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       tx.run('UPDATE trace_call SET executed_at=? WHERE call_key=?', [d.executedAt, ids.callKey!]);
       return;
     }
-    case 'call.completed': {
-      const d = detail as TraceDetailMap['call.completed'];
-      assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
-      tx.run('UPDATE trace_call SET execution_completed_at=? WHERE call_key=?', [d.completedAt,ids.callKey!]);
-      return;
-    }
     case 'call.output_prepared': {
       const d = detail as TraceDetailMap['call.output_prepared'];
       assertEpoch(tx, 'trace_call', 'call_key', ids.callKey!, epoch);
@@ -410,15 +402,56 @@ export function recordCallResult(port: TraceWritePort, result: { callKey: string
 }
 
 /**
- * Retention for the two trace content tables only, called at host start. Metadata rows keep
- * their place; a 30-day-old transcript or tool result is deleted logically, and WAL frames or
- * free pages are not forensically erased.
+ * Retention for owner content at 30 days, called at host start. Metadata rows keep their place: a
+ * 30-day-old transcript, tool result, journal payload or accepted prompt snapshot loses its text and
+ * keeps its ids, counts, kinds and outcome; WAL frames or free pages are not forensically erased.
+ * A live session is only content-pruned once it has ended before the cutoff, so the reattach window
+ * of a session that is still live is never shortened.
  */
-export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number } {
+export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; journalText: number; promptSnapshots: number } {
   const cutoff = now - TRACE_RETENTION_DAYS * TRACE_DAY_MS;
   const utterances = exec.run('DELETE FROM trace_utterance WHERE at < ?', [cutoff]);
   const callResults = exec.run('DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [cutoff]);
-  return { utterances, callResults };
+  // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
+  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, journalText: 0, promptSnapshots: 0 };
+  // A journal is only surplus once its session ended before the cutoff AND the transcript has already
+  // been distilled or never will be: a complete summary, a summary that gave up for a reason other
+  // than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
+  // ended session that has none, so its text must survive the cutoff. Without the summary tables the
+  // pruner cannot prove that, and proves nothing by leaving the journal alone.
+  const prunable = tableExists(exec, 'conversation_summaries') && tableExists(exec, 'history_exclusions')
+    ? `IN (SELECT s.live_session_id FROM live_sessions s
+           WHERE s.terminal_at IS NOT NULL AND s.terminal_at < ?
+             AND (EXISTS (SELECT 1 FROM conversation_summaries c WHERE c.live_session_id = s.live_session_id
+                            AND (c.status = 'complete'
+                              OR (c.status = 'skipped' AND COALESCE(c.skip_reason, '') <> 'no_text_model')
+                              OR (c.status = 'failed' AND COALESCE(c.error_code, '') <> 'deadline')))
+               OR EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind = 'live' AND h.source_id = s.live_session_id)))`
+    : null;
+  // Only owner speech and tool payloads are content. A marker row's `text` is the marker itself: a
+  // deferred wait's duration for `remember_deferred`, the event and reason for `continuity`, which
+  // `rowToFragment` reads back as `waitedMs` and the continuity event. Clearing those would report a
+  // 1200 ms wait as 0 and lose the continuity event while `payload_bytes` still claimed the bytes.
+  const journalText = prunable === null ? 0
+    : exec.run(`UPDATE live_journal SET text=NULL WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable}`, [cutoff])
+      // `tool_json` arrives with the v3 live_journal, which is the renamed live_journal_extended; a Store
+      // still at v2 keeps the narrower journal, so the tool payload pass is skipped rather than guessed.
+      + (columnExists(exec, 'live_journal', 'tool_json')
+        ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
+        : 0);
+  const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
+  return { utterances, callResults, journalText, promptSnapshots };
+}
+
+/** Whether the table's own DDL declares the column. The Store authorizer admits sqlite_master and
+ * denies a pragma, and a v2 live_journal simply has no tool_json to name. */
+function columnExists(exec: TraceExec, table: string, column: string): boolean {
+  const ddl = exec.all("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table])[0]?.['sql'];
+  return typeof ddl === 'string' && new RegExp(`(^|[^A-Za-z0-9_])${column}([^A-Za-z0-9_]|$)`).test(ddl);
+}
+
+function tableExists(exec: TraceExec, table: string): boolean {
+  return exec.all("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?", [table]).length > 0;
 }
 
 export { EVENT_KINDS };

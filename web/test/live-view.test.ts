@@ -321,16 +321,16 @@ test('every tool result is inspectable and errors never show markdown', () => {
 
 test('the transcript tool disclosure uses the human phrase', () => {
   const live: LiveCurrent = { ...speaking, entries: [
-    { seq: 1, kind: 'toolResult', tool: { name: 'gmail_list', status: 'completed', markdown: 'mail' } },
+    { seq: 1, kind: 'toolResult', tool: { name: 'gmail_search_messages', status: 'completed', markdown: 'mail' } },
   ] };
   const html = liveMarkup(live);
   assert.match(html, /Searching your mail/);
-  assert.doesNotMatch(html, /gmail_list/);
+  assert.doesNotMatch(html, /gmail_search_messages/);
 });
 
 test('liveActivity names the phrases of a pending batch and never the raw id', () => {
   const live: LiveCurrent = { state: 'thinking', cursor: 2, entries: [
-    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_list', status: 'called' } },
+    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_search_messages', status: 'called' } },
     { seq: 2, kind: 'toolCall', tool: { name: 'mattermost_search', status: 'called' } },
   ] };
   assert.deepEqual(liveActivity(live), { kind: 'tools', text: 'Searching your mail and Mattermost' });
@@ -345,7 +345,7 @@ test('thinking without tools is a subtle Thinking activity', () => {
 
 test('outcomes are one calm sentence: done, failed, and a quiet barged-in done', () => {
   const result = (tool: object): LiveCurrent => ({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolResult', tool } as never] });
-  const done = liveActivity(result({ name: 'gmail_list', status: 'completed', markdown: 'mail' }))!;
+  const done = liveActivity(result({ name: 'gmail_search_messages', status: 'completed', markdown: 'mail' }))!;
   assert.deepEqual(done, { kind: 'done', text: 'Done' });
   assert.match(activityMarkup(done), /activity-done/);
   const failed = liveActivity(result({ name: 'mattermost_search', status: 'error' }))!;
@@ -357,7 +357,7 @@ test('outcomes are one calm sentence: done, failed, and a quiet barged-in done',
 });
 
 test('a slow pending call adds elapsed seconds only after the threshold', () => {
-  const live: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'gmail_list', status: 'called' } }] };
+  const live: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'gmail_search_messages', status: 'called' } }] };
   const activity = liveActivity(live)!;
   assert.doesNotMatch(activityMarkup(activity, SLOW_TOOL_MS - 1), /\d+s/);
   assert.match(activityMarkup(activity, SLOW_TOOL_MS), /Searching your mail \(4s\)/);
@@ -366,7 +366,7 @@ test('a slow pending call adds elapsed seconds only after the threshold', () => 
 
 test('a batch of two calls renders one combined activity line', () => {
   const live: LiveCurrent = { state: 'thinking', cursor: 2, entries: [
-    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_list', status: 'called' } },
+    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_search_messages', status: 'called' } },
     { seq: 2, kind: 'toolCall', tool: { name: 'mattermost_search', status: 'called' } },
   ] };
   const html = activityMarkup(liveActivity(live));

@@ -80,7 +80,7 @@ test('a calendar window is asked for with the primary-calendar scope', () => {
   assert.equal(selection.actions.find(action => action.kind === 'calendar_window')?.window, 'tomorrow');
   const subs = candidateSubs('calendar_window', { question: 'q', configured: ['calendar'], evidence: new Map(), window: 'tomorrow', nowMs: Date.parse('2026-10-16T12:00:00Z') });
   assert.equal(subs.length, 1, 'one merged connector call, never one sub-call per calendar');
-  assert.equal(subs[0]?.name, 'gcal_list');
+  assert.equal(subs[0]?.name, 'calendar_list_events');
   assert.equal(subs[0]?.args['calendarId'], 'primary', 'research keeps its primary-calendar scope');
   assert.match(String(subs[0]?.args['timeMin']), /^\d{4}-\d{2}-\d{2}T/);
   assert.match(String(subs[0]?.args['timeMax']), /^\d{4}-\d{2}-\d{2}T/);
@@ -100,14 +100,14 @@ test('candidateSubs uses the authored query and the per-source limits', () => {
 
 test('shapeBlock emits one mail line per item with a count line, never the id in the snippet', () => {
   const text = '- Budget | from: Alice | date: Mon [unread] | body here [id m1]';
-  const block = shapeBlock('mail_search', [sub('gmail_list', text)]);
+  const block = shapeBlock('mail_search', [sub('gmail_search_messages', text)]);
   assert.equal(block.lines[0], 'Alice | Budget | Mon [unread] | body here');
   assert.match(block.text, /^mail: 1 of 1 shown\nAlice \| Budget/);
 });
 
 test('shapeBlock reads labelled list lines and omits an absent sender and date', () => {
   const text = '- Budget | from: Alice | date: Mon | body here [id m1]\n- No sender | body two [id m2]';
-  const block = shapeBlock('mail_search', [sub('gmail_list', text)]);
+  const block = shapeBlock('mail_search', [sub('gmail_search_messages', text)]);
   assert.equal(block.lines[0], 'Alice | Budget | Mon | body here');
   assert.equal(block.lines[1], 'No sender | body two');
   assert.equal(block.text.includes('unknown'), false);
@@ -115,7 +115,7 @@ test('shapeBlock reads labelled list lines and omits an absent sender and date',
 
 test('shapeBlock keeps sender and date from an opened mail, past the to line', () => {
   const text = 'subject: Budget\nfrom: Alice\nto: rob@example.invalid\ndate: Mon\n\nbody text';
-  const block = shapeBlock('mail_open', [sub('gmail_read', text)]);
+  const block = shapeBlock('mail_open', [sub('gmail_read_message', text)]);
   assert.equal(block.lines[0], 'Alice | Budget | Mon | body text');
 });
 
@@ -140,7 +140,7 @@ test('P5-R1: a knowledge hit keeps its whole body, never a 1,200 character snipp
 test('evidence ids reach mail_open and chat_thread', () => {
   const evidence = new Map<CandidateKind, string>([['mail_search', 'm1'], ['chat_search', 'p1']]);
   const mail = candidateSubs('mail_open', { question: 'q', configured: ['mail'], evidence });
-  assert.deepEqual(mail[0], { key: 'mo0', name: 'gmail_read', args: { id: 'm1' } });
+  assert.deepEqual(mail[0], { key: 'mo0', name: 'gmail_read_message', args: { id: 'm1' } });
   const chat = candidateSubs('chat_thread', { question: 'q', configured: ['chat'], evidence });
   assert.deepEqual(chat[0], { key: 'ct0', name: 'mattermost_get_thread', args: { post_id: 'p1' } });
 });
@@ -159,7 +159,7 @@ test('a mail search id flows into a second read in the same run', async () => {
     selector,
     execute: async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
-      return subs.map(call => call.name === 'gmail_list'
+      return subs.map(call => call.name === 'gmail_search_messages'
         ? sub(call.name, '- Budget | from: Alice | date: Mon [unread] | body here [id m1]', true, call.key)
         : sub(call.name, 'subject: Budget\nfrom: Alice\ndate: Mon\n\nthe body', true, call.key));
     },
@@ -168,7 +168,7 @@ test('a mail search id flows into a second read in the same run', async () => {
     ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'what does the budget mail say' }, new AbortController().signal);
-  const read = executed.find(call => call.name === 'gmail_read');
+  const read = executed.find(call => call.name === 'gmail_read_message');
   assert.deepEqual(read?.args, { id: 'm1' });
 });
 
@@ -194,7 +194,7 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
 // --- Metadata log shape ----------------------------------------------------------------------
 
 test('research_subcall is a closed metadata shape, never the query or text', () => {
-  const good = { event: 'research_subcall', researchId: 'r1', kind: 'mail_search', tool: 'gmail_list', ok: true, items: 3, rawBytes: 100, keptBytes: 80, queryChars: 20, queryAuthor: 'selector' };
+  const good = { event: 'research_subcall', researchId: 'r1', kind: 'mail_search', tool: 'gmail_search_messages', ok: true, items: 3, rawBytes: 100, keptBytes: 80, queryChars: 20, queryAuthor: 'selector' };
   assert.deepEqual(safeEvent(good), good);
   assert.equal(safeEvent({ ...good, query: 'secret terms' }), undefined, 'a query key refuses the whole event');
   assert.equal(safeEvent({ ...good, errorCode: 'invalid-query' })?.errorCode, 'invalid-query');
@@ -255,7 +255,7 @@ test('a failed sub-call is retried once inside the round', async () => {
   const deps: ResearchDeps = {
     now: () => 0, configured: CONFIGURED, selector,
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => {
-      if (call.name !== 'gmail_list') return { key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '### Title [id 1]', originalCharacters: 10, omittedCharacters: 0 };
+      if (call.name !== 'gmail_search_messages') return { key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '### Title [id 1]', originalCharacters: 10, omittedCharacters: 0 };
       mailCalls += 1;
       return { key: `r0~${n}~${call.key}`, name: call.name, ok: mailCalls > 1, text: mailCalls > 1 ? '- Subject | Sender | Mon | body [id m1]' : '', originalCharacters: 10, omittedCharacters: 0, ...(mailCalls > 1 ? {} : { code: 'transient' }) };
     }),
@@ -263,7 +263,7 @@ test('a failed sub-call is retried once inside the round', async () => {
   };
   await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
   assert.equal(mailCalls >= 2, true, 'the failed call is retried');
-  const mailLog = subcalls.find(entry => entry['tool'] === 'gmail_list');
+  const mailLog = subcalls.find(entry => entry['tool'] === 'gmail_search_messages');
   assert.equal(mailLog!['ok'], true, 'the retried result is the one logged');
 });
 

@@ -13,7 +13,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
-import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseFailureStage } from '../connectors/index.js';
+import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage } from '../connectors/index.js';
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { mongooseAccessToken } from '../host/mongoose-auth.js';
 import { Store } from '../runtime/store.js';
@@ -515,4 +515,41 @@ test('Mongoose literal projection: local coverage clipping remains bounded and c
   assert(projected.projection.text.length <= 4000); assert.equal(projected.projection.partial, true);
   assert.equal(projected.projection.text.length + projected.projection.omittedCharacters, projected.projection.originalCharacters);
   assert.equal(f.calls.length, 1, 'source next-tool advice is never executed by projection');
+});
+
+
+// H19: 92 connector_failure credential rows, one at every start, for a connector no research route
+// uses. A mongoose endpoint with no stored credential is not signed in yet: the start says so once and
+// opens nothing, and the next connect after a login probes it for real.
+test('a mongoose endpoint with no stored credential is not probed at start', () => {
+  assert.equal(mongooseCredentialAtStart('mongoose', false), 'not_signed_in');
+  assert.equal(mongooseCredentialAtStart('mongoose', true), 'probe');
+  assert.equal(mongooseCredentialAtStart('google', false), 'probe', 'a read connector still reports its missing credential');
+  assert.equal(mongooseCredentialAtStart('mattermost', false), 'probe');
+});
+
+
+// R9: the sign-in is finished by the product, not by a restart. After a login writes the credential,
+// recover() settles the parked endpoint again and it opens for real.
+test('a mongoose endpoint parked at not_signed_in connects on recover after a login', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-login-'));
+  const config = join(dir, 'provider-config');
+  mkdirSync(config, { recursive: true, mode: 0o700 });
+  writeFileSync(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
+    { id: 'mongoose', transport: 'streamable-http', url: 'http://127.0.0.1:9/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongoose-token', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+  ] }), { mode: 0o600 });
+  const store = new Store(join(dir, 'state'), [...toolsMigrations]);
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: config, lookupAuthority: async () => null });
+  const report = (): { state: string; error?: string } | undefined =>
+    runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongoose');
+  try {
+    assert.deepEqual([report()?.state, report()?.error], ['error', 'not_signed_in'], 'nothing is opened before a sign-in');
+    writeFileSync(join(config, 'mongoose-token.json'), JSON.stringify({ schemaVersion: 1, token: 'synthetic-token' }), { mode: 0o600 });
+    await runtime.recover();
+    assert.notEqual(report()?.error, 'not_signed_in', 'the parked endpoint is settled again once the credential exists');
+  } finally {
+    await runtime.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

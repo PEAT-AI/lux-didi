@@ -313,9 +313,9 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     assert.equal(bySession.get('ls-live')!.every(row => row.text === null && row.tool_json === null), false, 'a session that has not ended keeps its reattach text');
 
     const transcription = store.transaction(tx => tx.get("SELECT payload_bytes, arrived_at FROM live_journal WHERE live_session_id='ls-summarised' AND kind='inputTranscription'"));
-    assert.deepEqual(transcription, { payload_bytes: 9, arrived_at: endedAt }, 'the byte count and the arrival time are metadata and stay');
+    assert.deepEqual([transcription?.payload_bytes, transcription?.arrived_at], [9, endedAt], 'the byte count and the arrival time are metadata and stay');
     const marker = store.transaction(tx => tx.get("SELECT text, tool_json, payload_bytes, finished FROM live_journal WHERE live_session_id='ls-summarised' AND kind='ready'"));
-    assert.deepEqual(marker, { text: null, tool_json: null, payload_bytes: 0, finished: 1 }, 'a marker row keeps its own metadata untouched');
+    assert.deepEqual([marker?.text, marker?.tool_json, marker?.payload_bytes, marker?.finished], [null, null, 0, 1], 'a marker row keeps its own metadata untouched');
 
     const sessions = store.transaction(tx => tx.all('SELECT live_session_id, lifecycle, terminal_outcome, accepted_prompt_snapshot FROM live_sessions ORDER BY live_session_id'));
     assert.deepEqual(sessions.map(row => [row.live_session_id, row.lifecycle, row.terminal_outcome, row.accepted_prompt_snapshot]), [

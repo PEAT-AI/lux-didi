@@ -251,7 +251,7 @@ function researchProjection(response: JsonObject, status: 'completed' | 'error')
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
     const head = sources.length > 0 ? `findings from ${sources.join(', ')}` : 'no findings';
-    return note === undefined ? head : `${head}; ${note}`;
+    return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;
   return line.length <= RESEARCH_PROJECTION_CHARS ? line : `${line.slice(0, RESEARCH_PROJECTION_CHARS - 3)}...`;

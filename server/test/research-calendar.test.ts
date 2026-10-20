@@ -318,7 +318,7 @@ test('calendar R6: an explicit retired id cannot retarget a different pending ru
 test('#1020: a week-long calendar read whose events sit in one day says so, and is never spoken as a clear week', async () => {
   const h = fixture([event(21)]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
-  assert.match(String(reply['note']), /calendar: covers Wed 21 Oct; the rest of Mon 19 Oct to Sun 25 Oct was NOT read/, 'the covered days and the days never covered are said in one line');
+  assert.match(String(reply['note']), /calendar: covers Wed 21 Oct only; the rest of Mon 19 Oct to Sun 25 Oct was NOT read/, 'the covered days and the days never covered are said in one line');
   assert.deepEqual((reply['findings'] as { source: string }[]).map(finding => finding.source), ['calendar'], 'the one day it did cover still answers');
 });
 

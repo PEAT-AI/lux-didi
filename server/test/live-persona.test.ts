@@ -653,13 +653,17 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // wrapper growth stays bounded (P6-R3 set 1200; S4b raises the bound for the mandated delegation, backchannel,
 // interruption and honesty rules), and the accent block (pinned verbatim by PV1-R1)
 // keeps its wording.
+const WRAPPER_3O_CHARS = 6603;
 /** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. */
 const WRAPPER_W5_CHARS = 10_546;
-test('3p: five wrapper rules are stated once each, the six-word cue is retired, and the wrapper stays bounded', () => {
+test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
+    // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
+    // asserted where it now lives, at the same strength.
+    'Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.',
     'Write each query for its source, preserve the requested time window, and follow the actual returned coverage.',
     'Depth follows the topic, never the turn.',
   ];
@@ -668,6 +672,11 @@ test('3p: five wrapper rules are stated once each, the six-word cue is retired, 
   assert.equal(wrapper.includes('at most six words'), false, 'the six-word cue is retired, its rule is rule 1');
   assert.equal(wrapper.includes('Before any tool call'), false, 'the retired cue sentence is gone');
   // W5-R1: the bound stays, the positive half does not: the variety rule and its duplicates left the wrapper.
+  // W5-R1: the 3o base plus its 2,000 cap no longer bounds the wrapper, because the S4b delegation added the
+  // backend guide to it; the bound keeps both halves and carries the measured growth of 3,943 at this sha.
+  const growth = wrapper.length - WRAPPER_3O_CHARS;
+  const cap = 4_100;
+  assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
   assert.ok(wrapper.includes('in the voice and accent defined above'), 'the wrapper still points at the accent block');

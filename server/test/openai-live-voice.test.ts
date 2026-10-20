@@ -1427,6 +1427,74 @@ describe('openai gpt-live turn states', () => {
     assert.equal(socket.micFrames().length, 2, 'only the newest frames are left to send');
   });
 
+  // W3: the owner is told when the internet is the reason. Quality is derived from what the adapter already
+  // measures (capture against discards, persistent backlog), and the upload figure is what the socket drained.
+  test('a link that drains 20 KB/s reads weak with the measured upload, and ok again after 5 s of health', async t => {
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    const connection = () => (session.diagnostics?.() as { connection?: { quality: string; uploadKbps?: number } } | undefined)?.connection;
+    for (let index = 0; index < 150; index += 1) {
+      socket.drain(400); // 400 B per 20 ms frame is 20 KB/s, well under the 66.4 KB/s the capture demands
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'weak', 'more than a fifth of the captured bytes were discarded');
+    const measured = Number(connection()?.uploadKbps);
+    assert.ok(measured >= 140 && measured <= 180, `about 160 kbit/s of drain, got ${measured}`);
+    for (let index = 0; index < 260; index += 1) {
+      socket.drain(4_000);
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    assert.equal(connection()?.quality, 'ok', 'five quiet seconds make it ok again');
+  });
+
+  // W3 requirement 1: the wire carries runs of consecutive frames, never 20 ms islands, and the receipt says
+  // how many runs went and how fast the socket was draining.
+  test('a slow uplink sheds whole runs of the oldest frames and reports the run count and the drain', async t => {
+    const receipts = hostReceipts(t);
+    const clock = new FakeClock();
+    const { socket, session } = await fakeReady(t, { clock });
+    socket.trackBuffer = true;
+    for (let index = 0; index < 500; index += 1) {
+      socket.drain(400);
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      clock.advance(20);
+    }
+    const audio = socket.sent.map(frame => (JSON.parse(frame) as { type?: string }).type === 'session.input_audio.append');
+    const runs: number[] = [];
+    let run = 0;
+    for (const isAudio of audio) {
+      if (isAudio) run += 1;
+      else if (run) { runs.push(run); run = 0; }
+    }
+    if (run) runs.push(run);
+    assert.ok(runs.length >= 4, `the session went out in consecutive runs, got ${runs.length}`);
+    assert.ok(Math.min(...runs) >= 10, `no delivered run is thinner than ten frames, shortest ${Math.min(...runs)}`);
+    const shed = receipts().filter(record => record.event === 'uplink_shed');
+    assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
+    assert.ok(Number(shed[0]!.shedRuns) >= 2, 'the receipt counts shed runs, not shed frames');
+    const drain = Number(shed[0]!.drainBytesPerSec);
+    assert.ok(drain >= 15_000 && drain <= 25_000, `about 20 KB/s accepted, got ${drain}`);
+    assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the widened shed receipt');
+  });
+
+  // W3 requirement 2: a frame lost because the socket is not open is counted too, in its own field.
+  test('frames discarded while the socket is not open are counted apart from queue-overflow sheds', async t => {
+    const receipts = hostReceipts(t);
+    const { socket, session } = await fakeReady(t);
+    socket.readyState = 2; // CONNECTING
+    for (let index = 0; index < 2; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    socket.readyState = 3; // CLOSED
+    for (let index = 0; index < 3; index += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+    const shed = receipts().filter(record => record.event === 'uplink_shed');
+    assert.equal(shed.length, 1, 'lost frames are a receipt');
+    assert.equal(Number(shed[0]!.bytes), 0, 'nothing was shed from a queue overflow');
+    assert.ok(Number(shed[0]!.notOpenBytes) >= 5 * 1_280, `every lost frame is counted, got ${shed[0]!.notOpenBytes}`);
+    assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the not-open count');
+  });
+
   // 3o: a stall is inbound silence, never an upload queue. Both halves of the measured session are pinned here.
   test('inbound frames keep arriving while the upload is backed up: the session is not stalled', async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });

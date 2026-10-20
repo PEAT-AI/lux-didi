@@ -38,8 +38,8 @@ const snippet = 'it&#39;s &lt;ready&gt; to read';
 function dataFor(name, args) {
   if (name === 'gmail_get_profile') return { emailAddress: 'owner@example.invalid', messagesTotal: 3, threadsTotal: 2 };
   if (name === 'gmail_search_messages') {
-    // 'ramp' models the real child: messages.list returns up to maxResults ids and the child then
-    // issues one metadata GET per id, so the listed count equals the upstream round trips.
+    // 'ramp' models the real child: the batched fetch returns one listed message per requested id in
+    // a single upstream call, so the listed count equals the maxResults the connector asked for.
     if (mode !== 'ramp') return { messages: [{ id: 'm1', threadId: 't1', snippet, headers: listHeaders }, { id: 'm2', threadId: 't2', snippet, headers: listHeaders }] };
     const count = Math.max(1, Math.min(Number.isInteger(args.maxResults) ? args.maxResults : 10, 10));
     return { messages: Array.from({ length: count }, (_, index) => ({ id: `m${index + 1}`, threadId: `t${index + 1}`, snippet, headers: listHeaders })) };

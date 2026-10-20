@@ -342,7 +342,7 @@ export async function composeMcpRuntime(options: {
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;
       let identity: IdentityProof | undefined;
-      if (identitySource && descriptor && (expectedIdentities.length > 0 || identitySource.strict === true)) {
+      if (identitySource && descriptor && expectedIdentities.length) {
         registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource, tools: discovery.tools });
         try {
           const reader = descriptor.createReader({ port: sourcePort, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });

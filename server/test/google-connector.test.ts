@@ -156,7 +156,7 @@ test('a merged calendar read stops at its own budget and names the calendars it 
   assert.deepEqual(data['partial'], { unread: 3 }, 'the calendars the read did not reach are named, never dropped');
 });
 
-test('a default gmail_search_messages asks the child for exactly the digest cap, so the upstream per-message metadata fetch count is the digest cap not ten', async () => {
+test('a default gmail_search_messages asks the child for the batched digest cap of ten messages and renders all ten', async () => {
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();
   registry.register(config('local-stdio', 'ramp', pidFile));
@@ -167,10 +167,12 @@ test('a default gmail_search_messages asks the child for exactly the digest cap,
     const list = completed(await gmail.gmailList({}));
     payloadPorts.set(list, adapter);
     const envelope = envelopeOf(list);
-    // The child returns one listed message per upstream metadata GET, so this count is the call count.
+    // The helper now reads the listed messages' metadata in one batched call, so the request is no
+    // longer paced by sequential round trips and the digest cap is ten.
+    assert.equal(GMAIL_LIST_MESSAGES, 10);
     assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
     const data = envelope['data'] as Record<string, unknown>;
-    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one upstream metadata GET per listed message');
+    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one batched fetch returns every listed message');
     const projection = renderGoogleTool('gmail_search_messages', data);
     assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GMAIL_LIST_MESSAGES);
   } finally {

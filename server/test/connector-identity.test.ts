@@ -114,7 +114,7 @@ test('projectIdentity returns a closed shape, dropping anything unvalidated', ()
 // Real refusal wiring: one fake Gmail endpoint, the real host compose path, synthetic identities only.
 const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 
-async function gmailHost(email: string, options: { profile?: { content: unknown[]; isError?: boolean }; ownerIdentity?: string | null } = {}) {
+async function gmailHost(email: string, options: { profile?: { content: unknown[]; isError?: boolean } } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
@@ -135,7 +135,7 @@ async function gmailHost(email: string, options: { profile?: { content: unknown[
   endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
   const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
   const url = `http://127.0.0.1:${address.port}/gmail`;
-  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: options.ownerIdentity === undefined ? OWNER : options.ownerIdentity ?? undefined, endpoints: [
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
     { id: 'gmail', connector: 'google', transport: 'streamable-http', url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
   ] }), { mode: 0o600 });
   const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
@@ -167,11 +167,10 @@ test('a proven match keeps the connector and logs only the booleans', async () =
   assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
 });
 
-test('a helper identity refusal refuses Google even with no owner identity configured, naming only the closed code', async () => {
-  // lux-didi #495: unproven identity is never a published connector, so an unverified account can
-  // never return an empty mailbox that reads as "no mail". Neither the address nor a path is spoken.
+test('a helper identity refusal refuses Google with the closed code, never an unverified empty read', async () => {
+  // lux-didi #495: an unproven identity is never a published connector, so the helper's refusal
+  // cannot become an empty mailbox that reads as "no mail". Neither the address nor a path is spoken.
   const { reports } = await gmailHost(OWNER, {
-    ownerIdentity: null,
     profile: { content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }], isError: true },
   });
   assert.equal(reports[0]!.state, 'error');
@@ -181,7 +180,8 @@ test('a helper identity refusal refuses Google even with no owner identity confi
 });
 
 test('a profile with no identity value refuses a strict Google connector as identity_unverified', async () => {
-  const { reports } = await gmailHost(OWNER, { ownerIdentity: null, profile: { content: [{ type: 'text', text: JSON.stringify({ messagesTotal: 0 }) }] } });
+  const { reports } = await gmailHost(OWNER, { profile: { content: [{ type: 'text', text: JSON.stringify({ messagesTotal: 0 }) }] } });
   assert.equal(reports[0]!.state, 'error');
   assert.equal(reports[0]!.reasonCode, 'identity_unverified');
+  assert.deepEqual(reports[0]!.identity, { proven: false, match: null, value: null });
 });

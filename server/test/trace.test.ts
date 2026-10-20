@@ -274,9 +274,13 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
             JSON.stringify({ ownerText: `accepted words ${id}` })]);
         tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?)",
           [id, 'inputTranscription', `owner words ${id}`, 1, 9, at]);
-        // A marker row: no payload text, no tool payload, and therefore no retained bytes.
+        // Marker rows: no owner speech, and their `text` is the marker itself, which must survive.
         tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,NULL,1,0,?)",
           [id, 'ready', at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,4,?)",
+          [id, 'remember_deferred', '1200', at]);
+        tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,44,?)",
+          [id, 'continuity', JSON.stringify({ event: 'rebuilding', reason: 'stall' }), at]);
         tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, tool_json, payload_bytes, arrived_at) VALUES (?,?,NULL,1,?,0,?)",
           [id, 'toolCall', JSON.stringify({ name: 'search', args: { query: `owner words ${id}` } }), at]);
         if (summary) {
@@ -302,7 +306,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
     assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 6, promptSnapshots: 6 });
 
-    const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind <> 'ready' ORDER BY live_session_id, journal_id"));
+    const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind IN ('inputTranscription','toolCall') ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();
     for (const row of rows) bySession.set(String(row.live_session_id), [...(bySession.get(String(row.live_session_id)) ?? []), row]);
     const cleared = ['ls-summarised', 'ls-gave-up', 'ls-forgotten', 'ls-live'].filter(id => bySession.get(id)!.every(row => row.text === null && row.tool_json === null)).sort();
@@ -316,6 +320,13 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     assert.deepEqual([transcription?.payload_bytes, transcription?.arrived_at], [9, endedAt], 'the byte count and the arrival time are metadata and stay');
     const marker = store.transaction(tx => tx.get("SELECT text, tool_json, payload_bytes, finished FROM live_journal WHERE live_session_id='ls-summarised' AND kind='ready'"));
     assert.deepEqual([marker?.text, marker?.tool_json, marker?.payload_bytes, marker?.finished], [null, null, 0, 1], 'a marker row keeps its own metadata untouched');
+    // The reviewer's seed: a wait duration and a continuity event are markers, not owner speech, so a
+    // prune that cleared them would report a 1200 ms wait as 0 and lose the continuity event.
+    const wait = store.transaction(tx => tx.get("SELECT text, payload_bytes FROM live_journal WHERE live_session_id='ls-summarised' AND kind='remember_deferred'"));
+    assert.deepEqual([wait?.text, wait?.payload_bytes], ['1200', 4], 'the deferred wait keeps its duration and its byte count');
+    const continuity = store.transaction(tx => tx.get("SELECT text, payload_bytes FROM live_journal WHERE live_session_id='ls-summarised' AND kind='continuity'"));
+    assert.equal(continuity?.text, JSON.stringify({ event: 'rebuilding', reason: 'stall' }), 'the continuity event survives');
+    assert.equal(continuity?.payload_bytes, 44);
 
     const sessions = store.transaction(tx => tx.all('SELECT live_session_id, lifecycle, terminal_outcome, accepted_prompt_snapshot FROM live_sessions ORDER BY live_session_id'));
     assert.deepEqual(sessions.map(row => [row.live_session_id, row.lifecycle, row.terminal_outcome, row.accepted_prompt_snapshot]), [

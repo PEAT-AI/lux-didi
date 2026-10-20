@@ -428,8 +428,13 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
                               OR (c.status = 'failed' AND COALESCE(c.error_code, '') <> 'deadline')))
                OR EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind = 'live' AND h.source_id = s.live_session_id)))`
     : null;
+  // Only owner speech and tool payloads are content. A marker row's `text` is the marker itself: a
+  // deferred wait's duration for `remember_deferred`, the event and reason for `continuity`, which
+  // `rowToFragment` reads back as `waitedMs` and the continuity event. Clearing those would report a
+  // 1200 ms wait as 0 and lose the continuity event while `payload_bytes` still claimed the bytes.
   const journalText = prunable === null ? 0
-    : exec.run(`UPDATE live_journal SET text=NULL, tool_json=NULL WHERE (text IS NOT NULL OR tool_json IS NOT NULL) AND live_session_id ${prunable}`, [cutoff]);
+    : exec.run(`UPDATE live_journal SET text=NULL WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable}`, [cutoff])
+      + exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff]);
   const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
   return { utterances, callResults, journalText, promptSnapshots };
 }

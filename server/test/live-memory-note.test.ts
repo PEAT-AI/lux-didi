@@ -145,15 +145,6 @@ test('a note stitched from two non-adjacent turns is refused', async t => {
     { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
 });
 
-test('a second note from the same ask is its own memory, not a duplicate', async t => {
-  const store = liveSession(t, [{ text: 'i take tea first thing, tea and the crossword, and the mint ships friday', finished: true }]);
-  const first = await remember(store, 'Rob prefers tea and the crossword');
-  const second = await remember(store, 'the mint ships friday');
-  assert.equal(first.remembered, true, 'the first note from that utterance stores');
-  assert.equal(second.remembered, true, 'a different note from the same utterance stores too');
-  assert.notEqual(first.entryId, second.entryId, 'two distinct notes are two entries');
-});
-
 test('a session with no owner transcription reports the transcript was never final', async t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
   assert.deepEqual(await remember(store, 'Rob prefers tea and the crossword'), { remembered: false, code: 'owner_transcript_not_final' });

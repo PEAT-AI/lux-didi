@@ -500,19 +500,28 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
   'him', 'she', 'need', 'want', 'get', 'got', 'does', 'did', 'please', 'remember', 'note', 'keep', 'mind', 'naya', 'because',
   'before', 'after', 'over', 'under', 'very', 'much', 'more', 'most', 'only', 'own', 'same', 'such', 'too', 'now']);
 // Third-person framing is not note content: "Rob prefers", "he wants" and "the owner" say who the
-// note is about, and the owner never speaks their own name. Dropping it can only tighten the guard.
-const MEMORY_FRAMING_WORDS = new Set(['prefer', 'prefers', 'preferred', 'likes', 'liked', 'loves', 'wants', 'needs', 'hates', 'dislikes', 'owner', 'said', 'says']);
-const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|said|says)\b\s*/i;
+// note is about, and the owner never speaks their own name. Only the SUBJECT is dropped: the verb stays
+// a content word, because the verb is the word that says which way the owner feels.
+const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
+const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
+// Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
+const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
+  'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
+const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
+  'wasnt', 'wont', 'without', 'dislike', 'dislikes', 'hate', 'hates']);
+/** Affirms or denies; undefined when the clause says neither, so an ordinary note is never refused. */
+function feel(text: string): 'affirm' | 'deny' | undefined {
+  const words = tokens(text);
+  if (words.some(word => MEMORY_DENY.has(word))) return 'deny';
+  if (words.some(word => MEMORY_AFFIRM.has(word))) return 'affirm';
+  return undefined;
+}
 // Support must be ONE ask: the turns carrying the note's words have to be adjacent, because a note
 // stitched from two turns apart is nobody's sentence. Three turns is one ask, a question and its
 // clarification; a wider span is a different topic.
 const MEMORY_SPAN_TURNS = 3;
-// The ratio counts words, not meaning: a negated note over an unnegated ask says the opposite of what
-// the owner said, so polarity is compared separately.
-const MEMORY_NEGATORS = new Set(['not', 'never', 'no', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent', 'wasnt',
-  'wont', 'without', 'dislike', 'dislikes', 'hate', 'hates']);
-const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-const negated = (text: string): boolean => tokens(text).some(word => MEMORY_NEGATORS.has(word));
+// A contraction is one word: "don't" must read as the negator it is, so apostrophes go before tokens.
+const tokens = (text: string): string[] => text.toLowerCase().replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
 // Polarity belongs to the clause that carries the note's words, not to the whole turn: the same turn can
 // affirm "short answers in the morning" and then say "no meetings before nine".
 const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
@@ -551,7 +560,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
   const wordSet = new Set(words);
   const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
-  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; negated: boolean } | undefined;
+  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; feels: 'affirm' | 'deny' | undefined } | undefined;
   for (let end = turns.length - 1; end >= 0 && !ask; end--) {
     for (let width = 1; width <= MEMORY_SPAN_TURNS && end - width + 1 >= 0; width++) {
       const first = end - width + 1;
@@ -561,7 +570,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
       const ratio = words.length ? supported.length / words.length : 0;
       if (ratio < MEMORY_SUPPORT_RATIO) continue;
       ask = { turn: turns[end]!, ratio, supported: supported.length,
-        negated: negated(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
+        feels: feel(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
       break;
     }
   }
@@ -575,7 +584,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // A note copied word for word from one utterance names that utterance, whatever the span search found.
   for (let index = turns.length - 1; index >= 0; index--) {
     if (!normalized(turns[index]!.text).includes(pointer)) continue;
-    ask = { turn: turns[index]!, ratio: 1, supported: words.length, negated: negated(dominantClause(turns[index]!.text, wordSet)) };
+    ask = { turn: turns[index]!, ratio: 1, supported: words.length, feels: feel(dominantClause(turns[index]!.text, wordSet)) };
     break;
   }
   if (!ask) {
@@ -585,9 +594,11 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
     return receipt({ remembered: false, code: speech ? 'owner_text_mismatch' : 'owner_transcript_not_final' });
   }
   const metrics = { ratio: ask.ratio, supported: ask.supported };
-  // Every content word spoken still says nothing about polarity: "does not want" against "wants" is the
-  // opposite claim, so a flip is refused with the same code and supportRatio 1 that makes it debuggable.
-  if (negated(dominantClause(noteText.replace(MEMORY_FRAMING_LEAD, ''), wordSet)) !== ask.negated) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
+  // Every content word spoken still says nothing about polarity: "does not want" against "wants", or
+  // "hates" against "love", is the opposite claim. One side denying where the other does not is a flip,
+  // in either direction, and it is refused with the same code and supportRatio 1 that makes it visible.
+  const noteFeels = feel(dominantClause(noteText.replace(MEMORY_FRAMING_LEAD, ''), wordSet));
+  if (noteFeels !== ask.feels && (noteFeels === 'deny' || ask.feels === 'deny')) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
   const utterance = ask.turn.text.trim();
   if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, metrics);
   // One entry per owner utterance: the source identity is the canonical `session:journal-sequence` that

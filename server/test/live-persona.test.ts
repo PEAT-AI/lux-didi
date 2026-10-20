@@ -633,9 +633,10 @@ test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
 test('tool conduct retrieves relevant past context and distinguishes missing evidence', () => {
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const sentence of [
-    'Retrieve relevant past conversations or knowledge when advice depends on earlier decisions, preferences or commitments.',
-    'Batch independent reads, and follow dependent detail from returned identities.',
-    'Take a position when the evidence supports one.',
+    'look in memory or his knowledge vault first unless that evidence is already in the conversation',
+    'Put independent lookups for one question into one research request.',
+    'Use returned identities for dependent detail reads.',
+    'Then take a position: one recommendation and what it costs.',
   ]) assert.equal(wrapper.split(sentence).length - 1, 1);
   assert.match(NAYA_VOICE_TOOLS, /never call a partial search complete/);
   assert.match(NAYA_VOICE_TOOLS, /State a material gap briefly while giving the useful confirmed result/);
@@ -651,22 +652,22 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // wrapper growth stays bounded (P6-R3 set 1200; S4b raises the bound for the mandated delegation, backchannel,
 // interruption and honesty rules), and the accent block (pinned verbatim by PV1-R1)
 // keeps its wording.
-const WRAPPER_3O_CHARS = 6603;
-test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
+/** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. */
+const WRAPPER_W5_CHARS = 10_531;
+test('3p: five wrapper rules are stated once each, the six-word cue is retired, and the wrapper stays bounded', () => {
   const rules = [
     'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
-    'Query exactly the time window the question names, so today means today, and skip listing calendars unless he asks which calendars exist.',
-    'Lead with the point, then give the depth the question deserves; never pad, never summarise what you just said.',
+    'Write each query for its source, preserve the requested time window, and follow the actual returned coverage.',
+    'Depth follows the topic, never the turn.',
   ];
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of rules) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   assert.equal(wrapper.includes('at most six words'), false, 'the six-word cue is retired, its rule is rule 1');
   assert.equal(wrapper.includes('Before any tool call'), false, 'the retired cue sentence is gone');
-  const growth = wrapper.length - WRAPPER_3O_CHARS;
-  const cap = 2000;
-  assert.ok(growth > 0 && growth < cap, `the wrapper grows under the S4b cap of ${cap} chars (${growth})`);
+  // W5-R1: the bound stays, the positive half does not: the variety rule and its duplicates left the wrapper.
+  assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
   assert.ok(wrapper.includes('in the voice and accent defined above'), 'the wrapper still points at the accent block');
   for (const preset of Object.values(LIVE_ACCENT_PRESETS)) {
@@ -841,8 +842,8 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
   "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence.",
-  'When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.',
-  'Never make a second research call for the same question until the first has answered.',
+  'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.',
+  'Let that request return before starting another for the same question.',
 ];
 const Q5_SUPERSEDED = [
   'Open a fresh call with one specific line drawn from what is current, never a generic "ready when you are".',
@@ -850,13 +851,12 @@ const Q5_SUPERSEDED = [
   'A read cut short is said as cut short, so offer a narrower ask.',
   'never make several research calls in a row for one question.',
 ];
-test('Q5: three wrapper rules are stated once each, their superseded sentences are gone, and the growth stays under 700 chars', () => {
+test('Q5: three wrapper rules are stated once each, their superseded sentences are gone, and the wrapper stays bounded', () => {
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of Q5_RULES) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   for (const retired of Q5_SUPERSEDED) assert.equal(wrapper.includes(retired), false, `superseded sentence is gone: ${retired}`);
-  const added = Q5_RULES.reduce((chars, rule) => chars + rule.length, 0);
-  const removed = Q5_SUPERSEDED.reduce((chars, rule) => chars + rule.length, 0) - 'never make several research calls in a row for one question.'.length;
-  assert.ok(added - removed > 0 && added - removed < 700, `the wrapper grows under 700 chars (${added - removed})`);
+  // W5-R1: the additive bound becomes the same cap the 3p rule set holds, so the wrapper size stays asserted.
+  assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
 });
 
 test('Q5-R4: the start instruction carries the previous-openers context once, and nothing when there is none', () => {

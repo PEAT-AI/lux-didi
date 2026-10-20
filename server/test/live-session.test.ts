@@ -4850,6 +4850,8 @@ test('W6/H13: a playback receipt names the turn and the response open when its f
   attachment.playbackReceipt(frame('started', 3));
   const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM trace_event WHERE live_session_id=? ORDER BY seq', [session.liveSessionId]).map(row => row['kind']));
   assert.deepEqual(kinds, ['playback.received', 'playback.enqueued', 'playback.started'], 'DEBUGKINDS');
+  const keys = h.store.transaction(tx => tx.all('SELECT playback_key, source_instance_id, segment_seq FROM trace_playback WHERE live_session_id=?', [session.liveSessionId]));
+  assert.deepEqual(keys, [`WANTED:${session.liveSessionId}:inst-e2:1`], 'DEBUGKEYS');
   const row = h.store.transaction(tx => tx.get('SELECT turn_id, response_key, received_at FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-e2:1`]))!;
   assert.equal(row['turn_id'], turnId, 'the segment is tied to the turn that was open when its first chunk was sent');
   assert.equal(row['response_key'], responseKey, 'and to the response that was current then');

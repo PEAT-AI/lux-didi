@@ -420,6 +420,8 @@ class Session implements LiveVoiceSession {
   private lastBuffered = 0;
   private lastBufferedAt: number | undefined;
   private connectionQuality: 'ok' | 'weak' = 'ok';
+  /** The last sample that carried a discard or a pinned backlog: the five quiet seconds are counted from it. */
+  private lastUplinkLossAt: number | undefined;
   /** The last moment the link was observed weak: the watchdog compares it with the wait it is judging. */
   private connectionWeakAt: number | undefined;
   private drainBytesPerSec = 0;
@@ -1738,9 +1740,10 @@ class Session implements LiveVoiceSession {
     // Both arms need a whole window: one lost frame in a half-filled window is a 100% share and would make the
     // caption cry wolf on the first reconnect of a healthy call.
     const covered = oldest !== undefined && now - oldest >= CONNECTION_WINDOW_MS;
+    for (const sample of samples) if (sample.discarded > 0 || sample.backlogged) this.lastUplinkLossAt = sample.at;
     if (covered && captured > 0 && discarded / captured > CONNECTION_WEAK_SHARE) this.markUplinkLoss(now);
     else if (covered && pinned) this.markUplinkLoss(now);
-    else if (this.connectionQuality === 'weak' && now - (this.connectionWeakAt ?? 0) >= CONNECTION_OK_MS) {
+    else if (this.connectionQuality === 'weak' && (this.lastUplinkLossAt === undefined || now - this.lastUplinkLossAt >= CONNECTION_OK_MS)) {
       this.connectionQuality = 'ok';
       hostLogEvent({ event: 'connection_quality', quality: 'ok', uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000) });
     }

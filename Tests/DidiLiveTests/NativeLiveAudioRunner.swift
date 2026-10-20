@@ -302,10 +302,19 @@ private func checkFormatChangeRebuild() throws {
     try audioRequire(conversation.device.hasJournal, "production construction wires an audio journal into the device")
     try audioRequire(AudioOwner.shared.hasJournal, "production construction adopts the journal on the owner")
     conversation.device.log("audio_test_event", ["probe": "1"])
-    let file = directory.appendingPathComponent("audio.log")
+    let file = conversation.device.journal?.fileURL ?? directory.appendingPathComponent("audio.log")
     let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
     try audioRequire(text.contains("audio_test_event") && text.contains("timestamp"),
                      "the audio journal writes a timestamped metadata line to audio.log")
+    // #477: one audio journal per process. A second conversation over the same logs directory must not
+    // open a second writer on audio.log, or two handles seek to the same end and tear each other's lines.
+    let second = NativeLiveConversation(
+        authority: (origin, { url, _ in URLRequest(url: url) }),
+        dictationIsCapturing: { false }, logsDirectory: directory)
+    try audioRequire(second.device.journal === conversation.device.journal,
+                     "a second conversation's device writes into the one adopted audio journal")
+    try audioRequire(second.device.journal === AudioOwner.shared.journal,
+                     "the device journal is the journal the owner holds")
     print("PASS production construction records timestamped audio.log metadata")
 }
 

@@ -48,6 +48,9 @@ struct NativeAudioEvent: Equatable {
 @MainActor final class NativeAudioJournal {
     private var file: NativeLogFile
     private(set) var events: [NativeAudioEvent] = []
+    /// The file this journal appends to, if any: one journal per process, so a reader has to ask the
+    /// journal in use rather than assume a directory.
+    var fileURL: URL? { file.fileURL }
     var observer: ((NativeAudioEvent) -> Void)?
     /// The live session this journal is inside, if any: every line written meanwhile carries its id.
     var sessionID: String?
@@ -109,10 +112,13 @@ struct NativeAudioEvent: Equatable {
     var hasJournal: Bool { journal != nil }
 
     /// Production wiring: adopt the app's audio journal once, so every owner record is
-    /// timestamped into the same log the device writes.
-    func adopt(journal newJournal: NativeAudioJournal) {
-        guard journal == nil else { return }
+    /// timestamped into the same log the device writes. A second journal is never adopted: the caller
+    /// gets the one already in use, so two writers never hold audio.log at once (#477).
+    @discardableResult
+    func adopt(journal newJournal: NativeAudioJournal) -> NativeAudioJournal {
+        if let journal { return journal }
         journal = newJournal
+        return newJournal
     }
 
     /// Take the single owner slot and the cross-process lock before creating an engine.

@@ -616,7 +616,9 @@ struct NativeLiveInterruptionSample: Sendable {
     private let captureInput: AVAudioFormat?
     private let inputDevice: () -> (id: String, name: String)
     private let owner: AudioOwner
-    private let journal: NativeAudioJournal?
+    /// The one audio journal this device writes into: the owner's adopted journal when one exists, so
+    /// a second conversation can never open a second writer on audio.log (#477).
+    let journal: NativeAudioJournal?
     private let deviceState: (Bool) -> Bool
     private let now: () -> Date
     private let isBuiltInOutput: () -> Bool

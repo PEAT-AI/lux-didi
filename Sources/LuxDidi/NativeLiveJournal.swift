@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Closed reason enum for every native-live.log end record. A teardown never writes free text,
@@ -118,7 +119,7 @@ final class NativeLogClock: @unchecked Sendable {
 /// small `limit`. A write never throws into a call path and never changes capture or session state.
 struct NativeLogFile {
     static let limit = 5 * 1024 * 1024
-    private let fileURL: URL?
+    let fileURL: URL?
     private let limit: Int
     private var handle: FileHandle?
 
@@ -143,13 +144,13 @@ struct NativeLogFile {
         } catch { /* Logging never changes capture or session state. */ }
     }
 
+    /// #477: the log is opened with O_APPEND, so the kernel places every record at the current end of
+    /// file in one write. A second writer (a second journal in this process, or another process) can
+    /// neither overwrite nor split a line, which a seek-then-write append cannot promise.
     private static func open(_ url: URL) throws -> FileHandle {
-        if !FileManager.default.fileExists(atPath: url.path) {
-            guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-        }
-        return try FileHandle(forWritingTo: url)
+        let descriptor = url.path.withCString { Darwin.open($0, O_WRONLY | O_APPEND | O_CREAT, 0o600) }
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 
     private static func rotate(_ url: URL) throws {

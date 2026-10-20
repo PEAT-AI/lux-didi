@@ -1255,7 +1255,9 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.ok(current.liveSessions.every(row => row['resumption_handle'] === null && row['connection_generation'] === 0));
   assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
-  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
+  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation,
+    diagnostic_metadata_state: _dm, diagnostic_content_state: _dc, native_receipt_state: _nr, diagnostic_failures: _df,
+    diagnostic_last_reason: _dl, diagnostic_unattributed_transcripts: _du, diagnostic_clock_domain: _dcd, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {
@@ -1554,7 +1556,8 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
     import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
-    const store = new Store(${JSON.stringify(dir)}, liveMigrations);
+    import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
+    const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
     const owner = createLiveSessionOwner({ store, profile: validateLiveProfile(${JSON.stringify(profileInput({ unusedMs: 20 }))}),
       now: () => clock, voice: { open() { throw new Error('unexpected provider open'); } },
@@ -1575,7 +1578,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   assert.equal(code, 1);
   assert.match(stderr, /LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE/);
   assert.match(stdout, /^[a-f0-9-]{36}$/);
-  const store = new Store(dir, liveMigrations);
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
   t.after(() => store.close());
   assert.equal(store.transaction(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [stdout]))?.['lifecycle'], 'accepted');
   assert.equal(store.transaction(tx => tx.all('SELECT * FROM live_journal')).length, 0);

@@ -151,10 +151,13 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   // (configured without reading the secret); a session for a slot with no key fails loud, never as Gemini.
   const keyPresent = testing?.credentials !== undefined || slotKeyPresent(configDir, profile.keyReference);
   try {
-    // A gemini live route shares the text slot, so no per-route receipt exists to pin.
+    // A gemini live route shares the text slot, so no per-route receipt exists to pin. A slot with no
+    // receipt is a create-time gate too: status stays local validation and create() fails closed.
     if (!testing?.credentials && profile.provider !== 'gemini') {
-      binding = pinProviderBinding(configDir, seedScope(profile.provider, profile.liveModelId, profile.route.dataClasses));
-      profile = validateLiveProfile({ ...profile, credentialBinding: binding.identity });
+      try {
+        binding = pinProviderBinding(configDir, seedScope(profile.provider, profile.liveModelId, profile.route.dataClasses));
+        profile = validateLiveProfile({ ...profile, credentialBinding: binding.identity });
+      } catch { binding = undefined; }
     }
     if (!researchSelector) {
       try {

@@ -1408,7 +1408,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const cursorPage = run.mailCursorRequested ? run.mailCursors.get(run.mailCursorRequested) : undefined;
   const mailRemaining = cursorPage?.ids.length ? allMailRemaining.filter(([key]) => cursorPage.ids.includes(key)) : allMailRemaining;
   const mailReads = [...run.mail.values()];
-  if (mailRemaining.length) groups.push({ source: 'mail', label: 'mail messages', lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
+  if (mailRemaining.length) groups.push({ source: 'mail', label: SOURCE_LABEL.mail, lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
   const mailUpstream = mailReads.some(read => !read.failed && !read.exhausted);
   const mailIncomplete = mailReads.some(read => read.failed || read.upstreamIncomplete || read.invalid > 0 || [...read.messages.values()].some(message => message.bodyTruncated));
   if ((mailIncomplete || mailUpstream || mailRemaining.length > 8) && status === 'answered') status = 'partial';

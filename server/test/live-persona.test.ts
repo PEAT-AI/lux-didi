@@ -343,10 +343,10 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '43d542607473e43f13d813122c4c407057b28f5d86de032601b0909ac48a0658');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '15b04ba0fe834324077e940ad6659ba98c1f67141fdaf6d010931bdd9cf6c722');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '8a0e859356765262148b264dd8aa8e24647fb19ae9b334f8d9343293d674dce9');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'd10d76ba29670386d5c0beff0cfcbe52f42ad372cf22cfb9fdce0558582d11eb');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '7ae68d13b0570e51de1448717a967e6703f6e1da4a6a039a9708f0ff2896e25e');
+  assert.equal(sha(NAYA_TOOLS), '0eb168f0ff29660d19b1ef0f8dfb88e3a9e631b8ebde9e6ac92ccbf2e50be832');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -657,7 +657,6 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
     'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
-    'Vary how you start replies; never open two replies in a row with the same word.',
     'Query exactly the time window the question names, so today means today, and skip listing calendars unless he asks which calendars exist.',
     'Lead with the point, then give the depth the question deserves; never pad, never summarise what you just said.',
   ];
@@ -841,7 +840,7 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
-  "Open a fresh call from work, the calendar or an open work loop; never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence.",
+  "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later in the conversation, at most once, never as the first sentence.",
   'When a lookup is cut short, say so in a few words and keep going with what you have or ask one precise follow-up; never hand the research back to him.',
   'Never make a second research call for the same question until the first has answered.',
 ];
@@ -905,7 +904,6 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
     'When the answer is already in these instructions, answer from it without a lookup.',
     'Never claim or imply a check that did not run.',
     'Never explain a pause as thinking: say what is actually happening, or simply answer.',
-    'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
     'never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them',
   ]) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   assert.equal(wrapper.split('Open a fresh call').length - 1, 1, 'one opener rule only');
@@ -917,7 +915,7 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
 });
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
-  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough\. Never fill the silence while a lookup runs\./);
+  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends\. Never fill the silence while a lookup runs\./);
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the earlier thread only if it still matters; otherwise let it go\./);
 });
 
@@ -1073,7 +1071,7 @@ test('R7: a full-length digest keeps the composed instruction inside its limits'
 
 /** Q10, Q4, Q5, Q2: one unconditional rule each, stated once, in the instruction the speaking model reads. */
 const W5_RULES = [
-  'Open a fresh call with one specific line drawn from what is current, never a generic ready-to-help line',
+  'Open a fresh call on one current specific, never a generic ready-to-help line',
   'A short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends.',
   'Never hand any continuation, research included, back as a permission question',
   'name any source that failed in one clause',
@@ -1091,14 +1089,14 @@ const W5_REPLACED = [
 const W5_VOICE_BEFORE = 6997;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
-  const voice = composeLiveSessionInstruction({ text: 'Synthetic system', tools: ['research'], records: [],
+  const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, delegatedBackend: true });
   for (const rule of W5_RULES) assert.equal(voice.text.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   for (const gone of W5_REPLACED) assert.equal(voice.text.includes(gone), false, `replaced sentence is gone: ${gone}`);
 });
 
 test('W5: the Gemini path keeps its own full text and carries the same four rules', () => {
-  const gemini = composeLiveSessionInstruction({ text: 'Synthetic system', tools: ['research'], records: [],
+  const gemini = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   assert.ok(gemini.text.includes(NAYA_TOOLS), 'the full conduct is carried byte for byte');
   for (const rule of W5_RULES) assert.equal(gemini.text.split(rule).length - 1, 1, `stated exactly once on the Gemini path: ${rule}`);

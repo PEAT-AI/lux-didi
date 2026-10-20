@@ -338,7 +338,7 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
 test('W5: the compiled Gemini voice instruction carries the four audit rules once and none of the replaced text', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
   for (const rule of [
-    'Open a fresh call with one specific line drawn from what is current, never a generic ready-to-help line',
+    'Open a fresh call on one current specific, never a generic ready-to-help line',
     'after announcing a check, say what it found before the turn ends',
     'Never hand any continuation, research included, back as a permission question',
     'name any source that failed in one clause',

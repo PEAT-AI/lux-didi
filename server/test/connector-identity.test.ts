@@ -228,10 +228,10 @@ test('one proof per connector endpoint per boot, and no diagnostic capture at st
     try {
       const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch, 'Idempotency-Key': randomUUID() };
       const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
-      const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; identity?: IdentityProof }>;
+      const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; identity?: IdentityProof; reasonCode?: string; error?: string }>;
       assert.deepEqual(reports.map(report => [report.id, report.state, report.identity?.proven, report.identity?.match]), [
         ['mail', 'connected', true, true], ['calendar', 'connected', true, true],
-      ], 'both endpoints of the account are proven and published');
+      ], `both endpoints of the account are proven and published: ${JSON.stringify(reports)}`);
       const lines = (await readFile(join(dir, 'state', 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0)
         .map(line => JSON.parse(line) as Record<string, unknown>);
       assert.equal(lines.filter(line => line.event === 'connector_identity' && line.connector === 'google').length, 1, 'one identity proof for the account, not one per endpoint');

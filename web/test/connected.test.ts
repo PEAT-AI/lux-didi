@@ -20,11 +20,11 @@ test('a saved answer with a bullet list and a numbered list renders ul and ol in
 });
 
 test('chat evidence lists the items the answer used and the sources row carries the links', () => {
-  const evidence = [{ name: 'gmail_list', markdown: '**ACCEPTED** [unsafe](javascript:alert) <script>REJECTED-HTML</script>', sources: [{ title: 'Inbox evidence', url: 'https://example.org/mail' }, { title: 'Local citation' }, { title: 'Unsafe source', url: 'javascript:alert(1)' }] }];
+  const evidence = [{ name: 'gmail_search_messages', markdown: '**ACCEPTED** [unsafe](javascript:alert) <script>REJECTED-HTML</script>', sources: [{ title: 'Inbox evidence', url: 'https://example.org/mail' }, { title: 'Local citation' }, { title: 'Unsafe source', url: 'javascript:alert(1)' }] }];
   const html = render(evidence);
   assert.match(html, /chat-evidence/);
   assert.match(html, /Gmail/);
-  assert.doesNotMatch(html, /gmail_list|Gated tool result/);
+  assert.doesNotMatch(html, /gmail_search_messages|Gated tool result/);
   assert.match(html, /ACCEPTED/);
   assert.match(html, /unsafe/);
   assert.doesNotMatch(html, /href="javascript:/i);

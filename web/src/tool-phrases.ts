@@ -10,11 +10,11 @@ export const TOOL_PHRASES: Record<string, ToolPhrase> = {
   get_insight: { verb: 'Reading', object: 'your knowledge base' },
   // Gmail
   gmail_get_profile: { verb: 'Checking', object: 'your mail profile' },
-  gmail_list: { verb: 'Searching', object: 'your mail' },
-  gmail_read: { verb: 'Reading', object: 'that email' },
+  gmail_search_messages: { verb: 'Searching', object: 'your mail' },
+  gmail_read_message: { verb: 'Reading', object: 'that email' },
   // Calendar
-  gcal_calendars: { verb: 'Checking', object: 'your calendar' },
-  gcal_list: { verb: 'Checking', object: 'your calendar' },
+  calendar_list_calendars: { verb: 'Checking', object: 'your calendar' },
+  calendar_list_events: { verb: 'Checking', object: 'your calendar' },
   // Mattermost
   mattermost_whoami: { verb: 'Checking', object: 'your Mattermost account' },
   mattermost_get_channel_history: { verb: 'Reading', object: 'a Mattermost channel' },

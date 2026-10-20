@@ -24,7 +24,7 @@ const WebSocket = WS;
 const CONNECTOR_READS = {
   'lux-knowledge': { tool: 'search_knowledge', args: { query: 'Lux Didi' } },
   gmail: { tool: 'gmail_get_profile', args: {} },
-  calendar: { tool: 'gcal_calendars', args: {} },
+  calendar: { tool: 'calendar_list_calendars', args: {} },
   mongoose: { tool: 'get_company_profile', args: {} },
   mattermost: { tool: 'mattermost_whoami', args: {} },
 };
@@ -46,10 +46,10 @@ export const RESEARCH_PROBES = [
 ];
 // `kept` counts bytes meant for the reply; the calendar-name discovery read only feeds the event read.
 const SOURCE_TOOLS = {
-  mail: ['gmail_list', 'gmail_read'],
+  mail: ['gmail_search_messages', 'gmail_read_message'],
   chat: ['mattermost_search', 'mattermost_get_thread'],
   knowledge: ['search_knowledge', 'get_insight'],
-  calendar: ['gcal_list'],
+  calendar: ['calendar_list_events'],
 };
 
 function log(line) { process.stdout.write(line + '\n'); }

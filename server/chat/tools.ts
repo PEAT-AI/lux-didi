@@ -8,8 +8,8 @@ export const CHAT_TOOL_TIMEOUT_MS = 15_000;
 const LABELS: Record<string, string> = {
   search: 'searched everything', search_knowledge: 'searched the knowledge base', mail: 'searched mail', calendar: 'checked the calendar', drive: 'searched Drive',
   contacts: 'checked contacts', memory: 'read saved memory',
-  gmail_list: 'listed mail', gmail_read: 'read a message', gmail_search: 'searched mail',
-  gcal_list: 'listed calendar events', gcal_read: 'read an event', gcal_search: 'searched the calendar',
+  gmail_search_messages: 'listed mail', gmail_read_message: 'read a message', gmail_search: 'searched mail',
+  calendar_list_events: 'listed calendar events', gcal_read: 'read an event', gcal_search: 'searched the calendar',
   gdrive_list: 'listed files', gdrive_read: 'read a file', gdrive_search: 'searched Drive',
   mattermost_search: 'searched Mattermost', mattermost_read: 'read a channel',
 };

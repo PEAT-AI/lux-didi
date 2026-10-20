@@ -199,7 +199,7 @@ function digestConnector(script: DigestScript, clock: { now: number }): Calendar
       if (script.fail === 'throw') throw new Error('connector down');
       if (script.fail === 'refused') return { state: 'refused', reason: 'tool-not-granted' };
       const data = { events: [...(script.events ?? [digestEvent])] };
-      return { state: 'completed', tool: 'gcal_list', observedAt: clock.now,
+      return { state: 'completed', tool: 'calendar_list_events', observedAt: clock.now,
         decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
         source: {}, coverage: {}, projection: {}, response: {} } as unknown as GoogleResult;
     },

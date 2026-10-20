@@ -43,8 +43,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'gmail_read' : exactRead ? 'get_insight' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'gmail_read' : exactRead ? 'get_insight' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId } : exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
+    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'gmail_read_message' : exactRead ? 'get_insight' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'gmail_read_message' : exactRead ? 'get_insight' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId } : exactRead ? { ids: [42] } : { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -70,7 +70,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
   let executions = 0; const sourceRequests: Record<string, unknown>[] = [];
-  let exposed = sourceKind === 'gmail' ? [{ name: 'gmail_read', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
+  let exposed = sourceKind === 'gmail' ? [{ name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;
@@ -402,12 +402,12 @@ const completedOutcome = { status: 'completed' as const, result: { id: 'result-1
 
 test('a chat tool call that outlives its timeout returns a structured timeout and never hangs', async () => {
   const events: ChatStepEvent[] = [];
-  const registry = chatToolRegistry([toolDef('gmail_list', () => new Promise(() => {}))],
+  const registry = chatToolRegistry([toolDef('gmail_search_messages', () => new Promise(() => {}))],
     { runId: 'run-1', onStep: event => events.push(event),
       onFinished: record => events.push({ type: 'chat_step', runId: 'run-1', ...record, phase: 'end', resultCount: 0 }), timeoutMs: 20 });
   assert.deepEqual(await registry[0]!.execute({}, execContext()), { status: 'failed', code: 'timeout' });
   const end = events.at(-1)!;
-  assert.deepEqual([end.phase, end.ok, end.tool], ['end', false, 'gmail_list']);
+  assert.deepEqual([end.phase, end.ok, end.tool], ['end', false, 'gmail_search_messages']);
   assert.equal(typeof end.ms, 'number');
 });
 
@@ -428,14 +428,14 @@ test('the fence signal aborts an in-flight chat call and reports it as cancelled
 test('chat step events pair start with end in order and carry no tool content', async () => {
   const events: ChatStepEvent[] = [];
   const registry = chatToolRegistry([
-    toolDef('gmail_list', async () => completedOutcome),
+    toolDef('gmail_search_messages', async () => completedOutcome),
     toolDef('gdrive_read', async () => ({ status: 'failed', code: 'connector_error' })),
   ], { runId: 'run-1', onStep: event => events.push(event),
       onFinished: record => events.push({ type: 'chat_step', runId: 'run-1', ...record, phase: 'end', resultCount: 0 }) });
   await registry[0]!.execute({ query: 'secret query text' }, execContext());
   await registry[1]!.execute({}, execContext());
   assert.deepEqual(events.map(event => [event.phase, event.tool, event.ok]),
-    [['start', 'gmail_list', undefined], ['end', 'gmail_list', true],
+    [['start', 'gmail_search_messages', undefined], ['end', 'gmail_search_messages', true],
       ['start', 'gdrive_read', undefined], ['end', 'gdrive_read', false]]);
   assert.equal(events[0]!.label, 'listed mail');
   const wire = JSON.stringify(events);
@@ -459,7 +459,7 @@ test('a call cut by the fence is named as not reached for the partial answer', (
 });
 
 test('the deterministic answer is written from the frozen evidence, never from nothing', () => {
-  const evidence = [{ name: 'gmail_list', markdown: 'two messages' }, { name: 'search', markdown: 'one insight' }];
+  const evidence = [{ name: 'gmail_search_messages', markdown: 'two messages' }, { name: 'search', markdown: 'one insight' }];
   assert.equal(deterministicAnswer(evidence, ['searched mail']),
     'I searched listed mail and searched everything; found 2 items; searched mail did not answer in time.');
   assert.equal(deterministicAnswer([], []), 'I could not search any source; found 0 items.');
@@ -609,7 +609,7 @@ test('Text body integration: a consumer alone cannot launder revoked original so
 test('Text body integration: source completeness remains distinct from fully consumed received mail text', async t => {
   for (const complete of [false, true]) {
     const f = await fixture(t, ['ordinary', 'private'], {}, 'gmail'); f.followBodies();
-    f.leak(JSON.stringify({ family: 'gmail', tool: 'gmail_read', data: { id: 'synthetic-message', headers: { Subject: 'Synthetic completeness' }, body: 'Received mail evidence. '.repeat(180), bodyCoverage: { complete } } }));
+    f.leak(JSON.stringify({ family: 'gmail', tool: 'gmail_read_message', data: { id: 'synthetic-message', headers: { Subject: 'Synthetic completeness' }, body: 'Received mail evidence. '.repeat(180), bodyCoverage: { complete } } }));
     const { run, events } = await f.turnEvents(f.session()); assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); assert.equal(f.sourceRequests[0]!['format'], 'full');
     const trace = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace))), coverage = trace.receivedBodyCoverage[0];
     assert.equal(coverage.remaining, 0); assert.equal(coverage.upstreamComplete, complete); assert.equal(coverage.upstreamOmitted, !complete);

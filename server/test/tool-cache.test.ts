@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { LiveToolCache, LIVE_CACHED_READS, LIVE_CACHE_TTL_MS } from '../live/tool-cache.js';
 
 test('the allowlist holds exactly the idempotent reads and nothing else', () => {
-  assert.deepEqual([...LIVE_CACHED_READS].sort(), ['gcal_calendars', 'gmail_get_profile', 'mattermost_list_channels']);
+  assert.deepEqual([...LIVE_CACHED_READS].sort(), ['calendar_list_calendars', 'gmail_get_profile', 'mattermost_list_channels']);
   const cache = new LiveToolCache();
-  for (const tool of ['mattermost_list_channels', 'gcal_calendars', 'gmail_get_profile']) assert.equal(cache.cacheable(tool), true, tool);
+  for (const tool of ['mattermost_list_channels', 'calendar_list_calendars', 'gmail_get_profile']) assert.equal(cache.cacheable(tool), true, tool);
   for (const tool of ['mattermost_search', 'mattermost_get_channel_history', 'mattermost_get_thread', 'search_knowledge', 'remember_note']) assert.equal(cache.cacheable(tool), false, tool);
 });
 

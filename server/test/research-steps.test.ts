@@ -42,7 +42,7 @@ test('research publishes one live step per actual source read, including mail bo
   const collector = stepCollector();
   try {
     const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> =>
-      subs.map(call => call.name === 'gmail_list'
+      subs.map(call => call.name === 'gmail_search_messages'
         ? { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: [{ id: 'synthetic-mail', headers: { Subject: 'release freeze decided on Friday' } }] }) }
         : sub(call.name, 'release freeze decided on Friday', true, call.key));
     const reply = await runResearch(deps(selectorOf(['knowledge_search', 'mail_search', 'chat_search'], 'release freeze', 'week'), execute),

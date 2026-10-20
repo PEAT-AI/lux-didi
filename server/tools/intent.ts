@@ -132,10 +132,10 @@ export function declarationFor(name: IntentToolName): IntentDeclaration {
 export const INTERNAL = {
   knowledgeSearch: 'search_knowledge',
   knowledgeRead: 'get_insight',
-  mailList: 'gmail_list',
-  mailRead: 'gmail_read',
-  calendars: 'gcal_calendars',
-  calendarList: 'gcal_list',
+  mailList: 'gmail_search_messages',
+  mailRead: 'gmail_read_message',
+  calendars: 'calendar_list_calendars',
+  calendarList: 'calendar_list_events',
   chatSearch: 'mattermost_search',
   chatAttention: 'mattermost_attention',
   /** K6: the company knowledge base, read by the routed research path when the model names `company`. */

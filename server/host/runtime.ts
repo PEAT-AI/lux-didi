@@ -49,14 +49,14 @@ export interface HostConfig { dataDir: string; webRoot: string; port?: number; d
 
 /**
  * R7: mail and calendar are both `connector: google`, so the first google endpoint is not necessarily the
- * calendar endpoint. The digest reads the endpoint whose current grant carries `gcal_list`; without one
+ * calendar endpoint. The digest reads the endpoint whose current grant carries `calendar_list_events`; without one
  * there is no reader and the digest says so rather than reporting an empty day.
  */
 export function selectCalendarEndpoint<G extends { readonly toolNames: readonly string[] }>(endpoints: readonly { readonly id: string; readonly connector: string }[], grantOf: (endpointId: string) => G | undefined): G | undefined {
   for (const endpoint of endpoints) {
     if (endpoint.connector !== 'google') continue;
     const grant = grantOf(endpoint.id);
-    if (grant !== undefined && grant.toolNames.includes('gcal_list')) return grant;
+    if (grant !== undefined && grant.toolNames.includes('calendar_list_events')) return grant;
   }
   return undefined;
 }

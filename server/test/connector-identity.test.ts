@@ -101,7 +101,7 @@ async function gmailHost(email: string) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));
   const config = join(dir, 'provider-config');
   await mkdir(config, { mode: 0o700 });
-  const tools = ['gmail_get_profile', 'gmail_list', 'gmail_read'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  const tools = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
   const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
     jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
       ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }

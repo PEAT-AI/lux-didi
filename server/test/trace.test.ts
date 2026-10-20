@@ -363,8 +363,6 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
           endedAt, endedAt, endedAt]);
       tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,11,?)",
         [SESSION, 'inputTranscription', 'owner words', endedAt]);
-      tx.run("INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,NULL,1,0,?)",
-        [SESSION, 'toolCall', endedAt]);
     });
     // A v2 store has no tool_json to clear, and the pruner must not fail on the column it cannot see.
     assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 });
@@ -373,8 +371,9 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
     const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
     try {
       store.transaction(tx => {
-        // The owner's real journal carries the tool payload the migration moved to the wider table.
-        tx.run("UPDATE live_journal SET tool_json=? WHERE kind='toolCall'", [JSON.stringify({ name: 'search', args: { query: 'owner words' } })]);
+        // The migrated journal carries the tool payload the wider table makes room for.
+        tx.run("INSERT INTO live_journal (live_session_id, kind, finished, tool_json, payload_bytes, arrived_at) VALUES (?,?,1,?,0,?)",
+          [SESSION, 'toolCall', JSON.stringify({ name: 'search', args: { query: 'owner words' } }), endedAt]);
         tx.run(`INSERT INTO conversation_summaries (id, live_session_id, status, summary, ended_at, model, input_chars,
             input_truncated, injected_summary_ids, retry_count, error_code, created_at, skip_reason)
           VALUES (?,?,?,?,?,?,?,0,'[]',0,NULL,?,NULL)`, ['sum-migrated', SESSION, 'complete', 'a summary', endedAt, 'm', 11, endedAt]);

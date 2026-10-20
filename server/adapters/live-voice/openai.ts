@@ -1718,7 +1718,7 @@ class Session implements LiveVoiceSession {
 
   /** Record what this flush interval captured, discarded and the socket accepted, then start the next interval. */
   private sampleUplink(now: number, accepted: number, open: boolean, buffered: number): void {
-    if (this.uplinkSamples.length < 12) console.log('DBG', now, accepted, buffered, this.lastBuffered, this.sampleCaptured, this.sampleDiscarded);
+    if (now > 1_000_000 && now < 1_100_000) console.log('DBG', now, accepted, buffered, this.lastBuffered, this.lastBufferedAt);
     this.uplinkSamples.push({ at: now, captured: this.sampleCaptured, discarded: this.sampleDiscarded, accepted,
       backlogged: open && buffered >= UPLINK_SHED_BYTES });
     this.sampleCaptured = 0;

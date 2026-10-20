@@ -1340,14 +1340,12 @@ export class LiveSessionOwner {
     return `${parts.join('; ')}.`;
   }
 
-  /** One progress line, at most PROGRESS_LINES_PER_TURN a turn and never two inside PROGRESS_INTERVAL_MS, spoken
-   *  only while a call is in flight and suppressed while the owner speaks or an answer plays. Every refusal is a
-   *  receipt: the next audit counts the lines and the reasons there were no more. */
+  /** One progress line, at most PROGRESS_LINES_PER_TURN a turn and never two inside PROGRESS_INTERVAL_MS,
+   *  suppressed while the owner speaks or an answer plays. Every refusal is a receipt: the next audit counts the
+   *  lines and the reasons there were no more. The dead-air caller decides whether a turn has anything to say. */
   #sendProgress(handle: ActiveSession, reason: 'dead_air' | 'stalled'): boolean {
     if (this.#settled(handle) || handle.rebuilding) return this.#progressSkip(handle, 'settled');
     if (!this.#progressPath(handle)) return this.#progressSkip(handle, 'no_channel');
-    // W4: never after the tool result has been sent: a call in flight is the only thing a line may speak for.
-    if (handle.pendingCallIds.size === 0) return this.#progressSkip(handle, 'no_call_in_flight');
     if (handle.progressLines >= PROGRESS_LINES_PER_TURN) return this.#progressSkip(handle, 'budget');
     const now = this.#now();
     if (handle.progressSentAt !== undefined && now - handle.progressSentAt < PROGRESS_INTERVAL_MS) return this.#progressSkip(handle, 'interval');
@@ -1419,7 +1417,7 @@ export class LiveSessionOwner {
     if (handle.progressTimer !== undefined) return;
     if (!this.#progressPath(handle)) return;
     // W4: a turn with nothing in flight has nothing truthful to say, so no clock is armed for it.
-    if (handle.pendingCallIds.size === 0) return;
+    if (!this.#workInFlight(handle)) return;
     handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_FIRST_MS);
     handle.progressTimer.unref?.();
   }
@@ -1427,14 +1425,22 @@ export class LiveSessionOwner {
   #progressTick(handle: ActiveSession): void {
     handle.progressTimer = undefined;
     if (this.#settled(handle) || handle.rebuilding) return;
-    // W4: the line speaks for a call still in flight. Once the result is with the model the turn belongs to the
-    // answer, so a tick that finds nothing running says nothing and leaves one skip receipt behind.
-    if (handle.pendingCallIds.size === 0) { this.#progressSkip(handle, 'no_call_in_flight'); return; }
+    // W4: the line speaks for work still in flight. Once every call and every source of the turn has settled the
+    // turn belongs to the answer, so a tick that finds nothing running says nothing and leaves one skip receipt.
+    if (!this.#workInFlight(handle)) { this.#progressSkip(handle, 'no_call_in_flight'); return; }
     this.#sendProgress(handle, 'dead_air');
     if (this.#settled(handle)) return;
     // The cadence is the interval, not the attempt, so a suppressed line is retried on the same 6 s beat.
     handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_INTERVAL_MS);
     handle.progressTimer.unref?.();
+  }
+
+  /** W4: what a progress line may still speak for: a call the model is waiting on, or a research source the run
+   *  is still reading after the tool answered with it pending. A finished lookup is not progress. */
+  #workInFlight(handle: ActiveSession): boolean {
+    if (handle.pendingCallIds.size > 0) return true;
+    for (const entry of handle.exec.values()) if (entry.status === 'running' || entry.status === 'queued') return true;
+    return false;
   }
 
   #cancelProgress(handle: ActiveSession): void {
@@ -1985,7 +1991,7 @@ export class LiveSessionOwner {
           this.#cancelProgress(handle);
           // W4: a preamble or a finished model turn is audible activity; with a call still in flight the next
           // silence is a fresh one, so the progress clock restarts from it instead of staying cancelled.
-          if (handle.pendingCallIds.size > 0) this.#armProgress(handle);
+          if (this.#workInFlight(handle)) this.#armProgress(handle);
         }
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {

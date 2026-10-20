@@ -3712,9 +3712,10 @@ test('W4: a turn gets at most two progress lines, and never two inside six secon
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
+  // A held chat source keeps real work in flight past three beats, which no tool ceiling cuts short.
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
   const { session } = await openPort(h, 'progress-cap');
-  fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
   await settlePort();
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.commentary.length, 1, 'the first line goes out about six seconds into the call');
@@ -4749,11 +4750,10 @@ for (const route of ['typed', 'selector'] as const) test(`progress recovery: ${r
   assert.ok(progress.every(entry => !(entry['sourcesPending'] as string[]).includes('calendar')), 'configured but undispatched calendar is never pending');
   release(); for (let n = 0; n < 50 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); assert.equal(fake.toolResponses[0]![0]!.response['error'], undefined);
-  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the eight-second speech interval');
+  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the six-second speech interval');
   h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a result cannot cause a six-second repeat');
-  h.advance(1_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1);
-  h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 2, 'the existing eight-second beat is preserved');
-  assert.match(fake.commentary[1]!, /lookup is done/);
+  // W4: the turn's only lookup has answered, so no line may claim one is still running.
+  h.advance(2_000); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a finished lookup is not progress');
   h.owner.revoke(session.liveSessionId);
 });
 

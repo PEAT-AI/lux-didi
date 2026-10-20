@@ -126,6 +126,34 @@ test('a note combining words from no owner turn is still refused', async t => {
   assert.deepEqual(await remember(store, 'the dentist needs a passport in lisbon'), { remembered: false, code: 'owner_text_mismatch' });
 });
 
+test('a note that negates what the owner affirmed is refused', async t => {
+  // Every content word is spoken, but the claim is the opposite one: the ratio cannot see polarity.
+  const store = liveSession(t, [{ text: 'i want the tuesday plumber to come with a ladder', finished: true }]);
+  assert.deepEqual(await remember(store, 'Rob does not want the tuesday plumber to come with a ladder'),
+    { remembered: false, code: 'owner_text_mismatch' });
+});
+
+test('a note stitched from two non-adjacent turns is refused', async t => {
+  // One ask spans adjacent turns, never a turn and another one three turns later.
+  const store = liveSession(t, [
+    { text: 'remember the plumber comes on tuesday', finished: true },
+    { text: 'i will be out of the house most of the day', finished: true },
+    { text: 'the bins go out on thursday evening', finished: true },
+    { text: 'and there is a ladder and a wrench ready', finished: true },
+  ]);
+  assert.deepEqual(await remember(store, 'the plumber brings a ladder and a wrench on tuesday'),
+    { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
+});
+
+test('a second note from the same ask is its own memory, not a duplicate', async t => {
+  const store = liveSession(t, [{ text: 'i take tea first thing, tea and the crossword, and the mint ships friday', finished: true }]);
+  const first = await remember(store, 'Rob prefers tea and the crossword');
+  const second = await remember(store, 'the mint ships friday');
+  assert.equal(first.remembered, true, 'the first note from that utterance stores');
+  assert.equal(second.remembered, true, 'a different note from the same utterance stores too');
+  assert.notEqual(first.entryId, second.entryId, 'two distinct notes are two entries');
+});
+
 test('a session with no owner transcription reports the transcript was never final', async t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
   assert.deepEqual(await remember(store, 'Rob prefers tea and the crossword'), { remembered: false, code: 'owner_transcript_not_final' });

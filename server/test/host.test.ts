@@ -468,10 +468,14 @@ for (const missingMongoose of [true, false]) {
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
       'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
     ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
-    const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
+    const reply = (message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
       jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
         ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
-        : message.method === 'tools/list' ? { tools } : {},
+        : message.method === 'tools/list' ? { tools }
+        // D2: a strict Google source probes its identity before it publishes a read grant, so the fake
+        // answers the two identity tools instead of an empty envelope.
+        : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify(message.params?.name === 'calendar_list_calendars' ? { calendars: [{ id: 'owner@example.test', primary: true }] } : { emailAddress: 'owner@example.test' }) }] }
+        : {},
     };
     const endpoint = createServer(async (req, res) => {
       if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
@@ -479,7 +483,7 @@ for (const missingMongoose of [true, false]) {
       const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
       if (response && req.url && 'tools' in response.result) {
         const family = req.url.slice(1);
-        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('gcal_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('gcal_') && !['search_knowledge', 'get_insight'].includes(tool.name));
+        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('calendar_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('calendar_') && !['search_knowledge', 'get_insight'].includes(tool.name));
       }
       res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
       res.end(response ? JSON.stringify(response) : undefined);

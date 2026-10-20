@@ -48,8 +48,9 @@ import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
+import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -4796,4 +4797,84 @@ test('research 469: known stopped run projects error and retained no-wire delive
   assert.equal(partial.response['status'], 'partial'); assert.equal(partial.response['error'], undefined); assert.equal(partial.projection.status, 'completed');
   assert.equal(h.calls.length, 1); assert.deepEqual(h.owner.current().steps ?? [], []);
   assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error', sources: [] } });
+});
+
+test('W6/H12: a second owner utterance closes the open turn as superseded and names it on the next', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'supersede-turn');
+  // An utterance opens a turn; the finished frame ends that utterance, not the turn, because the
+  // provider has not sent turnComplete yet. The next utterance therefore arrives while it is open.
+  h.f.send({ serverContent: { inputTranscription: { text: 'first question' } } });
+  await drain(h, session.liveSessionId, 1);
+  h.f.send({ serverContent: { inputTranscription: { text: '', finished: true } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'second question' } } });
+  await drain(h, session.liveSessionId, 3);
+  const turns = h.store.transaction(tx => tx.all(
+    'SELECT turn_id, turn_index, closed_at, close_reason, supersedes_turn_id FROM trace_turn WHERE live_session_id=? ORDER BY turn_index',
+    [session.liveSessionId]));
+  assert.equal(turns.length, 2, 'the second utterance is its own turn');
+  assert.equal(turns[0]!['close_reason'], 'superseded', 'the replaced turn is closed, never orphaned open');
+  assert.ok(turns[0]!['closed_at'] !== null);
+  assert.equal(turns[1]!['supersedes_turn_id'], turns[0]!['turn_id'], 'the new turn names the one it replaced');
+  assert.equal(turns[1]!['closed_at'], null, 'the new turn stays open until its own close');
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/H12: a session that ends closes its last turn, so no normal turn is left open', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'session-end-turn');
+  h.f.send({ serverContent: { inputTranscription: { text: 'only question' } } });
+  await drain(h, session.liveSessionId, 1);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+  const turns = h.store.transaction(tx => tx.all('SELECT close_reason, closed_at FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]));
+  assert.deepEqual(turns.map(turn => [turn['close_reason'], turn['closed_at'] !== null]), [['session_end', true]]);
+});
+
+test('W6/H13: a playback receipt names the turn and the response open when its first chunk went out', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'playback-attribution');
+  h.f.send({ serverContent: { inputTranscription: { text: 'how long was that call' } } });
+  await drain(h, session.liveSessionId, 1);
+  const open = h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_turn WHERE live_session_id=? AND closed_at IS NULL', [session.liveSessionId]))!;
+  const turnId = String(open['turn_id']);
+  const responseKey = scopedTraceKey(session.liveSessionId, 'e0', 'response', 'resp-fixture');
+  record(h.store, 'response.created', { liveSessionId: session.liveSessionId, connectionEpoch: 'e0', turnId, responseKey },
+    { createdAt: 1_700_000_000_000, status: 'streaming', providerResponseId: 'resp-fixture' });
+  const frame = (receipt: string, seq: number): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-e2', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
+  attachment.playbackReceipt(frame('received', 1));
+  attachment.playbackReceipt(frame('enqueued', 2));
+  attachment.playbackReceipt(frame('started', 3));
+  const row = h.store.transaction(tx => tx.get('SELECT turn_id, response_key, received_at FROM trace_playback WHERE playback_key=?', [`${session.liveSessionId}:inst-e2:1`]))!;
+  assert.equal(row['turn_id'], turnId, 'the segment is tied to the turn that was open when its first chunk was sent');
+  assert.equal(row['response_key'], responseKey, 'and to the response that was current then');
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/H14: a completed tool call writes its result content row through recordCallResult', async t => {
+  const h = await harness(t, { tools: true });
+  const { session, attachment } = await attached(h, 'call-result-row');
+  const callKey = scopedTraceKey(session.liveSessionId, 'e0', 'call', 'c1');
+  record(h.store, 'call.intent', { liveSessionId: session.liveSessionId, connectionEpoch: 'e0', callKey },
+    { name: 'search_knowledge', argsChars: 12, intentAt: 1_700_000_000_000 });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(2);
+  const rows = h.store.transaction(tx => tx.all('SELECT text, text_truncated FROM trace_call_result WHERE call_key=?', [callKey]));
+  assert.equal(rows.length, 1, 'one content row per completed call, keyed by the trace call');
+  assert.match(String(rows[0]!['text']), /Synthetic insight/, 'the model-facing result is the content that lands');
+  assert.equal(Number(rows[0]!['text_truncated']), 0);
+  attachment.close();
+  await attachment.done;
+});
+
+test('W6/Q8: one status definition, so an error result is the only thing the journal calls error', () => {
+  assert.equal(journalToolStatus({ error: 'tool_result_denied' }), 'error',
+    'a result that is only an error is an error');
+  assert.equal(journalToolStatus({ error: 'partial', findings: [{ text: 'a source answered' }] }), 'completed',
+    'a result that carries content is completed even when it also names a partial failure');
+  assert.equal(journalToolStatus({ findings: [{ text: 'a source answered' }] }), 'completed');
 });

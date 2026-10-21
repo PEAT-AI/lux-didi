@@ -169,6 +169,11 @@ export interface ResearchSourceLog {
 /** A source that cannot serve a read right now, with the reason its connector gave. */
 export interface UnavailableSource { source: SourceKind; reason: string }
 
+/** The endpoint report fields an unreachable source name may read: closed codes only. */
+export interface ConfiguredEndpointStatus {
+  connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
+}
+
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
 export function normalizeLookups(value: unknown): ResearchLookup[] {
   if (!Array.isArray(value)) return [];
@@ -1019,6 +1024,24 @@ export function researchSourcesForConnector(connector: string): SourceKind[] {
   if (connector === 'lux-knowledge') return ['knowledge'];
   if (connector === 'mongoose') return ['mongoose'];
   return [];
+}
+
+/**
+ * W9-R3: the configured sources one endpoint set covers, and the closed reason for every endpoint
+ * that did not connect, so a source the owner configured is spoken as unreachable instead of
+ * vanishing. Only a closed code travels: never the free-text error, a url or a credential.
+ */
+export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndpointStatus[]): UnavailableSource[] {
+  const sources: UnavailableSource[] = [];
+  for (const endpoint of endpoints) {
+    if (endpoint.state === 'connected') continue;
+    const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+    for (const source of researchSourcesForConnector(endpoint.connector)) {
+      if (sources.some(entry => entry.source === source)) continue;
+      sources.push({ source, reason });
+    }
+  }
+  return sources;
 }
 
 /** The configured sources named for the model, joined as "a, b and c". */

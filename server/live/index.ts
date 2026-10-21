@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2367,21 +2367,10 @@ export class LiveSessionOwner {
   }
 
   #unreachableSources(): (ResearchSourceKind | UnavailableSource)[] {
-    const sources: (ResearchSourceKind | UnavailableSource)[] = [];
-    // P5-R5 (F3): the endpoint report carries why it is not connected, and the owner's reply names it.
-    // Codes and closed enums only: never the free-text `error`, so no connector text can reach a reply.
-    const endpoints = (this.#tools?.status?.().endpoints ?? []) as unknown as readonly {
-      connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
-    }[];
-    for (const endpoint of endpoints) {
-      if (endpoint.state === 'connected') continue;
-      const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
-      for (const source of researchSourcesForConnector(endpoint.connector)) {
-        if (sources.some(entry => (typeof entry === 'string' ? entry : entry.source) === source)) continue;
-        sources.push({ source, reason });
-      }
-    }
-    return sources;
+    // P5-R5 (F3) / W9-R3: the endpoint report carries why it is not connected, and the owner's reply
+    // names it. Codes and closed enums only: never the free-text `error`, so no connector text can
+    // reach a reply. One owner for the endpoint-to-source naming, in research.ts.
+    return configuredSourcesForEndpoints((this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[]);
   }
 
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {

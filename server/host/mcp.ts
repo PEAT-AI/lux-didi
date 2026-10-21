@@ -116,6 +116,9 @@ class ProbeRegistry extends McpRegistry {
     }
   }
 }
+/** The closed connect-time stages a connector_failure line may carry. */
+export type ConnectStage = 'credential' | 'config' | 'spawn' | 'handshake' | 'first_call';
+
 /** Bounded connect-time detail on a connector_failure line: closed tokens only, never free text. */
 export interface ConnectorFailureDetail {
   reason?: string;
@@ -173,6 +176,16 @@ export async function composeMcpRuntime(options: {
   const ready = new Set<string>();
   const generations = new Map<string, number>();
   let closed = false;
+  // W9: exactly one closed connector_failure line per endpoint that did not connect at host start,
+  // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
+  // can ride out, and a retried or repeated pass never doubles the line.
+  const failuresReported = new Set<string>();
+  const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
+    reason: string, exceptionCode?: string): void => {
+    if (attempt !== 'first-connect' || failuresReported.has(entry.id)) return;
+    failuresReported.add(entry.id);
+    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}) });
+  };
   const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
     if (!previous) return;
@@ -187,6 +200,7 @@ export async function composeMcpRuntime(options: {
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
+  const trusted = grantMode === 'owner-trusted-reads';
   // Reject local capability mismatches before any transport starts, including disabled entries.
   for (const entry of endpoints) {
     if (!Object.hasOwn(CONNECTOR_DESCRIPTORS, entry.connector)) throw new ConnectorCompositionError('unknown_connector', entry.id, entry.connector);
@@ -275,6 +289,7 @@ export async function composeMcpRuntime(options: {
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
     if (entry.configurationError || entry.unknownClass === null) {
       const code = entry.configurationError ?? 'unknown-class-missing';
+      reportFailure(entry, 'config', attempt, code);
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return { retryable: false };
     }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
@@ -286,19 +301,20 @@ export async function composeMcpRuntime(options: {
       // login (the app refreshes the connector then) probes it for real.
       if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
         needsSignIn.add(entry.id);
+        reportFailure(entry, 'credential', attempt, 'not_signed_in');
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
         return { retryable: false };
       }
       needsSignIn.delete(entry.id);
       try { if (!stored) readMcpCredential(configDir, entry.credentialRef); }
-      catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
+      catch { reportFailure(entry, 'credential', attempt, 'credential-unavailable'); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
     try {
       const discovery = await port.discover(entry.id);
       if (stale()) return { retryable: false };
       if (discovery.state !== 'discovered') {
         const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
-        options.connectorLog?.(entry.connector, stage, { reason: discovery.reason, ...(discovery.exception?.code ? { exceptionCode: discovery.exception.code } : {}), endpointId: entry.id, attempt });
+        reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code);
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
         // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
         // credential or configuration error is stable and a later refresh still reconnects it.
@@ -330,16 +346,33 @@ export async function composeMcpRuntime(options: {
       if (row) {
         const bytes = String(row.policy_json);
         if (sha256(bytes) !== row.policy_sha256) throw Error('connection_policy_binding');
-        const stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy);
+        // W9: the durable row approves a connector envelope, and a release may rename that envelope's
+        // read tools (ab755604 renamed every Google read). A row that no longer validates is a catalog
+        // change, never a fatal settle. Under owner-trusted-reads the owner already granted the
+        // reviewed envelope, so the row is reconciled from this discovery; a stored revocation still
+        // wins, and explicit mode keeps its owner-approval refusal.
+        let stored: ConnectionPolicy | null = null;
+        let revoked = true;
+        try { stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy); revoked = false; }
+        catch { try { revoked = (JSON.parse(bytes) as { enabled?: unknown }).enabled === false; } catch { revoked = true; } }
+        if (!stored && (!trusted || revoked)) {
+          reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
+        }
+        if (stored) {
         if (stored.ownerId !== ownerId || stored.connectionId !== entry.id || stored.generation !== Number(row.generation)) throw Error('connection_policy_binding');
         const legacy = stored.bindingMode === undefined;
         if (legacy && stored.route.identity !== stored.endpoint.id) {
+          reportFailure(entry, 'handshake', attempt, 'ambiguous-legacy-policy');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'ambiguous-legacy-policy', configurationError: 'ambiguous-legacy-policy' }); return { retryable: false };
         }
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
-        if (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass])) {
+        // Only an explicit approval mode needs a fresh owner approval for a catalog change: under
+        // owner-trusted-reads the reviewed envelope is what the owner already granted.
+        if (!trusted && (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]))) {
+          reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
         // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
@@ -354,7 +387,8 @@ export async function composeMcpRuntime(options: {
           policy.sourcePolicy.revision += 1;
           policy.route = { ...stored.route, allowedClasses: replaceClass(stored.route.allowedClasses) };
         }
-        if (canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+        }
+        if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
       // Identity proof before any read grant. A failed proof never falls back to publication.
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
@@ -388,10 +422,12 @@ export async function composeMcpRuntime(options: {
           // A strict source refuses an unproven identity too. The reason code is a closed helper code,
           // so the reply names the source without ever carrying the account or a token path.
           const code = refusalCode(identity);
+          reportFailure(entry, 'handshake', attempt, code);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
           return { retryable: false };
         }
         if (!identity.proven) {
+          reportFailure(entry, 'handshake', attempt, 'identity_unverified');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', identity });
           return { retryable: false };
         }
@@ -416,7 +452,10 @@ export async function composeMcpRuntime(options: {
         registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames, effect: 'read' });
         return true;
       });
-      if (!published) { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false }; }
+      if (!published) {
+        reportFailure(entry, 'handshake', attempt, stale() ? 'generation-superseded' : 'connection-policy-changed');
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false };
+      }
       ready.add(entry.id);
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
       return { retryable: false };
@@ -427,6 +466,7 @@ export async function composeMcpRuntime(options: {
         class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
         code: error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown',
       };
+      reportFailure(entry, mongooseFailureStage(exception.code ?? 'unavailable'), attempt, exception.code ?? 'unavailable');
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable', exception });
       return { retryable: false };
     }

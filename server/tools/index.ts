@@ -345,9 +345,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     const bytes = canonicalJSON(p); const hash = sha256(bytes);
     const changed = store.transaction(tx => {
       const row = tx.get('SELECT * FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, p.connectionId]);
-      const current = row ? connection(tx, p.connectionId) : undefined;
+      let current: BoundConnection | undefined;
+      try { current = row ? connection(tx, p.connectionId) : undefined; }
+      catch (error) {
+        // W9: a stored approval that no longer validates against this release's reviewed connector
+        // envelope (a release renamed its read tools) is a catalog change, not corruption. The
+        // compare-and-swap on the exact predecessor bytes below still guards the replacement.
+        if (row ? expected !== String(row.policy_sha256) : true) throw error;
+      }
       if (current && canonicalJSON(current.policy) === bytes) return false;
-      if (expected !== undefined && expected !== (current?.sha256 ?? null)) throw Error('connection_predecessor_mismatch');
+      const predecessor = current?.sha256 ?? (row ? String(row.policy_sha256) : null);
+      if (expected !== undefined && expected !== predecessor) throw Error('connection_predecessor_mismatch');
       if (current && (p.generation <= current.generation || canonicalJSON(p.endpoint) !== canonicalJSON(current.policy.endpoint))) throw Error('connection_identity_or_generation');
       if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, hash, ownerId, p.connectionId]);
       else tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, hash]);

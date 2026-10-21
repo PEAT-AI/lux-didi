@@ -236,7 +236,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: ACCOUNT,
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
     endpoints: [googleConfig(gmail.url, 'gmail', 'gmail', 'mail'), googleConfig(calendar.url, 'calendar', 'calendar', 'calendar')],
   }), { mode: 0o600 });
   const store = new Store(join(dir, 'data'), toolsMigrations);

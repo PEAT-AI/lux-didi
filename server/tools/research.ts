@@ -195,7 +195,7 @@ export interface UnavailableSource { source: SourceKind; reason: string }
 
 /** The endpoint report fields an unreachable source name may read: closed codes only. */
 export interface ConfiguredEndpointStatus {
-  connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
+  id?: string; connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
 }
 
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
@@ -742,6 +742,13 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
   return {};
 }
 
+/** ROUTE-1022: the owner's own schedule, in the words a spoken question uses. One deterministic rule, no classifier. */
+const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|calls?|busy|tomorrow|today|tonight|this week|next week|week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|itinerary|out of office)\b/u;
+
+export function ownerScheduleQuestion(question: string): boolean {
+  return OWNER_SCHEDULE.test(question.toLowerCase());
+}
+
 /** The keyword fallback: used when the selector times out or answers invalidly, and with no selector. */
 export function fallbackSelection(question: string, configured: readonly SourceKind[], nowMs = Date.now()): SelectorOutput {
   const text = question.toLowerCase();
@@ -1146,11 +1153,23 @@ export interface ResearchProgress {
 }
 export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'routed';
 
+/** ROUTE-R2: the closed reason a run log gives for a skipped source, so a grant gap never reads as an outage. */
+export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'] as const;
+export type SkipReason = typeof SKIP_REASONS[number];
+
+export function skipReasonOf(rawReason: string | undefined, outcome: LookupOutcome): SkipReason {
+  if (rawReason === 'not_configured') return 'not_configured';
+  if (rawReason === 'source_not_granted') return 'not_granted';
+  if (outcome === 'timeout' || rawReason === 'deadline_exhausted' || rawReason === 'cancelled') return 'timeout';
+  if (outcome === 'unavailable' || rawReason !== undefined) return 'endpoint_unavailable';
+  return 'read_failed';
+}
+
 export interface ResearchRunLog {
   event: 'research_run'; researchId: string; questionClass: QuestionClass; rounds: number;
   perRound: { candidates: { kind: CandidateKind; pUseful: number }[]; chosen: CandidateKind[] }[];
   stopReason: string; status: 'answered' | 'partial' | 'stopped' | 'unavailable' | 'failed'; ops: number;
-  sources: { kind: SourceKind; disposition: string; latencyMs: number }[];
+  sources: { kind: SourceKind; disposition: string; latencyMs: number; reason?: SkipReason }[];
   elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
   driver?: ResearchDriver;
   unchecked?: SourceKind[]; canContinue?: boolean; findingChars?: number[];
@@ -1364,7 +1383,7 @@ export const UNPUBLISHED_SOURCE_REASON = 'tools-unpublished';
 export function configuredSourcesForSession(published: readonly SourceKind[], endpoints: readonly ConfiguredEndpointStatus[]): SourceKind[] {
   const sources = [...published];
   for (const endpoint of endpoints) {
-    for (const source of researchSourcesForConnector(endpoint.connector)) if (!sources.includes(source)) sources.push(source);
+    for (const source of researchSourcesForEndpoint(endpoint)) if (!sources.includes(source)) sources.push(source);
   }
   return sources;
 }
@@ -1381,7 +1400,7 @@ export function unreachableSourcesForSession(served: readonly SourceKind[],
     const reason = endpoint.state === 'connected'
       ? UNPUBLISHED_SOURCE_REASON
       : endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
-    for (const source of researchSourcesForConnector(endpoint.connector)) {
+    for (const source of researchSourcesForEndpoint(endpoint)) {
       if (served.includes(source) || sources.some(entry => entry.source === source)) continue;
       sources.push({ source, reason });
     }
@@ -1394,6 +1413,18 @@ export function researchSourcesFromToolNames(names: Iterable<string>): SourceKin
   const found = new Set<SourceKind>();
   for (const [tool, source] of Object.entries(SOURCE_TOOLS)) if (present.has(tool)) found.add(source);
   return SOURCE_LABELS.map(([source]) => source).filter(source => found.has(source));
+}
+
+/** ROUTE-1022: the two Google endpoints the host registry keys, each serving its own source. */
+const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], gcal: ['calendar'] };
+
+/**
+ * ROUTE-1022: availability is per endpoint. gmail and the calendar are two endpoints on one connector,
+ * so a failed gmail proof never marks the calendar unreachable, and the reverse holds too.
+ */
+export function researchSourcesForEndpoint(endpoint: ConfiguredEndpointStatus): SourceKind[] {
+  const named = ENDPOINT_SOURCES[endpoint.id ?? ''];
+  return named === undefined ? researchSourcesForConnector(endpoint.connector) : [...named];
 }
 
 /**
@@ -1422,7 +1453,7 @@ export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndp
   for (const endpoint of endpoints) {
     if (endpoint.state === 'connected') continue;
     const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
-    for (const source of researchSourcesForConnector(endpoint.connector)) push(source, reason);
+    for (const source of researchSourcesForEndpoint(endpoint)) push(source, reason);
   }
   if (grantedTools === undefined) return sources;
   const granted = new Set(grantedTools);
@@ -1430,7 +1461,7 @@ export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndp
   for (const [tool, source] of Object.entries(SOURCE_TOOLS)) if (granted.has(tool)) reachable.add(source);
   for (const endpoint of endpoints) {
     if (endpoint.state !== 'connected') continue;
-    for (const source of researchSourcesForConnector(endpoint.connector)) if (!reachable.has(source)) push(source, 'source_not_granted');
+    for (const source of researchSourcesForEndpoint(endpoint)) if (!reachable.has(source)) push(source, 'source_not_granted');
   }
   return sources;
 }
@@ -1844,6 +1875,9 @@ function sourceKindOfKindName(name: string): SourceKind | null {
   }
 }
 
+/** ROUTE-1022: a continuation the run cannot serve says what to do next, so the model never stalls on it. */
+export const CONTINUATION_UNAVAILABLE_NOTE = 'That earlier result is no longer available. Ask a fresh research question about the same thing.';
+
 function bodyCursor(run: RunState, key: string, offset: number, width: number): string {
   const existing = [...run.bodyCursors].find(([, page]) => page.key === key && page.offset === offset)?.[0];
   if (existing) return existing;
@@ -1859,7 +1893,7 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
   const entry = selected ? [selected.key, run.bodies.get(selected.key)] as const : [...run.bodies].find(([, body]) => body.offset < body.evidence.body.length);
   if (!entry || !entry[1]) return undefined;
   const [key, body] = entry;
-  if (body.evidence.expiresAt <= Date.now()) return { researchId: run.researchId, error: 'continuation_unavailable', findings: [], canContinue: false };
+  if (body.evidence.expiresAt <= Date.now()) return { researchId: run.researchId, error: 'continuation_unavailable', findings: [], canContinue: false, note: CONTINUATION_UNAVAILABLE_NOTE };
   const width = Math.max(128, Math.min(2500, limit - 1200));
   const cursor = run.bodyCursorRequested ?? bodyCursor(run, key, body.offset, width), page = run.bodyCursors.get(cursor)!;
   if (page.end < body.evidence.body.length) page.nextCursor ??= bodyCursor(run, key, page.end, width);
@@ -2726,7 +2760,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     throw error;
   } finally {
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
   }
 }
 
@@ -2874,11 +2908,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       if (prior && bodyPage) {
         if (!evidenceAllowed(deps, prior, signal)) return deniedEvidence(deps, prior);
         const body = prior.bodies.get(bodyPage.key);
-        if (!body || body.evidence.expiresAt <= Date.now()) { deps.ledger.stop(prior.researchId); return { researchId: prior.researchId, error: 'continuation_unavailable', findings: [], canContinue: false }; }
+        if (!body || body.evidence.expiresAt <= Date.now()) { deps.ledger.stop(prior.researchId); return { researchId: prior.researchId, error: 'continuation_unavailable', findings: [], canContinue: false, note: CONTINUATION_UNAVAILABLE_NOTE }; }
         if (bodyPage.delivered) return { researchId: prior.researchId, status: 'partial', findings: [], alreadyDelivered: true, delivery: 'model-context', cursor: call.cursor, ...(bodyPage.nextCursor ? { nextCursor: bodyPage.nextCursor } : {}), canContinue: bodyPage.canContinue ?? Boolean(bodyPage.nextCursor) };
       } else {
         const page = prior?.mailCursors.get(call.cursor);
-      if (!prior || !page || !evidenceAllowed(deps, prior, signal)) return { researchId: call.researchId ?? '', error: 'continuation_unavailable', findings: [], canContinue: false };
+      if (!prior || !page || !evidenceAllowed(deps, prior, signal)) return { researchId: call.researchId ?? '', error: 'continuation_unavailable', findings: [], canContinue: false, note: CONTINUATION_UNAVAILABLE_NOTE };
       if (page.scope !== mailScope(prior) || page.ids.length === 0 && !page.delivered && page.sourceState !== mailSourceState(prior)) return { researchId: prior.researchId, error: 'continuation_unavailable', findings: [], canContinue: true, note: 'This source coordinate has already advanced. Use nextCursor from the latest reply or continue this researchId without a cursor for retained evidence.' };
       if (page.delivered) return { researchId: prior.researchId, status: page.partial ? 'partial' : 'answered', findings: [], alreadyDelivered: true, delivery: 'model-context', cursor: call.cursor, deliveredMessageIds: page.ids, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor) };
       }
@@ -3117,6 +3151,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
           selection.pUseful[kind] = 0.6;
         }
+      }
+
+      // ROUTE-1022: a question about the owner's own schedule keeps the calendar read in the plan on
+      // the selector path and the fallback path alike, whenever the calendar endpoint can serve it.
+      const scheduleText = question || run.direction || '';
+      if (ownerScheduleQuestion(scheduleText) && selection.actions.length > 0 && candidatesForSelector.includes('calendar_window')
+        && !unavailable.includes('calendar') && !selection.actions.some(action => action.kind === 'calendar_window')) {
+        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', scheduleText, now()) });
+        selection.pUseful['calendar_window'] ??= 0.4;
       }
 
       if (run.ledger.size === 0 && question) run.questionClass = selection.questionClass;
@@ -3363,7 +3406,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (answerCut.signal.aborted) for (const kind of readStarted) if (!latencies.has(kind)) cutKinds.add(kind);
         if (cutKinds.size > 0) sawCut = true;
 
-        for (const kind of batch) sourceLog.push({ kind: sourceKindOf(kind) ?? 'knowledge', disposition: cutKinds.has(kind) || !latencies.has(kind) ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0 });
+        for (const kind of batch) {
+          const source = sourceKindOf(kind) ?? 'knowledge', skipped = cutKinds.has(kind) || !latencies.has(kind);
+          sourceLog.push({ kind: source, disposition: skipped ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0, ...(skipped ? { reason: skipReasonOf(run.unavailableReasons.get(source), run.unavailableReasons.has(source) ? 'unavailable' : 'timeout') } : {}) });
+        }
         // A source that ran out of its own deadline ends the turn as an honest partial: it is named
         // unchecked, and the model can ask to continue instead of another round silently spending time.
         if (cutKinds.size > 0 && !answeredRound) { stopReason = 'deadline'; break; }

@@ -18,6 +18,8 @@ const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// ROUTE-R2: why a source was skipped, so a grant gap is never indistinguishable from an outage.
+const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale'];
@@ -627,13 +629,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       perRound.push({ candidates, chosen: row.chosen });
     }
     if (!Array.isArray(value.sources) || value.sources.length > 16) return;
-    const sources: { kind: string; disposition: string; latencyMs: number }[] = [];
+    const sources: { kind: string; disposition: string; latencyMs: number; reason?: string }[] = [];
     for (const source of value.sources) {
       if (!source || typeof source !== 'object' || Array.isArray(source)) return;
       const row = source as Record<string, unknown>;
-      if (Object.keys(row).sort().join(',') !== ['kind', 'disposition', 'latencyMs'].sort().join(',')) return;
+      const keys = Object.keys(row).sort().join(',');
+      const skipped = row.disposition === 'skipped';
+      if (![['kind', 'disposition', 'latencyMs'], ['kind', 'disposition', 'latencyMs', 'reason']].some(shape => shape.sort().join(',') === keys)) return;
       if (!isSafeMember(row.kind, RESEARCH_SOURCES) || !isSafeMember(row.disposition, RESEARCH_DISPOSITIONS) || !isSafeCount(row.latencyMs)) return;
-      sources.push({ kind: row.kind, disposition: row.disposition, latencyMs: row.latencyMs });
+      if (Object.prototype.hasOwnProperty.call(row, 'reason') && (!skipped || !isSafeMember(row.reason, RESEARCH_SKIP_REASONS))) return;
+      sources.push({ kind: row.kind as string, disposition: row.disposition as string, latencyMs: row.latencyMs as number, ...(skipped && row.reason !== undefined ? { reason: row.reason as string } : {}) });
     }
     if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
     if (typeof value.canContinue !== 'boolean') return;

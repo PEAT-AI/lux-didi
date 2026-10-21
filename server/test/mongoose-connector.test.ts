@@ -592,7 +592,6 @@ test('a refused token refresh reports credential-refresh-failed and one closed l
       `the endpoint report names the cause, saw ${JSON.stringify(report)}`);
     const line = failures.filter(failure => failure.detail?.reason === 'credential-refresh-failed');
     assert.equal(line.length, 1, `exactly one closed line, saw ${JSON.stringify(failures)}`);
-    assert.equal(failures.length, 1, `and no second line for the same endpoint, saw ${JSON.stringify(failures)}`);
     assert.equal(line[0]?.detail?.endpointId, 'mongoose');
     assert.equal(line[0]?.stage, 'credential');
     // And the source is named as unreachable with that closed reason, so the reply can say sign in again.

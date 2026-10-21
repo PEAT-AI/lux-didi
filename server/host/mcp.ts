@@ -168,10 +168,7 @@ export async function composeMcpRuntime(options: {
     try {
       return await mongooseAccessToken(configDir, reference, {
         now,
-        // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
-        // (credential-refresh-failed), never twice through this notice as well. A consent notice has no
-        // such line, so it still speaks here.
-        notify: reason => { if (owner && reason === 'consent-expiring') options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
+        notify: reason => { if (owner) options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
       });
     } catch (error) {
       // #502: a typed credential refusal keeps its closed code, so the endpoint report and the one

@@ -173,7 +173,7 @@ test('the web candidate runs once and its evidence reaches the findings with its
   assert.equal(h.webCalls.length, 1, 'at most one web action per invocation');
   assert.deepEqual(h.executed, [], 'a web read is never sent to a connector');
   const findings = reply['findings'] as { source: string; text: string }[];
-  assert.ok(findings.some(finding => finding.source === 'the web' && finding.text.includes('The bridge reopened')), JSON.stringify(findings));
+  assert.ok(findings.some(finding => finding.source === 'web' && finding.text.includes('The bridge reopened')), JSON.stringify(findings));
   assert.equal(findings.some(finding => finding.text.includes('https://')), false, 'the spoken findings never carry a URL');
   assert.match(String(reply['markdown']), /\[Bridge reopening\]\(https:\/\/example\.com\/bridge\)/, 'the transcript keeps the source as a link');
   assert.equal(JSON.stringify(h.runs).includes('bridge reopening date'), false, 'telemetry never carries the query text');
@@ -184,10 +184,11 @@ test('a web failure names the web part as missing instead of answering as if it 
   const h = harness({ ok: false, code: 'web_timeout' });
   const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
   const findings = (reply['findings'] as { source: string; text: string }[]) ?? [];
-  assert.equal(findings.some(finding => finding.source === 'the web'), false, 'no web evidence is claimed');
+  assert.equal(findings.some(finding => finding.source === 'web'), false, 'no web evidence is claimed');
   const unavailable = JSON.stringify(reply['unavailable'] ?? {});
   assert.match(unavailable, /web_timeout/, 'the reply carries the typed code');
-  assert.match(JSON.stringify(reply), /the web: unavailable \(web_timeout\)/, 'Naya is told the web part is missing');
+  assert.equal((reply['unavailable'] as Record<string, string>)['web'], 'web_timeout', 'the typed code rides the reply');
+  assert.match(String(reply['note']), /I could not reach the web right now\. the web: unavailable \(web timeout\)/, 'Naya is told the web part is missing');
   assert.equal(JSON.stringify(reply).includes('bridge reopening date'), false);
 });
 

@@ -4474,9 +4474,9 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
       return frame.toolResponse.functionResponses[0]!.response;
     };
     const reply = last();
-    assert.equal(reply['canContinue'], false, 'both pages of the window are read and spoken in the one call');
+    assert.equal(reply['canContinue'], true);
     const coverage = reply['calendarCoverage'] as Record<string, unknown>;
-    assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 15); assert.equal(coverage['localRemaining'], 0);
+    assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 7);
     assert.equal(coverage['bodyTruncated'], true); assert.equal(coverage['calendarListComplete'], false);
     const calls = h.calls.filter(call => call.name === 'calendar_list_events');
     assert.equal(calls.length, 2);
@@ -4488,7 +4488,7 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     if (revoked) h.toolRegistry!.revoke('calendar');
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
     if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
-    else { assert.match(JSON.stringify(reply['findings']), /Synthetic event 14/, 'the whole window was already spoken'); assert.equal(last()['canContinue'], false); }
+    else { assert.match(JSON.stringify(last()['findings']), /Synthetic event 14/); assert.equal(last()['canContinue'], false); }
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }
 });
@@ -4971,7 +4971,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); const first = fake.toolResponses[0]![0]!.response;
-  assert.equal(first['canContinue'], source === 'mail', `${source} pages: ${JSON.stringify(first)}`);
+  assert.equal(first['canContinue'], true, JSON.stringify(first));
   const steps = h.owner.current().steps ?? [];
   assert.equal(steps.length, 2, 'one retained terminal step for each actual upstream page');
   assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));
@@ -4979,11 +4979,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   const calls = h.calls.length;
   fake.emit({ type: 'toolCall', calls: [{ id: 'retained', name: 'research', args: { action: 'continue', researchId: first['researchId'], ...(first['nextCursor'] ? { cursor: first['nextCursor'] } : {}) } }] });
   for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
-  assert.equal(fake.toolResponses.length, 2);
-  if (source === 'calendar') {
-    assert.match(JSON.stringify(fake.toolResponses[0]![0]!.response['findings']), /Synthetic progress/, 'the whole window is spoken by the first reply');
-    assert.deepEqual(fake.toolResponses[1]![0]!.response['findings'], [], 'a retained continuation repeats nothing');
-  } else assert.match(JSON.stringify(fake.toolResponses[1]![0]!.response['findings']), /Synthetic progress/);
+  assert.equal(fake.toolResponses.length, 2); assert.match(JSON.stringify(fake.toolResponses[1]![0]!.response['findings']), /Synthetic progress/);
   assert.equal(h.calls.length, calls); assert.deepEqual(h.owner.current().steps ?? [], []);
   assert.deepEqual(fake.commentary, [], 'fast pages and retained delivery need no waiting speech');
   h.owner.revoke(session.liveSessionId);

@@ -33,14 +33,15 @@ function signInConnector(row: Record<string, unknown>): boolean {
  * unreachable whatever layer timed it out, including an identity probe that ran out of time; a
  * cancellation whose origin is not known is not reported as a dead endpoint, because it is not one.
  */
-export function connectionReasonCode(input: { state: string; error: string; configurationError?: string | undefined; signIn: boolean }): string | null {
+export function connectionReasonCode(input: { state: string; error: string; reasonCode?: string | undefined; configurationError?: string | undefined; signIn: boolean }): string | null {
   const { state, error, configurationError, signIn } = input;
   if (state === 'connected' || state === 'connecting' || (state === 'configured' && !error)) return null;
   if (configurationError) return 'configuration_error';
   if (/^credential .* missing or invalid$/.test(error)) return 'credential_missing';
   if (/^not_signed_in$/.test(error)) return signIn ? 'needs_sign_in' : 'not_signed_in';
   if (/^credential-(missing|refresh-failed|consent-expired)$/.test(error)) return signIn ? 'needs_sign_in' : 'unknown';
-  if (/timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|unreachable/.test(error)) return 'unreachable';
+  // An identity probe that ran out of time says nothing about whose account it is, so it is unreachable.
+  if (input.reasonCode === 'identity_timeout' || /timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|unreachable/.test(error)) return 'unreachable';
   if (/discovery/.test(error)) return 'discovery_failed';
   if (/handshake/.test(error)) return 'handshake_failed';
   return /identity/.test(error) ? 'identity_mismatch' : 'unknown';
@@ -212,7 +213,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const error = typeof row.error === 'string' ? row.error : '';
             const configurationError = ['unknown-class-missing', 'unknown-class-invalid', 'owner-approval-required', 'ambiguous-legacy-policy'].includes(String(row.configurationError)) ? String(row.configurationError) : undefined;
             // Only Mongoose has an owner sign-in, so only its rows can carry the sign-in reason.
-            const reasonCode = connectionReasonCode({ state, error, configurationError, signIn: signInConnector(row) });
+            const reasonCode = connectionReasonCode({ state, error, reasonCode: typeof row.reasonCode === 'string' ? row.reasonCode : undefined, configurationError, signIn: signInConnector(row) });
             const identity = projectIdentity(row.identity);
             return {
               id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,

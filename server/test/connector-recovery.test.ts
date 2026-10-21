@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { createServer, type IncomingMessage } from 'node:http';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -90,37 +90,42 @@ function oauthRecord(configDir: string, fields: { refreshToken: string; expiresA
   }), { mode: 0o600 });
 }
 
-test('a retryable failure gets exactly the bounded recovery round, one probe at a time', async () => {
-  const ran: number[] = [];
-  const schedule = createRecoverySchedule(FAST);
-  const probe = (): void => { ran.push(ran.length + 1); };
-  schedule.next('mongoose', probe);
-  assert.equal(schedule.pending('mongoose'), true);
-  assert.equal(schedule.attempts('mongoose'), 1);
-  // A second request while one is pending never starts a second timer.
-  schedule.next('mongoose', probe);
-  assert.equal(schedule.attempts('mongoose'), 1);
-  assert.equal(schedule.pending('mongoose'), true);
-  await new Promise(resolve => setTimeout(resolve, FAST[0]! + 20));
-  assert.deepEqual(ran, [1]);
-  assert.equal(schedule.pending('mongoose'), false);
-  assert.equal(schedule.attempts('mongoose'), 1);
-  // Stop is the explicit reconnect: the counter starts over.
-  schedule.stop('mongoose');
-  assert.equal(schedule.attempts('mongoose'), 0);
-  assert.equal(CONNECTOR_RECOVERY_DELAYS_MS.length, 3);
+test('a retryable failure gets exactly the bounded recovery round, one probe at a time', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const ran: number[] = [];
+    const schedule = createRecoverySchedule(FAST);
+    const probe = (): void => { ran.push(ran.length + 1); };
+    assert.equal(schedule.next('mongoose', probe), true);
+    assert.equal(schedule.pending('mongoose'), true);
+    assert.equal(schedule.attempts('mongoose'), 1);
+    // A second request while one is pending never starts a second timer.
+    assert.equal(schedule.next('mongoose', probe), true);
+    assert.equal(schedule.attempts('mongoose'), 1);
+    mock.timers.tick(FAST[0]!);
+    assert.deepEqual(ran, [1]);
+    assert.equal(schedule.pending('mongoose'), false);
+    assert.equal(schedule.attempts('mongoose'), 1);
+    // Stop is the explicit reconnect: the counter starts over.
+    schedule.stop('mongoose');
+    assert.equal(schedule.attempts('mongoose'), 0);
+    assert.equal(CONNECTOR_RECOVERY_DELAYS_MS.length, 3);
+  } finally { mock.timers.reset(); }
 });
 
-test('the schedule gives up after every delay and stays stopped', async () => {
-  const schedule = createRecoverySchedule([1, 1, 1]);
-  let runs = 0;
-  const step = (): void => { runs += 1; if (schedule.next('mongoose', step)) return; };
-  schedule.next('mongoose', step);
-  await new Promise(resolve => setTimeout(resolve, 40));
-  assert.equal(runs, 3, 'three attempts after the failure, never more');
-  assert.equal(schedule.pending('mongoose'), false);
-  assert.equal(schedule.next('mongoose', () => { runs += 1; }), false, 'the round is spent');
-  schedule.stopAll();
+test('the schedule gives up after every delay and stays stopped', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const schedule = createRecoverySchedule([1, 1, 1]);
+    let runs = 0;
+    const step = (): void => { runs += 1; schedule.next('mongoose', step); };
+    schedule.next('mongoose', step);
+    mock.timers.tick(1); mock.timers.tick(1); mock.timers.tick(1); mock.timers.tick(1);
+    assert.equal(runs, 3, 'three attempts after the failure, never more');
+    assert.equal(schedule.pending('mongoose'), false);
+    assert.equal(schedule.next('mongoose', () => { runs += 1; }), false, 'the round is spent');
+    schedule.stopAll();
+  } finally { mock.timers.reset(); }
 });
 
 test('an identity probe that ran out of time is inconclusive and retryable, a mismatch is not', async () => {
@@ -253,7 +258,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   assert.equal(gmailFirst.state, 'error', 'the slow proof left gmail unproven');
   assert.equal(gmailFirst.reasonCode, 'identity_timeout', 'and the code names a timeout, never a mismatch');
   assert.equal(gmailFirst.retrying, true, 'so recovery is scheduled');
-  assert.equal(connectionReasonCode({ state: gmailFirst.state, error: gmailFirst.error ?? '', signIn: false }), 'unreachable');
+  assert.equal(connectionReasonCode({ state: gmailFirst.state, error: gmailFirst.error ?? '', reasonCode: gmailFirst.reasonCode, signIn: false }), 'unreachable');
   assert.equal(calendarFirst.state, 'connected', 'calendar proved itself and never depended on gmail');
   assert.equal(calendarFirst.error, undefined);
   // The retry answers immediately: gmail ends connected and calendar keeps its own state and handshake.

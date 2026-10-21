@@ -271,8 +271,8 @@ test('a gmail proof that runs out of time is retried until it proves the account
   assert.ok(runtime.registry.currentGrant('gmail'), 'the retried proof published a grant');
   assert.deepEqual({ state: calendarAfter.state, lastHandshakeAt: calendarAfter.lastHandshakeAt },
     { state: calendarFirst.state, lastHandshakeAt: calendarFirst.lastHandshakeAt }, 'calendar was never re-probed');
-  // One receipt per probe, per endpoint: gmail's timed out proof is unproven, and its own retry proved it.
+  // One receipt per probe: gmail's unproven proof, then gmail's own retry, and calendar's single proof.
   assert.equal(identity.length, 3, 'calendar once, gmail twice');
-  assert.equal(identity.filter(entry => entry.connector === 'gmail' && !entry.proven).length, 1);
+  assert.equal(identity.filter(entry => !entry.proven).length, 1, 'only gmail was unproven, and only once');
   assert.equal(identity.filter(entry => entry.proven).length, 2);
 });

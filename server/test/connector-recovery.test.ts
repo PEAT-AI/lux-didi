@@ -62,13 +62,27 @@ async function fixture(options: FixtureOptions = {}) {
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(text);
     } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
   });
+  // No keep-alive: a pooled socket would make close() wait out Node's five second keep-alive timeout.
+  listener.keepAliveTimeout = 0;
   listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const address = listener.address(); assert(address && typeof address !== 'string');
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     requests: () => requests,
-    async close() { await new Promise<void>(resolve => listener.close(() => resolve())); },
+    async close() {
+      listener.closeAllConnections();
+      await new Promise<void>(resolve => listener.close(() => resolve()));
+    },
   };
+}
+
+/** Poll a real state change instead of sleeping a fixed span: the recovery round is the thing awaited. */
+async function until(done: () => boolean, budgetMs = 2000): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the recovery round');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
 
 function configDirFor(url: string, credentialRef: string | null): string {
@@ -261,7 +275,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   assert.equal(calendarFirst.state, 'connected', 'calendar proved itself and never depended on gmail');
   assert.equal(calendarFirst.error, undefined);
   // The retry answers immediately: gmail ends connected and calendar keeps its own state and handshake.
-  await new Promise(resolve => setTimeout(resolve, FAST[0]! + 400));
+  await until(() => runtime.status().endpoints.some(row => row.id === 'gmail' && row.state === 'connected'));
   const settled = runtime.status().endpoints;
   const gmailAfter = settled.find(row => row.id === 'gmail')!;
   const calendarAfter = settled.find(row => row.id === 'calendar')!;

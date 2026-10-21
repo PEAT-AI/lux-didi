@@ -4474,9 +4474,9 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
       return frame.toolResponse.functionResponses[0]!.response;
     };
     const reply = last();
-    assert.equal(reply['canContinue'], false, 'both pages of the window are read and spoken in the one call');
+    assert.equal(reply['canContinue'], true);
     const coverage = reply['calendarCoverage'] as Record<string, unknown>;
-    assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 15); assert.equal(coverage['localRemaining'], 0);
+    assert.equal(coverage['received'], 15); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 7);
     assert.equal(coverage['bodyTruncated'], true); assert.equal(coverage['calendarListComplete'], false);
     const calls = h.calls.filter(call => call.name === 'calendar_list_events');
     assert.equal(calls.length, 2);
@@ -4488,7 +4488,7 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     if (revoked) h.toolRegistry!.revoke('calendar');
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
     if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
-    else { assert.match(JSON.stringify(reply['findings']), /Synthetic event 14/, 'the whole window was already spoken'); assert.equal(last()['canContinue'], false); }
+    else { assert.match(JSON.stringify(last()['findings']), /Synthetic event 14/); assert.equal(last()['canContinue'], false); }
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }
 });

@@ -946,7 +946,8 @@ test('the installed five-endpoint shape reports every endpoint and connects ever
     // lux-knowledge and mongoose keep their streamable-http shape and point at a refusing local port.
     return { ...endpoint, url: 'http://127.0.0.1:1/mcp' };
   });
-  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ ...fixture, endpoints: shape }), { mode: 0o600 });
+  const { source: _source, ...profile } = fixture as typeof fixture & { source?: string };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ ...profile, endpoints: shape }), { mode: 0o600 });
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
   try {

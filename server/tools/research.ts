@@ -47,6 +47,8 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
   tool: RESEARCH_TOOL_NAME,
+  /** E7: one live turn window. A start that repeats a question answered inside it joins that run. */
+  coalesceWindowMs: 60_000,
   startDeadlineMs: 15_000,
   continueDeadlineMs: 30_000,
   startRounds: 2,
@@ -164,6 +166,8 @@ export interface ResearchSourceLog {
   coalesced: number;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean };
+  /** E5: the mail search's shape, and the one broader retry's shape when it ran. Counts, never words. */
+  mail?: MailQueryShape & { retried?: MailQueryShape };
 }
 
 /** A source that cannot serve a read right now, with the reason its connector gave. */
@@ -441,6 +445,182 @@ export function windowKind(window: string): WindowKind {
   return window === 'today' || window === 'tomorrow' || window === 'week' ? window : 'date';
 }
 
+// ---------------------------------------------------------------------------------------------
+// Mail query compilation (E4/E5)
+
+/** A Gmail operator the owner or a model authored: a query that carries one is already Gmail syntax. */
+const MAIL_AUTHORED_OPERATOR = /\b(?:from|to|cc|bcc|subject|after|before|newer_than|older_than|is|has|label|in|filename|larger|smaller|list|deliveredto|rfc822msgid):/iu;
+/** The instruction words a spoken mail question carries; Gmail ANDs them and matches nothing. */
+const MAIL_FILLER = new Set([
+  'about', 'regarding', 'concerning', 'sent', 'send', 'sending', 'received', 'receive', 'wrote', 'writing', 'written',
+  'emailed', 'emailing', 'reply', 'replied', 'message', 'mail', 'mails', 'morning', 'afternoon', 'evening', 'night',
+  'week', 'weeks', 'month', 'months', 'day', 'days', 'last', 'past', 'ago', 'since', 'today', 'yesterday', 'tomorrow',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+]);
+/** The correspondence verbs that make "mail from or to that person" explicit. */
+const MAIL_DIRECTION = /\b(?:from|to|sent|send|received|receive|reply|replied|wrote|written|emailed|hear from|heard from)\b/iu;
+/** Words capitalised for another reason than being a name. */
+const NOT_A_NAME = new Set([
+  'gmail', 'google', 'slack', 'mattermost', 'lux', 'didi', 'i',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+]);
+const MAIL_ARTICLES = new Set(['the', 'a', 'an', 'my', 'our', 'your', 'his', 'her', 'their']);
+
+/** The person a question asks about, when it asks about mail from or to them. */
+function mailPersonName(question: string): string | undefined {
+  const words = question.split(/\s+/);
+  for (let n = 1; n < words.length; n += 1) {
+    const bare = words[n]!.replace(/^[^A-Za-z]+|[^A-Za-z'’-]+$/gu, '');
+    if (!/^[A-Z][A-Za-z'’-]+$/u.test(bare)) continue;
+    if (NOT_A_NAME.has(bare.toLowerCase())) continue;
+    if (MAIL_ARTICLES.has(words[n - 1]!.toLowerCase().replace(/[^a-z]/gu, ''))) continue;
+    return bare.toLowerCase();
+  }
+  return undefined;
+}
+
+/** At most four salient terms: names, words and numbers survive; filler and time words do not. */
+export function mailTerms(text: string, max = 4): string[] {
+  const words = text.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
+  const terms: string[] = [];
+  for (const word of words) {
+    if (STOP_WORDS.has(word) || MAIL_FILLER.has(word)) continue;
+    if (!/\d/u.test(word) && word.length < 3) continue;
+    if (terms.includes(word)) continue;
+    terms.push(word);
+    if (terms.length >= max) break;
+  }
+  return terms;
+}
+
+const MAIL_RELATIVE_WINDOWS: readonly (readonly [RegExp, string])[] = [
+  [/\b(?:today|this morning|this afternoon|this evening)\b/u, 'newer_than:1d'],
+  [/\b(?:yesterday|last night)\b/u, 'newer_than:2d'],
+  [/\b(?:this week|past week)\b/u, 'newer_than:7d'],
+  [/\blast week\b/u, 'newer_than:14d'],
+  [/\b(?:this month|past month)\b/u, 'newer_than:30d'],
+  [/\blast month\b/u, 'newer_than:60d'],
+];
+const DAY_MS = 86_400_000;
+
+/** The local calendar day an instant names, in the zone the window was resolved for. */
+function localDay(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+}
+function dayShift(day: string, days: number): string {
+  const [year, month, date] = day.split('-').map(Number);
+  return new Date(Date.UTC(year!, month! - 1, date!) + days * DAY_MS).toISOString().slice(0, 10);
+}
+function gmailDate(day: string): string { return day.replaceAll('-', '/'); }
+
+/**
+ * The window a question asked for, resolved in the owner's own zone when it names a calendar day, and
+ * a rolling two weeks when it named none. Gmail's `after:` and `before:` are exclusive day bounds.
+ */
+export function mailWindow(question: string, nowMs = Date.now(), timeZone?: string): string {
+  const text = question.toLowerCase();
+  for (const [pattern, window] of MAIL_RELATIVE_WINDOWS) if (pattern.test(text)) return window;
+  const day = /\b(\d{4}-\d{2}-\d{2})\b/u.exec(text)?.[1] ?? /\bon (?:(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/u.exec(text)?.[1];
+  if (day !== undefined) {
+    try {
+      const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const range = windowRange(calendarWindowOf(day, day), nowMs, zone);
+      return `after:${gmailDate(dayShift(localDay(range.timeMin, zone), -1))} before:${gmailDate(localDay(range.timeMax, zone))}`;
+    } catch { /* an unresolved day keeps the rolling window */ }
+  }
+  return 'newer_than:14d';
+}
+
+const MAIL_DATE_SHAPE = /\b\d{4}-\d{2}-\d{2}\b/gu;
+
+/**
+ * E4: a spoken mail question becomes Gmail syntax. Plain words reduce to at most four salient terms,
+ * a person the question is about becomes `from:<name> OR to:<name>`, and a window is always added.
+ * Explicit Gmail syntax is the author's own and is never rewritten.
+ */
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string): string {
+  const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
+  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) return authored.slice(0, RESEARCH.queryLimitChars);
+  const text = `${authored || question} ${question}`.replace(MAIL_DATE_SHAPE, ' ');
+  const lower = question.toLowerCase();
+  const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
+  const flags = [/\bunread\b/u.test(lower) ? 'is:unread' : '', /\bimportant\b/u.test(lower) ? 'is:important' : ''].filter(Boolean);
+  const terms = mailTerms(text).filter(term => term !== person);
+  const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
+  if (leading.length === 0 && terms.length === 0) return `in:inbox ${mailWindow(question, nowMs, timeZone)}`;
+  return [...leading, ...terms, mailWindow(question, nowMs, timeZone)].join(' ').slice(0, RESEARCH.queryLimitChars);
+}
+
+/** The shape of one mail query for a receipt: term count, operators and window, never the words. */
+export interface MailQueryShape { terms: number; operators: string[]; window?: string }
+const OPERATOR_TOKEN = /^([a-z_]+):(.+)$/iu;
+const WINDOW_OPERATORS = new Set(['newer_than', 'older_than', 'after', 'before']);
+const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) || token.toUpperCase() === 'OR';
+
+export function mailQueryShape(q: string): MailQueryShape {
+  const operators: string[] = [];
+  let terms = 0, window: string | undefined;
+  for (const token of q.split(/\s+/).filter(Boolean)) {
+    const match = OPERATOR_TOKEN.exec(token);
+    if (match === null) { if (token.toUpperCase() !== 'OR') terms += 1; continue; }
+    const operator = match[1]!.toLowerCase();
+    if (!operators.includes(operator)) operators.push(operator);
+    if (WINDOW_OPERATORS.has(operator)) window = token;
+  }
+  return { terms, operators, ...(window === undefined ? {} : { window }) };
+}
+
+const WINDOW_STEPS: Record<string, string> = { '1d': '7d', '2d': '7d', '7d': '14d', '14d': '30d', '30d': '60d' };
+
+/**
+ * E5: the one broader query a search that matched nothing may run: drop the least salient term, else
+ * widen the window by one step. Undefined when nothing widens, so a narrow authored filter never loops.
+ */
+export function broaderMailQuery(q: string): string | undefined {
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const termIndexes = tokens.map((token, index) => isOperatorToken(token) ? -1 : index).filter(index => index >= 0);
+  if (termIndexes.length > 1) {
+    const dropped = termIndexes[termIndexes.length - 1]!;
+    return tokens.filter((_, index) => index !== dropped).join(' ').slice(0, RESEARCH.queryLimitChars);
+  }
+  const windowIndex = tokens.findIndex(token => /^newer_than:[a-z0-9]+$/u.test(token));
+  if (windowIndex >= 0) {
+    const step = WINDOW_STEPS[/^newer_than:(.+)$/u.exec(tokens[windowIndex]!)?.[1] ?? ''];
+    if (step !== undefined) {
+      const widened = [...tokens];
+      widened[windowIndex] = `newer_than:${step}`;
+      return widened.join(' ').slice(0, RESEARCH.queryLimitChars);
+    }
+  }
+  return undefined;
+}
+
+const WINDOW_PHRASE: Record<string, string> = {
+  '1d': 'in the last day', '2d': 'in the last two days', '7d': 'in the last week',
+  '14d': 'in the last two weeks', '30d': 'in the last month', '60d': 'in the last two months',
+};
+
+/**
+ * E5: how the reply says it searched: the words it matched and the window it used. The model voices
+ * this so an empty search reads as "nothing matching X in the last two weeks", never as a bare no.
+ */
+export function mailSearchPhrase(q: string): string {
+  const shape = mailQueryShape(q);
+  const words = q.split(/\s+/).filter(token => token.length > 0 && !isOperatorToken(token));
+  let phrase = words.length > 0 ? ` for "${words.join(' ')}"` : ' with a keyword filter';
+  if (shape.window !== undefined) {
+    const relative = /^newer_than:(.+)$/u.exec(shape.window)?.[1];
+    if (relative !== undefined) phrase += ` ${WINDOW_PHRASE[relative] ?? `within ${relative}`}`;
+    else {
+      const after = /after:(\S+)/u.exec(q)?.[1], before = /before:(\S+)/u.exec(q)?.[1];
+      phrase += after !== undefined && before !== undefined ? ` between ${after} and ${before}` : ` within ${shape.window}`;
+    }
+  }
+  return phrase;
+}
+
 /** The deterministic fallback query per source: never the raw sentence. */
 export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: number): { query?: string; window?: string } {
   const text = question.toLowerCase();
@@ -554,7 +734,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now(), config.timeZone);
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines }, 'cal0')];
   }
-  if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query ?? 'in:inbox newer_than:2d', maxResults: RESEARCH.mailLines }, 'm0')];
+  if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.mailLines }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: config.query ?? 'after:yesterday', limit: RESEARCH.chatLines }, 'c0')];
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
@@ -636,6 +816,8 @@ interface MailRead {
   plain?: string;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
   code?: string;
+  /** E5: the one broader read a search that matched nothing ran, so the receipt can name both shapes. */
+  retry?: MailRead;
 }
 type RemoteBody = Extract<HostEvidenceRef, { kind: 'remote-body' }>;
 interface ReceivedBody { evidence: RemoteBody; binding: ToolResultBinding; source: SourceKind; offset: number }
@@ -1061,7 +1243,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
   return {
     name: RESEARCH_TOOL_NAME,
     description: researchDescription(configured),
-    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
+    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
       properties: {
@@ -1625,7 +1807,13 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
   }
   if (lookup.source === 'knowledge') return { source: 'knowledge', kind: 'knowledge_search', subs: candidateSubs('knowledge_search', subsConfig) };
   if (lookup.source === 'mail') return lookup.mail
-    ? { source: 'mail', kind: 'id' in lookup.mail ? 'mail_open' : 'mail_search', subs: [{ key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList, args: { ...lookup.mail } }] }
+    ? {
+      source: 'mail', kind: 'id' in lookup.mail ? 'mail_open' : 'mail_search',
+      subs: [{
+        key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
+        args: 'id' in lookup.mail ? { ...lookup.mail } : { ...lookup.mail, q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
+      }],
+    }
     : { source: 'mail', kind: 'mail_search', subs: candidateSubs('mail_search', subsConfig) };
   return { source: 'chat', kind: 'chat_search', subs: candidateSubs('chat_search', subsConfig) };
 }
@@ -1634,6 +1822,8 @@ interface RoutedOutcome {
   bodyOnly?: boolean;
   lookup: ResearchLookup; kind: LedgerKind; tool: string; source: SourceKind | 'memory';
   outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
+  /** E5: the mail queries this read ran, so the receipt carries their shape and the reply their words. */
+  mail?: MailQueryInfo;
 }
 
 interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
@@ -1718,6 +1908,52 @@ function mailRead(run: RunState, args: JsonObject): MailRead {
   return read;
 }
 
+/** The mail queries one read ran, in order: the words stay local to the reply, the shape goes in the receipt. */
+interface MailQueryInfo { q: string; retried?: string }
+function mailQueryInfo(read: MailRead): MailQueryInfo | undefined {
+  const q = read.args['q'];
+  if (typeof q !== 'string' || q.length === 0) return undefined;
+  const retried = read.retry?.args['q'];
+  return { q, ...(typeof retried === 'string' ? { retried } : {}) };
+}
+
+/** E5: the receipt names both queries by shape, never by word. */
+function mailReceiptField(info: MailQueryInfo | undefined): { mail?: MailQueryShape & { retried?: MailQueryShape } } {
+  if (info === undefined) return {};
+  return { mail: { ...mailQueryShape(info.q), ...(info.retried === undefined ? {} : { retried: mailQueryShape(info.retried) }) } };
+}
+
+/** E5: how an empty mail search is voiced, naming the words and the window it really used. */
+function mailEmptyPhrase(info: MailQueryInfo | undefined, fallback: string): string {
+  return info === undefined ? fallback : mailSearchPhrase(info.retried ?? info.q);
+}
+
+/**
+ * E5: one mail read, then exactly one broader retry when a search matched nothing. The wider query
+ * shares the source's own deadline and ops budget, and its hits are credited to the first read.
+ */
+async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: readonly MailRead[], parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
+  await collectMail(deps, run, parent, remainingMs, now);
+  if (parent.aborted) return;
+  const retries = reads.map(read => {
+    if (read.messages.size > 0 || read.failed) return undefined;
+    const q = read.args['q'];
+    if (typeof q !== 'string') return undefined;
+    const broader = broaderMailQuery(q);
+    if (broader === undefined || broader === q) return undefined;
+    const retry = mailRead(run, { ...read.args, q: broader });
+    read.retry = retry;
+    return retry;
+  });
+  if (retries.every(retry => retry === undefined)) return;
+  await collectMail(deps, run, parent, remainingMs, now);
+  reads.forEach((read, index) => {
+    const retry = retries[index];
+    if (retry === undefined) return;
+    for (const [key, message] of retry.messages) if (!read.messages.has(key)) read.messages.set(key, message);
+  });
+}
+
 /** Each source page is dispatched once under one source deadline; received identities stay local. */
 async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
@@ -1778,11 +2014,12 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
 async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], signal: AbortSignal, remainingMs: number, now: () => number): Promise<RoutedOutcome[]> {
   const started = now();
   const reads = plans.map(plan => mailRead(run, plan.read.subs[0]!.args));
-  await collectMail(deps, run, signal, remainingMs, now);
+  await collectMailWithRetry(deps, run, reads, signal, remainingMs, now);
   return plans.map((plan, n) => {
     const read = reads[n]!, lines = [...read.messages.values()].map(message => message.line);
     const outcome: LookupOutcome = lines.length > 0 ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
-    return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size };
+    const info = mailQueryInfo(read);
+    return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }) };
   });
 }
 
@@ -2004,6 +2241,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
+        ...mailReceiptField(outcome.mail),
       });
       logSubcall({
         event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
@@ -2024,7 +2262,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         continue;
       }
       if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); run.cutShort.delete(outcome.source); }
-      else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, ` for "${outcome.lookup.query.slice(0, 60)}"`); }
+      else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, mailEmptyPhrase(outcome.mail, ` for "${outcome.lookup.query.slice(0, 60)}"`)); }
       else if (outcome.outcome === 'timeout') { run.cutShort.add(outcome.source); }
       else run.sourcesFailed.add(outcome.source);
     }
@@ -2582,7 +2820,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             if (mailCalls.length === 0) return [];
             run.ops -= mailCalls.length;
             const reads = mailCalls.map(call => mailRead(run, call.args));
-            await collectMail(deps, run, readSignal, Math.min(readDeadlineMs, deadlineAt - now()), now);
+            await collectMailWithRetry(deps, run, reads, readSignal, Math.min(readDeadlineMs, deadlineAt - now()), now);
             return mailCalls.map((call, n) => {
               const read = reads[n]!;
               const text = [...read.messages.values()].map(message => message.line).concat(read.plain ? [read.plain] : []).join('\n');
@@ -2631,6 +2869,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const parts = creditableSources(kind, results);
           for (const [index, part] of parts.entries()) {
             const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
+            // E5: the mail read's own queries, for the receipt's shape and the reply's "how I searched".
+            const mailInfo = part.source !== 'mail' || mailCalls.length === 0 ? undefined : mailQueryInfo(mailRead(run, mailCalls[0]!.args));
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
             if (part.source === null) continue;
             if (part.results.some(result => result.ok && result.text.trim())) {
@@ -2638,7 +2878,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             } else if (part.results.some(result => result.ok)) {
               // The connector answered and matched nothing: that is a search, not an outage.
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
-              run.emptySearches.set(part.source, queryShapeOf(served));
+              run.emptySearches.set(part.source, mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
             } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
             // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
             logSource({
@@ -2646,6 +2886,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
               ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
+              ...mailReceiptField(mailInfo),
             });
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
@@ -2748,8 +2989,20 @@ interface Deferred { promise: Promise<JsonObject>; resolve: (reply: JsonObject) 
 function startSignature(call: ResearchCall): string {
   return JSON.stringify([call.question?.trim() ?? '', call.sources?.trim() ?? '', call.direction?.trim() ?? '', normalizeLookups(call.lookups)]);
 }
+/**
+ * E7: the same intent, ignoring how it was worded. The question normalized and the set of sources it
+ * names: one owner question researched once, whatever lookups a model happens to attach to it.
+ */
+function coalesceKey(call: ResearchCall): string {
+  const sources = new Set<string>();
+  if (call.sources !== undefined && call.sources.trim() !== '') sources.add(call.sources.trim().toLowerCase());
+  for (const lookup of normalizeLookups(call.lookups)) sources.add(lookup.source);
+  const question = (call.question ?? '').toLowerCase().replace(/\s+/gu, ' ').replace(/[\s?.!,;:]+$/u, '').trim();
+  return JSON.stringify([question, [...sources].sort()]);
+}
 type ActiveRun = {
   signature?: string;
+  key?: string;
   superseded: boolean; awaiter: Deferred;
   /** R6/M2: the readers a first answer left running; the run is over when this settles. */
   reading?: Promise<void>;
@@ -2770,14 +3023,22 @@ function deferred(): Deferred {
 export class ResearchScheduler {
   readonly #deps: ResearchDeps;
   #active = new Map<string, ActiveRun>();
+  /** E7: the live turn window: the run each coalesce key last answered, and when. */
+  #recent = new Map<string, { id: string; at: number; reply: JsonObject }>();
   constructor(deps: ResearchDeps) { this.#deps = deps; }
 
   call(call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
     if (call.action === 'start') {
       const inflight = this.#resolveTarget(undefined);
-      if (inflight !== undefined && inflight.entry.signature === startSignature(call)) {
+      if (inflight !== undefined && (inflight.entry.signature === startSignature(call) || inflight.entry.key === coalesceKey(call))) {
         this.#deps.logJoined?.(inflight.id);
         return inflight.entry.awaiter.promise;
+      }
+      // E7: the same question and sources, answered moments ago in this turn, is the same research.
+      const recent = this.#recent.get(coalesceKey(call));
+      if (recent !== undefined && this.#deps.now() - recent.at <= RESEARCH.coalesceWindowMs) {
+        this.#deps.logJoined?.(recent.id);
+        return Promise.resolve(structuredClone(recent.reply));
       }
       for (const [id, entry] of this.#active) {
         this.#deps.ledger.stop(id);
@@ -2788,6 +3049,7 @@ export class ResearchScheduler {
       // Z1: the host mints every run id. A researchId the model supplies on a start is ignored, because
       // a model-chosen id that fails the host log's closed id rule takes the run's receipts with it.
       const id = newResearchId();
+      for (const [key, entry] of this.#recent) if (this.#deps.now() - entry.at > RESEARCH.coalesceWindowMs) this.#recent.delete(key);
       return this.#drive({ ...call, researchId: id }, signal, id);
     }
     // An explicit unknown id never selects another run.
@@ -2830,7 +3092,7 @@ export class ResearchScheduler {
 
   #drive(call: ResearchCall, signal: AbortSignal, id: string): Promise<JsonObject> {
     const awaiter = deferred();
-    const entry: ActiveRun = { superseded: false, awaiter, ...(call.action === 'start' ? { signature: startSignature(call) } : {}) };
+    const entry: ActiveRun = { superseded: false, awaiter, ...(call.action === 'start' ? { signature: startSignature(call), key: coalesceKey(call) } : {}) };
     this.#active.set(id, entry);
     // R6/M2: a call that answered ahead of its readers is still the run those readers belong to, so stop
     // and continue must find it. The entry leaves the active set only when the run itself has ended.
@@ -2840,6 +3102,7 @@ export class ResearchScheduler {
     } };
     const settle = (): void => { if (this.#active.get(id) === entry) this.#active.delete(id); };
     runResearch(deps, call, signal).then(reply => {
+      if (call.action === 'start') this.#recent.set(coalesceKey(call), { id, at: this.#deps.now(), reply });
       if (!entry.superseded) awaiter.resolve(reply);
       if (entry.reading === undefined) settle(); else void entry.reading.then(settle, settle);
     }).catch(() => {

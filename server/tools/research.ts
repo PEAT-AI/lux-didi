@@ -866,7 +866,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: config.query ?? 'after:yesterday', limit: RESEARCH.chatLines }, 'c0')];
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
-    ? [search(WEB_SEARCH_ACTION, { query: config.query ?? keywords }, 'w0')] : [];
+    ? [search(WEB_SEARCH_ACTION, { query: config.query ?? contentKeywords(config.question).join(' ') }, 'w0')] : [];
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
     // A brief reads primary events; calendar names alone are not findings.

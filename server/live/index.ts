@@ -2995,7 +2995,8 @@ export class LiveSessionOwner {
     let journalSequence: number;
     try {
       journalSequence = this.#store.transaction(tx => {
-        this.#keepUnheard(handle, tx);
+        // Only the owner's own stop can leave speech unheard; a revocation or a failure ends differently.
+        if (outcome.state === 'closed') this.#keepUnheard(handle, tx);
         if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
         return this.#terminalInTx(tx,handle.liveSessionId,outcome,complete,this.#now(),consumerState,rejected);
       });

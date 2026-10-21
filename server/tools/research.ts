@@ -1030,25 +1030,16 @@ export function researchSourcesForConnector(connector: string): SourceKind[] {
  * W9-R3: the configured sources one endpoint set covers, and the closed reason for every endpoint
  * that did not connect, so a source the owner configured is spoken as unreachable instead of
  * vanishing. Only a closed code travels: never the free-text error, a url or a credential.
- * W10: `grantedTools` is the read tools the session's current registry offers. A connected endpoint
- * whose source has no granted read tool has published no usable grant yet, so that source is named
- * too, with `source_not_granted`, instead of being silently absent from both lists.
  */
-export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndpointStatus[], grantedTools?: Iterable<string>): UnavailableSource[] {
+export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndpointStatus[]): UnavailableSource[] {
   const sources: UnavailableSource[] = [];
-  const push = (source: SourceKind, reason: string): void => { if (!sources.some(entry => entry.source === source)) sources.push({ source, reason }); };
   for (const endpoint of endpoints) {
     if (endpoint.state === 'connected') continue;
     const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
-    for (const source of researchSourcesForConnector(endpoint.connector)) push(source, reason);
-  }
-  if (grantedTools === undefined) return sources;
-  const granted = new Set(grantedTools);
-  const reachable = new Set<SourceKind>();
-  for (const [tool, source] of Object.entries(SOURCE_TOOLS)) if (granted.has(tool)) reachable.add(source);
-  for (const endpoint of endpoints) {
-    if (endpoint.state !== 'connected') continue;
-    for (const source of researchSourcesForConnector(endpoint.connector)) if (!reachable.has(source)) push(source, 'source_not_granted');
+    for (const source of researchSourcesForConnector(endpoint.connector)) {
+      if (sources.some(entry => entry.source === source)) continue;
+      sources.push({ source, reason });
+    }
   }
   return sources;
 }
@@ -1447,7 +1438,6 @@ interface ReplyFinding { source: string; text: string; chars: number }
 const REASON_WORDS: Record<string, string> = {
   not_configured: 'not configured',
   not_signed_in: 'not signed in',
-  source_not_granted: 'read grant not published',
   unresolved_window: 'could not resolve that date or window',
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',

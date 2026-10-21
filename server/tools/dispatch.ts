@@ -19,16 +19,6 @@ import { diagnosticContentAccess, type DiagnosticContentAuthority, type Diagnost
 import { sha256 } from './canonical.js';
 
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
-/**
- * W10: the lux-google-mcp envelope keys (google_mcp/server.py `_envelope`). The four load-bearing
- * fields are always present; the helper's own extras are named, so a projection of some other shape
- * is never vouched for even when its text and structured forms happen to agree.
- */
-const GOOGLE_ENVELOPE_KEYS = ['family', 'tool', 'method', 'account', 'data', 'coverage', 'diagnostics'] as const;
-function googleEnvelope(value: unknown, toolName: string): boolean {
-  if (!record(value) || Object.keys(value).some(key => !(GOOGLE_ENVELOPE_KEYS as readonly string[]).includes(key))) return false;
-  return (value['family'] === 'gmail' || value['family'] === 'calendar') && value['tool'] === toolName && record(value['data']) && record(value['coverage']);
-}
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object') { Object.freeze(value); for (const child of Object.values(value)) if (child && typeof child === 'object' && !Object.isFrozen(child)) freeze(child); }
   return value;
@@ -175,7 +165,7 @@ function extractVerifiedSource(result: CompletedResult,request: CallRequest,boun
     if (!record(part) || Object.keys(part).some(k => !['type','text'].includes(k)) || part.type !== 'text' || typeof part.text !== 'string') fail('unsupported_source_content');
     texts.push(part.text);
   }
-  let structuredEquivalence: 'lux_string_v1' | 'mongoose_json_dictionary_v1' | 'google_envelope_v1' | undefined;
+  let structuredEquivalence: 'lux_string_v1' | 'mongoose_json_dictionary_v1' | undefined;
   if (value.structuredContent !== undefined) {
     const structured = value.structuredContent;
     if (p.connector === 'lux-knowledge' && texts.length === 1 && record(structured) && Object.keys(structured).length === 1 && structured.result === texts[0]) {
@@ -184,10 +174,6 @@ function extractVerifiedSource(result: CompletedResult,request: CallRequest,boun
       let parsed: unknown;
       try { parsed = JSON.parse(texts[0]!); } catch { /* Non-JSON text cannot prove dictionary equivalence. */ }
       if (isDeepStrictEqual(parsed,structured)) structuredEquivalence = 'mongoose_json_dictionary_v1';
-    } else if (p.connector === 'google' && texts.length === 1 && record(structured)) {
-      let parsed: unknown;
-      try { parsed = JSON.parse(texts[0]!); } catch { /* Non-JSON text cannot prove envelope equivalence. */ }
-      if (googleEnvelope(parsed, request.toolName) && isDeepStrictEqual(parsed,structured)) structuredEquivalence = 'google_envelope_v1';
     }
     if (!structuredEquivalence) fail('structured_source_projection_unavailable');
   }

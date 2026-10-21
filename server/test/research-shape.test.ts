@@ -303,3 +303,22 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
   assert.equal(typeof logs[0]!['canContinue'], 'boolean');
   assert.ok(Array.isArray(logs[0]!['findingChars']));
 });
+
+test('E8/U2: a 31-event week comes back whole, one line per day, never cut at twelve', () => {
+  const lines = Array.from({ length: 31 }, (_, n) => {
+    const day = String(25 + Math.floor(n / 6)).padStart(2, '0');
+    return `- 2026-10-${day}T10:00:00Z, Synthetic week event ${n} [id w${n}]`;
+  });
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');
+  assert.match(block.text, /^calendar: 31 of 31 shown/u);
+  for (const n of [0, 12, 30]) assert.match(block.text, new RegExp(`Synthetic week event ${n}\\b`, 'u'));
+  assert.equal(block.lines.length, 6, 'one line per day of the window');
+  assert.doesNotMatch(block.text, /left out/u);
+});
+
+test('E8/U2: a trimmed calendar block says how many events it left out', () => {
+  const lines = Array.from({ length: 40 }, (_, n) => `- 2026-10-25T10:${String(n % 60).padStart(2, '0')}:00Z, Synthetic long week event ${n} with a title that fills the block ${'x'.repeat(120)} [id t${n}]`);
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');
+  assert.match(block.text, /I left out \d+ calendar events to keep this answer short\./u);
+  assert.ok(block.total > block.lines.length || /left out/u.test(block.text));
+});

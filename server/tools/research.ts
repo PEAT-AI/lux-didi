@@ -743,7 +743,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
 }
 
 /** ROUTE-1022: the owner's own schedule, in the words a spoken question uses. One deterministic rule, no classifier. */
-const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|calls?|busy|tomorrow|today|tonight|this week|next week|week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|itinerary|out of office)\b/u;
+const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|calls?|tomorrow|today|next week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|itinerary|out of office)\b/u;
 
 export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
@@ -1416,7 +1416,7 @@ export function researchSourcesFromToolNames(names: Iterable<string>): SourceKin
 }
 
 /** ROUTE-1022: the two Google endpoints the host registry keys, each serving its own source. */
-const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], gcal: ['calendar'] };
+const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], calendar: ['calendar'] };
 
 /**
  * ROUTE-1022: availability is per endpoint. gmail and the calendar are two endpoints on one connector,

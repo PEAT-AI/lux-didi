@@ -349,9 +349,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       try { current = row ? connection(tx, p.connectionId) : undefined; }
       catch (error) {
         // W9: a stored approval that no longer validates against this release's reviewed connector
-        // envelope (a release renamed its read tools) is a catalog change, not corruption. The
-        // compare-and-swap on the exact predecessor bytes below still guards the replacement.
-        if (row ? expected !== String(row.policy_sha256) : true) throw error;
+        // envelope (a release renamed its read tools) is a catalog change, not corruption. Only the
+        // same endpoint's own live approval qualifies, and the compare-and-swap on the exact
+        // predecessor bytes below still guards the replacement; anything else keeps throwing.
+        const peeked = ((): { enabled?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } } | null => {
+          try { return JSON.parse(String(row?.['policy_json'] ?? '')) as { enabled?: unknown }; } catch { return null; }
+        })();
+        const sameEndpoint = peeked !== null && peeked.enabled !== false
+          && peeked.endpoint?.id === p.endpoint.id
+          && peeked.endpoint?.account === p.endpoint.account
+          && peeked.endpoint?.resource === p.endpoint.resource;
+        if (!row || expected !== String(row.policy_sha256) || !sameEndpoint) throw error;
       }
       if (current && canonicalJSON(current.policy) === bytes) return false;
       const predecessor = current?.sha256 ?? (row ? String(row.policy_sha256) : null);

@@ -1,0 +1,108 @@
+{
+  "source": "structure of the installed provider-38 mcp.json at ab755604 (2026-10-21), values replaced by fakes",
+  "schemaVersion": 1,
+  "grantMode": "owner-trusted-reads",
+  "ownerIdentity": "owner@example.invalid",
+  "ownerChatUsername": "owner",
+  "endpoints": [
+    {
+      "id": "lux-knowledge",
+      "unknownClass": "sensitive",
+      "transport": "streamable-http",
+      "connector": "lux-knowledge",
+      "account": "local",
+      "resource": "lux-knowledge",
+      "credentialRef": null,
+      "enabled": true,
+      "allowEgress": true,
+      "url": "http://127.0.0.1:8765/mcp"
+    },
+    {
+      "id": "gmail",
+      "unknownClass": "private",
+      "transport": "stdio",
+      "args": [
+        "--family",
+        "gmail"
+      ],
+      "connector": "google",
+      "account": "local",
+      "resource": "google-gmail",
+      "credentialRef": null,
+      "enabled": true,
+      "allowEgress": true,
+      "env": {
+        "HOME": "",
+        "LOGNAME": "",
+        "LUX_GOOGLE_MCP_ACCOUNT": "",
+        "LUX_GOOGLE_MCP_TOKEN": "",
+        "PATH": "",
+        "SHELL": "",
+        "TERM": "",
+        "USER": ""
+      },
+      "command": "<fake-helper-path>"
+    },
+    {
+      "id": "calendar",
+      "unknownClass": "private",
+      "transport": "stdio",
+      "args": [
+        "--family",
+        "calendar"
+      ],
+      "connector": "google",
+      "account": "local",
+      "resource": "google-calendar",
+      "credentialRef": null,
+      "enabled": true,
+      "allowEgress": true,
+      "env": {
+        "HOME": "",
+        "LOGNAME": "",
+        "LUX_GOOGLE_MCP_ACCOUNT": "",
+        "LUX_GOOGLE_MCP_TOKEN": "",
+        "PATH": "",
+        "SHELL": "",
+        "TERM": "",
+        "USER": ""
+      },
+      "command": "<fake-helper-path>"
+    },
+    {
+      "id": "mongoose",
+      "unknownClass": "sensitive",
+      "transport": "streamable-http",
+      "connector": "mongoose",
+      "account": "local",
+      "resource": "mongoose",
+      "credentialRef": "mongoose-mcp",
+      "enabled": true,
+      "allowEgress": true,
+      "url": "https://mongoose.dev.peat-cloud.com/mcp/"
+    },
+    {
+      "id": "mattermost",
+      "unknownClass": "private",
+      "transport": "stdio",
+      "args": [
+        "/Users/rob/GitHub/mattermost-mcp/dist/index.cjs"
+      ],
+      "connector": "mattermost",
+      "account": "local",
+      "resource": "mattermost",
+      "credentialRef": null,
+      "enabled": true,
+      "allowEgress": true,
+      "env": {
+        "HOME": "",
+        "LOGNAME": "",
+        "PATH": "",
+        "SHELL": "",
+        "TERM": "",
+        "USER": ""
+      },
+      "command": "<fake-helper-path>"
+    }
+  ]
+}

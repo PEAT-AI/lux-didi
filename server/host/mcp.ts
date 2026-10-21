@@ -116,6 +116,12 @@ class ProbeRegistry extends McpRegistry {
     }
   }
 }
+/** A registration-class rejection reduced to one closed token, never the thrown message. */
+function registrationCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(message) ? message : 'registration-rejected';
+}
+
 /** The closed connect-time stages a connector_failure line may carry. */
 export type ConnectStage = 'credential' | 'config' | 'spawn' | 'handshake' | 'first_call';
 
@@ -202,21 +208,34 @@ export async function composeMcpRuntime(options: {
   const { grantMode, endpoints } = selection.catalog;
   const trusted = grantMode === 'owner-trusted-reads';
   // Reject local capability mismatches before any transport starts, including disabled entries.
+  const rejected = new Set<string>();
   for (const entry of endpoints) {
     if (!Object.hasOwn(CONNECTOR_DESCRIPTORS, entry.connector)) throw new ConnectorCompositionError('unknown_connector', entry.id, entry.connector);
     if (entry.enabled) {
-      if (entry.transport === 'stdio') {
-        registry.register({ id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource });
-      } else {
-        registry.register({ id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, ...(entry.credentialRef ? { credentialRef: entry.credentialRef } : {}) });
+      try {
+        if (entry.transport === 'stdio') {
+          registry.register({ id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource });
+        } else {
+          registry.register({ id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, ...(entry.credentialRef ? { credentialRef: entry.credentialRef } : {}) });
+        }
+        registry.enable(entry.id);
+        if (entry.allowEgress) registry.allowEgress(entry.id);
+      } catch (error) {
+        // W9-B2: a registration-class rejection (a moved helper, an unapproved env) never admits the
+        // endpoint, so nothing can settle it. It is still reported and still says why, and the rest of
+        // the composition continues: one bad endpoint must never take every source down with it.
+        const code = registrationCode(error);
+        rejected.add(entry.id);
+        reportFailure(entry, 'config', 'first-connect', code);
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: null, error: code, exception: { class: 'Registration', code } });
+        connectors.set(entry.id, entry.connector);
+        continue;
       }
-      registry.enable(entry.id);
-      if (entry.allowEgress) registry.allowEgress(entry.id);
     }
     reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
     connectors.set(entry.id, entry.connector);
   }
-  const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
+  const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
 
   const eligible = new Map<string, { session: number; revision: number }>();
   // Endpoints parked at `not_signed_in`: a login writes the credential, and the next recover()
@@ -352,10 +371,19 @@ export async function composeMcpRuntime(options: {
         // reviewed envelope, so the row is reconciled from this discovery; a stored revocation still
         // wins, and explicit mode keeps its owner-approval refusal.
         let stored: ConnectionPolicy | null = null;
-        let revoked = true;
-        try { stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy); revoked = false; }
-        catch { try { revoked = (JSON.parse(bytes) as { enabled?: unknown }).enabled === false; } catch { revoked = true; } }
-        if (!stored && (!trusted || revoked)) {
+        let sameEndpoint = false;
+        let enabledInRow = false;
+        try {
+          const parsed = JSON.parse(bytes) as { enabled?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } };
+          sameEndpoint = parsed.endpoint?.id === policy.endpoint.id
+            && parsed.endpoint?.account === policy.endpoint.account
+            && parsed.endpoint?.resource === policy.endpoint.resource;
+          enabledInRow = parsed.enabled !== false;
+          stored = validatePolicy(parsed as unknown as ConnectionPolicy);
+        } catch { stored = null; }
+        // Only the same endpoint's own approval may be reconciled, and never a revoked one: a tampered,
+        // foreign or revoked row keeps the owner-approval refusal.
+        if (!stored && (!trusted || !sameEndpoint || !enabledInRow)) {
           reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }

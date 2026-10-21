@@ -919,3 +919,146 @@ test('a configured endpoint that cannot connect logs exactly one closed connecto
     } finally { await runtime.close(); }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+// --- W9 reviewer round: registration failures, installed shape, reconciliation breadth, line counts. ---
+
+/** The installed provider-38 mcp.json structure, values replaced by locals. */
+function installedShape(): { schemaVersion: 1; grantMode: 'owner-trusted-reads'; ownerIdentity: string; endpoints: Record<string, unknown>[] } {
+  return JSON.parse(readFileSync(new URL('../../test/fixtures/installed-mcp-config.json', import.meta.url), 'utf8')) as never;
+}
+
+function localEndpoint(endpoint: Record<string, unknown>, child: string, args: readonly string[]): Record<string, unknown> {
+  const { url: _url, command: _command, ...rest } = endpoint;
+  if (endpoint['transport'] === 'stdio') {
+    return { ...rest, command: process.execPath, args: [...args], env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } };
+  }
+  return { ...rest, url: child };
+}
+
+test('the installed five-endpoint shape reports every endpoint and connects every reachable one', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-installed-shape-'));
+  const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { mode: 0o700 });
+  const fixture = installedShape();
+  const shape = fixture.endpoints.map(endpoint => {
+    if (endpoint['connector'] === 'google') return localEndpoint(endpoint, '', [googleChild, 'ok']);
+    if (endpoint['connector'] === 'mattermost') return localEndpoint(endpoint, '', [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mattermost-child.mjs')]);
+    // lux-knowledge and mongoose keep their streamable-http shape and point at a refusing local port.
+    return { ...endpoint, url: 'http://127.0.0.1:1/mcp' };
+  });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ ...fixture, endpoints: shape }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
+  try {
+    const runtime = await host.composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
+    });
+    try {
+      const reports = runtime.status().endpoints;
+      assert.deepEqual(reports.map(report => report.id).sort(), ['calendar', 'gmail', 'lux-knowledge', 'mattermost', 'mongoose'],
+        'one report per installed endpoint: none vanishes');
+      assert.deepEqual(runtime.connectionIds().sort(), ['calendar', 'gmail', 'mattermost']);
+      const gmail = reports.find(report => report.id === 'gmail');
+      assert.equal(gmail?.state, 'connected');
+      assert.ok((gmail?.tools ?? 0) >= 3, 'gmail publishes its reads');
+      // Behaviour 1's other half: the calendar digest has a reader only when a calendar grant is current.
+      const grant = runtime.registry.currentGrant('calendar');
+      assert.ok(grant, 'a calendar grant exists, so the digest reader is composed');
+      // Every endpoint that did not connect says so exactly once, in closed codes.
+      const failed = failures.map(failure => failure.detail?.endpointId).sort();
+      assert.deepEqual(failed, ['lux-knowledge', 'mongoose']);
+      for (const failure of failures) {
+        assert.match(failure.stage, /^(config|credential|spawn|handshake|first_call)$/);
+        assert.match(String(failure.detail?.reason ?? ''), /^[A-Za-z][A-Za-z0-9_-]{0,63}$/, 'closed reason only');
+      }
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a registration-class rejection is reported and says why, and never takes the other sources down', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-registration-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const missing = { id: 'gmail', transport: 'stdio' as const, command: join(dir, 'no-such-helper'), args: [] as string[],
+    env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'google', account: ACCOUNT, resource: 'google-gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' };
+  const healthy = { ...missing, id: 'knowledge', connector: 'lux-knowledge', resource: 'lux-knowledge', command: process.execPath,
+    args: [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mcp-child.mjs'), 'ok'] };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [missing, healthy] }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
+  try {
+    const runtime = await host.composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
+    });
+    try {
+      const gmail = runtime.status().endpoints.find(report => report.id === 'gmail');
+      assert.equal(gmail?.state, 'error', 'a rejected endpoint is reported, never absent');
+      assert.equal(failures.length, 1, 'exactly one line for the rejected endpoint');
+      assert.equal(failures[0]?.detail?.endpointId, 'gmail');
+      assert.equal(failures[0]?.stage, 'config');
+      assert.match(String(failures[0]?.detail?.reason), /^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
+      assert.ok(runtime.status().endpoints.some(report => report.id === 'knowledge'), 'the healthy sibling still composes');
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a transport failure carrying an exception code logs once, and a refresh never doubles the start line', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-exception-line-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const crashing = { id: 'mail', transport: 'stdio' as const, command: process.execPath,
+    args: [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mcp-child.mjs'), 'crash'],
+    env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'google', account: ACCOUNT, resource: 'google-gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [crashing] }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string; exceptionCode?: string } }[] = [];
+  try {
+    const runtime = await host.composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
+    });
+    try {
+      const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'mail');
+      assert.equal(report?.state, 'error');
+      assert.equal(failures.length, 1, `one closed line for the start failure, saw ${JSON.stringify(failures.map(f => f.detail))}`);
+      assert.ok(failures[0]?.detail?.exceptionCode || failures[0]?.detail?.reason, 'a closed code travels');
+      await runtime.recover();
+      assert.equal(failures.length, 1, 'a later refresh never doubles the start line');
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a tampered or foreign durable row is refused, never re-published from config', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-tampered-row-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const endpoint = { id: 'gmail', transport: 'stdio' as const, command: process.execPath, args: [googleChild, 'ok'],
+    env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'google', account: ACCOUNT, resource: 'google-gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [endpoint] }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  try {
+    // A row for another account: the release-rename tolerance must not adopt it.
+    const foreign = { schemaVersion: 1, bindingMode: 'connection', ownerId: store.assistantId, connectionId: 'gmail', generation: 2,
+      enabled: true, connector: 'google', endpoint: { id: 'gmail', transport: 'stdio', command: process.execPath, args: [googleChild, 'ok'],
+        env: endpoint.env, account: 'someone-else', resource: 'google-gmail', credentialRef: null },
+      toolNames: ['gmail_list'], schemaDigest: 'b'.repeat(64),
+      sourcePolicy: { id: 'gmail', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+      route: { identity: 'gmail', allowedClasses: ['private'] },
+      bounds: { maxEntityBytes: 1048576, maxGetIds: 100, maxQueryChars: 16384, maxResultBytes: 1048576, maxSearchLimit: 100 } };
+    const bytes = canonicalJSON(foreign);
+    store.transaction(tx => tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)',
+      [store.assistantId, 'gmail', 'gmail', 2, 1, bytes, sha256(bytes)]));
+    const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    try {
+      const report = runtime.status().endpoints.find(entry => entry.id === 'gmail');
+      assert.equal(report?.state, 'error', JSON.stringify(report));
+      assert.deepEqual(runtime.connectionIds(), [], 'a foreign row is never published');
+      assert.equal(report?.configurationError, 'owner-approval-required');
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

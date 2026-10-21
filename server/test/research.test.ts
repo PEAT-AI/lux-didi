@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
-  configuredSourcesForEndpoints, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
+  configuredSourcesForEndpoints, configuredSourcesForSession, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
@@ -1301,4 +1301,23 @@ test('a google endpoint in configuration error is voiced as unreachable mail, ne
   const note = String(reply['note'] ?? '');
   assert.match(note, /could not reach mail/);
   assert.deepEqual(dispatched, [], 'a source known to be unreachable is not dispatched to');
+});
+
+// W9-B1: a session opened before the connect round publishes still names what it cannot reach.
+test('a session opened before publication names mail and calendar with a closed reason', () => {
+  const connected = [
+    { connector: 'google', state: 'connected' },
+    { connector: 'mattermost', state: 'connected' },
+  ];
+  const named = unreachableSourcesForSession(['chat'], connected);
+  assert.deepEqual(named, [
+    { source: 'calendar', reason: UNPUBLISHED_SOURCE_REASON },
+    { source: 'mail', reason: UNPUBLISHED_SOURCE_REASON },
+  ], 'a connected endpoint whose reads this session never got is named, not dropped');
+
+  // The configured set carries the same sources, so a research call can ask for them at all.
+  assert.deepEqual(configuredSourcesForSession(['chat'], connected), ['chat', 'calendar', 'mail']);
+
+  // Once the reads are published into the session, nothing is called unreachable.
+  assert.deepEqual(unreachableSourcesForSession(['chat', 'calendar', 'mail'], connected), []);
 });

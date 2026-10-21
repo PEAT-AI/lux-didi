@@ -1007,6 +1007,42 @@ const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
+/** The closed reason a connected endpoint carries when this session cannot call its reads yet. */
+export const UNPUBLISHED_SOURCE_REASON = 'tools-unpublished';
+
+/**
+ * W9/B1: a session's configured sources are what its published reads serve plus every source a
+ * configured endpoint covers, so a session opened before the connect round still names what it
+ * cannot reach instead of silently narrowing.
+ */
+export function configuredSourcesForSession(published: readonly SourceKind[], endpoints: readonly ConfiguredEndpointStatus[]): SourceKind[] {
+  const sources = [...published];
+  for (const endpoint of endpoints) {
+    for (const source of researchSourcesForConnector(endpoint.connector)) if (!sources.includes(source)) sources.push(source);
+  }
+  return sources;
+}
+
+/**
+ * W9/B1: the sources this session cannot read, with a closed reason each. `served` is what the
+ * session's own tool set can call, so a connected endpoint whose reads were not published into this
+ * session is named as unpublished rather than vanishing.
+ */
+export function unreachableSourcesForSession(served: readonly SourceKind[],
+  endpoints: readonly ConfiguredEndpointStatus[]): UnavailableSource[] {
+  const sources: UnavailableSource[] = [];
+  for (const endpoint of endpoints) {
+    const reason = endpoint.state === 'connected'
+      ? UNPUBLISHED_SOURCE_REASON
+      : endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+    for (const source of researchSourcesForConnector(endpoint.connector)) {
+      if (served.includes(source) || sources.some(entry => entry.source === source)) continue;
+      sources.push({ source, reason });
+    }
+  }
+  return sources;
+}
+
 export function researchSourcesFromToolNames(names: Iterable<string>): SourceKind[] {
   const present = new Set(names);
   const found = new Set<SourceKind>();

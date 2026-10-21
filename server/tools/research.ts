@@ -96,8 +96,9 @@ export const RESEARCH = Object.freeze({
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
   value: Object.freeze({ quick_fact: 8, cross_source: 16, explicit_continue: 30 } as Record<QuestionClass, number>),
-  /** Median seconds per source, from the release-3a wire facts. */
-  p50Seconds: Object.freeze({ knowledge: 2.2, chat: 3.6, calendar: 4.7, gmail: 10.0 } as Record<'knowledge' | 'chat' | 'calendar' | 'gmail', number>),
+  /** Median seconds per source, from the release-3a wire facts. K8: her own knowledge reads measured p50
+   * 1,425 ms inside a 1,531 ms dispatch, so the old 2.2 understated the dead-air ladder's cost. */
+  p50Seconds: Object.freeze({ knowledge: 2.9, chat: 3.6, calendar: 4.7, gmail: 10.0 } as Record<'knowledge' | 'chat' | 'calendar' | 'gmail', number>),
   /** Selector cost multiplier by elapsed seconds: cheap early, expensive late. */
   lambda: Object.freeze([{ upToMs: 4_000, value: 0 }, { upToMs: 8_000, value: 0.5 }, { upToMs: Number.POSITIVE_INFINITY, value: 1.5 }]),
   /** Q1-R0: more data beats token thrift; 6,000 chars of telegraphic lines, never prose. */
@@ -120,6 +121,18 @@ export const RESEARCH = Object.freeze({
   knowledgeDetail: 'bodies' as const,
   knowledgeMaxChars: 1_200,
   knowledgeDeadlineMs: 8_000,
+  /** K3: the selector writes keywords, and a long string costs ranker score, so the query is clipped. */
+  knowledgeQueryTerms: 5,
+  /**
+   * K2: a search snippet stays short, and the body a hit is opened for is shown at three thousand
+   * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
+   */
+  knowledgeBodyChars: 3_000,
+  /** K1: how many ids the hydration hop reads, and the confidence below which a body is not worth it. */
+  knowledgeOpenIds: 2,
+  /** K1: the hydration hop's own key. Its body is shown at the read window; a named id stays whole. */
+  knowledgeHydrateKey: 'kz',
+  knowledgeReadMinConfidence: 'medium',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -333,7 +346,7 @@ export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answ
   + 'Write a real query for every search kind, never the whole spoken sentence. '
   + 'mail_search query: Gmail syntax, e.g. in:inbox newer_than:2d is:unread is:important from:alice@example.com subject:invoice "exact phrase". '
   + 'chat_search query: Mattermost keywords (a few words, not a sentence), optional from:, in:, after:YYYY-MM-DD. '
-  + 'knowledge_search query: 3 to 8 content keywords, no filler. '
+  + 'knowledge_search query: 3 to 5 content keywords, no filler. '
   + 'web_search query: 3 to 10 plain words for the public question itself; use it only for public-world facts that need looking up (news, current events, prices, opening hours, public documents) or when the owner asks you to search the web, never for personal commitments, correspondence, mail, calendar or private matters, and never put a name, address, message text or other private detail in the query. '
   + 'calendar_window: use today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD date. Unresolved or contradictory windows are refused; never widen them. ';
 
@@ -785,13 +798,38 @@ export function namedInsightIds(question: string, query?: string): number[] {
   return [...new Set(ids.filter(id => Number.isSafeInteger(id) && id > 0))].slice(0, RESEARCH.knowledgeHits);
 }
 
+/**
+ * K4: the owner's project names, from the corpus's own project tags, matched whole-word and
+ * case-insensitively. A name the question says out loud becomes a ranking hint, never a hard filter.
+ */
+const KNOWN_PROJECTS: readonly string[] = Object.freeze([
+  'Mosquito', 'llama', 'Wriggler', 'plantix', 'lux-harness', 'mongoose', 'dagster-dp-wriggler-pipeline',
+  'dogtation', 'vicuna', 'the-lux-emissary', 'Hawk', 'freya', 'macaca', 'lux-didi', 'claude-lux-knowledge',
+]);
+
+/** K4: the project the question names, written the way the corpus tags it, or nothing. */
+export function projectHintOf(question: string): string | undefined {
+  const spoken = question.toLowerCase();
+  return KNOWN_PROJECTS.find(project => new RegExp(`(^|[^a-z0-9-])${project.toLowerCase()}([^a-z0-9-]|$)`, 'u').test(spoken));
+}
+
+/** K3: the model writes sentences, and a long string costs ranker score, so the query is keywords. */
+export function knowledgeQuery(text: string): string {
+  const kept = contentKeywords(text, RESEARCH.knowledgeQueryTerms);
+  if (kept.length > 0) return kept.join(' ');
+  // A query the model wrote is already keywords: `team` or `notes` is a stop word for a spoken
+  // question, never for a search string, so it is clipped and kept instead of dropped.
+  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(Boolean).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
+}
+
 /** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree. */
-function knowledgeSearchArgs(query: string): JsonObject {
+function knowledgeSearchArgs(query: string, projectHint?: string): JsonObject {
   return {
     query, limit: RESEARCH.knowledgeHits,
     detail: RESEARCH.knowledgeDetail,
     max_chars: RESEARCH.knowledgeMaxChars,
     deadline_ms: RESEARCH.knowledgeDeadlineMs,
+    ...(projectHint === undefined ? {} : { project_hint: projectHint }),
   };
 }
 
@@ -807,13 +845,16 @@ function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars:
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
 export function candidateSubs(kind: CandidateKind, config: { question: string; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined; timeZone?: string | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
-  const keywords = contentKeywords(config.question).join(' ');
   if (kind === 'knowledge_search') {
     // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
     // again; the connector returns its whole body up to the knowledge body cap.
     const ids = namedInsightIds(config.question, config.query);
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
-    return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(config.query ?? (keywords || 'recent notes')), 'k0')];
+    // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
+    // K6: with no model query, a question of pure filler is no question to search at all.
+    const query = config.query === undefined ? contentKeywords(config.question, RESEARCH.knowledgeQueryTerms).join(' ') : knowledgeQuery(config.query);
+    if (!query) return [];
+    return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'k0')];
   }
   if (kind === 'calendar_window') {
     // Research keeps the declared primary-calendar scope.
@@ -835,7 +876,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     }
     if (config.configured.includes('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: 'after:yesterday', limit: RESEARCH.chatLines }, 'b2'));
-    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(keywords || 'open loop follow up'), 'b3'));
+    // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
+    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(knowledgeQuery(config.question) || 'open loop follow up', projectHintOf(config.question)), 'b3'));
     return subs;
   }
   return [];
@@ -1505,27 +1547,68 @@ function knowledgeHeadingOf(line: string): { id: string | undefined; title: stri
 
 const KNOWLEDGE_BULLET = /^\s*(?:-\s+)?\*\*#(\d+)\*\*\s*(.*)$/;
 const KNOWLEDGE_MD_HEADING = /^#{2,3}\s+/;
+/** K7: the server's two score scales in one line; they are not comparable, so neither is voiced. */
+const KNOWLEDGE_SCORE = /^Score: /u;
+/** K5: the ranker's own confidence line, so a weak match is hedged instead of stated with certainty. */
+const KNOWLEDGE_CONFIDENCE_META = /^_.*(?:confidence:|top score:|relevant candidate:).*$/u;
+const CONFIDENCE_RANK: Readonly<Record<string, number>> = { low: 0, medium: 1, high: 2 };
+interface KnowledgeConfidence { confidence: string; top?: string; candidates?: string }
+
+function knowledgeConfidenceOf(lines: readonly string[]): KnowledgeConfidence | undefined {
+  for (const line of lines) {
+    if (!KNOWLEDGE_CONFIDENCE_META.test(line)) continue;
+    const confidence = /confidence:\s*([a-z]+)/u.exec(line)?.[1];
+    if (confidence === undefined) continue;
+    const top = /top score:\s*([\d.]+)/u.exec(line)?.[1];
+    const candidates = /relevant candidate:\s*([a-z]+)/u.exec(line)?.[1];
+    return { confidence, ...(top === undefined ? {} : { top }), ...(candidates === undefined ? {} : { candidates }) };
+  }
+  return undefined;
+}
+
+/** The one machine line the voice model reads: the match's strength, not the corpus's totals. */
+function knowledgeConfidenceLine(confidence: KnowledgeConfidence): string {
+  return `knowledge: confidence=${confidence.confidence}${confidence.top === undefined ? '' : ` top=${confidence.top}`}${confidence.candidates === undefined ? '' : ` candidates=${confidence.candidates}`}`;
+}
+
+/**
+ * K1: the ids a search reply's body read may open. The hydration already skips a hit the server proved
+ * complete; a reply that calls its own match weak is not worth a second read at all.
+ */
+export function knowledgeHydrateIds(raw: string, complete: ReadonlySet<number>): number[] {
+  const confidence = knowledgeConfidenceOf(raw.split('\n'));
+  const floor = CONFIDENCE_RANK[RESEARCH.knowledgeReadMinConfidence] ?? 0;
+  if (confidence !== undefined && (CONFIDENCE_RANK[confidence.confidence] ?? floor) < floor) return [];
+  return extractInsightIds(raw, RESEARCH.knowledgeHits).filter(id => !complete.has(id)).slice(0, RESEARCH.knowledgeOpenIds);
+}
 /** The server's own bounded-body flag: `truncated: yes (5,432 chars stored)` under a hit. */
 const KNOWLEDGE_TRUNCATED = /^truncated: (yes|no)\b/u;
 
 /** Knowledge headings collapse to `#id title | body`, one per insight, in the shaped and raw forms. */
-function insightItems(raw: readonly string[]): string[] {
+function insightItems(raw: readonly string[], bodyWindow?: number): string[] {
   const items: string[] = [];
+  // K5: the ranker's confidence line leads the finding, so the model can hedge a weak match.
+  const confidence = knowledgeConfidenceOf(raw);
+  if (confidence !== undefined) items.push(knowledgeConfidenceLine(confidence));
   let heading: { id: string | undefined; title: string } | undefined;
   let body: string[] = [];
   const flush = (): void => {
     if (heading === undefined) { body = []; return; }
     // P5-R1: the body is kept whole: the connector's own result bounds are the only cap on a hit.
     // 3r K1: a hit the server cut at the asked-for window says so, in place of the server's own flag.
+    // K2: an opened body is shown at the wider read window; a search snippet keeps the short one.
     let cut = false;
     const kept = body.filter(line => {
       const flag = KNOWLEDGE_TRUNCATED.exec(line);
-      if (!flag) return true;
-      cut = flag[1] === 'yes';
-      return false;
+      if (flag) { cut = flag[1] === 'yes'; return false; }
+      // K7: the per-hit `Score:` line carries two incomparable scales, so it is never voiced.
+      return !KNOWLEDGE_SCORE.test(line);
     });
-    const text = `${heading.id ? `#${heading.id} ` : ''}${heading.title}${kept.length ? ` | ${kept.join(' ')}` : ''}`;
-    items.push(cut ? `${text} | cut at ${RESEARCH.knowledgeMaxChars} chars` : text);
+    const joined = kept.join(' ');
+    const bounded = bodyWindow === undefined ? joined : clip(joined, bodyWindow);
+    const text = `${heading.id ? `#${heading.id} ` : ''}${heading.title}${bounded ? ` | ${bounded}` : ''}`;
+    const window = bodyWindow ?? RESEARCH.knowledgeMaxChars;
+    items.push(cut || bounded !== joined ? `${text} | cut at ${window} chars` : text);
     heading = undefined; body = [];
   };
   for (const line of raw) {
@@ -1680,7 +1763,9 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       lines.push([head['from'] ?? '', head['subject'] ?? '(no subject)', head['date'] ?? '', body].filter(value => value !== '').join(' | '));
       total += 1;
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
-      const items = insightItems(raw);
+      // K2: a search snippet stays short, the hydration hop's body gets the wider window, and an
+      // explicit read by id stays whole, as Q5-R1 promises.
+      const items = insightItems(raw, result.key === RESEARCH.knowledgeHydrateKey ? RESEARCH.knowledgeBodyChars : undefined);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
       const items = calendarEvents(raw).map(event => event.line);
@@ -2835,6 +2920,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const knowledgeWanted = configured.includes('knowledge') && knowledgeSubs.length > 0 && !run.readKinds.has('knowledge_search')
     && !(hint.length === 1 && hint[0] !== 'knowledge');
   let knowledgeStartedAt = 0;
+  let knowledgeEndedAt = 0;
   let knowledgePromise: Promise<IntentSubResult[]> | undefined;
   let knowledgeConsumed = false;
   // R9: the terminal run line is written once, from the finally below, so a throw inside the selector loop
@@ -2856,8 +2942,14 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const remainingMs = deadlineAt - now();
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).catch((error: unknown) => {
+          // K8: the read's own span is stamped when it settles, so the source log states the read and
+          // never the wait it spent in the selector's shadow.
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).then((results: IntentSubResult[]) => {
+            knowledgeEndedAt = now();
+            return results;
+          }).catch((error: unknown) => {
             if (stepSinkFailed) throw error;
+            knowledgeEndedAt = now();
             return [] as IntentSubResult[];
           });
         }
@@ -3067,9 +3159,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const second: IntentSubCall[] = [];
           const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
           if (kind === 'knowledge_search') {
-            const complete = completeKnowledgeIds(results);
-            const ids = extractInsightIds(primaryText, RESEARCH.knowledgeHits).filter(id => !complete.has(id)).slice(0, 3);
-            if (ids.length) second.push({ key: 'kz', name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
+            // K1: the second hop is the body read finding 1 is about, gated by the reply's own confidence.
+            const ids = knowledgeHydrateIds(primaryText, completeKnowledgeIds(results));
+            if (ids.length) second.push({ key: RESEARCH.knowledgeHydrateKey, name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
           }
           if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
             const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
@@ -3108,7 +3200,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             logSource({
               event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
               outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
-              ms: Math.max(0, now() - at), deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
+              // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it.
+              ms: consumeKnowledge && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
+              deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
               ...mailReceiptField(mailInfo),
             });

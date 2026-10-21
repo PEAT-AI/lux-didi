@@ -37,7 +37,7 @@ test('SELECTOR_SYSTEM teaches the per-source query syntax', () => {
   assert.match(SELECTOR_SYSTEM, /in:inbox/);
   assert.match(SELECTOR_SYSTEM, /newer_than/);
   assert.match(SELECTOR_SYSTEM, /after:YYYY-MM-DD/);
-  assert.match(SELECTOR_SYSTEM, /3 to 8 content keywords/);
+  assert.match(SELECTOR_SYSTEM, /3 to 5 content keywords/);
   assert.match(SELECTOR_SYSTEM, /window/);
 });
 
@@ -201,7 +201,8 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? knowledge : mail, true, call.key)),
     emit: () => undefined, log: () => undefined, ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  // #1021: a content-free question no longer searches knowledge, so the packing test asks a real one.
+  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string; text: string }[];
   assert.ok(JSON.stringify(reply).length <= 3_000, `reply was ${JSON.stringify(reply).length}`);
   assert.equal(findings.length, 2, 'at least one line per source with hits');
@@ -262,7 +263,8 @@ test('extractInsightIds reads the shaped, raw and real knowledge id forms', () =
 
 test('shapeBlock shapes the real knowledge item form too', () => {
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', '**#90082** [BUG_GOTCHA] a title\n  an excerpt line\n  Score: 0.2\n## #4 [pattern]\nother body')]);
-  assert.equal(block.lines[0], '#90082 [BUG_GOTCHA] a title | an excerpt line Score: 0.2');
+  // #1021 K7: the per-hit `Score:` line names two incomparable scales, so the shape never carries it.
+  assert.equal(block.lines[0], '#90082 [BUG_GOTCHA] a title | an excerpt line');
   assert.equal(block.lines[1], '#4 [pattern] | other body');
 });
 
@@ -301,7 +303,7 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '### Title (PATTERN) [id 1]\nbody', true, call.key)),
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.deepEqual(logs[0]!['unchecked'], ['calendar', 'mail', 'chat']);
   assert.equal(typeof logs[0]!['canContinue'], 'boolean');
   assert.ok(Array.isArray(logs[0]!['findingChars']));

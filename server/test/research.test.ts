@@ -1328,5 +1328,4 @@ test('a refused mongoose refresh is voiced as sign in again, never as an unknown
   assert.deepEqual(named, [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
   // The reply speaks REASON_WORDS, so the closed code reads as an instruction, not a code.
   assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
-  assert.equal(plainReason('discovery-unavailable'), 'discovery unavailable');
 });

@@ -159,3 +159,23 @@ test('E5: an empty retry says how it searched, naming the window it used', async
   const note = String(reply['note'] ?? '');
   assert.match(note, /I searched your mail for "invoice" in the last month and found nothing matching/, 'the reply says what it matched and the window it used');
 });
+
+test('E5: the host log accepts the mail shape only as counts and closed tokens, never words', () => {
+  const receipt: ResearchSourceLog = {
+    event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'empty', ms: 5, deadlineMs: 12_000, coalesced: 1,
+    mail: { terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:14d', retried: { terms: 1, operators: ['from', 'newer_than'], window: 'newer_than:30d' } },
+  };
+  assert.ok(safeEvent(receipt) !== undefined, 'the receipt with both shapes is kept');
+  const kept = safeEvent(receipt)!;
+  assert.deepEqual(kept['mail'], receipt.mail);
+  const freeText = (mail: unknown): Record<string, unknown> => ({ ...receipt, mail });
+  assert.equal(safeEvent(freeText({ terms: 1, operators: ['from'], window: 'from:dana' })), undefined, 'a window that carries words is refused');
+  assert.equal(safeEvent(freeText({ terms: 1, operators: ['dana'] })), undefined, 'an operator outside the closed set is refused');
+  assert.equal(safeEvent(freeText({ terms: 1, operators: ['from'], q: 'from:dana invoice' })), undefined, 'any extra key is refused');
+  assert.equal(safeEvent(freeText({ terms: 1, operators: ['from'], retried: { terms: 1, operators: ['invoice'] } })), undefined, 'the retry shape is held to the same rule');
+  assert.equal(safeEvent(freeText('from:dana invoice')), undefined, 'the field itself is never a string');
+  // Other receipts are unchanged: no mail key still passes, and an unknown top-level key still fails.
+  const plain: ResearchSourceLog = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 5, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent(plain)?.['mail'], undefined);
+  assert.equal(safeEvent({ ...plain, extra: 1 }), undefined, 'the top-level key list is still closed');
+});

@@ -85,7 +85,7 @@ function openLive(t: TestContext): Live {
     emit: async event => { fake.emit(event); await flush(); },
     advance: async ms => { clock.now += ms; clock.runDue(); await flush(); },
     conversationOf: liveSessionId => store.transaction(tx => {
-      const row = tx.get('SELECT conversation_id FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+      const row = tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [liveSessionId]);
       return row?.['conversation_id'] === null || row?.['conversation_id'] === undefined ? undefined : String(row['conversation_id']);
     }),
     history: index => (fake.requests[index]?.history ?? []).map(turn => ({ role: String(turn.role), text: String(turn.text) })),

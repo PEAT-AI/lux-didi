@@ -999,7 +999,7 @@ export class LiveSessionOwner {
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
       tx.run("UPDATE live_sessions SET diagnostic_metadata_state='in_progress',diagnostic_content_state='in_progress',native_receipt_state='unknown',diagnostic_failures=0,diagnostic_unattributed_transcripts=0,diagnostic_clock_domain=? WHERE live_session_id=?", [hostClockDomain,liveSessionId]);
       tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
-      tx.run('UPDATE live_sessions SET conversation_id=? WHERE live_session_id=?', [this.#conversationInTx(tx, assistantId), liveSessionId]);
+      tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, this.#conversationInTx(tx, assistantId)]);
       recordHistorySession(tx, liveSessionId, assistantId, this.#profile.route.dataClasses, injectedSummaryIds, now);
       for (const opener of injectedOpeners) recordHistoryDependency(tx, liveSessionId, opener.sessionId);
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
@@ -1273,7 +1273,8 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const history = this.#jobHistory(liveSessionId, inputClass);
+    const seed = this.#seedHistory(liveSessionId, inputClass);
+    const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
     const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || OPEN_TOOL_NAMES.has(tool.name));
@@ -1836,25 +1837,57 @@ export class LiveSessionOwner {
     return conversationId;
   }
 
-  /** Build the seeded history for a fresh recovery from this session's journal, bounded to SEED_CHAR_LIMIT. */
-  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
+  /** The conversation a persisted session belongs to; a session older than the table joins the current one. */
+  #conversationOf(liveSessionId: string): string {
+    return this.#store.transaction(tx => {
+      const row = tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [liveSessionId]);
+      if (row) return String(row['conversation_id']);
+      const conversationId = this.#conversationInTx(tx, this.#store.assistantId);
+      tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, conversationId]);
+      return conversationId;
+    });
+  }
+
+  /** Seed for a new provider session: the conversation's recent exchanges, never half an exchange. */
+  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
+    const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
-      "SELECT kind,text,finished FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') AND text IS NOT NULL ORDER BY journal_id",
-      [liveSessionId]));
-    const turns: { role: 'user' | 'model'; text: string }[] = [];
+      "SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id JOIN live_session_conversations c ON c.live_session_id=s.live_session_id WHERE c.conversation_id=? AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id",
+      [conversationId]));
+    const runs: { role: 'user' | 'model'; text: string }[] = [];
     let role: 'user' | 'model' | undefined; let pending = '';
-    const flush = () => { if (role !== undefined && pending.trim().length) turns.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
+    const flush = () => { if (role !== undefined && pending.trim().length) runs.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
     for (const row of rows) {
       const next: 'user' | 'model' = String(row['kind']) === 'inputTranscription' ? 'user' : 'model';
       if (role !== undefined && role !== next) flush();
       role = next; pending += String(row['text'] ?? '');
       if (Number(row['finished']) === 1) flush();
     }
+    // An unfinished model run is speech the owner never heard, so it never becomes history here.
+    if (role === 'model') pending = '';
     flush();
-    let start = 0; let chars = turns.reduce((sum, turn) => sum + turn.text.length, 0);
-    while (start < turns.length && chars > SEED_CHAR_LIMIT) { chars -= turns[start]!.text.length; start += 1; }
-    const kept = turns.slice(start).slice(-128).map(turn => ({ role: turn.role, text: turn.text, dataClass: inputClass }));
-    return { turns: kept, chars };
+    const exchanges: { role: 'user' | 'model'; text: string }[][] = [];
+    for (const run of runs) {
+      if (run.role === 'user' || exchanges.length === 0) exchanges.push([run]);
+      else exchanges[exchanges.length - 1]!.push(run);
+    }
+    const charsOf = (exchange: { role: 'user' | 'model'; text: string }[]) => exchange.reduce((sum, run) => sum + run.text.length, 0);
+    let chars = exchanges.reduce((sum, exchange) => sum + charsOf(exchange), 0);
+    let condensed = false;
+    // The latest exchange is the anchor: older exchanges go whole, and a latest exchange over budget is condensed.
+    while (exchanges.length > 1 && chars > SEED_CHAR_LIMIT) { chars -= charsOf(exchanges[0]!); exchanges.shift(); }
+    if (exchanges.length === 1 && chars > SEED_CHAR_LIMIT) {
+      const anchor = exchanges[0]!;
+      for (const run of anchor) {
+        const room = SEED_CHAR_LIMIT - (chars - run.text.length);
+        if (run.text.length <= room) continue;
+        const keep = Math.max(room - 3, 0);
+        run.text = keep > 0 ? `...${run.text.slice(run.text.length - keep)}` : '...';
+        chars = charsOf(anchor); condensed = true;
+      }
+    }
+    const kept = exchanges.flat().slice(-128).map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
+    return { turns: kept, chars, condensed };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */

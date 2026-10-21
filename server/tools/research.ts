@@ -739,7 +739,11 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const calendarWords = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/.test(text);
   const chatWords = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/.test(text);
   const matched = mailWords || calendarWords || chatWords;
-  if (!matched) { offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge'); return { questionClass: 'cross_source', actions, pUseful }; }
+  if (!matched) {
+    offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
+    if (webWords) offer('web_search', 0.45, 'web');
+    return { questionClass: 'cross_source', actions, pUseful };
+  }
   offer('knowledge_search', 0.4, 'knowledge');
   if (mailWords) offer('mail_search', 0.4, 'mail');
   if (calendarWords) offer('calendar_window', 0.4, 'calendar');

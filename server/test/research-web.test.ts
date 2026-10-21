@@ -260,9 +260,10 @@ test('an out-of-range chunk index is dropped instead of crashing the reply path'
   const outcome = await port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
-  assert.deepEqual(outcome.evidence.claims.map(claim => claim.sourceIndexes), [[1]]);
-  assert.equal(outcome.evidence.sources.length, 3, 'no undefined card reaches the reply');
+  assert.deepEqual(outcome.evidence.claims.map(claim => claim.sourceIndexes), [[0]], 'the kept chunk becomes the first source');
+  assert.deepEqual(outcome.evidence.sources.map(source => source.title), ['Council works list']);
   assert.equal(webFooter(outcome.evidence.sources).includes('undefined'), false);
+  assert.equal(webFooter(outcome.evidence.sources).includes('https://example.org/works'), true);
 });
 
 test('the deterministic fallback offers the web read for a public question once web is configured', () => {

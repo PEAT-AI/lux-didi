@@ -308,8 +308,9 @@ export async function composeMcpRuntime(options: {
     }
   };
 
-  const identityOnce = identityProofMemo();
-  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh'): Promise<{ retryable: boolean }> => {
+  // One proof per endpoint per connect round: an in-flight probe is shared, a settled one is not, so a
+  // refresh verifies the account again instead of inheriting the boot-time proof.
+  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
@@ -443,7 +444,7 @@ export async function composeMcpRuntime(options: {
           // H19 with D2's strict per-endpoint source: a proof belongs to one endpoint of one account.
           // Sharing it across a mailbox and a calendar of one account made the second endpoint inherit
           // a proof of the other family's tool, so a strict source refused it (or raced the first
-          // endpoint's proof). Each endpoint proves itself once per boot.
+          // endpoint's proof). One proof per endpoint per round lives in settle's caller.
           const proofKey = `${entry.id}\u0000${policy.endpoint.account ?? ''}`;
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
@@ -510,6 +511,7 @@ export async function composeMcpRuntime(options: {
   let startPromise: Promise<void> | undefined;
   const run = async (): Promise<void> => {
     if (closed) return;
+    const identityOnce = identityProofMemo();
     await Promise.all(active.map(async entry => {
       eligible.delete(entry.id); bursts.delete(entry.id);
       const token = (generations.get(entry.id) ?? 0) + 1;
@@ -519,7 +521,7 @@ export async function composeMcpRuntime(options: {
       registry.suspend(entry.id);
       // The startup path makes one connect pass only. A first_call failure is reported and left for
       // a background retry; it must never double the five-second startup bound.
-      await settle(entry, token, 'first-connect').catch(() => { /* the per-connector report already carries the failure */ });
+      await settle(entry, token, 'first-connect', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
   const composition: McpRuntimeComposition = {
@@ -535,6 +537,7 @@ export async function composeMcpRuntime(options: {
     recover: async () => {
       // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
       // again with a new generation, exactly as a first connect would (R9).
+      const identityOnce = identityProofMemo();
       await Promise.all([...needsSignIn].map(async id => {
         const entry = active.find(candidate => candidate.id === id);
         if (closed || entry === undefined || entry.credentialRef == null) return;
@@ -544,7 +547,7 @@ export async function composeMcpRuntime(options: {
         const token = (generations.get(id) ?? 0) + 1;
         generations.set(id, token);
         registry.suspend(id);
-        await settle(entry, token, 'refresh').catch(() => { /* the per-connector report already carries the failure */ });
+        await settle(entry, token, 'refresh', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
       }));
       await Promise.all([...eligible.keys()].map(recoverEndpoint));
     },

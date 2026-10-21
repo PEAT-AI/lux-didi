@@ -22,15 +22,21 @@ Closing the full window with Cmd+W during Live switches to the orb and keeps the
 
 ### The single key
 
-If you prefer one key to the chord, turn on **Right Command tap** in the menu bar
-menu (it is on by default), then use the right Command key the way Superwhisper uses
-Right Option:
+Turn on **Right Command tap** in the menu bar menu (it is on by default), then use the
+right Command key as the one switch over Naya:
 
-- **Tap** it to start, and tap it again to stop. From another app it summons the mini orb without taking focus. A tap stops Live the same way the
-  **Stop** button does, so nothing waits out the mute grace.
-- **Hold** it to talk. The microphone is open only while you hold the key, and letting
-  go closes it: Naya finishes the answer it already started and ends Live after that
-  answer, or after 30 seconds of silence.
+- **Tap** it to start her, and tap it again to mute her. The orb turns **purple** while she
+  is muted: she does not hear you and she does not speak by herself, she waits. Tap once
+  more and she listens again; the orb shows the connecting look until she is ready.
+- The mute lasts as long as you want it to, so muting her and coming back an hour later
+  only needs one tap.
+- **Hold** it, or press it with another key (Cmd, Option, Shift), and nothing happens: only
+  the bare tap counts. Muting Naya never touches your microphone, your speakers, another
+  app, or Superwhisper's Right Option.
+- The first time, macOS asks for **Input Monitoring** for Naya. Until that is on, the menu
+  bar shows **Right Command is off: allow Input Monitoring for Naya**: choose it, flip the
+  switch in the pane it opens, and the key starts working without a restart. The
+  Control Option Space chord works with or without it.
 
 The key ignores itself while you are using it in a chord such as Cmd+C, so ordinary
 Command shortcuts keep working, and a chord pressed during a hold ends that hold there

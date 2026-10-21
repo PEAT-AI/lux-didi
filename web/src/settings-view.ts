@@ -258,19 +258,21 @@ export function singleKeyRow(state: SingleKeyState): string {
  * Naya" is the only switch over it. The app owns the state and pushes it as
  * `window.didiPresence`; a preview or a test reads the default (on).
  */
-export interface PresenceState { alwaysShow: boolean; listening: boolean }
+export interface PresenceState { alwaysShow: boolean; listening: boolean; muted: boolean }
 
 export function presenceState(source: unknown = (globalThis as { didiPresence?: unknown }).didiPresence): PresenceState {
   const row = record(source);
-  return { alwaysShow: row?.alwaysShow !== false, listening: row?.state === 'live' };
+  return { alwaysShow: row?.alwaysShow !== false, listening: row?.state === 'live', muted: row?.muted === true };
 }
 
 export function presenceRow(state: PresenceState): string {
   const why = !state.alwaysShow
     ? 'Off. Turn it back on in the Naya menu bar menu.'
-    : state.listening
-      ? 'On, and Naya is listening now: a Right Command tap mutes her.'
-      : 'On. Naya is there in the orb, quiet until a Right Command tap.';
+    : state.muted
+      ? 'On, and she is muted: the orb is purple and she waits until you tap Right Command again.'
+      : state.listening
+        ? 'On, and Naya is listening now: a Right Command tap mutes her.'
+        : 'On. Naya is there in the orb, quiet until a Right Command tap.';
   return `<p><strong>Always show Naya</strong> ${escapeHtml(state.alwaysShow ? 'on' : 'off')}. ${escapeHtml(why)}</p>`;
 
 }

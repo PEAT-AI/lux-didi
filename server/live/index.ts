@@ -2247,9 +2247,6 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          // W4-R2: #sendThinking filters the research call itself and names the fan-out from it, so it is handed
-          // the whole batch; a pre-filtered list made a research-only batch look like no batch at all.
-          this.#sendThinking(handle, event.calls);
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
@@ -2575,24 +2572,6 @@ export class LiveSessionOwner {
     return { responses, projections };
   }
 
-  /** S4a: one silent line per lookup turn, so "did you find it?" is answered truthfully without a backend round
-   *  trip. It names only sources this turn is actually reading, and states the read-only fact at that moment. */
-  #sendThinking(handle: ActiveSession, calls: readonly { name: string }[]): void {
-    const typed = handle.session.sendThinking;
-    if (typed === undefined) return;
-    const named = calls.filter(call => call.name !== RESEARCH_TOOL_NAME);
-    const research = calls.some(call => call.name === RESEARCH_TOOL_NAME);
-    const sources = [...new Set(named.map(call => stepSourceOf(call.name)))];
-    // Review F1: a research run picks its sources inside the run, so the honest start line names the fan-out.
-    if (!sources.length && !research) return;
-    // S4a-R2 (e): a write in the batch means the host cannot claim nothing changed, so it claims nothing.
-    const readOnly = named.every(call => isReadOnlyTool(call.name));
-    const what = sources.length ? `Reading ${joinWords(sources)}` : 'Running a lookup across your sources';
-    const text = readOnly ? `${what}. Nothing has been sent or booked while that runs.` : `${what}.`;
-    try { typed.call(handle.session, { text }); } catch { return; }
-    hostLogEvent({ event: 'thinking_sent', chars: text.length });
-  }
-
   /**
    * R6: what a source found after the call had already answered. The block is always silent context for the
    * model, so "what else did you find?" is answered truthfully, and it is spoken only when the turn is quiet:
@@ -2831,14 +2810,14 @@ export class LiveSessionOwner {
           const subResults = [...first, ...second];
           const digest = unit.plan.combine(subResults);
           const ok = subResults.some(result => result.ok);
-          projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
+          projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text, call.name, typeof call.args['query'] === 'string' ? call.args['query'] : undefined), sources: [] };
           // The count the voice view shows is the items the source returned, never the citation count.
           if (ok && digest.itemCount !== undefined) handle.liveStepItems.set(call.id, digest.itemCount);
           return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const completed = accepted !== undefined && record?.status === 'completed';
-        const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
+        const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason, call.name, typeof call.args['query'] === 'string' ? call.args['query'] : undefined) : reason;
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         projections[index] = projection;

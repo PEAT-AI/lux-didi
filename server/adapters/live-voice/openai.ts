@@ -61,7 +61,7 @@ export function openAiBackendInstructions(procedure?: string): string {
   const base = `${OPENAI_BACKEND_TEMPLATE}\n\n${OPENAI_BACKEND_BREVITY}`;
   return typeof procedure === 'string' && procedure.length ? `${base}\n\n${procedure}` : base;
 }
-export const OPENAI_TOOLS_SECTION = 'Tools: before a lookup, say one short natural line that you are checking; never go silent for more than a few seconds.';
+export const OPENAI_TOOLS_SECTION = 'Tools: call one when the answer depends on the owner\'s world or on current data rather than on general knowledge.';
 export const OPENAI_DELIVERY_SECTION = 'Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.';
 /** OpenAI's live prompting guide, verbatim: the server owns turn taking, so a stray sound is not a new turn. */
 const OPENAI_LISTENING_SECTION = 'Do not treat a cough, music, or nearby conversation as a new request.\nKeep listening while the owner pauses to think.';

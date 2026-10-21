@@ -176,6 +176,21 @@ test('3r voice search: the bounded-body fields reach the wire exactly, and no ot
   } finally { await adapter.close(); await f.close(); }
 });
 
+test('K4: a project hint reaches the wire as project_hint, and an unknown search key is still refused', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const result = complete(await reader.search({ query: 'wriggler pipeline', limit: 6, projectHint: 'Wriggler' }));
+    assert.equal(result.tool, 'search_knowledge');
+    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project_hint: 'Wriggler' } }]);
+    await reader.search({ query: 'wriggler pipeline', limit: 6, project: 'Wriggler' });
+    assert.deepEqual(f.calls[1], { name: 'search_knowledge', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project: 'Wriggler' } });
+    const refused = await reader.search({ query: 'wriggler pipeline', limit: 6, sort: 'score' } as unknown as Parameters<typeof reader.search>[0]);
+    assert.deepEqual({ state: 'refused' in refused ? refused.state : 'allowed', reason: 'refused' in refused ? refused.reason : '' }, { state: 'refused', reason: 'invalid-search-input' });
+  } finally { await adapter.close(); await f.close(); }
+});
+
 test('3r fields outside the server range are refused before dispatch', async () => {
   const f = await fixture();
   const { adapter, registry } = setup(f.url);

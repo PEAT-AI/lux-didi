@@ -101,7 +101,7 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
  * added, every existing binding stays byte-identical, and the same run row is rewritten so the
  * later authority checks (`readRun`, `currentPolicies`) see the extended acceptance.
  */
-export interface LateRunConnections { adoptLateConnections(tx: Transaction, runId: string, connectionIds: readonly string[]): { acceptance: RunAcceptance; sha256: string } }
+export interface LateRunConnections { adoptLateConnections?(tx: Transaction, runId: string, connectionIds: readonly string[]): { acceptance: RunAcceptance; sha256: string } }
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LateRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
@@ -388,7 +388,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LateR
       hostLogEvent({event:'tool_diagnostic_capture',reason,runId:scope?.call.runId ?? null,executionId:scope?.call.executionId ?? null});
     },
   });
-  const owner: ToolsOwner = {
+  const owner: ToolsOwner & LateRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {

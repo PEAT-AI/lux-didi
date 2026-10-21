@@ -2385,10 +2385,11 @@ export class LiveSessionOwner {
    * change mid-call; the research tool it was already given can, and it names the new sources.
    */
   #refreshSources(handle: ActiveSession): void {
-    if (!this.#tools || this.#settled(handle)) return;
+    const adopt = this.#tools?.owner.adoptLateConnections;
+    if (!adopt || this.#settled(handle)) return;
     const adopted = this.#store.transaction(tx => {
       if (!tx.get('SELECT 1 FROM live_tool_acceptances WHERE live_session_id=?', [handle.liveSessionId])) return false;
-      const { acceptance, sha256 } = this.#tools!.owner.adoptLateConnections(tx, handle.liveSessionId, this.#tools!.connectionIds());
+      const { acceptance, sha256 } = adopt(tx, handle.liveSessionId, this.#tools!.connectionIds());
       tx.run('UPDATE live_tool_acceptances SET acceptance_json=?, accepted_run_hash=? WHERE live_session_id=?', [JSON.stringify(acceptance), sha256, handle.liveSessionId]);
       return true;
     });
@@ -2417,7 +2418,10 @@ export class LiveSessionOwner {
     const sources = researchSourcesFromToolNames(handle.registry.map(tool => tool.name));
     // Outcome 2: an approved connector that is down, or up without a usable read grant, keeps its
     // sources in the configured set, so the reply reports them unreachable instead of narrowing.
-    for (const entry of this.#unreachableSources(handle)) if (!sources.includes(entry.source)) sources.push(entry.source);
+    for (const entry of this.#unreachableSources(handle)) {
+      const source = typeof entry === 'string' ? entry : entry.source;
+      if (!sources.includes(source)) sources.push(source);
+    }
     return sources;
   }
 

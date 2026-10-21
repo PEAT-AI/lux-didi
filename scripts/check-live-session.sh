@@ -17,7 +17,7 @@ npm run build
 # voice fault-replay scenarios (release gate F1): the real adapter and the real host, driven over a virtual clock.
 # The conversation continuity suite (#1021) pins mute, unmute and seeding; the resumption and watchdog suites
 # ride along because the seed and the provider lifetime are what they assert.
-node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-continuity.test.js dist/test/live-resumption.test.js dist/test/live-watchdog.test.js dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js dist/test/research-steps.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/trace.test.js dist/test/voice-replay.test.js | tee "$work/test.log"
+node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-continuity.test.js dist/test/live-resumption.test.js dist/test/live-watchdog.test.js dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js dist/test/research-steps.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/trace.test.js dist/test/voice-replay.test.js dist/test/research-web.test.js | tee "$work/test.log"
 
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live session tests failed' >&2; exit 1; }

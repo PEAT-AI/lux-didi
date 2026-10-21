@@ -7,6 +7,7 @@ import type { ToolResultBinding, JsonObject, ModelPort, ModelRequest } from '../
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
+import { WEB_SEARCH_ACTION, webAttribution, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -19,10 +20,10 @@ export const RESEARCH_TOOL_NAME = 'research';
 
 export type ResearchAction = 'start' | 'continue' | 'stop';
 export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
-export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose';
+export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
-  | 'chat_search' | 'chat_thread' | 'brief' | 'stop_answer' | 'stop_insufficient';
+  | 'chat_search' | 'chat_thread' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
 export interface Candidate {
@@ -39,6 +40,7 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'mail_open', source: 'mail', requires: 'mail_search' },
   { kind: 'chat_search', source: 'chat' },
   { kind: 'chat_thread', source: 'chat', requires: 'chat_search' },
+  { kind: 'web_search', source: 'web' },
   { kind: 'brief', source: null },
   { kind: 'stop_answer', source: null },
   { kind: 'stop_insufficient', source: null },
@@ -75,7 +77,7 @@ export const RESEARCH = Object.freeze({
    * This is the single table every per-source bound reads.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 12_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 12_000, web: 4_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -129,14 +131,14 @@ export const RESEARCH = Object.freeze({
   mailSnippetChars: 200, chatTextChars: 300, openedBodyChars: 1_500,
 });
 
-export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
 
 /**
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
  * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
  */
-export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies';
-export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
+export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'web';
+export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
 
@@ -320,6 +322,8 @@ export interface SelectorOutput {
 
 export interface ResearchSelector {
   select(input: SelectorInput, signal: AbortSignal): Promise<SelectorOutput | null>;
+  /** The public web read this selector was built with, so production wires the same binding the selector uses. */
+  web?: WebSearchPort | undefined;
 }
 
 export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answer one owner question, and you write the query each read runs. '
@@ -330,6 +334,7 @@ export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answ
   + 'mail_search query: Gmail syntax, e.g. in:inbox newer_than:2d is:unread is:important from:alice@example.com subject:invoice "exact phrase". '
   + 'chat_search query: Mattermost keywords (a few words, not a sentence), optional from:, in:, after:YYYY-MM-DD. '
   + 'knowledge_search query: 3 to 8 content keywords, no filler. '
+  + 'web_search query: 3 to 10 plain words for the public question itself; use it only for public-world facts that need looking up (news, current events, prices, opening hours, public documents) or when the owner asks you to search the web, never for personal commitments, correspondence, mail, calendar or private matters, and never put a name, address, message text or other private detail in the query. '
   + 'calendar_window: use today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD date. Unresolved or contradictory windows are refused; never widen them. ';
 
 export function buildSelectorPrompt(input: SelectorInput): { system: string; user: string } {
@@ -401,8 +406,9 @@ export function parseSelector(text: string): SelectorOutput | null {
 }
 
 /** The real selector: the same-provider Gemini text adapter, one structured request, its deadline is selectorDeadlineMs. */
-export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1'): ResearchSelector {
+export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1', web?: WebSearchPort): ResearchSelector {
   return {
+    ...(web === undefined ? {} : { web }),
     async select(input, signal) {
       const { system, user } = buildSelectorPrompt(input);
       const request: ModelRequest = {
@@ -700,6 +706,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
+  if (kind === 'web_search') return terms ? { query: terms.slice(0, 120) } : {};
   if (kind === 'mail_search') {
     const flags: string[] = [];
     if (/\bimportant\b/.test(text)) flags.push('is:important');
@@ -727,15 +734,21 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
     pUseful[kind] = p;
   };
+  const webWords = /\b(news|headlines|weather|forecast|price|prices|cost|opening hours|search the web|latest)\b/.test(text);
   const mailWords = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/.test(text);
   const calendarWords = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/.test(text);
   const chatWords = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/.test(text);
   const matched = mailWords || calendarWords || chatWords;
-  if (!matched) { offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge'); return { questionClass: 'cross_source', actions, pUseful }; }
+  if (!matched) {
+    offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
+    if (webWords) offer('web_search', 0.45, 'web');
+    return { questionClass: 'cross_source', actions, pUseful };
+  }
   offer('knowledge_search', 0.4, 'knowledge');
   if (mailWords) offer('mail_search', 0.4, 'mail');
   if (calendarWords) offer('calendar_window', 0.4, 'calendar');
   if (chatWords) offer('chat_search', 0.4, 'chat');
+  if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
 
@@ -811,6 +824,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: config.query ?? 'after:yesterday', limit: RESEARCH.chatLines }, 'c0')];
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
+  if (kind === 'web_search') return config.configured.includes('web')
+    ? [search(WEB_SEARCH_ACTION, { query: config.query ?? keywords }, 'w0')] : [];
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
     // A brief reads primary events; calendar names alone are not findings.
@@ -934,6 +949,10 @@ export interface RunState {
   progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
   evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
+  /** WEB: the transcript cards and retrieval time of the web read this run made, so the chat keeps the links. */
+  web: { title: string; url: string; retrievedAt: string }[];
+  /** WEB: Gemini's search entry point links, shown in the transcript as the grounding attribution. */
+  webAttribution: { title: string; url: string }[];
   /** Read signatures already issued this run, so an identical duplicate read is never executed twice. */
   calls: Set<string>;
   /** Per source, the query shape a search that matched nothing used, for a line the model can voice. */
@@ -968,7 +987,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), web: [], webAttribution: [],
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -989,7 +1008,7 @@ export class ResearchLedger {
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
-      unavailableReasons: new Map(existing.unavailableReasons),
+      unavailableReasons: new Map(existing.unavailableReasons), web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
     existing.cancelled = true; existing.progressAbort.abort();
@@ -1112,6 +1131,8 @@ export interface ResearchDeps {
   configured: readonly SourceKind[];
   /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
   configuredNow?: (() => readonly SourceKind[]) | undefined;
+  /** WEB: the public web read. Present means the web part is configured; absent means it is not offered. */
+  web?: WebSearchPort | undefined;
   /**
    * #351: the sources whose connector cannot serve a read right now. A lookup settles `unavailable` at
    * once instead of spending its deadline on sub-calls that cannot reach a stopped connector. P5: an
@@ -1260,6 +1281,7 @@ function validMailLookup(value: unknown): value is MailLookup {
 
 /** The display order and human name of every research source the host loop can read today (R2-R2). */
 const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
+  ['web', 'the web'],
   ['calendar', 'calendar'],
   ['mail', 'mail'],
   ['chat', 'team chat'],
@@ -1455,9 +1477,9 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
-const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge' };
+const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
-const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   mail_search: RESEARCH.mailLines, mail_open: 2,
   chat_search: RESEARCH.chatLines, chat_thread: 12,
@@ -1615,6 +1637,11 @@ export function cutLineOf(results: readonly IntentSubResult[]): string | undefin
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+  if (kind === 'web_search') {
+    const ok = results.filter(result => result.ok && result.text.trim());
+    const lines = ok.flatMap(result => result.text.split('\n').filter(Boolean));
+    return { text: ok.map(result => result.text).join('\n'), source: 'web', lines, total: lines.length };
+  }
   if (kind === 'calendar_window') {
     const block = shapeCalendarBlock(results);
     const cutLine = cutLineOf(results);
@@ -1691,6 +1718,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
 
 function sourceKindOfKindName(name: string): SourceKind | null {
   switch (name) {
+    case WEB_SEARCH_ACTION: return 'web';
     case INTERNAL.knowledgeSearch:
     case INTERNAL.knowledgeRead: return 'knowledge';
     case INTERNAL.calendars:
@@ -1894,7 +1922,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
         return { source: group.source, text: `${group.label}: ${group.lines.length} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`, chars: group.lines.join('\n').length };
       });
-    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;
@@ -2610,7 +2638,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
   };
   const now = () => deps.now();
-  const configured = (deps.configuredNow ?? (() => deps.configured))();
+  const configured = [...new Set([...(deps.configuredNow ?? (() => deps.configured))(), ...(deps.web === undefined ? [] : ['web' as const])])];
   // P5: a source that cannot serve a read says why. The composition may hand over the connector's own
   // reason; a bare source name still reports a cause, never "nothing found".
   const unavailableEntries = (deps.unavailableNow ?? (() => []))().map(entry => typeof entry === 'string' ? { source: entry, reason: 'connector_unavailable' } : entry);
@@ -2982,7 +3010,22 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           };
           const calendarCalls = issued.filter(call => call.name === INTERNAL.calendarList);
           const mailCalls = issued.filter(call => call.name === INTERNAL.mailList);
-          const ordinaryCalls = issued.filter(call => call.name !== INTERNAL.calendarList && call.name !== INTERNAL.mailList);
+          const ordinaryCalls = issued.filter(call => call.name !== INTERNAL.calendarList && call.name !== INTERNAL.mailList && call.name !== WEB_SEARCH_ACTION);
+          const webCalls = issued.filter(call => call.name === WEB_SEARCH_ACTION);
+          const webResults = async (): Promise<IntentSubResult[]> => {
+            if (webCalls.length === 0 || deps.web === undefined) return [];
+            run.ops -= webCalls.length;
+            return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
+              const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
+              const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal });
+              if (!outcome.ok) { run.unavailableReasons.set('web', outcome.code); return empty; }
+              run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
+              run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
+              run.evidence.set('web_search', outcome.evidence.answer);
+              const text = webEvidenceText(outcome.evidence);
+              return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+            }));
+          };
           const calendarResults = async (): Promise<IntentSubResult[]> => {
             if (calendarCalls.length === 0) return [];
             run.ops -= calendarCalls.length;
@@ -3009,10 +3052,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             });
           };
           let results: IntentSubResult[];
-          if (consumeKnowledge) results = (knowledgeConsumed = true, await knowledgePromise!);
+          if (consumeKnowledge) results = [...(knowledgeConsumed = true, await knowledgePromise!), ...await webResults()];
           else {
-            const [ordinary, calendar, mail] = await Promise.all([ordinaryCalls.length ? executeWithRetry(ordinaryCalls) : Promise.resolve([]), calendarResults(), mailResults()]);
-            const byKey = new Map([...ordinary, ...calendar, ...mail].map(result => [result.key, result]));
+            const [ordinary, calendar, mail, web] = await Promise.all([ordinaryCalls.length ? executeWithRetry(ordinaryCalls) : Promise.resolve([]), calendarResults(), mailResults(), webResults()]);
+            const byKey = new Map([...ordinary, ...calendar, ...mail, ...web].map(result => [result.key, result]));
             // Production execute keys include the host call id, so preserve source positions for ordinary results.
             ordinaryCalls.forEach((call, n) => { if (ordinary[n]) byKey.set(call.key, ordinary[n]!); });
             results = issued.map(call => byKey.get(call.key)).filter((result): result is IntentSubResult => result !== undefined);

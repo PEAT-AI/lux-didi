@@ -16,6 +16,7 @@ import type { Store } from '../runtime/store.js';
 import type { LiveSelectionResult, LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 import { hostLogEvent } from './log.js';
 import { createGeminiSelector, type ResearchSelector } from '../tools/research.js';
+import { createWebSearch } from '../tools/web-search.js';
 import type { CalendarDigestSnapshot } from '../live/warm-context.js';
 import type { WarmPrewarmReceipt } from '../live/index.js';
 
@@ -162,7 +163,11 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     if (!researchSelector) {
       try {
         const provider = loadProviderConfig({ configDir, ownerId: store.assistantId });
-        if (provider.status === 'ready') researchSelector = createGeminiSelector(boundTextModel(configDir, provider, testing).model);
+        if (provider.status === 'ready') {
+          const bound = boundTextModel(configDir, provider, testing);
+          researchSelector = createGeminiSelector(bound.model, 'research-selector-v1',
+            createWebSearch({ credentials: testing?.credentials ?? bound.binding!.credentials() }));
+        }
       } catch { researchSelector = undefined; }
     }
   } catch (error) {

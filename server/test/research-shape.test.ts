@@ -7,6 +7,9 @@ import {
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { safeEvent } from '../host/log.js';
 
+// The web candidate's own suite rides with the research suite, so one run covers the candidate set.
+import './research-web.test.js';
+
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {

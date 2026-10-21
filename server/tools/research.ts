@@ -2251,7 +2251,7 @@ function rememberCalendarWindow(deps: ResearchDeps, reads: readonly CalendarRead
   if (memo === undefined) return;
   reads.forEach((read, n) => {
     const result0 = results[slots[n]!];
-    memo.calendar.set(`probe-${read.failed ? 'failed' : read.nextPageToken !== undefined ? 'token' : result0?.ok !== true ? 'ok' : result0.calendarPage === undefined ? 'nopage' : result0.calendarPage.nextPageToken !== undefined ? 'pagetoken' : result0.calendarPage.unread > 0 ? 'unread' : 'write'}`, { at, events: new Map() });
+    memo.calendar.set(`probe-r${results.length}-s${slots.length}-n${n}-${result0 === undefined ? 'undef' : `ok${String(result0.ok)}`}`, { at, events: new Map() });
     if (read.failed || read.nextPageToken !== undefined) return;
     const result = results[slots[n]!];
     const page = result?.calendarPage;

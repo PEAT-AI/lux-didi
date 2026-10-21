@@ -2247,11 +2247,8 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
  */
 function rememberCalendarWindow(deps: ResearchDeps, reads: readonly CalendarRead[], results: readonly IntentSubResult[], slots: readonly number[], at: number): void {
   const memo = deps.memo;
-  memo?.calendar.set('probe', { at, events: new Map() });
   if (memo === undefined) return;
   reads.forEach((read, n) => {
-    const result0 = results[slots[n]!];
-    memo.calendar.set(`probe-r${results.length}-s${slots.length}-n${n}-${result0 === undefined ? 'undef' : `ok${String(result0.ok)}`}`, { at, events: new Map() });
     if (read.failed || read.nextPageToken !== undefined) return;
     const result = results[slots[n]!];
     const page = result?.calendarPage;
@@ -2281,11 +2278,10 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
   const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(RESEARCH.sourceDeadline.calendar, remainingMs)))]);
   while (now() < sourceDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     // E8: a window this session already read inside the turn window costs no transport call.
-    deps.memo?.calendar.set('probe2', { at: now(), events: new Map() });
     for (const [key, read] of run.calendar) {
       if (read.exhausted || read.failed || read.inflight || read.nextPageToken !== undefined) continue;
       const hit = deps.memo?.calendar.get(key);
-      if (hit === undefined || now() - hit.at > RESEARCH.coalesceWindowMs) { deps.memo?.calendar.set('probe3', { at: now(), events: new Map() }); continue; }
+      if (hit === undefined || now() - hit.at > RESEARCH.coalesceWindowMs) continue;
       for (const [eventKey, event] of hit.events) read.events.set(eventKey, event);
       read.exhausted = true;
     }
@@ -2818,7 +2814,13 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const fresh = results.flatMap(result => result.binding ? [result.binding] : []);
     if (run.stopped || run.cancelled || dispatchSignal.aborted || deps.ledger.find(run.researchId) !== run) {
       deps.ledger.discardEvidence(fresh);
-      return results.map(result => { const { hostEvidence: _evidence, ...rest } = result; return { ...rest, ok: false, text: '', code: 'round_cancelled' }; });
+      return results.map(result => {
+        const { hostEvidence: _evidence, ...rest } = result;
+        // E8: a window the provider already answered is kept for the session, so the run that replaced this
+        // one never pays for the same days again. Its evidence was discarded above and never reaches a reply.
+        if (result.name === INTERNAL.calendarList && result.ok) { const { binding: _binding, ...page } = rest; return page; }
+        return { ...rest, ok: false, text: '', code: 'round_cancelled' };
+      });
     }
     for (const result of results) {
       if (!result.ok || !result.binding || result.hostEvidence?.kind !== 'remote-body') continue;

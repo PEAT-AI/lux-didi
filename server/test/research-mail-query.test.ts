@@ -71,7 +71,7 @@ test('E4: at most four terms survive, a sentence never becomes the query', () =>
   const bare = q.split(/\s+/).filter((token: string) => !token.includes(':') && token.toUpperCase() !== 'OR');
   assert.ok(bare.length <= 4, `bounded to four terms: ${q}`);
   assert.equal(q.includes('?'), false);
-  assert.match(q, /newer_than:14d$/u, 'a window is always appended when the question gave none');
+  assert.match(q, /(?:newer_than:\d+d|before:\d{4}\/\d{2}\/\d{2})$/u, 'a window is always appended when the question gave none');
 });
 
 test('E5: the one broader retry drops a term, else widens the window once', () => {

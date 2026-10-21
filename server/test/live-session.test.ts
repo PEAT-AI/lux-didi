@@ -3067,7 +3067,7 @@ test('W10: a source whose grant publishes after the call started joins the next 
   await settleLiveTool(h, 'r2', 'research', { action: 'start', question: 'what is on my calendar' });
   const reply = lastToolResponse(h);
   assert.doesNotMatch(reply, /calendar: unavailable/, 'the published grant is offered, not reported broken');
-  assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), 'the late source serves the read');
+  assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), `the late source serves the read: calls=${JSON.stringify(h.calls.map(call => call.name))} reply=${reply}`);
 });
 
 test('U1: research progress reaches the live channel with metadata only', async t => {

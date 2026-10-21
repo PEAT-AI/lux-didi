@@ -924,6 +924,8 @@ export interface RunState {
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number;
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   calendarScopeAttempted?: boolean;
+  /** N3: the counted note the calendar list supports, for the routed answer that carries no raw list. */
+  calendarNotRead?: string;
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
@@ -2178,26 +2180,37 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     if (pending.length === 0) break;
     const reads = pending.slice(0, RESEARCH.maxOps - run.ops);
     // W2: the connector plans inside this run's remaining source budget, never its own 40 s constant.
-    const calls: IntentSubCall[] = reads.map((read, n) => ({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt } }));
-    const listScope = !run.calendarScopeAttempted && calls.length < RESEARCH.maxOps - run.ops;
-    if (listScope) { calls.push({ key: 'calendarScope', name: INTERNAL.calendars, args: { maxResults: 20 } }); run.calendarScopeAttempted = true; }
+    const calls: IntentSubCall[] = [];
+    const slots: number[] = [];
+    const listScope = !run.calendarScopeAttempted && reads.length < RESEARCH.maxOps - run.ops;
+    let scopeSlot: number | undefined;
+    reads.forEach((read, n) => {
+      slots.push(calls.length);
+      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt } });
+      // N3: the list rides in the same batch as the read it qualifies, so the answer can count what it
+      // did not read and the batch is the read, its list, then any further window.
+      if (n === 0 && listScope) {
+        scopeSlot = calls.length;
+        calls.push({ key: 'calendarScope', name: INTERNAL.calendars, args: { maxResults: 20 } });
+        run.calendarScopeAttempted = true;
+      }
+    });
     if (!evidenceAllowed(deps, run, signal)) break;
     for (const read of reads) { read.inflight = true; if (read.nextPageToken) read.tokens.add(read.nextPageToken); }
     run.ops += calls.length;
     let results: IntentSubResult[];
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
-    if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateEvidence(run); break; }
-    if (signal.aborted || now() >= sourceDeadlineAt) { for (const read of reads) { read.failed = true; read.inflight = false; } run.cutShort.add('calendar'); break; }
-    if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; invalidateEvidence(run); break; }
-    if (listScope) {
-      const scope = results[reads.length];
+    if (parent.aborted) { for (const read of reads) { read.failed = true; read.inflight = false; } run.cutShort.add('calendar'); break; }
+    if (scopeSlot !== undefined) {
+      const scope = results[scopeSlot];
       if (scope?.ok && scope.calendarScope) run.calendarScope = scope.calendarScope;
+      if (scope !== undefined) run.calendarNotRead = calendarNotRead([scope]);
       if (scope?.binding && reads[0]) reads[0].bindings.push(scope.binding);
     }
     reads.forEach((read, n) => {
       read.inflight = false;
-      const result = results[n];
+      const result = results[slots[n]!];
       if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
       // A calendar answer with text but no page envelope is still that source's answer: each tagged
       // line is one event, so the brief fan-out and the reply carry it like any other page.
@@ -2230,6 +2243,30 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     if (now() - run.startedAt >= run.deadlineMs) break;
   }
   if (signal.aborted) run.cutShort.add('calendar');
+}
+
+async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], signal: AbortSignal, remainingMs: number, now: () => number): Promise<RoutedOutcome[]> {
+  const started = now();
+  const owned = new Map<RoutedPlan, string>();
+  for (const plan of plans) {
+    const call = plan.read.subs.find(sub => sub.name === INTERNAL.calendarList);
+    if (!call || plan.read.unresolved) { run.unavailableReasons.set('calendar', 'unresolved_window'); continue; }
+    const key = JSON.stringify(call.args);
+    owned.set(plan, key);
+    if (!run.calendar.has(key)) run.calendar.set(key, { args: { ...call.args }, events: new Map(), bindings: [], tokens: new Set(), exhausted: false, failed: false, bodyTruncated: false, unread: 0 });
+  }
+  await collectCalendar(deps, run, signal, remainingMs, now);
+  const credited = new Set<string>();
+  return plans.map(plan => {
+    const key = owned.get(plan);
+    const read = key === undefined ? undefined : run.calendar.get(key);
+    const first = key !== undefined && !credited.has(key);
+    const lines = read && first ? [...read.events.values()].map(event => event.line) : [];
+    if (first && run.calendarNotRead !== undefined && lines.length > 0) lines.push(run.calendarNotRead);
+    if (key) credited.add(key);
+    const outcome: LookupOutcome = !read ? 'unavailable' : read.events.size > 0 ? 'ok' : read.failed ? 'failed' : read.exhausted ? 'empty' : 'timeout';
+    return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.calendarList, source: 'calendar', outcome, ms: now() - started, lines, total: read?.events.size ?? 0 };
+  });
 }
 
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
@@ -2284,6 +2321,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   if (context.unavailable.includes(source)) return unserved('unavailable', context.unavailableReason?.(source) ?? 'connector_unavailable');
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
   if (remainingMs <= 0) return unserved('unavailable', 'deadline_exhausted');
+  if (source === 'calendar') return calendarGroup(deps, run, reads, context.signal, remainingMs, context.now);
   if (source === 'mail' && reads.every(plan => plan.read.subs.length === 1 && plan.read.subs[0]?.name === INTERNAL.mailList)) return mailGroup(deps, run, reads, context.signal, remainingMs, context.now);
   const subs: IntentSubCall[] = [];
   const owned: number[][] = reads.map(() => []);

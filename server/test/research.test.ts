@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
-  parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
+  configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
@@ -265,6 +265,29 @@ test('an identical start while a run is in flight joins that exact intent', asyn
   assert.match(minted, /^[A-Za-z0-9-]{1,64}$/, 'the first start names the id the host minted');
   assert.equal(String(b['researchId']), minted, 'the second start joins the in-flight run');
   assert.deepEqual(h.joined, [minted], 'the join is logged as research_joined');
+});
+
+// E7: the same intent recurs inside one live turn (5 research calls and 6 chat searches in 90 s in the
+// audit). A start whose question and sources match a run already answered in the window is the same
+// question: it answers from that run instead of reading every source again.
+test('E7: three identical research calls in the live turn window read each source once', async () => {
+  let clock = 1_000;
+  const h = harness({ now: () => clock, selector: knowledge });
+  const scheduler = new ResearchScheduler(h.deps);
+  const replies: Record<string, unknown>[] = [];
+  for (let n = 0; n < 3; n += 1) {
+    replies.push(await scheduler.call({ action: 'start', question: 'Where does the release stand?', sources: 'knowledge' }, new AbortController().signal));
+    clock += 5_000;
+  }
+  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 1, 'the question was researched once, not three times');
+  assert.equal(new Set(replies.map(reply => reply['researchId'])).size, 1, 'every call answers the run the host minted');
+  assert.deepEqual(h.joined, [replies[0]!['researchId'], replies[0]!['researchId']], 'both later calls are logged as joins');
+  const other = await scheduler.call({ action: 'start', question: 'What did the board decide about hiring?', sources: 'knowledge' }, new AbortController().signal);
+  assert.notEqual(String(other['researchId']), String(replies[0]!['researchId']), 'a different question is its own run');
+  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 2, 'and it is read');
+  clock += RESEARCH.coalesceWindowMs + 1;
+  await scheduler.call({ action: 'start', question: 'Where does the release stand?', sources: 'knowledge' }, new AbortController().signal);
+  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 3, 'outside the window the same question is researched again');
 });
 
 test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {
@@ -1266,4 +1289,81 @@ test('a selector round still delivers every source the selector chose', async ()
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team say about the deploy freeze' }, new AbortController().signal);
   assert.equal((reply['unchecked'] as string[]).includes('chat'), false, 'the selector pick is still read and credited');
   assert.ok(h.executed.some(call => JSON.stringify(call.args).includes('deploy freeze')), 'the selector query is the one read');
+});
+
+// W9-R3: a configured source that cannot be reached is named to the model, never silently dropped,
+// and a configuration-time rejection speaks in a closed code rather than a free-text error.
+test('a google endpoint in configuration error names mail and calendar as unreachable', () => {
+  const named = configuredSourcesForEndpoints([
+    { connector: 'google', state: 'error', configurationError: 'unknown-class-invalid', reasonCode: 'unknown-class-invalid' },
+    { connector: 'mattermost', state: 'connected' },
+  ]);
+  assert.deepEqual(named, [
+    { source: 'calendar', reason: 'unknown-class-invalid' },
+    { source: 'mail', reason: 'unknown-class-invalid' },
+  ], 'both google reads keep their source name with the closed reason');
+});
+
+test('a google endpoint in configuration error is voiced as unreachable mail, never silently dropped', async () => {
+  // The configured set and the unreachable reasons come from the same endpoint report the host writes.
+  const named = configuredSourcesForEndpoints([
+    { connector: 'google', state: 'error', configurationError: 'unknown-class-invalid' },
+  ]);
+  const unreachable = named.filter(entry => entry.source === 'mail').map(entry => entry.source);
+  const dispatched: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: unreachable, unavailableNow: () => unreachable,
+    execute: async subs => {
+      for (const call of subs) dispatched.push(call.name);
+      return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0, received: { shape: 'list', items: 1 } } as never));
+    },
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'invoice' }] }) } as unknown as ResearchSelector,
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'did I get the invoice' }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /could not reach mail/);
+  assert.deepEqual(dispatched, [], 'a source known to be unreachable is not dispatched to');
+});
+
+
+// W9-B1: a session opened before the connect round publishes still names what it cannot reach.
+test('a session opened before publication names mail and calendar with a closed reason', () => {
+  const connected = [
+    { connector: 'google', state: 'connected' },
+    { connector: 'mattermost', state: 'connected' },
+  ];
+  const named = unreachableSourcesForSession(['chat'], connected);
+  assert.deepEqual(named, [
+    { source: 'calendar', reason: UNPUBLISHED_SOURCE_REASON },
+    { source: 'mail', reason: UNPUBLISHED_SOURCE_REASON },
+  ], 'a connected endpoint whose reads this session never got is named, not dropped');
+
+  // The configured set carries the same sources, so a research call can ask for them at all.
+  assert.deepEqual(configuredSourcesForSession(['chat'], connected), ['chat', 'calendar', 'mail']);
+
+  // Once the reads are published into the session, nothing is called unreachable.
+  assert.deepEqual(unreachableSourcesForSession(['chat', 'calendar', 'mail'], connected), []);
+});
+
+// W9-R4 / #502: a refused Mongoose refresh reaches the owner as a closed sign-in-again reason.
+test('a refused mongoose refresh is voiced as sign in again, never as an unknown failure', () => {
+  const named = configuredSourcesForEndpoints([{ connector: 'mongoose', state: 'error', reasonCode: 'credential-refresh-failed' }]);
+  assert.deepEqual(named, [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
+  // The reply speaks REASON_WORDS, so the closed code reads as an instruction, not a code.
+  assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
+});
+
+test('W10: a connected endpoint whose read grant has not published is named, with a closed reason', () => {
+  const endpoints = [
+    { id: 'calendar', connector: 'google', state: 'connected' },
+    { connector: 'gmail', state: 'connected' },
+  ];
+  // Gmail published its grant; the calendar endpoint is connected but offers no read yet.
+  const named = configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message']);
+  assert.deepEqual(named, [{ source: 'calendar', reason: 'source_not_granted' }]);
+  // Every source has a granted read: nothing is reported unreachable.
+  assert.deepEqual(configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message', 'calendar_list_events']), []);
+  // Without a granted set the report is the one W9 wrote: a connected endpoint is not reported.
+  assert.deepEqual(configuredSourcesForEndpoints(endpoints), []);
 });

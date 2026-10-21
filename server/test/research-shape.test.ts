@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, extractInsightIds, fallbackSelection, parseSelector, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, parseSelector, runResearch, shapeBlock,
   type CandidateKind, type ResearchDeps, type ResearchSelector, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -36,6 +36,21 @@ test('SELECTOR_SYSTEM teaches the per-source query syntax', () => {
   assert.match(SELECTOR_SYSTEM, /after:YYYY-MM-DD/);
   assert.match(SELECTOR_SYSTEM, /3 to 8 content keywords/);
   assert.match(SELECTOR_SYSTEM, /window/);
+});
+
+// W11: the model authors mail queries too, so the declaration itself says how to ask mail well.
+test('the research declaration tells the model to ask mail in short Gmail syntax with a window', () => {
+  const { guidance, description } = researchDeclaration();
+  assert.match(guidance, /Gmail operators/, 'the guidance names the operators it wants');
+  assert.match(guidance, /from:/);
+  assert.match(guidance, /newer_than/);
+  assert.match(guidance, /window/, 'and the window rule');
+  assert.match(guidance, /from:dana newer_than:14d invoice/, 'one short example with a sender and a window');
+  assert.match(guidance, /newer_than:2d is:unread/, 'a second short example');
+  // F3: the field that grew for this change carries its own budget, so the next example cannot creep in
+  // unbounded; the mail clause is one sentence with two examples.
+  assert.ok(guidance.length < 800, `the declaration guidance keeps its 800-char budget (${guidance.length} chars)`);
+  assert.ok(description.length < 500, `the declaration description keeps its budget (${description.length} chars)`);
 });
 
 // --- Deterministic fallback: content keywords, never the raw sentence ------------------------

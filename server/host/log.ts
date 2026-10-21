@@ -49,6 +49,23 @@ const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
+/** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
+const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
+/** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
+const MAIL_WINDOW_TOKEN = /^(?:newer_than|older_than):\d{1,4}d$|^(?:after|before):\d{4}\/\d{2}\/\d{2}$/u;
+/** W11-R3: a mail search's shape: how many terms, which operators, which window, and one retry of the same. */
+function mailQueryShape(value: unknown): { terms: number; operators: string[]; window?: string } | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  const hasWindow = Object.prototype.hasOwnProperty.call(row, 'window');
+  if (Object.keys(row).sort().join(',') !== ['operators', 'terms', ...(hasWindow ? ['window'] : [])].sort().join(',')) return undefined;
+  if (!isSafeCount(row['terms'])) return undefined;
+  const operators = row['operators'];
+  if (!Array.isArray(operators) || operators.length > 12 || !operators.every(operator => typeof operator === 'string' && MAIL_QUERY_OPERATORS.includes(operator))) return undefined;
+  const window = hasWindow ? row['window'] : undefined;
+  if (hasWindow && (typeof window !== 'string' || !MAIL_WINDOW_TOKEN.test(window))) return undefined;
+  return { terms: row['terms'], operators: operators as string[], ...(hasWindow ? { window: window as string } : {}) };
+}
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 /**
  * Z1: a research line whose id fails SAFE_ID used to be dropped whole, so a run that really happened left
@@ -139,7 +156,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
-    const stages = ['credential', 'spawn', 'handshake', 'first_call'];
+    const stages = ['config', 'credential', 'spawn', 'handshake', 'first_call'];
     const attempts = ['first-connect', 'refresh'];
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
@@ -644,7 +661,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // deadline and coalesced count included, was refused and never reached host.log.
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
     const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : [])].sort().join(',')) return;
+    const hasMail = Object.prototype.hasOwnProperty.call(value, 'mail');
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -657,7 +675,21 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeToken(row['detail']) || !isSafeCount(row['maxChars']) || !isSafeCount(row['deadlineMs']) || typeof row['truncated'] !== 'boolean') return;
       knowledge = { detail: row['detail'], maxChars: row['maxChars'], deadlineMs: row['deadlineMs'], truncated: row['truncated'] };
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}) };
+    let mail: { terms: number; operators: string[]; window?: string; retried?: { terms: number; operators: string[]; window?: string } } | undefined;
+    if (hasMail) {
+      const row = value.mail as Record<string, unknown> | null | undefined;
+      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
+      const hasRetried = Object.prototype.hasOwnProperty.call(row, 'retried');
+      const shape = mailQueryShape(hasRetried ? Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'retried')) : row);
+      if (shape === undefined) return;
+      if (!hasRetried) mail = shape;
+      else {
+        const retried = mailQueryShape(row['retried']);
+        if (retried === undefined) return;
+        mail = { ...shape, retried };
+      }
+    }
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

@@ -95,7 +95,14 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
   return a.runId === h.runId && a.actorId === h.actorId && a.authorityEpoch === h.authorityEpoch && a.revision === h.revision;
 }
 
-export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
+/**
+ * W10: the connections a run may use are frozen at acceptance, so a `connectionIds()` that only
+ * names the connectors that already finished their handshake drops a slow one for the whole call.
+ * The durable policies are the ones this owner has already published, and they are the set a start
+ * freezes, whether or not the transport has come up yet.
+ */
+export interface LiveRunConnections { durableConnectionIds?(tx: Transaction): string[] }
+export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
@@ -345,9 +352,25 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     const bytes = canonicalJSON(p); const hash = sha256(bytes);
     const changed = store.transaction(tx => {
       const row = tx.get('SELECT * FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, p.connectionId]);
-      const current = row ? connection(tx, p.connectionId) : undefined;
+      let current: BoundConnection | undefined;
+      try { current = row ? connection(tx, p.connectionId) : undefined; }
+      catch (error) {
+        // W9: a stored approval that no longer validates against this release's reviewed connector
+        // envelope (a release renamed its read tools) is a catalog change, not corruption. Only the
+        // same endpoint's own live approval qualifies, and the compare-and-swap on the exact
+        // predecessor bytes below still guards the replacement; anything else keeps throwing.
+        const peeked = ((): { enabled?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } } | null => {
+          try { return JSON.parse(String(row?.['policy_json'] ?? '')) as { enabled?: unknown }; } catch { return null; }
+        })();
+        const sameEndpoint = peeked !== null && peeked.enabled !== false
+          && peeked.endpoint?.id === p.endpoint.id
+          && peeked.endpoint?.account === p.endpoint.account
+          && peeked.endpoint?.resource === p.endpoint.resource;
+        if (!row || expected !== String(row.policy_sha256) || !sameEndpoint) throw error;
+      }
       if (current && canonicalJSON(current.policy) === bytes) return false;
-      if (expected !== undefined && expected !== (current?.sha256 ?? null)) throw Error('connection_predecessor_mismatch');
+      const predecessor = current?.sha256 ?? (row ? String(row.policy_sha256) : null);
+      if (expected !== undefined && expected !== predecessor) throw Error('connection_predecessor_mismatch');
       if (current && (p.generation <= current.generation || canonicalJSON(p.endpoint) !== canonicalJSON(current.policy.endpoint))) throw Error('connection_identity_or_generation');
       if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, hash, ownerId, p.connectionId]);
       else tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, hash]);
@@ -373,7 +396,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       hostLogEvent({event:'tool_diagnostic_capture',reason,runId:scope?.call.runId ?? null,executionId:scope?.call.executionId ?? null});
     },
   });
-  const owner: ToolsOwner = {
+  const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
@@ -454,6 +477,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       const existing = tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [ownerId, acceptance.runId]);
       if (existing) { if (existing.snapshot_json !== bytes) throw Error('run_snapshot_collision'); return { sha256: hash }; }
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
+    },
+    durableConnectionIds(tx) {
+      return tx.all('SELECT connection_id FROM tool_connections WHERE owner_id=? ORDER BY connection_id', [ownerId])
+        .map(row => String(row['connection_id']))
+        .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } });
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
     liveDefinitions(runId, rememberNote) {

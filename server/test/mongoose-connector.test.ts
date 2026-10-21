@@ -19,6 +19,7 @@ import { mongooseAccessToken } from '../host/mongoose-auth.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
+import { plainReason, unreachableSourcesForSession } from '../tools/research.js';
 
 const ACCOUNT = 'account-a';
 const RESOURCE = 'resource-a';
@@ -550,6 +551,58 @@ test('a mongoose endpoint parked at not_signed_in connects on recover after a lo
   } finally {
     await runtime.close();
     store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// #502: a refresh the server refuses (invalid_grant) is a typed credential failure, not an unknown
+// transport failure, and the source is named as needing a sign-in again.
+test('a refused token refresh reports credential-refresh-failed and one closed line', async () => {
+  const f = await fixture({ requireBearer: false });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-refresh-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  // A synthetic token endpoint that refuses the refresh exactly as the server does: invalid_grant.
+  const tokenServer = createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'invalid_grant' })); }); });
+  tokenServer.listen(0, '127.0.0.1'); await once(tokenServer, 'listening');
+  const tokenPort = (tokenServer.address() as { port: number }).port;
+  const NOW = Date.now();
+  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
+    schemaVersion: 2, base: `http://127.0.0.1:${tokenPort}`, clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
+    accessToken: 'stale-token', refreshToken: 'refresh-token', expiresAt: NOW - 60_000, consentStartedAt: NOW - 1_000,
+  }), { mode: 0o600 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads',
+    endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT,
+      resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'sensitive' }],
+  }), { mode: 0o600 });
+  let store: Store | undefined;
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
+  try {
+    store = new Store(join(dir, 'data'), toolsMigrations);
+    runtime = await composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
+    });
+    // The refresh the host needs before its first read is refused: discovery never gets a bearer.
+    const report = runtime.status().endpoints[0];
+    assert.equal(report?.state, 'error');
+    assert.equal(report?.reasonCode ?? report?.exception?.code ?? report?.error, 'credential-refresh-failed',
+      `the endpoint report names the cause, saw ${JSON.stringify(report)}`);
+    const line = failures.filter(failure => failure.detail?.reason === 'credential-refresh-failed');
+    assert.equal(line.length, 1, `exactly one closed line, saw ${JSON.stringify(failures)}`);
+    assert.equal(failures.length, 1, `and no second line for the same endpoint, saw ${JSON.stringify(failures)}`);
+    assert.equal(line[0]?.detail?.endpointId, 'mongoose');
+    assert.equal(line[0]?.stage, 'credential');
+    // And the source is named as unreachable with that closed reason, so the reply can say sign in again.
+    assert.deepEqual(unreachableSourcesForSession([], [report as never]),
+      [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
+    assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
+  } finally {
+    if (runtime) await runtime.close();
+    store?.close(); await f.close();
+    tokenServer.closeAllConnections(); await new Promise<void>(done => tokenServer.close(() => done()));
     rmSync(dir, { recursive: true, force: true });
   }
 });

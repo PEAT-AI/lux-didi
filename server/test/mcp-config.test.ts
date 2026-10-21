@@ -47,7 +47,11 @@ async function localSource(t: TestContext) {
       const args = req.params.arguments ?? {};
       const ids = args['ids'] as number[] | undefined;
       const ownId = account === 'alpha' ? 101 : 202;
-      const text = req.params.name === 'gmail_search_messages' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
+      // A Google endpoint proves its account before any read (server/connectors/identity.ts, strict):
+      // the fake helper answers its own identity tool with the account it pins, like the real one.
+      const text = req.params.name === 'gmail_get_profile' ? JSON.stringify({ emailAddress: account })
+        : req.params.name === 'calendar_list_calendars' ? JSON.stringify({ calendars: [{ id: account, primary: true }] })
+        : req.params.name === 'gmail_search_messages' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
         : req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
       return { content: [{ type: 'text', text }] } as never;
     });

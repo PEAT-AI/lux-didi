@@ -35,7 +35,7 @@ export interface OrbVisual {
   amplitude: number;
   /** The canvas opacity at the middle of this state's breathe, 0..1. */
   opacity: number;
-  /** How grey the canvas is, 0..1. Only the cold and hot-muted states take any colour out. */
+  /** How grey the canvas is, 0..1. Only the cold state takes any colour out. */
   grey: number;
   /** How bright the canvas is, 0..1. The quiet states are dimmer as well as greyer. */
   bright: number;
@@ -55,8 +55,8 @@ export interface OrbVisual {
  *  between the listening teal and the tool amber, so a shift toward amber is
  *  visible before the tool itself. */
 /** The one visual per state. `cold` is the pill with no session: 35 percent grey and a
- *  very slow nine second breathe. `hot-muted` is the same orb with the microphone off:
- *  grey, slightly more opaque, a six second breathe. M3-R4: thinking and tool are both the
+ *  very slow nine second breathe. `hot-muted` is the same orb with the owner's mute on:
+ *  purple, a six second breathe, so muted can never be read as cold. M3-R4: thinking and tool are both the
  *  palette's amber at full strength, so neither can be read as the listening teal; the two
  *  are told apart by motion, the thinking swirl and the tool's steady orbiting highlight. */
 export const ORB_VISUALS: Readonly<Record<MiniVisualState, OrbVisual>> = {
@@ -68,12 +68,20 @@ export const ORB_VISUALS: Readonly<Record<MiniVisualState, OrbVisual>> = {
   thinking: { state: 'thinking', hue: 34, glow: 0.32, amplitude: 0.8, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'thinking', followsMic: false, followsOutput: false },
   tool: { state: 'tool', hue: 34, glow: 0.44, amplitude: 0.78, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'thinking', followsMic: false, followsOutput: false },
   speaking: { state: 'speaking', hue: 173, glow: 0.45, amplitude: 1, opacity: 0.92, grey: 0, bright: 1, breatheMs: 0, posture: 'speaking', followsMic: false, followsOutput: true },
-  'hot-muted': { state: 'hot-muted', hue: 216, glow: 0.12, amplitude: 0.5, opacity: 0.42, grey: 1, bright: 0.9, breatheMs: 6000, posture: 'quiet', followsMic: false, followsOutput: false },
+  'hot-muted': { state: 'hot-muted', hue: 278, glow: 0.3, amplitude: 0.5, opacity: 0.55, grey: 0, bright: 0.95, breatheMs: 6000, posture: 'quiet', followsMic: false, followsOutput: false },
 };
+
+/** #1021: the owner's mute, as the native app pushes it (`window.didiPresence.muted`). It is the
+ *  owner's own word and it outlives the session: the provider is closed at the mute, so no live
+ *  state is left to carry it, and the orb is purple until the next tap. */
+export function presenceMuted(source: unknown = (globalThis as { didiPresence?: unknown }).didiPresence): boolean {
+  return typeof source === 'object' && source !== null && (source as { muted?: unknown }).muted === true;
+}
 
 /** M3: the mini route's state machine eases the numbers itself and hands them to the one
  *  renderer through this store, so the pill needs no second renderer. The full window
- *  publishes nothing and keeps its own posture and hue rules untouched. */
+ *  publishes nothing and keeps its own posture and hue rules, with the mute as the one
+ *  exception it now shares. */
 export interface OrbVisualOverride {
   hue?: number;
   glow?: number;

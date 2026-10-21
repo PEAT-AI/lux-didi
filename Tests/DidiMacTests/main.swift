@@ -259,131 +259,80 @@ expect(hotkey.presence.state == .live && hotkey.fences.last == false, "readiness
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
-expect(hotkey.presence.state == .cold && hotkey.closed == 1,
-    "a live tap STOPS the session through the Stop path; it no longer mutes")
-expect(hotkey.presence.dropDeadline == nil, "a stopped session has no mute grace to wait out")
-expect(hotkey.lastAction() == "stop" && hotkey.lastReason() == "cold", "the live tap logs single_key_tap stop")
+expect(hotkey.presence.state == .hotMuted && hotkey.closed == 1,
+    "a live tap mutes her and ends the provider session at once (R4)")
+expect(hotkey.presence.posture.muted, "the mute is on the surface the orb reads, so it can go purple")
+expect(hotkey.fences.last == true, "the mute closes Naya's own capture fence")
+expect(hotkey.presence.dropDeadline == hotkey.clock + NativePresence.hotMutedGrace,
+    "the mute still carries the five minute deadline, which only ends a session left open")
+expect(hotkey.lastAction() == "mute" && hotkey.lastReason() == "hotMuted", "the live tap logs single_key_tap mute")
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
-hotkey.presence.ready()
-hotkey.presence.mute(.app)
-expect(hotkey.presence.state == .hotMuted, "the menu's mute still mutes, it is only off the key")
-var closedBeforeMutedTap = hotkey.closed
-hotkey.clock += 1
-hotkey.press(at: hotkey.clock)
-hotkey.release(at: hotkey.clock + 0.1)
-expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeMutedTap + 1,
-    "a tap while muted stops the session; no 300 s grace on a tap")
-expect(hotkey.lastAction() == "stop", "the muted tap logs single_key_tap stop")
+expect(hotkey.presence.state == .live && hotkey.fences.last == false && !hotkey.presence.posture.muted,
+    "a second tap lets her listen again, with the fence open")
+expect(hotkey.lastAction() == "unmute" && hotkey.lastReason() == "live", "the muted tap logs single_key_tap unmute")
 
-// A hold from idle: the timer at the threshold opens the session, the mic stays open
-// while held, and the release closes the fence and leaves the answer to finish.
+// Acceptance 2: muted for six minutes. The session goes at the mute, the owner still sees
+// MUTED (purple) the whole time, and the next tap reconnects and opens the mic.
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .hotMuted, "the day's mute starts from a live session")
+// AC3, by construction: the mute ends the provider session, so a proactive or callback speech
+// request has no session to play into while she waits, and nothing reopens one on its own.
+expect(hotkey.closed == 2 && hotkey.fences.last == true,
+    "the mute closes the session and the fence, which is where a held speech request would land")
+let openedDuringMute = hotkey.opened
+hotkey.presence.wake()
+expect(hotkey.opened == openedDuringMute,
+    "a wake while muted asks for no session, so no held speech can be spoken")
+hotkey.presence.sessionEnded()
+hotkey.clock += NativePresence.hotMutedGrace + 60
+hotkey.presence.tick()
+expect(hotkey.opened == openedDuringMute && hotkey.presence.posture.muted,
+    "six minutes muted open nothing by themselves, they only keep her purple")
+expect(hotkey.presence.state == .cold && hotkey.presence.posture.muted,
+    "the session's end after a mute keeps the owner on MUTED, never the grey cold orb")
+var openedBeforeLateTap = hotkey.opened
+hotkey.clock += 1
+hotkey.press(at: hotkey.clock)
+hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .connecting && hotkey.opened == openedBeforeLateTap + 1,
+    "the tapping owner reconnects her instead of starting a quiet session")
+expect(hotkey.presence.state == .connecting && !hotkey.presence.posture.muted,
+    "the reconnect shows the existing connecting look until the new session is ready (R4)")
+hotkey.presence.ready()
+expect(hotkey.presence.state == .live && !hotkey.presence.posture.muted && hotkey.fences.last == false,
+    "and readiness opens the mic, so she hears the owner again")
+// The explicit Stop, and sleep, are the two things that end a mute.
+hotkey.clock += 1
+hotkey.presence.tap(.hotkey)
+expect(hotkey.presence.posture.muted, "a tap from live mutes again")
+hotkey.presence.stop(.app)
+expect(hotkey.presence.state == .cold && !hotkey.presence.posture.muted,
+    "an explicit stop ends the mute, so the orb is grey again")
+hotkey.presence.tap(.hotkey)
+hotkey.presence.ready()
+hotkey.presence.tap(.hotkey)
+expect(hotkey.presence.posture.muted, "a mute is on before the sleep")
+hotkey.presence.sleep()
+expect(hotkey.presence.state == .cold && !hotkey.presence.posture.muted, "sleep ends the mute too")
+
+// A held key does nothing: the press past the threshold is one ignored receipt and the
+// machine does not move, which is the owner's spec of 2026-10-21.
 hotkey.clock += 10
 var openedBeforeHold = hotkey.opened
+let stateBeforeHold = hotkey.presence.state
 hotkey.press(at: hotkey.clock)
-expect(hotkey.holdDelay == RightCommandTapDetector.holdThreshold, "the press arms the hold timer at the 400 ms threshold")
-expect(hotkey.presence.state == .cold && hotkey.opened == openedBeforeHold, "a press alone opens nothing before the threshold")
+expect(hotkey.holdDelay == RightCommandTapDetector.holdThreshold, "the press still arms the 400 ms threshold, which tells a hold from a tap")
 hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
 hotkey.fireHold()
-expect(hotkey.presence.state == .connecting && hotkey.opened == openedBeforeHold + 1, "the hold opens the session")
-expect(hotkey.lastAction() == "hold_start", "the hold logs single_key_tap hold_start")
-hotkey.presence.ready()
-expect(hotkey.presence.state == .live && hotkey.fences.last == false, "the mic is open while the key is held")
-var closedBeforeHoldRelease = hotkey.closed
-hotkey.clock += 1.2
-hotkey.release(at: hotkey.clock)
-expect(hotkey.presence.state == .hotMuted && hotkey.fences.last == true, "the release closes the capture fence")
-expect(hotkey.closed == closedBeforeHoldRelease, "the release keeps the session while the answer finishes")
-expect(hotkey.presence.dropDeadline == hotkey.clock + NativePresence.holdReleaseGrace,
-    "the hold's own 30 s grace, not the 5 minute mute grace")
-expect(hotkey.lastAction() == "hold_end", "the release logs single_key_tap hold_end")
-hotkey.presence.answerCompleted()
-expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeHoldRelease + 1,
-    "the answer's end closes the session the hold left open")
-
-// The same hold, ended by 30 s of silence instead of by the answer.
-hotkey.clock += 10
-var closedBeforeSilence = hotkey.closed
-hotkey.press(at: hotkey.clock)
-hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
-hotkey.fireHold()
-hotkey.presence.ready()
-hotkey.clock += 1
-hotkey.release(at: hotkey.clock)
-hotkey.clock += NativePresence.holdReleaseGrace - 0.5
-hotkey.presence.tick()
-expect(hotkey.presence.state == .hotMuted, "a tick before the hold grace changes nothing")
-hotkey.clock += 0.5
-hotkey.presence.tick()
-expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeSilence + 1,
-    "30 s of silence ends the session a hold left open")
-
-// A hold while already live keeps the mic open and releases to the normal live state.
-hotkey.clock += 10
-hotkey.press(at: hotkey.clock)
-hotkey.release(at: hotkey.clock + 0.1)
-hotkey.presence.ready()
-expect(hotkey.presence.state == .live, "a tap starts the session the hold is measured in")
-var closedAtLiveHold = hotkey.closed
-hotkey.clock += 1
-hotkey.press(at: hotkey.clock)
-hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
-hotkey.fireHold()
-expect(hotkey.presence.state == .live && hotkey.fences.last == false, "a hold while live keeps the mic open")
-expect(hotkey.lastAction() == "hold_start", "the live hold logs single_key_tap hold_start")
-hotkey.clock += 0.8
-hotkey.release(at: hotkey.clock)
-expect(hotkey.presence.state == .live && hotkey.closed == closedAtLiveHold,
-    "a hold while live releases to the normal live state")
-expect(hotkey.lastAction() == "hold_end", "the live hold's release logs single_key_tap hold_end")
-
-// A chord during a hold from idle cancels the hold where it happens: the fence closes at
-// the chord while the key is still down, and the release adds nothing.
-hotkey.clock += 10
-hotkey.press(at: hotkey.clock)
-hotkey.release(at: hotkey.clock + 0.1)
-expect(hotkey.presence.state == .cold, "the session before the cancelled hold is stopped")
-var closedBeforeChordHold = hotkey.closed
-hotkey.clock += 1
-hotkey.press(at: hotkey.clock)
-hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
-hotkey.fireHold()
-hotkey.presence.ready()
-expect(hotkey.presence.state == .live && hotkey.fences.last == false, "the hold opens the mic")
-var receiptsBeforeChordHold = hotkey.receipts.count
-hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
-expect(hotkey.presence.state == .hotMuted && hotkey.fences.last == true,
-    "a chord during the hold closes the capture fence at the chord, not at the release")
-expect(hotkey.lastAction() == "hold_end", "a chord during the hold logs single_key_tap hold_end")
+expect(hotkey.presence.state == stateBeforeHold && hotkey.opened == openedBeforeHold,
+    "a held Right Command opens nothing")
+expect(hotkey.lastAction() == "ignored" && hotkey.lastReason() == "hold", "the hold logs single_key_tap ignored, reason hold")
 hotkey.release(at: hotkey.clock + 0.2)
-expect(hotkey.presence.state == .hotMuted && hotkey.receipts.count == receiptsBeforeChordHold + 1,
-    "the release of a cancelled hold adds no gesture")
-expect(hotkey.closed == closedBeforeChordHold, "the cancelled hold keeps the session for the answer")
-hotkey.presence.answerCompleted()
-expect(hotkey.presence.state == .cold && hotkey.closed == closedBeforeChordHold + 1,
-    "the answer's end still closes the session a cancelled hold left open")
-
-// A hold that starts while Naya is already live is cancelled the same way: the gesture
-// ends, and the session it was talking in is not sent into the mute grace.
-hotkey.clock += 10
-hotkey.press(at: hotkey.clock)
-hotkey.release(at: hotkey.clock + 0.1)
-hotkey.presence.ready()
-expect(hotkey.presence.state == .live, "a session is live before the cancelled live hold")
-hotkey.clock += 1
-hotkey.press(at: hotkey.clock)
-hotkey.clock += RightCommandTapDetector.holdThreshold + 0.001
-hotkey.fireHold()
-expect(hotkey.presence.state == .live, "a hold while live keeps the session live")
-var receiptsBeforeLiveChord = hotkey.receipts.count
-hotkey.key.receive(.otherKeyDown, at: hotkey.clock + 0.05)
-expect(hotkey.presence.state == .live && hotkey.presence.dropDeadline == nil,
-    "a chord during a live hold cancels the gesture and leaves no mute grace behind")
-expect(hotkey.lastAction() == "hold_end", "the cancelled live hold still logs single_key_tap hold_end")
-hotkey.release(at: hotkey.clock + 0.2)
-expect(hotkey.receipts.count == receiptsBeforeLiveChord + 1
-    && hotkey.presence.state == .live, "the release of the cancelled live hold adds no gesture")
+expect(hotkey.presence.state == stateBeforeHold, "and its release moves nothing either")
 
 // A Command chord during the press cancels the gesture: no start, no hold, one receipt.
 var receiptsBeforeChord = hotkey.receipts.count
@@ -414,23 +363,23 @@ let grantSuite = "didi.single-key.test.\(UUID().uuidString)"
 let grantDefaults = UserDefaults(suiteName: grantSuite)!
 var prompts = 0
 SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3p", defaults: grantDefaults, enabled: true,
-                                     trusted: false, prompt: { prompts += 1 })
+                                     granted: false, prompt: { prompts += 1 })
 expect(prompts == 1, "an untrusted new version asks for the grant once")
 expect(grantDefaults.string(forKey: SingleKeyGrantPrompt.versionKey) == "3p", "the asked version is the one remembered")
 SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3p", defaults: grantDefaults, enabled: true,
-                                     trusted: false, prompt: { prompts += 1 })
+                                     granted: false, prompt: { prompts += 1 })
 expect(prompts == 1, "the same version never asks again")
 SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3q", defaults: grantDefaults, enabled: true,
-                                     trusted: false, prompt: { prompts += 1 })
+                                     granted: false, prompt: { prompts += 1 })
 expect(prompts == 2, "a new version asks once more, which is the ad-hoc install's case")
 SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3r", defaults: grantDefaults, enabled: true,
-                                     trusted: true, prompt: { prompts += 1 })
+                                     granted: true, prompt: { prompts += 1 })
 expect(prompts == 2, "a key that has its grant is never asked for")
 SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3s", defaults: grantDefaults, enabled: false,
-                                     trusted: false, prompt: { prompts += 1 })
+                                     granted: false, prompt: { prompts += 1 })
 expect(prompts == 2, "a key that is turned off is never asked for")
 for kind in [LaunchKind.installedProof, .selfCheck, .uiProof, .verification] {
-    SingleKeyTrigger.requestGrantIfNeeded(for: kind, version: "3t", defaults: grantDefaults, enabled: true, trusted: false)
+    SingleKeyTrigger.requestGrantIfNeeded(for: kind, version: "3t", defaults: grantDefaults, enabled: true, granted: false)
     expect(grantDefaults.string(forKey: SingleKeyGrantPrompt.versionKey) != "3t", "a \(kind) launch never asks for the single-key grant")
 }
 expect(SingleKeyTrigger.explanation.contains("\n") == false && SingleKeyTrigger.explanation.count < 300, "the grant explanation is one line")
@@ -442,22 +391,35 @@ let singleKeyWasEnabled = SingleKeyTrigger.isEnabled
 SingleKeyTrigger.isEnabled = true
 var singleKeyReceipts: [[String: Any]] = []
 let untrustedKey = SingleKeyTrigger()
-untrustedKey.system = .init(trusted: { false }, install: { true })
+untrustedKey.system = .init(grants: { .init(listenEvent: false, accessibility: false) }, install: { true })
 untrustedKey.onReceipt = { singleKeyReceipts.append($0) }
 expect(untrustedKey.start() == false && untrustedKey.tapCreated == false, "an untrusted launch creates no tap")
-let untrustedState = SingleKeyTrigger.stateReceipt(enabled: true, trusted: false, tapCreated: untrustedKey.tapCreated, signing: "adhoc")
+let untrustedState = SingleKeyTrigger.stateReceipt(enabled: true,
+    grants: .init(listenEvent: false, accessibility: false), tapCreated: untrustedKey.tapCreated, signing: "adhoc")
 expect(untrustedState["event"] as? String == "single_key_state" && untrustedState["tapCreated"] as? Bool == false
     && untrustedState["trusted"] as? Bool == false && untrustedState["signing"] as? String == "adhoc",
-    "the launch receipt says the key is untrusted and has no tap")
+    "the launch receipt says the key has no grant and no tap")
 let trustedKey = SingleKeyTrigger()
-trustedKey.system = .init(trusted: { true }, install: { true })
+trustedKey.system = .init(grants: { .init(listenEvent: true, accessibility: false) }, install: { true })
 trustedKey.onReceipt = { singleKeyReceipts.append($0) }
 // No real hold timer here: each gesture is fired by the events this test sends.
 trustedKey.scheduleHold = { _, _ in }
-expect(trustedKey.start() && trustedKey.tapCreated, "a trusted launch creates the tap")
-let trustedState = SingleKeyTrigger.stateReceipt(enabled: true, trusted: true, tapCreated: trustedKey.tapCreated, signing: "identity")
+// R3: Input Monitoring alone is enough for the listen-only tap, with Accessibility denied.
+expect(trustedKey.start() && trustedKey.tapCreated, "Input Monitoring granted, Accessibility denied, installs the tap")
+let installReceipt = singleKeyReceipts.last
+expect(installReceipt?["event"] as? String == "single_key_state" && installReceipt?["trusted"] as? Bool == true
+    && installReceipt?["listenEvent"] as? Bool == true && installReceipt?["tapCreated"] as? Bool == true,
+    "the launch that installs the tap writes one receipt naming the grant it used")
+singleKeyReceipts.removeAll()
+let trustedState = SingleKeyTrigger.stateReceipt(enabled: true,
+    grants: .init(listenEvent: true, accessibility: false), tapCreated: trustedKey.tapCreated, signing: "identity")
 expect(trustedState["tapCreated"] as? Bool == true && trustedState["signing"] as? String == "identity",
     "the launch receipt says the tap is live and what signed it")
+expect(trustedState["listenEvent"] as? Bool == true && trustedState["accessibility"] as? Bool == false,
+    "the receipt reports both grants apart, so the owner knows which toggle to flip (R2)")
+expect(SingleKeyTrigger.stateReceipt(enabled: true, grants: .init(listenEvent: false, accessibility: true),
+    tapCreated: true, signing: "identity")["trusted"] as? Bool == true,
+    "either grant is enough for a listen-only tap")
 var presenceAfterTap: [PresenceState] = [.connecting, .hotMuted, .hotMuted]
 var singleKeyPresence = PresenceState.cold
 trustedKey.presenceState = { singleKeyPresence }
@@ -469,23 +431,22 @@ expect(singleKeyReceipts.count == 1 && singleKeyReceipts[0]["event"] as? String 
     "a tap that starts Naya logs single_key_tap start")
 trustedKey.receive(.rightCommandDown, at: 310)
 trustedKey.receive(.rightCommandUp, at: 310.1)
-expect(singleKeyReceipts.count == 2 && singleKeyReceipts[1]["action"] as? String == "stop"
-    && singleKeyReceipts[1]["reason"] as? String == "hotMuted", "a tap that stops Naya logs single_key_tap stop")
+expect(singleKeyReceipts.count == 2 && singleKeyReceipts[1]["action"] as? String == "mute"
+    && singleKeyReceipts[1]["reason"] as? String == "hotMuted", "a tap that mutes her logs single_key_tap mute")
 trustedKey.receive(.rightCommandDown, at: 320)
 trustedKey.receive(.rightCommandUp, at: 320.1)
 expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "ignored"
     && singleKeyReceipts[2]["reason"] as? String == "hotMuted", "a tap the machine does not move is logged as ignored with the state it stayed in")
 trustedKey.receive(.rightCommandDown, at: 330)
 trustedKey.receive(.rightCommandUp, at: 331)
-expect(singleKeyReceipts.count == 5 && singleKeyReceipts[3]["action"] as? String == "hold_start"
-    && singleKeyReceipts[4]["action"] as? String == "hold_end",
-    "a press held past the threshold logs single_key_tap hold_start, then hold_end on the release")
-expect(SingleKeyTapOutcome(action: .holdStart, state: .connecting).reason == "connecting",
-    "a hold receipt names the state it left the machine in")
+expect(singleKeyReceipts.count == 5 && singleKeyReceipts[3]["action"] as? String == "ignored"
+    && singleKeyReceipts[3]["reason"] as? String == "hold" && singleKeyReceipts[4]["reason"] as? String == "hold",
+    "a press held past the threshold logs ignored receipts, because a held key does nothing")
 expect(SingleKeyTapOutcome(from: .live, to: .live).action == .ignored && SingleKeyTapOutcome(from: .live, to: .live).reason == "live",
     "a tap the machine does not move is a receipt naming the state, proven directly")
-expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .start && SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
-    "a move out of cold or back from hot-muted starts, a move to cold stops")
+expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .unmute
+    && SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
+    "a move out of a mute is an unmute, a move to cold stops")
 expect(SingleKeyTrigger.signing == "adhoc" || SingleKeyTrigger.signing == "identity" || SingleKeyTrigger.signing == "unknown",
     "the signing fact is one of the three the receipt knows")
 // The signing label is pure over the code-signature flags, so it is testable with
@@ -500,14 +461,77 @@ expect(SingleKeyTrigger.signingLabel(codeFlags: { adhocFlags | developerIDFlags 
     "the injected stub cannot turn ad-hoc flags into identity")
 SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 
+// #1021: the key can never be silently dead. The menu line that says why, the deep link
+// behind it and the re-check that installs the tap when the grant arrives late are the
+// three facts the seams prove without TCC, a real tap or a keyboard.
+SingleKeyTrigger.isEnabled = true
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: false) == "Right Command is off: allow Input Monitoring for Naya",
+    "a key with no tap carries one line that names the fix")
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: true) == nil,
+    "the line is gone once the tap is live, so a working key never shows it")
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: false, tapped: false) == nil,
+    "a key the owner turned off shows no grant line, because no grant would fix it")
+expect(URL(string: SingleKeyTrigger.grantSettingsURL)?.scheme == "x-apple.systempreferences",
+    "the notice opens the Accessibility pane, not a copy of its address")
+// The launch is untrusted, the grant arrives while the app runs, and the next re-check
+// installs the tap: no restart, and one receipt for the change (acceptance 1).
+let lateGrantKey = SingleKeyTrigger()
+var lateGrantTrusted = false
+lateGrantKey.system = .init(grants: { .init(listenEvent: lateGrantTrusted, accessibility: false) }, install: { true })
+var lateGrantReceipts: [[String: Any]] = []
+lateGrantKey.onReceipt = { lateGrantReceipts.append($0) }
+expect(lateGrantKey.start() == false && lateGrantKey.tapCreated == false, "an untrusted launch has no tap")
+expect(lateGrantReceipts.count == 1 && lateGrantReceipts[0]["event"] as? String == "single_key_state"
+    && lateGrantReceipts[0]["trusted"] as? Bool == false && lateGrantReceipts[0]["tapCreated"] as? Bool == false,
+    "the untrusted launch writes one single_key_state receipt")
+lateGrantTrusted = true
+expect(lateGrantKey.start() && lateGrantKey.tapCreated, "the next re-check installs the tap the moment the grant is there")
+expect(lateGrantReceipts.count == 2 && lateGrantReceipts[1]["event"] as? String == "single_key_state"
+    && lateGrantReceipts[1]["trusted"] as? Bool == true && lateGrantReceipts[1]["tapCreated"] as? Bool == true,
+    "the grant arriving writes one receipt that says the tap is live")
+expect(lateGrantKey.start() && lateGrantReceipts.count == 2,
+    "a re-check with the tap already live writes no second receipt")
+// Turning the key off is a state change too, so it is one receipt and no live tap.
+lateGrantKey.stop()
+expect(lateGrantReceipts.count == 3 && lateGrantReceipts[2]["tapCreated"] as? Bool == false
+    && lateGrantReceipts[2]["trusted"] as? Bool == true,
+    "a tap that goes away writes one receipt, so a key that dies mid-run is visible")
+SingleKeyTrigger.isEnabled = true
+// F13 (#1021): the live re-check is pinned by one seam, so the app can never poll a working key
+// and can never leave an untrusted one dead. Activation plus one slow timer, at most every 5 s.
+let waitingPlan = SingleKeyTrigger.grantWatchPlan(enabled: true, tapped: false)
+expect(waitingPlan.onActivation && waitingPlan.pollInterval != nil,
+    "an enabled key with no tap is re-checked on activation and on a timer")
+expect((waitingPlan.pollInterval ?? .infinity) <= 5,
+    "the untrusted poll is cheap, at most every five seconds")
+expect(SingleKeyTrigger.grantWatchPlan(enabled: true, tapped: true) == SingleKeyTrigger.grantWatchPlan(enabled: false, tapped: false)
+    && SingleKeyTrigger.grantWatchPlan(enabled: true, tapped: true).pollInterval == nil,
+    "a live tap and a key the owner turned off both owe no polling at all")
+expect(!SingleKeyTrigger.grantWatchPlan(enabled: false, tapped: false).onActivation,
+    "a key the owner turned off is never re-checked: no grant would turn it on")
+// The once-per-version prompt never gates the line, so a missed or dismissed prompt still
+// leaves the owner a way in (acceptance 3).
+let noticeSuite = "didi.single-key-notice.\(UUID().uuidString)"
+let noticeDefaults = UserDefaults(suiteName: noticeSuite)!
+var noticePrompts = 0
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3t", defaults: noticeDefaults, enabled: true,
+                                     granted: false, prompt: { noticePrompts += 1 })
+expect(noticePrompts == 1, "the prompt still asks once for a version")
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: false) != nil,
+    "a version that already asked keeps the line, so a missed prompt is not a dead key")
+noticeDefaults.removePersistentDomain(forName: noticeSuite)
+SingleKeyTrigger.isEnabled = singleKeyWasEnabled
+
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
-// MINI2: the pill is 64x26, sits top-center just below the menu bar (the screens
-// are visible frames, so on a notched display the menu bar carries the notch).
+// MINI2, owner spec 2026-10-21: the orb sits top right, just under the menu bar clock.
+// The screens are visible frames, so on a notched display the menu bar carries the notch.
 expect(MiniOrbFrameRestore.size == CGSize(width: 220, height: 220), "the floating orb is 220 square points")
-expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 610, y: 674, width: 220, height: 220), "default pill frame is top-center just below the menu bar")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]) == CGRect(x: 1196, y: 674, width: 220, height: 220), "default pill frame is top right, under the clock")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [miniScreen]).maxX == miniScreen.maxX - MiniOrbFrameRestore.rightMargin,
+    "the default keeps one small margin from the screen's right edge")
 let notched = CGRect(x: 0, y: 0, width: 1728, height: 1083)
 let notchedPill = MiniOrbFrameRestore.resolve(nil, screens: [notched])
-expect(notchedPill == CGRect(x: 754, y: 857, width: 220, height: 220), "default pill frame is top-center on a notched display")
+expect(notchedPill == CGRect(x: 1484, y: 857, width: 220, height: 220), "default pill frame is top right on a notched display")
 expect(notchedPill.maxY == notched.maxY - MiniOrbFrameRestore.topMargin, "the pill keeps one menu-bar margin, never inside the notch")
 let miniSaved = CGRect(x: 100, y: 120, width: 300, height: 300)
 expect(MiniOrbFrameRestore.resolve(miniSaved, screens: [miniScreen]) == CGRect(x: 100, y: 120, width: 220, height: 220), "a remembered pill position is kept at the pill size")
@@ -930,6 +954,18 @@ for id in NativeNextSteps.connectorIDs {
 }
 let calendarStep = NativeNextSteps.lookup(id: "calendar", state: "missing", reason: "credential_missing")
 expect(calendarStep.command == nil && calendarStep.guideURL?.absoluteString == "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup", "portable calendar instructions link the public guide without a copy command")
+// R6, obligation 1: the next-steps surface carries the same key line as the menu bar, with the
+// pane that fixes it, so the owner has two ways to the one switch.
+let keyOffStep = NativeNextSteps.singleKeyStep(enabled: true, tapped: false)
+expect(keyOffStep.text == SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: false)
+    && keyOffStep.text == "Right Command is off: allow Input Monitoring for Naya",
+    "the next-steps row for the key says what to allow, in the same words as the menu bar")
+expect(keyOffStep.guideURL?.absoluteString == SingleKeyTrigger.grantSettingsURL
+    && keyOffStep.guideURL?.absoluteString.hasSuffix("Privacy_ListenEvent") == true,
+    "and its button opens the Input Monitoring pane")
+let keyOnStep = NativeNextSteps.singleKeyStep(enabled: true, tapped: true)
+expect(keyOnStep.text != keyOffStep.text && keyOnStep.text.contains("mutes and unmutes"),
+    "a key with a live tap gets the working line, never the warning")
 let mongooseStep = NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil)
 expect(mongooseStep.command == "mongoose-login", "the Mongoose next step offers exactly the sign-in action id")
 expect(mongooseStep.command != "cp" && !(mongooseStep.command ?? "").hasPrefix("cp ") && !(mongooseStep.command ?? "").contains("/"), "credential path is not a copy command")
@@ -1026,7 +1062,7 @@ expect(q4Log.last?["event"] as? String == "mini_presented" && q4Log.last?["trigg
 
 // Visual opacity belongs to the renderer; the native panel always has alpha one.
 for state in [PresenceState.cold, .connecting, .hotMuted, .live] {
-    expect(PresenceSurfaceState.shown(PresencePosture(state: state, alwaysShow: true, failed: false)).opacity == 1,
+    expect(PresenceSurfaceState.shown(PresencePosture(state: state, alwaysShow: true, failed: false, muted: false)).opacity == 1,
            "native opacity stays one in every presence state")
 }
 let rememberedOrb = CGRect(x: 400, y: 300, width: 64, height: 26)

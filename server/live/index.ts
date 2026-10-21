@@ -12,7 +12,7 @@ import { isIntentTool, planIntent, intentResponse, type IntentToolName, type Int
 import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
+import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
@@ -168,7 +168,7 @@ const RECOVERY_BACKOFF_MS = [0, 2_000, 5_000] as const;
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
 /** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
 type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
-const SEED_CHAR_LIMIT = 8_000;
+export const SEED_CHAR_LIMIT = 8_000;
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
 /** D6: an open model turn holds SPEAKING across the adapter's between-sentence silence for this long. */
@@ -823,7 +823,9 @@ export class LiveSessionOwner {
     const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))
       .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
-    return buildRuntimeContext({ now: new Date(this.#now()), timeZone: this.#timeZone, connected, unavailable });
+    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone: this.#timeZone, connected, unavailable });
+    const signIn = signInNote(endpoints);
+    return signIn ? `${context}\n\n${signIn}` : context;
   }
 
   /** Safe operator-visible identity. Never carries key bytes or prompt text. */
@@ -999,6 +1001,7 @@ export class LiveSessionOwner {
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
       tx.run("UPDATE live_sessions SET diagnostic_metadata_state='in_progress',diagnostic_content_state='in_progress',native_receipt_state='unknown',diagnostic_failures=0,diagnostic_unattributed_transcripts=0,diagnostic_clock_domain=? WHERE live_session_id=?", [hostClockDomain,liveSessionId]);
       tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
+      tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, this.#conversationInTx(tx, assistantId)]);
       recordHistorySession(tx, liveSessionId, assistantId, this.#profile.route.dataClasses, injectedSummaryIds, now);
       for (const opener of injectedOpeners) recordHistoryDependency(tx, liveSessionId, opener.sessionId);
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
@@ -1272,7 +1275,8 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const history = this.#jobHistory(liveSessionId, inputClass);
+    const seed = this.#seedHistory(liveSessionId, inputClass);
+    const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
     const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || OPEN_TOOL_NAMES.has(tool.name));
@@ -1799,32 +1803,93 @@ export class LiveSessionOwner {
     });
   }
 
+  /** The words Naya had produced but the owner never heard: kept apart, so a later turn can offer to finish. */
+  #keepUnheard(handle: ActiveSession, tx: Transaction): void {
+    const row = tx.get(
+      "SELECT group_concat(text,'') AS text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND journal_id > COALESCE((SELECT MAX(journal_id) FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND finished=1),0)",
+      [handle.liveSessionId, handle.liveSessionId]);
+    const text = String(row?.['text'] ?? '').trim();
+    if (!text.length) return;
+    this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event: 'unheard', text }) }, 'continuity', tx);
+  }
+
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
     const journalSequence = this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event, ...(reason ? { reason } : {}) }) }, 'continuity');
     if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return; }
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
   }
 
-  /** Build the seeded history for a fresh recovery from this session's journal, bounded to SEED_CHAR_LIMIT. */
-  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
+  /** The conversation this owner is in: app owned, persisted, and unmoved by mute, expiry, restart or midnight. */
+  #conversationInTx(tx: Transaction, assistantId: string): string {
+    const row = tx.get('SELECT conversation_id FROM live_conversations WHERE owner_assistant_id=?', [assistantId]);
+    if (row) return String(row['conversation_id']);
+    const previous = tx.get('SELECT c.conversation_id AS conversation_id FROM live_session_conversations c JOIN live_sessions s ON s.live_session_id=c.live_session_id WHERE s.owner_assistant_id=? ORDER BY s.created_at DESC, s.rowid DESC LIMIT 1', [assistantId]);
+    const conversationId = previous ? String(previous['conversation_id']) : randomUUID();
+    tx.run('INSERT INTO live_conversations(owner_assistant_id,conversation_id,started_at) VALUES(?,?,?)', [assistantId, conversationId, this.#now()]);
+    return conversationId;
+  }
+
+  /** An explicit new conversation. Nothing ordinary does this, so a topic change keeps the same id. */
+  newConversation(): string {
+    this.#guardOpen();
+    const conversationId = randomUUID();
+    this.#store.transaction(tx => tx.run(
+      'INSERT INTO live_conversations(owner_assistant_id,conversation_id,started_at) VALUES(?,?,?) ON CONFLICT(owner_assistant_id) DO UPDATE SET conversation_id=excluded.conversation_id,started_at=excluded.started_at',
+      [this.#store.assistantId, conversationId, this.#now()]));
+    return conversationId;
+  }
+
+  /** The conversation a persisted session belongs to; a session older than the table joins the current one. */
+  #conversationOf(liveSessionId: string): string {
+    return this.#store.transaction(tx => {
+      const row = tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [liveSessionId]);
+      if (row) return String(row['conversation_id']);
+      const conversationId = this.#conversationInTx(tx, this.#store.assistantId);
+      tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, conversationId]);
+      return conversationId;
+    });
+  }
+
+  /** Seed for a new provider session: the conversation's recent exchanges, never half an exchange. */
+  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
+    const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
-      "SELECT kind,text,finished FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') AND text IS NOT NULL ORDER BY journal_id",
-      [liveSessionId]));
-    const turns: { role: 'user' | 'model'; text: string }[] = [];
+      "SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id JOIN live_session_conversations c ON c.live_session_id=s.live_session_id WHERE c.conversation_id=? AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id",
+      [conversationId]));
+    const runs: { role: 'user' | 'model'; text: string }[] = [];
     let role: 'user' | 'model' | undefined; let pending = '';
-    const flush = () => { if (role !== undefined && pending.trim().length) turns.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
+    const flush = () => { if (role !== undefined && pending.trim().length) runs.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
     for (const row of rows) {
       const next: 'user' | 'model' = String(row['kind']) === 'inputTranscription' ? 'user' : 'model';
       if (role !== undefined && role !== next) flush();
       role = next; pending += String(row['text'] ?? '');
       if (Number(row['finished']) === 1) flush();
     }
+    // An unfinished model run is speech the owner never heard, so it never becomes history here.
+    if (role === 'model') pending = '';
     flush();
-    // Newest kept: drop whole oldest turns until the seed fits, then cap to the adapter's turn ceiling.
-    let start = 0; let chars = turns.reduce((sum, turn) => sum + turn.text.length, 0);
-    while (start < turns.length && chars > SEED_CHAR_LIMIT) { chars -= turns[start]!.text.length; start += 1; }
-    const kept = turns.slice(start).slice(-128).map(turn => ({ role: turn.role, text: turn.text, dataClass: inputClass }));
-    return { turns: kept, chars };
+    const exchanges: { role: 'user' | 'model'; text: string }[][] = [];
+    for (const run of runs) {
+      if (run.role === 'user' || exchanges.length === 0) exchanges.push([run]);
+      else exchanges[exchanges.length - 1]!.push(run);
+    }
+    const charsOf = (exchange: { role: 'user' | 'model'; text: string }[]) => exchange.reduce((sum, run) => sum + run.text.length, 0);
+    let chars = exchanges.reduce((sum, exchange) => sum + charsOf(exchange), 0);
+    let condensed = false;
+    // The latest exchange is the anchor: older exchanges go whole, and a latest exchange over budget is condensed.
+    while (exchanges.length > 1 && chars > SEED_CHAR_LIMIT) { chars -= charsOf(exchanges[0]!); exchanges.shift(); }
+    if (exchanges.length === 1 && chars > SEED_CHAR_LIMIT) {
+      const anchor = exchanges[0]!;
+      for (const run of anchor) {
+        const room = SEED_CHAR_LIMIT - (chars - run.text.length);
+        if (run.text.length <= room) continue;
+        const keep = Math.max(room - 3, 0);
+        run.text = keep > 0 ? `...${run.text.slice(run.text.length - keep)}` : '...';
+        chars = charsOf(anchor); condensed = true;
+      }
+    }
+    const kept = exchanges.flat().slice(-128).map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
+    return { turns: kept, chars, condensed };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
@@ -2453,6 +2518,8 @@ export class LiveSessionOwner {
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), selector: this.#research, execute,
+      // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
+      ...(this.#research?.web === undefined ? {} : { web: this.#research.web }),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -2566,12 +2633,14 @@ export class LiveSessionOwner {
     hostLogEvent({ event: 'thinking_sent', chars: block.length });
     const reason = this.#lateCommentaryReason(handle, event);
     if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
-    const speak = handle.session.sendCommentary;
+    // U4/R4(b): every commentary append the provider saw was refused on delegation_id, and a late finding rides
+    // that same door. Findings are the answer to a question already asked, not progress, so they travel on the
+    // normal response channel, which the provider accepts. No progress line is added anywhere.
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
-    try { speak!.call(handle.session, { text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
+    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
     handle.lateCommentaryFor = event.researchId;
-    hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
-    hostLogEvent({ ...receipt, delivered: 'commentary', reason: 'quiet' });
+    hostLogEvent({ event: 'late_findings_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
+    hostLogEvent({ ...receipt, delivered: 'response', reason: 'quiet' });
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
@@ -2579,7 +2648,6 @@ export class LiveSessionOwner {
     const now = this.#now();
     const answeredAt = handle.researchAnsweredAt ?? now;
     if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
-    if (typeof handle.session.sendCommentary !== 'function') return 'no_commentary_channel';
     if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
     // A question begun after the first answer means the owner moved on: the block stays context only.
     if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';
@@ -2932,6 +3000,8 @@ export class LiveSessionOwner {
     let journalSequence: number;
     try {
       journalSequence = this.#store.transaction(tx => {
+        // Only the owner's own stop can leave speech unheard; a revocation or a failure ends differently.
+        if (outcome.state === 'closed') this.#keepUnheard(handle, tx);
         if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
         return this.#terminalInTx(tx,handle.liveSessionId,outcome,complete,this.#now(),consumerState,rejected);
       });

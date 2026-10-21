@@ -143,7 +143,8 @@ test('stop is idempotent and returns what is known', async () => {
 test('an unrelated barge-in signal does not abort a running research run', async () => {
   const barge = new AbortController();
   const h = harness({ selector: knowledge, execute: async subs => { barge.abort(); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  // #1021: a content-free question no longer searches knowledge, so the harness asks a real one.
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.notEqual(reply['status'], 'stopped');
   assert.equal(barge.signal.aborted, true);
 });
@@ -151,7 +152,7 @@ test('an unrelated barge-in signal does not abort a running research run', async
 test('the session abort ends the run as stopped', async () => {
   const session = new AbortController();
   const h = harness({ selector: knowledge, execute: async subs => { session.abort(); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, session.signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, session.signal);
   assert.equal(reply['status'], 'stopped');
 });
 
@@ -159,7 +160,7 @@ test('a run past its deadline returns partial after one round', async () => {
   let advanced = false;
   const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9, chat_search: 0.9 } }) });
   const deps: ResearchDeps = { ...h.deps, now: () => (advanced ? RESEARCH.startDeadlineMs + 5_000 : 0), execute: async subs => { advanced = true; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(reply['status'], 'partial');
   assert.equal(h.logs[0]!.rounds, 1);
 });
@@ -444,7 +445,8 @@ test('knowledge shaping carries at least ninety percent of a 41-item ledger unde
   const body = 'k'.repeat(60);
   const items = Array.from({ length: 41 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
   const h = harness({ selector: knowledge, executeText: items.join('\n') });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  // #1021: a content-free question no longer searches knowledge, so the ledger test asks a real one.
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
   const lines = finding.text.split('\n').slice(1);
   assert.ok(lines.length >= 37, `carried ${lines.length} of 41 lines`);

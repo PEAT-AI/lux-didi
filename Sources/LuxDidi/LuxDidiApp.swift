@@ -600,9 +600,9 @@ struct RootView: View {
     private var liveCallBadge: AnyCancellable?
     private var liveCallHealth: AnyCancellable?
     private var pickupMenuItem: NSMenuItem?
-    private var accessibilityNoticeItem: NSMenuItem?
-    /// The one line the status menu shows when Right Command has no grant.
-    static let accessibilityNoticeTitle = "Right Command needs Accessibility (open System Settings)"
+    private var singleKeyGrantItem: NSMenuItem?
+    private var singleKeyGrantTimer: Timer?
+    private var singleKeyGrantMonitor: NSObjectProtocol?
     private var keyboardMonitor: Any?
     private var terminationMonitor: NSObjectProtocol?
     /// 338: the wake observer, paired with the sleep one above so the warm context is refreshed
@@ -684,9 +684,8 @@ struct RootView: View {
         // #3p: the one line that says why a silent key is silent, in the status menu the
         // owner already opens, with a button to the pane that fixes it. Hidden while the
         // grant is there, and no window of its own.
-        accessibilityNoticeItem = menu.addItem(withTitle: Self.accessibilityNoticeTitle,
-                                               action: #selector(openAccessibilitySettings), keyEquivalent: "")
-        accessibilityNoticeItem?.isHidden = true
+        singleKeyGrantItem = menu.addItem(withTitle: "", action: #selector(openInputMonitoringSettings), keyEquivalent: "")
+        singleKeyGrantItem?.isHidden = true
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
@@ -718,10 +717,8 @@ struct RootView: View {
         singleKey.presenceState = { [weak presence] in presence?.state ?? .cold }
         singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
         SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
-        let tapCreated = singleKey.start()
-        model.appendPresenceReceipt(SingleKeyTrigger.stateReceipt(
-            enabled: SingleKeyTrigger.isEnabled, trusted: SingleKeyTrigger.isGranted,
-            tapCreated: tapCreated, signing: SingleKeyTrigger.signing))
+        singleKey.start()
+        syncSingleKeyGrantWatch()
         model.onShellChanged = { [weak self] in
             guard let self else { return }
             fullPageObservation.bind(model.shell)
@@ -888,19 +885,61 @@ struct RootView: View {
         loginMenuItem?.title = loginAvailability?.text ?? "Open at login: unavailable in this launch"
         loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
         loginMenuItem?.isEnabled = loginAvailability != nil
-        // #3p: the notice is only there while the key is on and the grant is missing, and
-        // a grant picked in System Settings while the app runs brings the tap up without
-        // waiting for another launch.
-        let needsGrant = SingleKeyTrigger.isEnabled && !SingleKeyTrigger.isGranted
-        accessibilityNoticeItem?.isHidden = !needsGrant
-        if !needsGrant, SingleKeyTrigger.isEnabled, !singleKey.tapCreated { singleKey.start() }
+        // #3p, #1021: the notice is only there while the key has no tap, and a grant picked
+        // in System Settings while the app runs brings the tap up on this very look.
+        refreshAccessibilityNotice()
+        recheckSingleKeyGrant()
     }
-    /// #3p: the notice's button. The Accessibility pane, opened the same way Getting
-    /// Started opens the Microphone pane.
-    @objc private func openAccessibilitySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+    /// #3p, R2: the notice's button. The owner's one explicit click asks for the Input
+    /// Monitoring grant, which puts Naya in that list by itself, and opens the pane so the
+    /// owner only flips a toggle.
+    @objc private func openInputMonitoringSettings() {
+        if !SingleKeyTrigger.currentGrants().any { SingleKeyTrigger.requestListenEventAccess() }
+        if let url = URL(string: SingleKeyTrigger.grantSettingsURL) { NSWorkspace.shared.open(url) }
+    }
+    /// #1021: the line while the key cannot work, nothing once the tap is live, and the
+    /// one-shot grant prompt never decides this.
+    private func refreshAccessibilityNotice() {
+        guard let title = SingleKeyTrigger.grantNoticeTitle(enabled: SingleKeyTrigger.isEnabled,
+                                                           tapped: singleKey.tapCreated) else {
+            singleKeyGrantItem?.isHidden = true
+            return
         }
+        singleKeyGrantItem?.title = title
+        singleKeyGrantItem?.isHidden = false
+    }
+    /// #1021: a grant can arrive without a relaunch, so the key re-checks on activation and
+    /// on a slow timer while it has no tap. Nothing here prompts; the polling stops the
+    /// moment the tap is live.
+    private func syncSingleKeyGrantWatch() {
+        let plan = SingleKeyTrigger.grantWatchPlan(enabled: SingleKeyTrigger.isEnabled,
+                                                  tapped: singleKey.tapCreated)
+        guard plan.onActivation, let interval = plan.pollInterval else { stopSingleKeyGrantWatch(); return }
+        guard singleKeyGrantTimer == nil else { return }
+        singleKeyGrantTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.recheckSingleKeyGrant() }
+        }
+        singleKeyGrantMonitor = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.recheckSingleKeyGrant() }
+        }
+    }
+    private func stopSingleKeyGrantWatch() {
+        singleKeyGrantTimer?.invalidate()
+        singleKeyGrantTimer = nil
+        if let monitor = singleKeyGrantMonitor { NotificationCenter.default.removeObserver(monitor) }
+        singleKeyGrantMonitor = nil
+    }
+    /// The tap goes in the moment the grant is there, one receipt says so, and the line that
+    /// said the key was off goes with it.
+    private func recheckSingleKeyGrant() {
+        let wasTapped = singleKey.tapCreated
+        singleKey.start()
+        refreshAccessibilityNotice()
+        guard singleKey.tapCreated != wasTapped else { return }
+        singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
+        pushSingleKeyState()
+        syncSingleKeyGrantWatch()
     }
     @objc func startLiveFromMenu() { menuBridge.start() }
     @objc func muteLiveFromMenu() { summonActions.mute() }
@@ -922,6 +961,9 @@ struct RootView: View {
             var rows = NativeGettingStartedItems.rows(microphone: model.voice.microphone.rawValue,
                 notifications: model.notificationStatus.rawValue, login: login,
                 connections: model.connections.map { ($0.id, $0.state, $0.reasonCode) })
+            let keyStep = NativeNextSteps.singleKeyStep(enabled: SingleKeyTrigger.isEnabled, tapped: singleKey.tapCreated)
+            rows.append(NativeGettingStartedItem(title: "Right Command", detail: keyStep.text, command: nil,
+                                                guideURL: keyStep.guideURL))
             if model.connectionsError != nil {
                 rows.append(NativeGettingStartedItem(title: "Connections unavailable",
                     detail: "Refresh status after the service is ready; use Copy diagnostics if it still fails.", command: nil))
@@ -994,6 +1036,8 @@ struct RootView: View {
             singleKey.stop()
         }
         singleKeyMenuItem?.state = enabled ? .on : .off
+        refreshAccessibilityNotice()
+        syncSingleKeyGrantWatch()
         pushSingleKeyState()
     }
     /// The settings view reads this at render time: the app owns the state and the
@@ -1008,7 +1052,8 @@ struct RootView: View {
     private func pushPresenceState() {
         let surface = PresenceSurfaceState.shown(presence.posture)
         model.bridge.sendJS?("window.didiPresence={\"alwaysShow\":\(presence.alwaysShow),"
-            + "\"state\":\"\(presence.state.rawValue)\"," + "\"error\":\(surface.error)}")
+            + "\"state\":\"\(presence.state.rawValue)\"," + "\"error\":\(surface.error),"
+            + "\"muted\":\(presence.mutedHeld)}")
     }
     /// Presence surfaces: the orb is there in every state, grey while Naya is silent, and
     /// the notch pill is the live-only privacy indicator. Nothing here takes focus.
@@ -1020,6 +1065,7 @@ struct RootView: View {
         if !surface.visible, coordinator.mode != .full { coordinator.hideAll() }
         else { coordinator.requestPresence() }
         miniPanel?.alphaValue = 1
+        miniPanel?.applyMuted(presence.mutedHeld)
         pushPresenceState()
         schedulePresenceGrace()
     }
@@ -1064,10 +1110,7 @@ struct RootView: View {
 
     private func presenceTransitioned(_ state: NativeLiveConversation.State) {
         switch state {
-        case .listening:
-            presence.ready()
-            // Q2: back to listening after speaking is the answer a hold release waits for.
-            presence.answerCompleted()
+        case .listening: presence.ready()
         case .speaking:
             presence.ready()
         case .failed: presence.fail()
@@ -1132,6 +1175,7 @@ struct RootView: View {
                     if miniPanel == nil {
                         miniPanel = MiniOrbPanel(web: mini.webView, onStep: { [weak self] step in self?.applyPresenceStep(step) },
                             onExpand: { [weak self] in self?.miniOrb.openFullInterface() })
+                        miniPanel?.applyMuted(presence.mutedHeld)
                     }
                     miniPanel?.onVisibilityChanged = { [weak self] in self?.syncPresentedSurface() }
                     miniPanel?.contentView?.layoutSubtreeIfNeeded()

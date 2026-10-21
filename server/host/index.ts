@@ -1,7 +1,6 @@
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { defaultDataDir, pairLocal, startHost, type HostConfig } from './runtime.js';
+import { defaultDataDir, openInDefaultBrowser, pairLocal, startHost, type HostConfig } from './runtime.js';
 import { supervise } from './supervision.js';
 import { ServiceError } from '../contracts/errors.js';
 import { MongooseLoginError, runMongooseLogin, type MongooseLoginCode } from './mongoose-login.js';
@@ -116,11 +115,8 @@ async function runOwnerLogin(config: HostConfig, noBrowser: boolean): Promise<vo
   }
   process.stdout.write('Mongoose sign-in complete. Restart Lux Didi to use it.\n');
 }
+}
 
-function openInDefaultBrowser(url: string): void {
-  spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
-}
-}
 // Node 26 main-module identity handles symlink spellings and stays false on import.
 // https://nodejs.org/api/esm.html#importmetamain
 if (import.meta.main) {

@@ -25,6 +25,8 @@ struct PresencePosture: Equatable {
     let state: PresenceState
     let alwaysShow: Bool
     let failed: Bool
+    /// The owner muted Naya and has not tapped again: purple, whatever the session does.
+    let muted: Bool
 }
 
 /// The effects the machine drives. Every one is injected, so the transition test
@@ -49,13 +51,6 @@ struct PresenceEffects {
 final class NativePresence {
     /// The named constant of the design: five minutes of hot-muted grace, then COLD.
     static let hotMutedGrace: TimeInterval = 300
-    /// Q2, owner order 2026-10-18: a hold's own grace. The release of a push-to-talk hold
-    /// closes the capture fence while the answer already in flight may finish, so the
-    /// session ends when that answer completes or after this many seconds of silence.
-    static let holdReleaseGrace: TimeInterval = 30
-
-    /// Why the capture fence is closed: the owner's mute, or the release of a hold.
-    enum HotMuteKind: Equatable { case userMute, holdRelease }
 
     private let now: () -> TimeInterval
     private let effects: PresenceEffects
@@ -67,12 +62,9 @@ final class NativePresence {
     private(set) var failed = false
     /// The trigger that opened CONNECTING, so the readiness receipt names the tap.
     private var connectingTrigger: PresenceTrigger?
-    /// Why the fence is closed, which decides the grace that ends the session.
-    private(set) var hotMuteKind: HotMuteKind?
-    /// A hold is down and the mic is open while it is.
-    private(set) var holding = false
-    /// The state the hold started from, so its release restores what it interrupted.
-    private var holdOrigin: PresenceState?
+    /// The owner muted her, and that outlives the session: the 5 minute grace may drop to
+    /// cold, but the surface stays muted until the next tap or an explicit stop.
+    private(set) var mutedHeld = false
 
     init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          effects: PresenceEffects = PresenceEffects()) {
@@ -84,12 +76,14 @@ final class NativePresence {
     /// nothing else, and the test advances the injected clock instead.
     var dropDeadline: TimeInterval? {
         guard state == .hotMuted, let mutedAt else { return nil }
-        let grace = hotMuteKind == .holdRelease ? Self.holdReleaseGrace : Self.hotMutedGrace
-        return mutedAt + grace
+        return mutedAt + Self.hotMutedGrace
     }
 
-    /// What the surfaces render now.
-    var posture: PresencePosture { PresencePosture(state: state, alwaysShow: alwaysShow, failed: failed) }
+    /// What the surfaces render now. `muted` is the owner's own mute, which stays purple
+    /// after the session's grace drops it to cold.
+    var posture: PresencePosture {
+        PresencePosture(state: state, alwaysShow: alwaysShow, failed: failed, muted: mutedHeld)
+    }
 
     func start(_ trigger: PresenceTrigger) {
         guard state == .cold else { return }
@@ -97,16 +91,19 @@ final class NativePresence {
     }
 
     func stop(_ trigger: PresenceTrigger) {
-        guard state != .cold else { return }
+        if state == .cold {
+            guard mutedHeld else { return }
+            mutedHeld = false
+            effects.surface(posture)
+            return
+        }
+        mutedHeld = false
         if state == .connecting { cancelConnecting(trigger) } else { teardown(trigger) }
     }
 
     func sessionEnded() {
         guard state != .cold else { return }
         connectingTrigger = nil
-        holding = false
-        holdOrigin = nil
-        hotMuteKind = nil
         mutedAt = nil
         move(to: .cold, trigger: .app)
     }
@@ -132,93 +129,70 @@ final class NativePresence {
         move(to: .live, trigger: trigger)
     }
 
-    /// Q2, owner order 2026-10-18: a Right Command tap starts Naya when idle and STOPS it
-    /// when it is live, connecting or muted, through the same teardown the Stop button
-    /// takes. The mute stays on the UI controls; it is no longer what the key does, so a
-    /// tap never leaves the 5 minute grace behind.
+    /// The bare Right Command tap is the owner's one toggle (revised 2026-10-21): cold
+    /// starts her, live mutes her, muted lets her listen again. A held key and a chord are
+    /// not a toggle and do nothing. The mute outlives the session's grace, so a tap on a
+    /// muted machine that already dropped to cold reconnects with the mic opening at
+    /// `ready()`, and the owner sees the muted purple until that tap.
     func tap(_ trigger: PresenceTrigger) {
+        if mutedHeld {
+            mutedHeld = false
+            switch state {
+            case .hotMuted: unmute(trigger)
+            case .cold: connect(trigger)
+            case .connecting, .live: effects.surface(posture)
+            }
+            return
+        }
         switch state {
         case .cold: connect(trigger)
         case .connecting: cancelConnecting(trigger)
-        case .live, .hotMuted: teardown(trigger)
+        case .live: mute(trigger)
+        case .hotMuted: unmute(trigger)
         }
     }
 
-    /// The app's explicit mute: LIVE goes hot-muted, anything else is a no-op.
+    /// The owner's mute (R4): the fence closes, queued speech goes, and the provider session
+    /// ends at once, so nothing is sent while she waits. The mute itself is what stays: purple
+    /// until the next tap, however long, and the next tap reconnects and opens the mic.
     func mute(_ trigger: PresenceTrigger) {
         guard state == .live else { return }
         // The fence closes before the state says muted, so no frame outlives the receipt.
         effects.setCaptureMuted(true)
-        hotMuteKind = .userMute
+        mutedHeld = true
         move(to: .hotMuted, trigger: trigger)
         mutedAt = now()
         effects.cancelPlayback()
         effects.providerInputMute(true)
+        connectingTrigger = nil
+        effects.closeSession()
     }
 
     /// The app's explicit unmute: instant, the session was never closed.
     func unmute(_ trigger: PresenceTrigger) {
         guard state == .hotMuted else { return }
         mutedAt = nil
-        hotMuteKind = nil
+        mutedHeld = false
         effects.setCaptureMuted(false)
         move(to: .live, trigger: trigger)
         effects.providerInputMute(false)
     }
 
-    /// Q2: the Right Command press reached the hold threshold. The mic is open while the
-    /// key is held: a cold or connecting machine opens the session, a muted one opens the
-    /// fence again, and a live one keeps what it has.
-    func holdStarted(_ trigger: PresenceTrigger) {
-        guard !holding else { return }
-        holding = true
-        holdOrigin = state
-        switch state {
-        case .cold: connect(trigger)
-        case .connecting: break
-        case .live: break
-        case .hotMuted: unmute(trigger)
-        }
-    }
-
-    /// Q2: the hold was released. Held from cold, the fence closes while the answer may
-    /// finish and the session ends then or after `holdReleaseGrace`; held while live, the
-    /// mic never closed and nothing changes; held over a mute, the mute comes back.
-    func holdEnded(_ trigger: PresenceTrigger) {
-        guard holding else { return }
-        holding = false
-        let origin = holdOrigin ?? .cold
-        holdOrigin = nil
-        switch origin {
-        case .live: return
-        case .hotMuted:
-            // The unmute opened the fence; the owner's mute goes back on, grace and all.
-            mute(trigger)
-        case .cold, .connecting:
-            switch state {
-            case .connecting: cancelConnecting(trigger)
-            case .live, .hotMuted: closeFenceForAnswer(trigger)
-            case .cold: break
-            }
-        }
-    }
-
-    /// Q2: the answer a hold release left in flight finished, so nothing is left to wait
-    /// for and the session ends now. A mute the owner asked for is untouched.
-    func answerCompleted() {
-        guard state == .hotMuted, hotMuteKind == .holdRelease else { return }
-        teardown(.app)
-    }
-
-    /// The grace timer. A tick before the deadline changes nothing.
+    /// The grace timer. R4 ends the provider session at the mute itself, so a muted tick has
+    /// nothing left to end; any other hot-muted state (an app mute the key did not make) still
+    /// drops the session here.
     func tick() {
         guard let deadline = dropDeadline, now() >= deadline else { return }
+        if mutedHeld { mutedAt = nil; return }
         teardown(.timer)
     }
 
-    /// `NSWorkspace.willSleepNotification`: the session goes now and never reconnects on wake.
+    /// `NSWorkspace.willSleepNotification`: the session goes now and never reconnects on wake,
+    /// and a mute ends with it, because COLD is what the orb shows after sleep.
     func sleep() {
-        guard state != .cold else { return }
+        guard state != .cold || mutedHeld else { return }
+        mutedHeld = false
+        guard state != .cold else { effects.surface(posture); return }
         teardown(.sleep)
     }
 
@@ -265,21 +239,9 @@ final class NativePresence {
     private func teardown(_ trigger: PresenceTrigger) {
         if state != .connecting { effects.setCaptureMuted(true) }
         connectingTrigger = nil
-        holding = false
-        holdOrigin = nil
-        hotMuteKind = nil
         move(to: .cold, trigger: trigger)
         mutedAt = nil
         effects.closeSession()
-    }
-
-    /// A hold's release: nothing new is captured, while the answer already in flight may
-    /// finish. The session goes when that answer completes or the hold's own grace runs out.
-    private func closeFenceForAnswer(_ trigger: PresenceTrigger) {
-        effects.setCaptureMuted(true)
-        hotMuteKind = .holdRelease
-        move(to: .hotMuted, trigger: trigger)
-        mutedAt = now()
     }
 
     private func move(to next: PresenceState, trigger: PresenceTrigger) {

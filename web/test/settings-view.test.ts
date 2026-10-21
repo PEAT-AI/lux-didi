@@ -64,6 +64,20 @@ test('maps each connector state to its sentence and one-line next step', () => {
   for (const label of ['Connected', 'Configured', 'Credential missing', 'Failed']) assert.match(html, new RegExp(label));
 });
 
+test('the Mongoose consent button appears on its row only while Mongoose needs a sign-in', () => {
+  const signedOut = [{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }];
+  const html = settingsMarkup({ status, connections: signedOut });
+  assert.match(html, /Sign-in needed/);
+  assert.match(html, /<button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose<\/button>/);
+  const healthy = settingsMarkup({ status, connections: [{ id: 'mongoose', state: 'connected', tools: 3, lastHandshakeAt: '2026-10-12T14:52:00Z', reasonCode: null }] });
+  assert.doesNotMatch(healthy, /id="mongoose-signin"/, 'a connected connector offers no sign-in');
+  const otherFailure = settingsMarkup({ status, connections: [{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'unreachable' }] });
+  assert.doesNotMatch(otherFailure, /id="mongoose-signin"/, 'only a sign-in reason offers the button');
+  const otherConnector = settingsMarkup({ status, connections: [{ id: 'gmail', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }] });
+  assert.doesNotMatch(otherConnector, /id="mongoose-signin"/, 'the button never points a non-Mongoose row at a Mongoose sign-in');
+  assert.doesNotMatch(otherConnector, /Sign in to Mongoose/, 'and the row keeps its own wording');
+});
+
 test('renders limits in whole minutes and rejects unsafe values', () => {
   assert.equal(limitMinutes(900000), '15 min');
   assert.equal(limitMinutes(60000), '1 min');

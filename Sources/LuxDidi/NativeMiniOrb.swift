@@ -71,6 +71,7 @@ final class MiniOrbToggle {
 
     func toggle() { isVisible ? hide() : show() }
 
+
     func presentationCommitted(visible: Bool) { isVisible = visible }
 
     /// The chord: show the orb and start Live when it is not already running. The chord, an
@@ -154,10 +155,12 @@ enum MiniOrbFrameRestore {
     static let size = CGSize(width: 220, height: 220)
     /// The gap between the menu bar and the top of the pill.
     static let topMargin: CGFloat = 6
-    /// The default: top-center, just below the menu bar.
+    /// The gap between the orb's right edge and the screen's, so it sits under the clock.
+    static let rightMargin: CGFloat = 24
+    /// The default: top right, just below the menu bar clock (owner spec 2026-10-21).
     static func defaultFrame(in visible: CGRect) -> CGRect {
         let width = min(size.width, visible.width), height = min(size.height, visible.height)
-        return clamp(CGRect(x: visible.midX - width / 2, y: visible.maxY - height - topMargin,
+        return clamp(CGRect(x: visible.maxX - width - rightMargin, y: visible.maxY - height - topMargin,
                             width: width, height: height), into: visible)
     }
 
@@ -209,6 +212,12 @@ enum PresenceStep: String, Equatable {
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
+    /// #1021: the owner's mute outlives the session, so the mini page is told the fact directly
+    /// instead of reading it off a live state that is already gone.
+    func applyMuted(_ muted: Bool) {
+        webView.evaluateJavaScript("window.didiPresence=Object.assign(window.didiPresence||{},{muted:\(muted)});"
+            + "window.didiPresenceChanged&&window.didiPresenceChanged()", completionHandler: nil)
+    }
     var onVisibilityChanged: (() -> Void)?
     private let frameKey: String
     private let overlay: MiniOrbHitView

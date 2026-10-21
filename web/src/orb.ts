@@ -4,7 +4,7 @@
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU } from './orb-classic.ts';
 import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
 import { OrbInkSurface } from './orb-ink.ts';
-import { orbVisualOf, registerOrbRenderer } from './orb-states.ts';
+import { ORB_VISUALS, orbVisualOf, presenceMuted, registerOrbRenderer } from './orb-states.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export type { AudioFrame } from './orb-level.ts';
 export { LatestFrame, silentFrame } from './orb-level.ts';
@@ -108,7 +108,10 @@ export class Orb {
     this.lastTime=time;
     const frame=this.audio.read(time);
     const visual=orbVisualOf(this.canvas);
-    const active=visual?.posture??posture(this.state,frame);
+    // #1021: the owner's mute outlives the session, so the full orb is purple while she waits,
+    // even with no live state at all. The pill publishes its own visual, so this only fills the gap.
+    const muted=visual===undefined && presenceMuted();
+    const active=muted?ORB_VISUALS['hot-muted'].posture:visual?.posture??posture(this.state,frame);
     const mid=Math.min(1,Math.max(0,frame.mid));
     this.mid+=(mid-this.mid)*smoothingAlpha(dt,mid>this.mid?ORB_SMOOTHING_TAU.midAttack:ORB_SMOOTHING_TAU.midDecay);
     const high=Math.min(1,Math.max(0,frame.high));
@@ -121,7 +124,7 @@ export class Orb {
     ctx.clearRect(0,0,s,s);
     const zoom=ORB_PRESENCE.heroScale*m.scale;
     ctx.save();ctx.translate(c,c);ctx.rotate(m.swirl);ctx.scale(zoom,zoom);ctx.translate(-c,-c);
-    const hueTarget=visual?.hue??(this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174);
+    const hueTarget=muted?ORB_VISUALS['hot-muted'].hue:visual?.hue??(this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174);
     this.hue=this.hue===undefined||still||visual?.hue!==undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.14);
     // The pill's machine has already eased these, so they are drawn as given.
     const activity=m.activity*(visual?.amplitude??1), glow=visual?.glow??m.glow;

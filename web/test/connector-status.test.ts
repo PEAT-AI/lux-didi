@@ -18,6 +18,13 @@ test('connections renders all states using only allowlisted fields and fixed rea
   assert.doesNotMatch(html, /PRIVATE|secret.invalid|token=|PRIVATE CONFIG/);
 });
 
+test('a mongoose sign-in need names the Settings button, never a restart', () => {
+  const html = connectionsMarkup([{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }]);
+  assert.match(html, /Sign-in needed\./);
+  assert.match(html, /Settings/);
+  assert.doesNotMatch(html, /restart/i);
+});
+
 test('unknown reason and invalid scalar payloads never render free text', () => {
   const html = connectionsMarkup([{ id: 'safe', state: 'error', tools: 'TOKEN', lastHandshakeAt: 'SECRET', reasonCode: 'RAW SECRET' }]);
   assert.doesNotMatch(html, /TOKEN|SECRET/);

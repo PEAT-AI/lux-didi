@@ -26,3 +26,18 @@ test('the mongoose row is the one sign-in action, and it names no pasted token',
   assert.doesNotMatch(step.text, /token|bearer|credential file/i);
   for (const reason of reasonCodes) assert.equal(nextStep('mongoose', 'error', reason).command, reason === 'credential_missing' ? 'mongoose-login' : undefined);
 });
+
+test('a Mongoose sign-in need points at the Settings button and never at a restart', () => {
+  const step = nextStep('mongoose', 'error', 'needs_sign_in');
+  assert.match(step.text, /Sign in to Mongoose in Settings/);
+  assert.match(step.text, /reconnects by itself/);
+  assert.doesNotMatch(step.text, /restart|token|bearer/i);
+  assert.equal(step.command, undefined, 'the Settings button runs the login, not a copyable command');
+});
+
+test('the sign-in row belongs to Mongoose alone, so no other connector borrows it', () => {
+  for (const id of ['lux-knowledge', 'gmail', 'calendar', 'mattermost']) {
+    const step = nextStep(id, 'error', 'needs_sign_in');
+    assert.doesNotMatch(step.text, /Mongoose|Settings/, `${id} keeps its own behaviour`);
+  }
+});

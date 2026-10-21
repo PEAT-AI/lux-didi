@@ -1,6 +1,6 @@
 /** The transparent floating orb reuses the canonical renderer at 220 CSS pixels. */
 import type { VoiceState } from './orb.ts';
-import { createOrbStateMachine, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
+import { createOrbStateMachine, presenceMuted, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
 import type { LiveActivity } from './live-view.ts';
 
 export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted' | 'connecting' | 'tool' | 'error';
@@ -9,6 +9,12 @@ export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted'
  * handler and the same compiled assets serve it unchanged. */
 export function isMiniRoute(search: string): boolean {
   return new URLSearchParams(search).get('view') === 'mini';
+}
+
+/** #1021: muted is the owner's word, and it outlives the session (the provider is closed at the
+ *  mute), so the pill is purple for the live mute and for the native push alike. */
+export function pillMuted(liveMuted: boolean, presence: unknown = (globalThis as { didiPresence?: unknown }).didiPresence): boolean {
+  return liveMuted || presenceMuted(presence);
 }
 
 /** The one glance state for the pill: listening, thinking, speaking, muted,

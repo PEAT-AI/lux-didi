@@ -94,7 +94,7 @@ export function limitMinutes(value: unknown): string | undefined {
 }
 
 /** Whitelist one connection row: id, state and reasonCode, mapped to a fixed state name and next step. */
-export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string } | undefined {
+export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string; signIn?: boolean } | undefined {
   const row = record(value);
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
@@ -105,9 +105,9 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   if (state === 'connected') return withIdentity({ id, state: 'Connected', next: nextStep(id, state).text });
   if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
-  const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : 'Failed';
+  const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
   const step = nextStep(id, state, reason);
-  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}) };
+  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(reason === 'needs_sign_in' ? { signIn: true } : {}) };
 }
 
 function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
@@ -166,7 +166,7 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
   const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signIn && row.id === 'mongoose' ? ' <button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose</button>' : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {
@@ -258,19 +258,21 @@ export function singleKeyRow(state: SingleKeyState): string {
  * Naya" is the only switch over it. The app owns the state and pushes it as
  * `window.didiPresence`; a preview or a test reads the default (on).
  */
-export interface PresenceState { alwaysShow: boolean; listening: boolean }
+export interface PresenceState { alwaysShow: boolean; listening: boolean; muted: boolean }
 
 export function presenceState(source: unknown = (globalThis as { didiPresence?: unknown }).didiPresence): PresenceState {
   const row = record(source);
-  return { alwaysShow: row?.alwaysShow !== false, listening: row?.state === 'live' };
+  return { alwaysShow: row?.alwaysShow !== false, listening: row?.state === 'live', muted: row?.muted === true };
 }
 
 export function presenceRow(state: PresenceState): string {
   const why = !state.alwaysShow
     ? 'Off. Turn it back on in the Naya menu bar menu.'
-    : state.listening
-      ? 'On, and Naya is listening now: a Right Command tap mutes her.'
-      : 'On. Naya is there in the orb, quiet until a Right Command tap.';
+    : state.muted
+      ? 'On, and she is muted: the orb is purple and she waits until you tap Right Command again.'
+      : state.listening
+        ? 'On, and Naya is listening now: a Right Command tap mutes her.'
+        : 'On. Naya is there in the orb, quiet until a Right Command tap.';
   return `<p><strong>Always show Naya</strong> ${escapeHtml(state.alwaysShow ? 'on' : 'off')}. ${escapeHtml(why)}</p>`;
 
 }

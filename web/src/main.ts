@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySum
 import { ConnectedView } from './connected';
 import { Orb, orbSurfaceVisible, type VoiceState } from './orb';
 import { createStateDebounce } from './orb-states';
-import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
+import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive, startMongooseSignIn } from './api';
 import { activityMarkup, connectingBeforeFirstSpeech, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
@@ -13,7 +13,7 @@ import { connectionsMarkup } from './connector-status';
 import { micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
-import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, refreshMiniVisuals, type MiniState } from './mini';
+import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, pillMuted, refreshMiniVisuals, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -314,7 +314,7 @@ function miniCaptionMarkup(): string {
 function paintMiniStage() {
   const stage = document.querySelector('.mini-stage');
   if (!stage) return;
-  const state = miniState(orbState(), liveActivity(live), live?.muted === true);
+  const state = miniState(orbState(), liveActivity(live), pillMuted(live?.muted === true));
   stage.setAttribute('data-mini-state', state);
   stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
   refreshMiniVisuals();
@@ -445,6 +445,10 @@ function bind() {
   document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
   document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
   document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
+  button('mongoose-signin',()=>void mutate(async (signal,version)=>{
+    const started=await startMongooseSignIn(signal);assertAuthority(version);
+    notice=started.status==='started'?'Sign in to Mongoose in the browser window. The connector reconnects by itself when you finish.':'Sign-in did not finish. Use the Sign in button to try again.';
+  }));
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>) {
   if(!writable())return;
@@ -718,6 +722,11 @@ Object.assign(window,{
     surfaceGeneration=generation;
     (window as unknown as {didiNativeSurfaceVisible:boolean}).didiNativeSurfaceVisible=visible;
     window.dispatchEvent(new Event('didi-surface-visibility'));
+  },
+  /** #1021: the app pushes the owner's mute as a plain assignment; this asks for the repaint a
+   *  data attribute cannot do by itself, so the pill goes purple at the mute and back at the tap. */
+  didiPresenceChanged(){
+    if(miniRoute||document.querySelector('.mini-stage')){paintMiniStage();refreshMiniVisuals();}
   },
   didiPrepareSurface(generation:number){
     if(!Number.isSafeInteger(generation)||generation<surfaceGeneration)return{generation,painted:false};

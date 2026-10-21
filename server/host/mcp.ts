@@ -1,6 +1,6 @@
 import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
-import { McpRegistry } from '../adapters/mcp/registry.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
@@ -188,6 +188,8 @@ export async function composeMcpRuntime(options: {
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
   const generations = new Map<string, number>();
+  // The per-tool digest of each endpoint's readable names as of its last approved round.
+  const approvedSchemas = new Map<string, Map<string, string>>();
   let closed = false;
   // W9: exactly one closed connector_failure line per endpoint that did not connect at host start,
   // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
@@ -245,9 +247,18 @@ export async function composeMcpRuntime(options: {
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
 
   const eligible = new Map<string, { session: number; revision: number }>();
-  // Endpoints parked at `not_signed_in`: a login writes the credential, and the next recover()
-  // connects them, so the owner never restarts the host to finish a sign-in (R9).
-  const needsSignIn = new Set<string>();
+  // Endpoints parked on a sign-in reason: a login rewrites the credential, and the next recover()
+  // connects them, so the owner never restarts the host to finish a sign-in (R9). The parked value is
+  // a digest of the stored credential at park time, so a dead record is never re-probed and a fresh
+  // sign-in always is, whichever shape the endpoint stores (OAuth record or pasted bearer).
+  const needsSignIn = new Map<string, string>();
+  const storedCredentialDigest = (reference: string): string => {
+    let pasted = '';
+    try { pasted = readMcpCredential(configDir, reference); } catch { pasted = ''; }
+    return sha256(`${readMongooseOAuth(configDir, reference)?.refreshToken ?? ''}\u0000${pasted}`);
+  };
+  // Every credential-stage reason only a new sign-in fixes. A busy refresh is not one of them.
+  const signInReasons = new Set(['not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
   const bursts = new Map<string, { session: number; token: number | undefined }>();
   const flights = new Map<string, Promise<void>>();
   const recoverEndpoint = (id: string): Promise<void> => {
@@ -308,8 +319,9 @@ export async function composeMcpRuntime(options: {
     }
   };
 
-  const identityOnce = identityProofMemo();
-  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh'): Promise<{ retryable: boolean }> => {
+  // One proof per endpoint per connect round: an in-flight probe is shared, a settled one is not, so a
+  // refresh verifies the account again instead of inheriting the boot-time proof.
+  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
@@ -326,7 +338,7 @@ export async function composeMcpRuntime(options: {
       // no failing probe is logged at every launch: one typed status, and the next connect after a
       // login (the app refreshes the connector then) probes it for real.
       if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
-        needsSignIn.add(entry.id);
+        needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reportFailure(entry, 'credential', attempt, 'not_signed_in');
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
         return { retryable: false };
@@ -341,6 +353,9 @@ export async function composeMcpRuntime(options: {
       if (discovery.state !== 'discovered') {
         const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
         reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code);
+        // A refused refresh or an expired consent parks the endpoint for the next sign-in, exactly as
+        // a missing record does, so the login reconnects it without a restart (R9).
+        if (stage === 'credential' && entry.connector === 'mongoose' && signInReasons.has(discovery.reason) && entry.credentialRef) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
         // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
         // credential or configuration error is stable and a later refresh still reconnects it.
@@ -357,6 +372,7 @@ export async function composeMcpRuntime(options: {
         return { retryable: false };
       }
       // Reconcile through the owner projection; the durable row is authoritative over local config.
+      const schemas = new Map(discovery.tools.map(tool => [tool.name, canonicalToolDigest([tool])] as const));
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
       const policy: ConnectionPolicy = {
         schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
@@ -404,9 +420,12 @@ export async function composeMcpRuntime(options: {
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
-        // Only an explicit approval mode needs a fresh owner approval for a catalog change: under
-        // owner-trusted-reads the reviewed envelope is what the owner already granted.
-        if (!trusted && (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]))) {
+        const previousSchemas = approvedSchemas.get(entry.id);
+        const readableChanged = previousSchemas !== undefined && names.some(name => previousSchemas.get(name) !== schemas.get(name));
+        // Only an explicit approval mode needs a fresh owner approval for any catalog change: under
+        // owner-trusted-reads the reviewed envelope is the approval, so only a change to the contract of
+        // a name that envelope already makes readable needs the owner again.
+        if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]) || (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest)) {
           reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
@@ -425,6 +444,7 @@ export async function composeMcpRuntime(options: {
         }
         if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
+      approvedSchemas.set(entry.id, schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;
@@ -443,7 +463,7 @@ export async function composeMcpRuntime(options: {
           // H19 with D2's strict per-endpoint source: a proof belongs to one endpoint of one account.
           // Sharing it across a mailbox and a calendar of one account made the second endpoint inherit
           // a proof of the other family's tool, so a strict source refused it (or raced the first
-          // endpoint's proof). Each endpoint proves itself once per boot.
+          // endpoint's proof). One proof per endpoint per round lives in settle's caller.
           const proofKey = `${entry.id}\u0000${policy.endpoint.account ?? ''}`;
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
@@ -510,6 +530,7 @@ export async function composeMcpRuntime(options: {
   let startPromise: Promise<void> | undefined;
   const run = async (): Promise<void> => {
     if (closed) return;
+    const identityOnce = identityProofMemo();
     await Promise.all(active.map(async entry => {
       eligible.delete(entry.id); bursts.delete(entry.id);
       const token = (generations.get(entry.id) ?? 0) + 1;
@@ -519,7 +540,7 @@ export async function composeMcpRuntime(options: {
       registry.suspend(entry.id);
       // The startup path makes one connect pass only. A first_call failure is reported and left for
       // a background retry; it must never double the five-second startup bound.
-      await settle(entry, token, 'first-connect').catch(() => { /* the per-connector report already carries the failure */ });
+      await settle(entry, token, 'first-connect', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
   const composition: McpRuntimeComposition = {
@@ -534,17 +555,19 @@ export async function composeMcpRuntime(options: {
     refresh: async () => { startPromise = undefined; await run(); },
     recover: async () => {
       // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
-      // again with a new generation, exactly as a first connect would (R9).
-      await Promise.all([...needsSignIn].map(async id => {
+      // again with a new generation, exactly as a first connect would (R9), and that connect proves the
+      // account again. Only a changed credential counts as a landing, so a dead record is never re-probed.
+      const identityOnce = identityProofMemo();
+      await Promise.all([...needsSignIn].map(async ([id, parked]) => {
         const entry = active.find(candidate => candidate.id === id);
         if (closed || entry === undefined || entry.credentialRef == null) return;
-        const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
-        if (!stored) return;
+        const landed = storedCredentialDigest(entry.credentialRef);
+        if (landed === parked) return;
         needsSignIn.delete(id);
         const token = (generations.get(id) ?? 0) + 1;
         generations.set(id, token);
         registry.suspend(id);
-        await settle(entry, token, 'refresh').catch(() => { /* the per-connector report already carries the failure */ });
+        await settle(entry, token, 'refresh', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
       }));
       await Promise.all([...eligible.keys()].map(recoverEndpoint));
     },

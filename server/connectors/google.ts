@@ -260,7 +260,20 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
    * list), read each calendar in bounded parallel, and return one result sorted by start with a shared
    * event deduplicated by id and each event tagged with its calendar name.
    */
+  /**
+   * R5/R6: the helper gained an `include` projection for attendees and organizer, and an older helper refuses any
+   * argument it does not declare. So the field is sent only when the accepted schema advertises it.
+   */
+  function includeArgs(): Record<string, unknown> {
+    try {
+      const definition = registry.visibleTools(settings.endpointId).find(entry => entry.name === 'calendar_list_events');
+      const properties = (definition?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+      return properties !== undefined && properties['include'] !== undefined ? { include: ['attendees', 'organizer'] } : {};
+    } catch { return {}; }
+  }
+
   async function gcalWindow(baseArgs: Record<string, unknown>, explicit: readonly string[] | undefined, signal?: AbortSignal, deadlineAt?: number): Promise<GoogleResult> {
+    baseArgs = { ...baseArgs, ...includeArgs() };
     // The merged read is one serialized remote call per visible calendar, so it carries a wall-clock
     // budget of its own: a read that runs until the caller aborts loses its whole result to the result
     // gate, so it stops short and reports the calendars it did not reach as unread. A caller that names

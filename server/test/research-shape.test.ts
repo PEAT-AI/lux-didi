@@ -7,6 +7,9 @@ import {
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { safeEvent } from '../host/log.js';
 
+// The web candidate's own suite rides with the research suite, so one run covers the candidate set.
+import './research-web.test.js';
+
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -34,7 +37,7 @@ test('SELECTOR_SYSTEM teaches the per-source query syntax', () => {
   assert.match(SELECTOR_SYSTEM, /in:inbox/);
   assert.match(SELECTOR_SYSTEM, /newer_than/);
   assert.match(SELECTOR_SYSTEM, /after:YYYY-MM-DD/);
-  assert.match(SELECTOR_SYSTEM, /3 to 8 content keywords/);
+  assert.match(SELECTOR_SYSTEM, /3 to 5 content keywords/);
   assert.match(SELECTOR_SYSTEM, /window/);
 });
 
@@ -198,7 +201,8 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? knowledge : mail, true, call.key)),
     emit: () => undefined, log: () => undefined, ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  // #1021: a content-free question no longer searches knowledge, so the packing test asks a real one.
+  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string; text: string }[];
   assert.ok(JSON.stringify(reply).length <= 3_000, `reply was ${JSON.stringify(reply).length}`);
   assert.equal(findings.length, 2, 'at least one line per source with hits');
@@ -259,7 +263,8 @@ test('extractInsightIds reads the shaped, raw and real knowledge id forms', () =
 
 test('shapeBlock shapes the real knowledge item form too', () => {
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', '**#90082** [BUG_GOTCHA] a title\n  an excerpt line\n  Score: 0.2\n## #4 [pattern]\nother body')]);
-  assert.equal(block.lines[0], '#90082 [BUG_GOTCHA] a title | an excerpt line Score: 0.2');
+  // #1021 K7: the per-hit `Score:` line names two incomparable scales, so the shape never carries it.
+  assert.equal(block.lines[0], '#90082 [BUG_GOTCHA] a title | an excerpt line');
   assert.equal(block.lines[1], '#4 [pattern] | other body');
 });
 
@@ -298,8 +303,42 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '### Title (PATTERN) [id 1]\nbody', true, call.key)),
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.deepEqual(logs[0]!['unchecked'], ['calendar', 'mail', 'chat']);
   assert.equal(typeof logs[0]!['canContinue'], 'boolean');
   assert.ok(Array.isArray(logs[0]!['findingChars']));
+});
+
+test('E8/U2: a 31-event week comes back whole, one line per day, never cut at twelve', () => {
+  const lines = Array.from({ length: 31 }, (_, n) => {
+    const day = String(25 + Math.floor(n / 6)).padStart(2, '0');
+    return `- 2026-10-${day}T10:00:00Z, Synthetic week event ${n} [id w${n}]`;
+  });
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');
+  assert.match(block.text, /^calendar: 31 of 31 shown/u);
+  for (const n of [0, 12, 30]) assert.match(block.text, new RegExp(`Synthetic week event ${n}\\b`, 'u'));
+  assert.equal(block.lines.length, 6, 'one line per day of the window');
+  assert.doesNotMatch(block.text, /left out/u);
+});
+
+test('CALM-R11: a connector line with a location keeps its title, the calendar is never its stand-in', () => {
+  const line = '- 2026-10-16T09:00:00+05:30, Standup, Room 1 | Primary [id e1]';
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', line)], 'Asia/Kolkata');
+  assert.match(block.text, /09:00 Standup, Room 1/u, 'the title and the place ride the day line');
+  assert.doesNotMatch(block.text, /Primary/u, 'the calendar name never stands in for the title');
+  assert.deepEqual(block.lines, ['- Fri 16 Oct: 09:00 Standup, Room 1']);
+});
+
+test('CALM-R11: an event with no location and a calendar still keeps its title', () => {
+  const line = '- 2026-10-16T09:00:00+05:30, Standup | Primary [id e1]';
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', line)], 'Asia/Kolkata');
+  assert.deepEqual(block.lines, ['- Fri 16 Oct: 09:00 Standup'], 'a bare title survives the pipe segment');
+  assert.doesNotMatch(block.text, /Primary/u);
+});
+
+test('E8/U2: a trimmed calendar block says how many events it left out', () => {
+  const lines = Array.from({ length: 40 }, (_, n) => `- 2026-10-25T10:${String(n % 60).padStart(2, '0')}:00Z, Synthetic long week event ${n} with a title that fills the block ${'x'.repeat(120)} [id t${n}]`);
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');
+  assert.match(block.text, /I left out \d+ calendar events to keep this answer short\./u);
+  assert.ok(block.total > block.lines.length || /left out/u.test(block.text));
 });

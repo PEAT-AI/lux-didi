@@ -22,6 +22,8 @@ import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime } from './mcp.js';
+import { spawn } from 'node:child_process';
+import { MongooseLoginError, runMongooseLogin } from './mongoose-login.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -34,6 +36,14 @@ export const hostMigrations = [...domainMigrations, ...chatMigrations, ...liveMi
 
 /** Structural match for W-B's LiveToolsComposition; kept local and additive until its signature lands. */
 export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>;
+
+/** One owner click runs the same sign-in the CLI flag runs, and the connector reconnects when it lands. */
+export type MongooseSignIn = () => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>;
+
+/** Opens the owner's default browser; the web view never opens one by itself. */
+export function openInDefaultBrowser(url: string): void {
+  spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+}
 export interface LiveToolsComposition {
   recover?(): Promise<void>;
   owner: ToolsOwner;
@@ -43,6 +53,37 @@ export interface LiveToolsComposition {
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** 339, 1015: today's calendar digest for the warm context; absent leaves the slot out. */
   calendarDigest?: CalendarDigestOwner;
+}
+
+/**
+ * The one click path: resolve the configured mongoose endpoint, run the same login the CLI flag runs, and
+ * reconnect the connector once the record lands. Every failure is a closed code, never free text.
+ */
+export function createMongooseSignIn(options: { configDir: string; recover: () => Promise<void>; open?: (url: string) => void }): MongooseSignIn {
+  const open = options.open ?? openInDefaultBrowser;
+  let pending: Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> | undefined;
+  return () => {
+    if (pending) return pending;
+    const selection = loadMcpEndpoints({ configDir: options.configDir });
+    const entry = selection.state === 'configured'
+      ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
+      : undefined;
+    if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    let release: (value: { status: 'started'; url: string } | { status: 'failed'; reason: string }) => void = () => {};
+    let failure: string | undefined;
+    const first = new Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>(resolve => { release = resolve; });
+    pending = first;
+    void runMongooseLogin({ configDir: options.configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account,
+      showAuthorizationUrl: (url: string) => { open(url); release({ status: 'started', url }); } })
+      .then(() => options.recover())
+      .catch((error: unknown) => { failure = error instanceof MongooseLoginError ? error.code : 'sign-in-did-not-finish'; })
+      .finally(() => {
+        pending = undefined;
+        // Only a login that never reached the browser settles here unanswered, and it settles named.
+        release({ status: 'failed', reason: failure ?? 'sign-in-did-not-finish' });
+      });
+    return first;
+  };
 }
 
 export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean; supervised?: boolean }
@@ -340,7 +381,7 @@ export async function startHost(config: HostConfig) {
       return attachment;
     };
     startupStage = 'listen';
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover() }), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

@@ -25,13 +25,13 @@ cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/sour
 cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
-cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts "$out/source/tools/"
+cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 cp server/host/log.ts "$out/source/host/"
 cp server/http/routes.ts "$out/source/http/"
 cp server/config/files.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"
-cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts server/test/research-routed.test.ts server/test/research-calendar.test.ts "$out/source/test/"
+cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts server/test/research-web.test.ts server/test/research-routed.test.ts server/test/research-calendar.test.ts "$out/source/test/"
 # W11-R1: server/test/research-mail-query.test.ts lands from fix/w11-mail-queries-1021; stage it
 # whenever this tree carries it, so this check is green on either side of that merge.
 [[ -f server/test/research-mail-query.test.ts ]] && cp server/test/research-mail-query.test.ts "$out/source/test/"
@@ -44,7 +44,7 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/adapters/model/*.ts "$out"/source/prompt/*.ts "$out"/source/tools/*.ts "$out"/source/test/*.ts
 test -f "$out/dist/test/prompt.test.js" # fresh mktemp output; no stale dist accepted
-tests=("$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-routed.test.js" "$out/dist/test/research-shape.test.js")
+tests=("$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-web.test.js" "$out/dist/test/research-routed.test.js" "$out/dist/test/research-shape.test.js")
 # W11-R1: server/test/research-mail-query.test.ts lands from fix/w11-mail-queries-1021; stage and run
 # it here whenever this tree carries it, so this check is green on either side of that merge.
 if [[ -f "$out/source/test/research-mail-query.test.ts" ]]; then

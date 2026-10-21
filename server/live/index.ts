@@ -209,18 +209,10 @@ export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
 
 /** S4a ceiling on one non-research tool call: past it the host answers the call itself with a timeout output. */
 const TOOL_CEILING_MS = 12_000;
-/** S4a progress speech on the GPT-Live path: one speakable line about this long into an open delegation, only
- *  when nothing has been audible for PROGRESS_QUIET_MS, and never more than one every PROGRESS_INTERVAL_MS.
- *  W4: at most PROGRESS_LINES_PER_TURN lines a turn, and only while a call is still in flight. */
-const PROGRESS_FIRST_MS = 6_000;
-const PROGRESS_QUIET_MS = 3_000;
-const PROGRESS_INTERVAL_MS = 6_000;
-const PROGRESS_LINES_PER_TURN = 2;
-/** W4: why a progress decision stayed silent. A closed set, because a receipt carries the reason and nothing else. */
-type ProgressSkip = 'settled' | 'no_channel' | 'budget' | 'interval' | 'no_call_in_flight' | 'owner_speaking'
-  | 'answer_playing' | 'no_content' | 'send_failed' | 'no_delegation';
+/** R6: how recent the model's own audio must be to hold a late line back. */
+const ANSWER_AUDIO_HOLD_MS = 3_000;
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
- *  stalled: the receipt names it, one progress line goes out, and the S2 recovery resumes instead of rebuilding. */
+ *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
 const DELEGATION_DEADLINE_MS = 25_000;
 /** R6 late findings: a source that settles this long after the first answer is still silent context for the
  *  model, but it is no longer spoken, because the owner has moved on. */
@@ -244,7 +236,7 @@ function stepSourceOf(name: string): string {
   return STEP_SOURCES[prefix] ?? prefix;
 }
 
-/** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary a progress line names. */
+/** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
 /** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
 const RESEARCH_PROJECTION_CHARS = 240;
@@ -273,11 +265,6 @@ function researchProjection(response: JsonObject, status: 'completed' | 'error')
 /** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
 function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
 
-/** S4a: a spoken list of at most a handful of sources, in the order the ledger ran them. */
-function joinWords(words: readonly string[]): string {
-  if (words.length <= 1) return words[0] ?? '';
-  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
-}
 
 /** The action word a direct tool asks its source for. */
 function stepActionOf(name: string): string {
@@ -306,16 +293,13 @@ interface ActiveSession {
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
   recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
   /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
-   *  own audible audio or an ended turn. Inaudible fill and progress speech never clear it (D3, amendment C). */
+   *  own audible audio or an ended turn. Inaudible fill never clears it (D3, amendment C). */
   awaitingAnswer: boolean; answerAt: number | undefined;
-  /** S4a progress speech and the delegation deadline that outlives the S2 watchdog window. */
-  progressTimer?: ReturnType<JobTimer> | undefined; progressSentAt?: number | undefined;
-  /** W4: progress lines already spoken this turn, the count PROGRESS_LINES_PER_TURN bounds. */
-  progressLines: number;
+  /** S4a: the delegation deadline that outlives the S2 watchdog window. */
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
-  /** S4a-R2 (e): one execution receipt per call of this turn, the only source a progress line may name. */
+  /** S4a-R2 (e): one execution receipt per call of this turn, the only source a late line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
   progressCallIds: Set<string>;
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
@@ -455,8 +439,6 @@ function countTurnScript(handle: ActiveSession, text: string): void {
 function resetTurnScript(handle: ActiveSession): void {
   handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
   handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0;
-  // W4: the progress budget is per turn, so a new turn speaks afresh.
-  handle.progressLines = 0;
 }
 
 /** One metadata-only record per turn. A turn with no spoken output reports nothing. */
@@ -1311,7 +1293,7 @@ export class LiveSessionOwner {
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), progressLines: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1441,75 +1423,8 @@ export class LiveSessionOwner {
     this.#armIdle(handle, this.#profile.limits.idleMs);
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
-    this.#armProgress(handle);
     this.#armDelegationDeadline(handle);
     this.#armWatchdog(handle);
-  }
-
-  /** S4a: only the GPT-Live path carries progress speech, and only while the adapter declares it. */
-  #progressPath(handle: ActiveSession): boolean {
-    return this.#profile.provider === 'openai' && typeof handle.session.sendCommentary === 'function';
-  }
-
-  /** S4a: a factual line from this turn's step ledger, naming only sources actually running or done. */
-  #progressLine(handle: ActiveSession): string | undefined {
-    // S4a-R2 (e): what the host can prove, from the execution receipts of this turn's calls: a source that was
-    // only requested is never described as being read.
-    const priority: readonly ExecStatus[] = ['running', 'queued', 'timeout', 'failed', 'cancelled', 'done'];
-    const sources = new Map<string, ExecStatus>();
-    for (const { source, status } of handle.exec.values()) {
-      const previous = sources.get(source);
-      if (previous === undefined || priority.indexOf(status) < priority.indexOf(previous)) sources.set(source, status);
-    }
-    const byStatus = (status: ExecStatus): string[] => [...sources].filter(([, value]) => value === status).map(([source]) => source);
-    const parts: string[] = [];
-    const running = byStatus('running');
-    const queued = byStatus('queued');
-    const done = byStatus('done');
-    const failed = byStatus('failed');
-    const timedOut = byStatus('timeout');
-    if (running.length) parts.push(`Still reading the ${joinWords([...new Set(running)])}`);
-    if (queued.length) parts.push(`waiting on the ${joinWords([...new Set(queued)])}`);
-    if (done.length) parts.push(`the ${joinWords([...new Set(done)])} lookup is done`);
-    if (failed.length) parts.push(`the ${joinWords([...new Set(failed)])} lookup failed`);
-    if (timedOut.length) parts.push(`the ${joinWords([...new Set(timedOut)])} lookup timed out`);
-    // Never invent progress: a turn with no receipt has nothing truthful to say, so it says nothing.
-    if (!parts.length) return undefined;
-    return `${parts.join('; ')}.`;
-  }
-
-  /** One progress line, at most PROGRESS_LINES_PER_TURN a turn and never two inside PROGRESS_INTERVAL_MS,
-   *  suppressed while the owner speaks or an answer plays. Every refusal is a receipt: the next audit counts the
-   *  lines and the reasons there were no more. The dead-air caller decides whether a turn has anything to say. */
-  #sendProgress(handle: ActiveSession, reason: 'dead_air' | 'stalled'): boolean {
-    if (this.#settled(handle) || handle.rebuilding) return this.#progressSkip(handle, 'settled');
-    if (!this.#progressPath(handle)) return this.#progressSkip(handle, 'no_channel');
-    // W4: a dead-air line speaks only for work still in flight. The stall deadline after the answer keeps its own
-    // one line (S4a-R2 b), which is about the owed answer, not about a lookup.
-    if (reason === 'dead_air' && !this.#workInFlight(handle)) return this.#progressSkip(handle, 'no_call_in_flight');
-    if (handle.progressLines >= PROGRESS_LINES_PER_TURN) return this.#progressSkip(handle, 'budget');
-    const now = this.#now();
-    if (handle.progressSentAt !== undefined && now - handle.progressSentAt < PROGRESS_INTERVAL_MS) return this.#progressSkip(handle, 'interval');
-    if (handle.speaking) return this.#progressSkip(handle, 'owner_speaking');
-    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return this.#progressSkip(handle, 'owner_speaking');
-    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return this.#progressSkip(handle, 'answer_playing');
-    const line = this.#progressLine(handle);
-    if (line === undefined) return this.#progressSkip(handle, 'no_content');
-    // W4: the transport answers whether the append left the wire. A refusal (no open delegation to name) is a
-    // receipt, never a claimed send, and the answer that is owed is untouched by it. A transport that answers
-    // nothing at all counts as delivered.
-    try { if (handle.session.sendCommentary!({ text: line }) === false) return this.#progressSkip(handle, 'no_delegation'); }
-    catch { return this.#progressSkip(handle, 'send_failed'); }
-    handle.progressSentAt = now;
-    handle.progressLines += 1;
-    hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason });
-    return true;
-  }
-
-  /** W4: one receipt per refused progress decision, so silence is countable and never anonymous. */
-  #progressSkip(handle: ActiveSession, reason: ProgressSkip): false {
-    hostLogEvent({ event: 'commentary_skipped', delegationKey: this.#delegationKey(handle), reason });
-    return false;
   }
 
   /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
@@ -1538,10 +1453,10 @@ export class LiveSessionOwner {
     handle.thinking = false;
     handle.awaitingAnswer = false;
     handle.answerAt = undefined;
-    this.#cancelProgress(handle);
+    this.#cancelTimers(handle);
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
-    if (this.#progressPath(handle)) {
+    if (typeof handle.session.sendCommentary === 'function') {
       try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
     }
     this.#armIdle(handle, this.#profile.limits.idleMs);
@@ -1553,38 +1468,7 @@ export class LiveSessionOwner {
     }, TURN_FAILED_GRACE_MS);
   }
 
-  #armProgress(handle: ActiveSession): void {
-    if (handle.progressTimer !== undefined) return;
-    if (!this.#progressPath(handle)) return;
-    // W4: a turn with nothing in flight has nothing truthful to say, so no clock is armed for it.
-    if (!this.#workInFlight(handle)) return;
-    handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_FIRST_MS);
-    handle.progressTimer.unref?.();
-  }
-
-  #progressTick(handle: ActiveSession): void {
-    handle.progressTimer = undefined;
-    if (this.#settled(handle) || handle.rebuilding) return;
-    // W4: the line speaks for work still in flight. Once every call and every source of the turn has settled the
-    // turn belongs to the answer, so a tick that finds nothing running says nothing and leaves one skip receipt.
-    if (!this.#workInFlight(handle)) { this.#progressSkip(handle, 'no_call_in_flight'); return; }
-    this.#sendProgress(handle, 'dead_air');
-    if (this.#settled(handle)) return;
-    // The cadence is the interval, not the attempt, so a suppressed line is retried on the same 6 s beat.
-    handle.progressTimer = this.#schedule(() => this.#progressTick(handle), PROGRESS_INTERVAL_MS);
-    handle.progressTimer.unref?.();
-  }
-
-  /** W4: what a progress line may still speak for: a call the model is waiting on, or a research source the run
-   *  is still reading after the tool answered with it pending. A finished lookup is not progress. */
-  #workInFlight(handle: ActiveSession): boolean {
-    if (handle.pendingCallIds.size > 0) return true;
-    for (const entry of handle.exec.values()) if (entry.status === 'running' || entry.status === 'queued') return true;
-    return false;
-  }
-
-  #cancelProgress(handle: ActiveSession): void {
-    handle.progressTimer?.cancel(); handle.progressTimer = undefined;
+  #cancelTimers(handle: ActiveSession): void {
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
   }
 
@@ -1596,15 +1480,14 @@ export class LiveSessionOwner {
     handle.delegationTimer.unref?.();
   }
 
-  /** S4a: a delegation open past its deadline gets one receipt, one spoken line, and no session rebuild. */
+  /** S4a: a delegation open past its deadline gets one receipt and no session rebuild. */
   #delegationDeadline(handle: ActiveSession): void {
     handle.delegationTimer = undefined;
     if (this.#settled(handle) || handle.rebuilding || !handle.awaitingAnswer) return;
     // A nested response that finished the answer is a terminal event, so only silence past the answer is a stall.
     if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt > (handle.answerAt ?? 0)) return;
-    // S4a-R2 (b): diagnostic only. The receipt and one line are all this deadline does; escalation stays S2's.
+    // S4a-R2 (b): diagnostic only. The receipt is all this deadline writes; escalation stays S2's.
     hostLogEvent({ event: 'gptlive_delegation_stalled', ms: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())) });
-    this.#sendProgress(handle, 'stalled');
   }
 
   /** S4a: a bounded wait on tool work that resolves to `timeout` instead of running past the host ceiling.
@@ -1683,10 +1566,9 @@ export class LiveSessionOwner {
             });
           }
         }
-        // S4a: on the GPT-Live path progress speech replaces the "Continue." user message, which under Responses
-        // delegation would be a fake owner turn. Gemini keeps its nudge unchanged.
-        if (this.#progressPath(handle)) this.#sendProgress(handle, 'dead_air');
-        else { try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; } }
+        // VOICE-R4: on the GPT-Live path dead air stays silent, because the "Continue." user message would be a
+        // fake owner turn. Gemini keeps its nudge unchanged.
+        if (this.#profile.provider !== 'openai') { try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; } }
         handle.watchdogPhase = 'nudged';
         hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation });
         this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
@@ -1778,8 +1660,7 @@ export class LiveSessionOwner {
     // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.
     const supersedes = connection.turnId;
     if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
-    this.#cancelProgress(handle);
-    handle.progressSentAt = undefined;
+    this.#cancelTimers(handle);
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
@@ -2191,13 +2072,10 @@ export class LiveSessionOwner {
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
         // nothing else; it neither re-arms the deadline nor answers the obligation.
         const audible = event.type === 'audio' && event.audible !== false;
-        // The answer's own audible audio is the one thing that clears the owed reply; progress text does not.
+        // The answer's own audible audio is the one thing that clears the owed reply; tool text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
         if (audible || event.type === 'turnComplete') {
-          this.#cancelProgress(handle);
-          // W4: a preamble or a finished model turn is audible activity; with a call still in flight the next
-          // silence is a fresh one, so the progress clock restarts from it instead of staying cancelled.
-          if (this.#workInFlight(handle)) this.#armProgress(handle);
+          this.#cancelTimers(handle);
         }
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
@@ -2247,8 +2125,7 @@ export class LiveSessionOwner {
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
-          this.#armProgress(handle);
-          // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
+                // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
@@ -2630,11 +2507,11 @@ export class LiveSessionOwner {
     if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
     // A question begun after the first answer means the owner moved on: the block stays context only.
     if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';
-    // Owner speech, on the same hold `#sendProgress` uses: speech that began before the first answer and has
+    // Owner speech: speech that began before the first answer and has
     // not gone quiet yet is still the owner talking, even though it is not a new question.
     if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
     // Answer audio is the model's own output, a different reason from the owner's voice.
-    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < PROGRESS_QUIET_MS) return 'answer_playing';
+    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
     return null;
   }
 
@@ -2879,7 +2756,7 @@ export class LiveSessionOwner {
       // #451 Q8: the status the journal carries is the one definition of how the result settled, so a
       // call whose result carries content can never be described as failed.
       const status = journalToolStatus(responses[index]?.response ?? {});
-      // S4a-R2 (e): the settled status of a call is an execution receipt, so a progress line can name it. A call
+      // S4a-R2 (e): the settled status of a call is an execution receipt. A call
       // the ceiling settled keeps that status, because "timed out" is what happened and "failed" would hide it.
       if (handle.exec.has(id) && handle.exec.get(id)?.status !== 'timeout') {
         if (handle.progressCallIds.has(id)) handle.exec.set(id, { source: stepSourceOf(event.calls[index]!.name), status: status === 'completed' ? 'done' : 'failed' });

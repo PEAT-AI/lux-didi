@@ -458,6 +458,7 @@ const MAIL_FILLER = new Set([
   'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
   'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
   'whether', 'if', 'actually', 'someone', 'anyone', 'still', 'currently', 'recently', 'earlier', 'later', 'think',
+  'mention', 'mentioning', 'mentions', 'mentioned', 'thread', 'threads', 'share', 'shared', 'shares', 'sharing', 'next', 'before', 'after',
   'came', 'come', 'coming', 'went', 'gone', 'arrived', 'thanks', 'thank', 'cheers', 'regards', 'hello', 'hi', 'hey',
 ]);
 /** The correspondence verbs that make "mail from or to that person" explicit. */
@@ -489,6 +490,7 @@ export function mailTerms(text: string, max = 4, skip?: ReadonlySet<string>): st
   const terms: string[] = [];
   for (const word of words) {
     if (STOP_WORDS.has(word) || MAIL_FILLER.has(word) || skip?.has(word) === true) continue;
+    if (/^[a-z_]+:$/u.test(word)) continue;
     if (!/\d/u.test(word) && word.length < 3) continue;
     if (terms.includes(word)) continue;
     terms.push(word);
@@ -517,21 +519,73 @@ function dayShift(day: string, days: number): string {
 }
 function gmailDate(day: string): string { return day.replaceAll('-', '/'); }
 
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+const WEEKDAY_NAMES = 'sunday|monday|tuesday|wednesday|thursday|friday|saturday';
+
+/** The owner's calendar year at an instant, in the zone the window is resolved for. */
+function localYear(nowMs: number, timeZone: string): number {
+  return Number(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric' }).format(new Date(nowMs)));
+}
+function monthStart(monthIndex: number, year: number): string {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-01`;
+}
+/** One resolved local day as Gmail's exclusive day bounds. */
+function dayWindow(day: string, nowMs: number, timeZone: string, shiftDays = 0): string {
+  const range = windowRange(calendarWindowOf(day, day), nowMs, timeZone);
+  const after = dayShift(localDay(range.timeMin, timeZone), -1 + shiftDays);
+  const before = dayShift(localDay(range.timeMax, timeZone), shiftDays);
+  return `after:${gmailDate(after)} before:${gmailDate(before)}`;
+}
+/** The year of the most recent occurrence of a month that has already begun in the owner's zone. */
+function monthYear(monthIndex: number, nowMs: number, timeZone: string): number {
+  const year = localYear(nowMs, timeZone);
+  return Date.parse(`${monthStart(monthIndex, year)}T00:00:00Z`) > nowMs ? year - 1 : year;
+}
+/** The month a question names as Gmail's exclusive day bounds over that whole month. */
+function monthWindow(monthIndex: number, year: number, nowMs: number, timeZone: string): string {
+  const start = windowRange(monthStart(monthIndex, year), nowMs, timeZone).timeMin;
+  const endIndex = monthIndex === 11 ? 0 : monthIndex + 1;
+  const end = windowRange(monthStart(endIndex, monthIndex === 11 ? year + 1 : year), nowMs, timeZone).timeMin;
+  return `after:${gmailDate(dayShift(localDay(start, timeZone), -1))} before:${gmailDate(localDay(end, timeZone))}`;
+}
+function monthNamed(text: string, name: string): boolean {
+  // "may" is also a verb, so it only counts as a month behind a time preposition.
+  return name === 'may'
+    ? /\b(?:in|during|since|after|before) may\b/u.test(text)
+    : new RegExp(`\\b${name}\\b`, 'u').test(text);
+}
+
 /**
- * The window a question asked for, resolved in the owner's own zone when it names a calendar day, and
- * a rolling two weeks when it named none. Gmail's `after:` and `before:` are exclusive day bounds.
+ * The window a question asked for, resolved in the owner's own zone when it names a calendar day or a
+ * month, and a rolling two weeks when it named none. Every time word the question carries is answered
+ * here rather than deleted, so "in September" and "before October" reach the mails they name. Gmail's
+ * `after:` and `before:` are exclusive day bounds.
  */
 export function mailWindow(question: string, nowMs = Date.now(), timeZone?: string): string {
   const text = question.toLowerCase();
+  const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    const iso = /\b(\d{4}-\d{2}-\d{2})\b/u.exec(text)?.[1];
+    if (iso !== undefined) return dayWindow(iso, nowMs, zone);
+    const nextWeekday = new RegExp(`\\bnext (${WEEKDAY_NAMES})\\b`, 'u').exec(text)?.[1];
+    if (nextWeekday !== undefined) return dayWindow(`next ${nextWeekday}`, nowMs, zone);
+    const lastWeekday = new RegExp(`\\blast (${WEEKDAY_NAMES})\\b`, 'u').exec(text)?.[1];
+    if (lastWeekday !== undefined) return dayWindow(lastWeekday, nowMs, zone, -7);
+    const onWeekday = new RegExp(`\\bon (${WEEKDAY_NAMES})\\b`, 'u').exec(text)?.[1];
+    if (onWeekday !== undefined) return dayWindow(onWeekday, nowMs, zone);
+    const monthIndex = MONTH_NAMES.findIndex(name => monthNamed(text, name));
+    if (monthIndex >= 0) {
+      const name = MONTH_NAMES[monthIndex]!;
+      const year = monthYear(monthIndex, nowMs, zone);
+      // "before October" is the day October begins; "since/after September" is the day it ended.
+      if (new RegExp(`\\bbefore (?:the )?${name}\\b`, 'u').test(text)) return `before:${gmailDate(monthStart(monthIndex, localYear(nowMs, zone)))}`;
+      if (new RegExp(`\\b(?:since|after) (?:the )?${name}\\b`, 'u').test(text)) {
+        return `after:${gmailDate(dayShift(monthStart(monthIndex, year), -1))}`;
+      }
+      return monthWindow(monthIndex, year, nowMs, zone);
+    }
+  } catch { /* an unresolved day or month keeps the rolling window below */ }
   for (const [pattern, window] of MAIL_RELATIVE_WINDOWS) if (pattern.test(text)) return window;
-  const day = /\b(\d{4}-\d{2}-\d{2})\b/u.exec(text)?.[1] ?? /\bon (?:(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/u.exec(text)?.[1];
-  if (day !== undefined) {
-    try {
-      const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const range = windowRange(calendarWindowOf(day, day), nowMs, zone);
-      return `after:${gmailDate(dayShift(localDay(range.timeMin, zone), -1))} before:${gmailDate(localDay(range.timeMax, zone))}`;
-    } catch { /* an unresolved day keeps the rolling window */ }
-  }
   return 'newer_than:14d';
 }
 
@@ -580,11 +634,22 @@ const WINDOW_STEPS: Record<string, string> = { '1d': '7d', '2d': '7d', '7d': '14
  * E5: the one broader query a search that matched nothing may run: drop the least salient term, else
  * widen the window by one step. Undefined when nothing widens, so a narrow authored filter never loops.
  */
+/**
+ * How much a term is worth keeping: a number or an acronym is the least droppable, a long word next, a
+ * short word last. Ties are broken toward the later term, so a trailing modifier goes before its noun.
+ */
+function termSalience(term: string): number {
+  if (/\d/u.test(term)) return 4;
+  if (/^[a-z]{2,4}$/u.test(term)) return 3;
+  return term.length >= 5 ? 2 : 1;
+}
+
 export function broaderMailQuery(q: string): string | undefined {
   const tokens = q.split(/\s+/).filter(Boolean);
   const termIndexes = tokens.map((token, index) => isOperatorToken(token) ? -1 : index).filter(index => index >= 0);
   if (termIndexes.length > 1) {
-    const dropped = termIndexes[termIndexes.length - 1]!;
+    let dropped = termIndexes[0]!;
+    for (const index of termIndexes) if (termSalience(tokens[index]!) <= termSalience(tokens[dropped]!)) dropped = index;
     return tokens.filter((_, index) => index !== dropped).join(' ').slice(0, RESEARCH.queryLimitChars);
   }
   const windowIndex = tokens.findIndex(token => /^newer_than:[a-z0-9]+$/u.test(token));
@@ -617,7 +682,10 @@ export function mailSearchPhrase(q: string): string {
     if (relative !== undefined) phrase += ` ${WINDOW_PHRASE[relative] ?? `within ${relative}`}`;
     else {
       const after = /after:(\S+)/u.exec(q)?.[1], before = /before:(\S+)/u.exec(q)?.[1];
-      phrase += after !== undefined && before !== undefined ? ` between ${after} and ${before}` : ` within ${shape.window}`;
+      if (after !== undefined && before !== undefined) phrase += ` between ${after} and ${before}`;
+      else if (after !== undefined) phrase += ` after ${after}`;
+      else if (before !== undefined) phrase += ` before ${before}`;
+      else phrase += ` within ${shape.window}`;
     }
   }
   return phrase;

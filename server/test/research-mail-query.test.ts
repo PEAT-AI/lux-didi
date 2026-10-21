@@ -33,7 +33,16 @@ const FIXTURES: readonly { question: string; authored?: string; q: string }[] = 
   { question: 'What did Sam send on 2026-10-15?', q: 'from:sam OR to:sam after:2026/10/14 before:2026/10/16' },
   { question: 'Any mail from Neha on Friday?', q: 'from:neha OR to:neha after:2026/10/22 before:2026/10/24' },
   { question: 'Check my email for anything from the city council about parking this morning', q: 'city council parking newer_than:1d' },
-  { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract draft board newer_than:14d' },
+  { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract draft board after:2026/02/28 before:2026/04/01' },
+  // F1/F2 from the review: the question's own time words are answered, never deleted, and instruction
+  // words spend no term slot.
+  { question: 'did anyone email me about the electricity bill in September', q: 'electricity bill after:2026/08/31 before:2026/10/01' },
+  { question: 'the invoice from the design agency from before October', q: 'invoice design agency before:2026/10/01' },
+  { question: 'show me mail about the flat inspection next Monday', q: 'flat inspection after:2026/10/25 before:2026/10/27' },
+  { question: 'emails mentioning the offsite venue', q: 'offsite venue newer_than:14d' },
+  { question: 'find the thread where Ravi shared the deployment checklist', q: 'ravi deployment checklist newer_than:14d' },
+  { question: "what's the latest from my accountant", q: 'accountant newer_than:14d' },
+  { question: 'after:', q: 'in:inbox newer_than:14d' },
   // The three shapes the 04:06Z call really sent (described, never quoted from the log): a bare first
   // name with no window, a long natural-language sentence, and one with a person and a time word.
   { question: 'Davian', q: 'davian newer_than:14d' },
@@ -67,6 +76,8 @@ test('E4: at most four terms survive, a sentence never becomes the query', () =>
 
 test('E5: the one broader retry drops a term, else widens the window once', () => {
   assert.equal(broaderMailQuery('landlord lease newer_than:60d'), 'landlord newer_than:60d', 'the least salient term is dropped');
+  assert.equal(broaderMailQuery('from:sana OR to:sana signed nda newer_than:14d'), 'from:sana OR to:sana nda newer_than:14d', 'a verb goes before the acronym it names');
+  assert.equal(broaderMailQuery('offsite venue inspection newer_than:14d'), 'offsite venue newer_than:14d', 'a trailing short modifier goes before its noun');
   assert.equal(broaderMailQuery('from:dana OR to:dana invoice newer_than:14d'), 'from:dana OR to:dana invoice newer_than:30d', 'one term left widens the window by one step');
   assert.equal(broaderMailQuery('newer_than:60d'), undefined, 'nothing left to widen is no retry');
   assert.equal(broaderMailQuery('from:plantix'), undefined, 'an authored filter with no terms has nothing to broaden');
@@ -85,6 +96,7 @@ test('E5: the reply says how it searched: the words and the window, never an ope
   assert.equal(mailSearchPhrase('from:dana OR to:dana invoice newer_than:14d'), ' for "invoice" in the last two weeks');
   assert.equal(mailSearchPhrase('in:inbox newer_than:1d'), ' with a keyword filter in the last day');
   assert.equal(mailSearchPhrase('from:neha OR to:neha after:2026/10/22 before:2026/10/24'), ' with a keyword filter between 2026/10/22 and 2026/10/24');
+  assert.equal(mailSearchPhrase('invoice design agency before:2026/10/01'), ' for "invoice design agency" before 2026/10/01', 'a single bound is voiced as one');
 });
 
 // --- The compiler and the retry on the routed wire ----------------------------------------------

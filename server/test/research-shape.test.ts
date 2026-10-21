@@ -47,6 +47,9 @@ test('the research declaration tells the model to ask mail in short Gmail syntax
   assert.match(guidance, /window/, 'and the window rule');
   assert.match(guidance, /from:dana newer_than:14d invoice/, 'one short example with a sender and a window');
   assert.match(guidance, /newer_than:2d is:unread/, 'a second short example');
+  // F3: the field that grew for this change carries its own budget, so the next example cannot creep in
+  // unbounded; the mail clause is one sentence with two examples.
+  assert.ok(guidance.length < 800, `the declaration guidance keeps its 800-char budget (${guidance.length} chars)`);
   assert.ok(description.length < 500, `the declaration description keeps its budget (${description.length} chars)`);
 });
 

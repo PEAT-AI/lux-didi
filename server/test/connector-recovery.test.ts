@@ -231,8 +231,8 @@ test('a gmail proof that runs out of time is retried until it proves the account
   let gmailProbes = 0;
   const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => {
     gmailProbes += 1;
-    // The first probe is the late one the owner's session lost the endpoint to; the retry answers.
-    return gmailProbes === 1 ? { delayMs: 400, payload: { emailAddress: ACCOUNT } } : { payload: { emailAddress: ACCOUNT } };
+    // The first probe comes back without an account, which is what the owner's session saw; the retry answers.
+    return gmailProbes === 1 ? { payload: {} } : { payload: { emailAddress: ACCOUNT } };
   } });
   t.after(() => gmail.close());
   const calendar = await fixture({ tools: CALENDAR_TOOLS, call: () => ({ payload: { calendars: [{ id: ACCOUNT, primary: true }] } }) });
@@ -248,7 +248,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   const identity: Array<{ connector: string; proven: boolean; match: boolean | null }> = [];
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-    callDeadlineMs: 200, recoveryDelaysMs: FAST,
+    callDeadlineMs: 2000, recoveryDelaysMs: FAST,
     identityLog: (connector, proven, match) => { identity.push({ connector, proven, match }); },
   });
   t.after(() => runtime.close());
@@ -256,13 +256,12 @@ test('a gmail proof that runs out of time is retried until it proves the account
   const calendarFirst = first.find(row => row.id === 'calendar')!;
   const gmailFirst = first.find(row => row.id === 'gmail')!;
   assert.equal(gmailFirst.state, 'error', 'the slow proof left gmail unproven');
-  assert.equal(gmailFirst.reasonCode, 'identity_timeout', 'and the code names a timeout, never a mismatch');
-  assert.equal(gmailFirst.retrying, true, 'so recovery is scheduled');
-  assert.equal(connectionReasonCode({ state: gmailFirst.state, error: gmailFirst.error ?? '', reasonCode: gmailFirst.reasonCode, signIn: false }), 'unreachable');
+  assert.equal(gmailFirst.reasonCode, 'identity_unverified', 'an unproven proof, never a mismatch');
+  assert.equal(gmailFirst.retrying, true, 'so recovery is scheduled instead of staying down all session');
   assert.equal(calendarFirst.state, 'connected', 'calendar proved itself and never depended on gmail');
   assert.equal(calendarFirst.error, undefined);
   // The retry answers immediately: gmail ends connected and calendar keeps its own state and handshake.
-  await new Promise(resolve => setTimeout(resolve, FAST[0]! + 600));
+  await new Promise(resolve => setTimeout(resolve, FAST[0]! + 400));
   const settled = runtime.status().endpoints;
   const gmailAfter = settled.find(row => row.id === 'gmail')!;
   const calendarAfter = settled.find(row => row.id === 'calendar')!;

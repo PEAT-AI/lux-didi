@@ -7,7 +7,7 @@ import {
   type MiniState, type PillClickHost, type PillVisualHost, type PresenceStep,
 } from '../src/mini.ts';
 import { ORB_VISUALS, TRANSITION_MS, DEBOUNCE_MS, type OrbVisual } from '../src/orb-states.ts';
-import { singleKeyRow, singleKeyState } from '../src/settings-view.ts';
+import { presenceRow, presenceState, singleKeyRow, singleKeyState } from '../src/settings-view.ts';
 
 test('the mini route is a query on the one built page', () => {
   assert.equal(isMiniRoute('?view=mini'), true);
@@ -287,4 +287,16 @@ test('the pill stays muted from the owner\'s word even when the session has ende
   assert.equal(pillMuted(false, { alwaysShow: true, state: 'cold', muted: true }), true, 'the push alone is a mute');
   assert.equal(pillMuted(false, { alwaysShow: true, state: 'cold' }), false, 'an unmuted push is not a mute');
   assert.equal(miniState('IDLE', undefined, pillMuted(false, { state: 'cold', muted: true })), 'muted');
+});
+
+test('the presence row says she is muted and purple, which outlives the session (#1021)', () => {
+  // The native app pushes the owner's mute as `window.didiPresence.muted`, session or no session.
+  assert.deepEqual(presenceState({ alwaysShow: true, state: 'cold', muted: true }),
+    { alwaysShow: true, listening: false, muted: true });
+  const muted = presenceRow(presenceState({ alwaysShow: true, state: 'cold', muted: true }));
+  assert.match(muted, /purple/);
+  assert.match(muted, /waits until you tap Right Command again/);
+  assert.doesNotMatch(muted, /quiet until a Right Command tap/, 'a muted Naya is not described as merely quiet');
+  const idle = presenceRow(presenceState({ alwaysShow: true, state: 'cold' }));
+  assert.match(idle, /quiet until a Right Command tap/, 'without the mute the row reads as it always did');
 });

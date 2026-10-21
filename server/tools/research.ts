@@ -1838,7 +1838,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const calendarReads = [...run.calendar.values()];
   const calendarPending = remaining.length > 8 || calendarReads.some(read => !read.failed && !read.exhausted);
   const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || read.upstreamIncomplete || !read.exhausted) || remaining.length > 8;
-  if (sources === undefined && calendarPartial && status === 'answered') status = 'partial';
+  // A source that delivered part of its answer makes a routed answer partial. A source that read
+  // nothing and is named unreachable does not, when another layer answered the call.
+  if (calendarPartial && status === 'answered' && (sources === undefined || calendarEvents.size > 0)) status = 'partial';
   const calendarCoverage = calendarReads.length === 0 ? undefined : {
     scope: 'primary', received: calendarEvents.size, remaining: remaining.length,
     upstreamRemaining: calendarReads.some(read => !read.failed && !read.exhausted),
@@ -1853,7 +1855,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   if (mailRemaining.length) groups.push({ source: 'mail', label: SOURCE_LABEL.mail, lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
   const mailUpstream = mailReads.some(read => !read.failed && !read.exhausted);
   const mailIncomplete = mailReads.some(read => read.failed || read.upstreamIncomplete || read.invalid > 0 || [...read.messages.values()].some(message => message.bodyTruncated));
-  if (sources === undefined && (mailIncomplete || mailUpstream || mailRemaining.length > 8) && status === 'answered') status = 'partial';
+  if ((mailIncomplete || mailUpstream || mailRemaining.length > 8) && status === 'answered' && (sources === undefined || receivedMail.size > 0)) status = 'partial';
   const readSources = new Set(run.sourcesDone);
   const unchecked = configured.filter(source => !readSources.has(source));
   // Outcome 2: name the sources this run could not reach, in one short clause the model can voice,
@@ -2202,7 +2204,9 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     let results: IntentSubResult[];
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
-    if (parent.aborted) { for (const read of reads) { read.failed = true; read.inflight = false; } run.cutShort.add('calendar'); break; }
+    if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateEvidence(run); break; }
+    if (signal.aborted || now() >= sourceDeadlineAt) { for (const read of reads) { read.failed = true; read.inflight = false; } run.cutShort.add('calendar'); break; }
+    if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; invalidateEvidence(run); break; }
     if (scopeSlot !== undefined) {
       const scope = results[scopeSlot];
       if (scope?.ok && scope.calendarScope) run.calendarScope = scope.calendarScope;

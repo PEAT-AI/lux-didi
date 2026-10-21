@@ -13,7 +13,7 @@ import { connectionsMarkup } from './connector-status';
 import { micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
-import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, refreshMiniVisuals, type MiniState } from './mini';
+import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, pillMuted, refreshMiniVisuals, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -314,7 +314,7 @@ function miniCaptionMarkup(): string {
 function paintMiniStage() {
   const stage = document.querySelector('.mini-stage');
   if (!stage) return;
-  const state = miniState(orbState(), liveActivity(live), live?.muted === true);
+  const state = miniState(orbState(), liveActivity(live), pillMuted(live?.muted === true));
   stage.setAttribute('data-mini-state', state);
   stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
   refreshMiniVisuals();
@@ -718,6 +718,11 @@ Object.assign(window,{
     surfaceGeneration=generation;
     (window as unknown as {didiNativeSurfaceVisible:boolean}).didiNativeSurfaceVisible=visible;
     window.dispatchEvent(new Event('didi-surface-visibility'));
+  },
+  /** #1021: the app pushes the owner's mute as a plain assignment; this asks for the repaint a
+   *  data attribute cannot do by itself, so the pill goes purple at the mute and back at the tap. */
+  didiPresenceChanged(){
+    if(miniRoute||document.querySelector('.mini-stage')){paintMiniStage();refreshMiniVisuals();}
   },
   didiPrepareSurface(generation:number){
     if(!Number.isSafeInteger(generation)||generation<surfaceGeneration)return{generation,painted:false};

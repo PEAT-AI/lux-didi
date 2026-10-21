@@ -71,6 +71,7 @@ final class MiniOrbToggle {
 
     func toggle() { isVisible ? hide() : show() }
 
+
     func presentationCommitted(visible: Bool) { isVisible = visible }
 
     /// The chord: show the orb and start Live when it is not already running. The chord, an
@@ -211,6 +212,12 @@ enum PresenceStep: String, Equatable {
 @MainActor
 final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
+    /// #1021: the owner's mute outlives the session, so the mini page is told the fact directly
+    /// instead of reading it off a live state that is already gone.
+    func applyMuted(_ muted: Bool) {
+        webView.evaluateJavaScript("window.didiPresence=Object.assign(window.didiPresence||{},{muted:\(muted)});"
+            + "window.didiPresenceChanged&&window.didiPresenceChanged()", completionHandler: nil)
+    }
     var onVisibilityChanged: (() -> Void)?
     private let frameKey: String
     private let overlay: MiniOrbHitView

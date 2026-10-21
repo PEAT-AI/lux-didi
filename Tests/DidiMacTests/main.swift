@@ -279,13 +279,21 @@ hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
 expect(hotkey.presence.state == .hotMuted, "the day's mute starts from a live session")
+// AC3, by construction: the mute ends the provider session, so a proactive or callback speech
+// request has no session to play into while she waits, and nothing reopens one on its own.
+expect(hotkey.closed == 2 && hotkey.fences.last == true,
+    "the mute closes the session and the fence, which is where a held speech request would land")
+let openedDuringMute = hotkey.opened
+hotkey.presence.wake()
+expect(hotkey.opened == openedDuringMute,
+    "a wake while muted asks for no session, so no held speech can be spoken")
 hotkey.presence.sessionEnded()
-expect(hotkey.presence.state == .cold && hotkey.presence.posture.muted,
-    "the session's end after a mute keeps the owner on MUTED, never the grey cold orb")
 hotkey.clock += NativePresence.hotMutedGrace + 60
 hotkey.presence.tick()
+expect(hotkey.opened == openedDuringMute && hotkey.presence.posture.muted,
+    "six minutes muted open nothing by themselves, they only keep her purple")
 expect(hotkey.presence.state == .cold && hotkey.presence.posture.muted,
-    "six minutes of mute change nothing the owner sees, and restart no session")
+    "the session's end after a mute keeps the owner on MUTED, never the grey cold orb")
 var openedBeforeLateTap = hotkey.opened
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)

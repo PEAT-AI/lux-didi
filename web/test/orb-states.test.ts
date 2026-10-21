@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
-  breathe, createOrbStateMachine, createStateDebounce, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, TRANSITION_MS,
+  breathe, createOrbStateMachine, createStateDebounce, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, presenceMuted,
+  TRANSITION_MS,
   type MiniVisualState,
 } from '../src/orb-states.ts';
 
@@ -168,4 +169,12 @@ test('D6: the full-window orb debounces a between-sentence blip, with explicit t
   // A blip that outlasts the debounce is a real state.
   orb.request('LISTENING', 2_000);
   assert.equal(orb.settled(2_250), 'LISTENING', 'a held listening state commits');
+});
+
+test('the owner\'s mute is read from the native push, and nothing else counts (#1021)', () => {
+  assert.equal(presenceMuted({ alwaysShow: true, state: 'cold', muted: true }), true);
+  assert.equal(presenceMuted({ alwaysShow: true, state: 'cold', muted: false }), false);
+  assert.equal(presenceMuted({ alwaysShow: true, state: 'live' }), false, 'no mute field is not a mute');
+  assert.equal(presenceMuted(undefined), false, 'a browser preview has no native push and is not muted');
+  assert.equal(presenceMuted('muted'), false, 'a string is never read as the mute');
 });

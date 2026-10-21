@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   connectorState, limitMinutes, micModeLabel, micModePicker, micModePromptMarkup, micModeRow, micModeState,
+  presenceRow, presenceState,
   settingsMarkup, MIC_MODE_SENTENCE, type MicModeMessage,
 } from '../src/settings-view.ts';
 
@@ -261,4 +262,16 @@ test('P3: the speaking pace is shown read-only from the summary, with no control
   const hostile = settingsMarkup({ status, summary: { ...summary, playbackRate: '<img src=x>' as unknown as number } });
   assert.doesNotMatch(hostile, /<img src=x>/);
   assert.match(hostile, /<strong>Speaking pace<\/strong> unknown/);
+});
+
+test('the presence row says she is muted and purple, which outlives the session (#1021)', () => {
+  // The native app pushes the owner's mute as `window.didiPresence.muted`, session or no session.
+  assert.deepEqual(presenceState({ alwaysShow: true, state: 'cold', muted: true }),
+    { alwaysShow: true, listening: false, muted: true });
+  const muted = presenceRow(presenceState({ alwaysShow: true, state: 'cold', muted: true }));
+  assert.match(muted, /purple/);
+  assert.match(muted, /waits until you tap Right Command again/);
+  assert.doesNotMatch(muted, /quiet until a Right Command tap/, 'a muted Naya is not described as merely quiet');
+  const idle = presenceRow(presenceState({ alwaysShow: true, state: 'cold' }));
+  assert.match(idle, /quiet until a Right Command tap/, 'without the mute the row reads as it always did');
 });

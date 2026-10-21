@@ -4979,7 +4979,11 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   const calls = h.calls.length;
   fake.emit({ type: 'toolCall', calls: [{ id: 'retained', name: 'research', args: { action: 'continue', researchId: first['researchId'], ...(first['nextCursor'] ? { cursor: first['nextCursor'] } : {}) } }] });
   for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
-  assert.equal(fake.toolResponses.length, 2); assert.match(JSON.stringify(fake.toolResponses[1]![0]!.response['findings']), /Synthetic progress/);
+  assert.equal(fake.toolResponses.length, 2);
+  if (source === 'calendar') {
+    assert.match(JSON.stringify(fake.toolResponses[0]![0]!.response['findings']), /Synthetic progress/, 'the whole window is spoken by the first reply');
+    assert.deepEqual(fake.toolResponses[1]![0]!.response['findings'], [], 'a retained continuation repeats nothing');
+  } else assert.match(JSON.stringify(fake.toolResponses[1]![0]!.response['findings']), /Synthetic progress/);
   assert.equal(h.calls.length, calls); assert.deepEqual(h.owner.current().steps ?? [], []);
   assert.deepEqual(fake.commentary, [], 'fast pages and retained delivery need no waiting speech');
   h.owner.revoke(session.liveSessionId);

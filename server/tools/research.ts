@@ -103,8 +103,11 @@ export const RESEARCH = Object.freeze({
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
   mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
-  /** E8: ask for the whole reply-worthy page in one call, so no loop pages a window or a query at a time. */
-  pageResults: Object.freeze({ calendar: 100, mail: 25 }),
+  /**
+   * E8: ask for the whole reply-worthy page in one call, so no loop pages a window or a query at a time.
+   * 50 is the connector's own ceiling (GOOGLE_DEFAULTS.maxListResults); asking more is refused outright.
+   */
+  pageResults: Object.freeze({ calendar: 50, mail: 25 }),
   /**
    * P5-R1: a knowledge lookup keeps the body the connector sends instead of forty snippets that cut
    * the evidence short. 3r K1: six hits, because each hit now carries a bounded body rather than a

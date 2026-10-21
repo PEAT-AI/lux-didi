@@ -1286,7 +1286,7 @@ test('a google endpoint in configuration error is voiced as unreachable mail, ne
   const named = configuredSourcesForEndpoints([
     { connector: 'google', state: 'error', configurationError: 'unknown-class-invalid' },
   ]);
-  const unreachable = named.map(entry => entry.source);
+  const unreachable = named.filter(entry => entry.source === 'mail').map(entry => entry.source);
   const dispatched: string[] = [];
   const deps: ResearchDeps = {
     now: () => 0, configured: unreachable, unavailableNow: () => unreachable,

@@ -919,7 +919,7 @@ export class LiveSessionOwner {
         const acceptance: RunAcceptance = { ownerId: assistantId, actorId: context.clientId, runId: liveSessionId,
           authorityEpoch: context.authorityEpoch, revision: this.#revision,
           route: { identity: this.#profileIdentity, provider: this.#profile.provider, modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
-          allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
+          allowedClasses: [...this.#profile.route.dataClasses], connectionIds: this.#connectionIds(tx) };
         toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
         toolNames = [...definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name).filter(name => name !== 'remember_note'), 'remember_note'];
       }
@@ -1268,8 +1268,9 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = this.#liveRegistry(liveSessionId);
-      host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision, grants: this.#hostGrants(registry) };
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
+        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
@@ -2365,41 +2366,15 @@ export class LiveSessionOwner {
     }
   }
 
-  /** The session's frozen tool registry, rebuilt from the run's current bindings (W10). */
-  #liveRegistry(liveSessionId: string): readonly ToolDefinition[] {
-    return Object.freeze(this.#tools!.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()))
-      .map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
-  }
-
-  /** The read grants the host carries for a registry: what dispatch may reach, nothing more. */
-  #hostGrants(registry: readonly ToolDefinition[]): HostContext['grants'] {
-    return registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory')
-      .map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId }));
-  }
-
   /**
-   * W10 behaviour 1: the registry a call opened with is a snapshot, so a connector whose grant
-   * publishes after the start (a slow stdio or HTTP connector) used to be missing for the whole call.
-   * The run adopts the connections that are published now and the registry is rebuilt, so the next
-   * model turn and every research call offer the source. The provider's own tool declarations cannot
-   * change mid-call; the research tool it was already given can, and it names the new sources.
+   * W10 behaviour 1: the run freezes its connections at acceptance. Naming only the connectors that
+   * have already finished their handshake drops a slow one (Google stdio, Mongoose HTTP, a source that
+   * connects just after host start) for the whole call, so the durable policies this owner has already
+   * published are part of the set and the source is there when the transport comes up.
    */
-  #refreshSources(handle: ActiveSession): void {
-    const adopt = this.#tools?.owner.adoptLateConnections;
-    if (!adopt || this.#settled(handle)) return;
-    const adopted = this.#store.transaction(tx => {
-      if (!tx.get('SELECT 1 FROM live_tool_acceptances WHERE live_session_id=?', [handle.liveSessionId])) return false;
-      const { acceptance, sha256 } = adopt(tx, handle.liveSessionId, this.#tools!.connectionIds());
-      tx.run('UPDATE live_tool_acceptances SET acceptance_json=?, accepted_run_hash=? WHERE live_session_id=?', [JSON.stringify(acceptance), sha256, handle.liveSessionId]);
-      return true;
-    });
-    if (!adopted) return;
-    const registry = this.#liveRegistry(handle.liveSessionId);
-    if (registry.length === handle.registry.length && registry.every((tool, index) => tool.name === handle.registry[index]!.name)) return;
-    handle.registry = registry;
-    if (handle.host) handle.host.grants = this.#hostGrants(registry);
-    // The digest belongs to the calendar source: a calendar grant that arrives mid-call refreshes it.
-    if (registry.some(tool => tool.name === 'calendar_list_events') && this.#calendarState !== 'present') this.#calendarDigest?.refresh();
+  #connectionIds(tx: import('../contracts/storage.js').Transaction): string[] {
+    const durable = this.#tools?.owner.durableConnectionIds?.(tx) ?? [];
+    return [...new Set([...this.#tools!.connectionIds(), ...durable])];
   }
 
   #unreachableSources(handle: ActiveSession): (ResearchSourceKind | UnavailableSource)[] {
@@ -2427,8 +2402,6 @@ export class LiveSessionOwner {
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
   async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
-    // W10: a grant that published since the start joins this call before its sources are resolved.
-    this.#refreshSources(handle);
     const configured = this.#researchSources(handle);
     const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {

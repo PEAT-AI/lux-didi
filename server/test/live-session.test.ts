@@ -129,8 +129,13 @@ async function harness(t: TestContext, overrides: {
   history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
-  /** W10: the calendar endpoint is registered and configured, but its grant publishes after a start. */
+  /**
+   * W10 (behaviour 1): the calendar connection's policy is already durable, but the transport has not
+   * come up when the call starts; `publishCalendar` brings it up 300 ms into the call.
+   */
   lateCalendar?: boolean;
+  /** W10 (behaviour 2): the calendar endpoint reports connected while no read grant exists at all. */
+  ungrantedCalendar?: boolean;
   mail?: boolean;
   research?: ResearchSelector;
   mailData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
@@ -327,18 +332,26 @@ async function harness(t: TestContext, overrides: {
       mark('mattermost', 'mattermost');
     }
     if (overrides.calendar && calendarEndpoint) {
-      const connect = async (): Promise<void> => {
+      const apply = (): void => {
         toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
           endpoint: { ...calendarEndpoint!, credentialRef: null }, toolNames: ['calendar_list_calendars', 'calendar_list_events'], schemaDigest: canonicalToolDigest(calendarSchemas),
           sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
           route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
           bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      };
+      const connect = async (): Promise<void> => {
+        apply();
         assert.equal((await port.discover(calendarEndpoint!.id)).state, 'discovered');
         toolOwner.projectConnection('calendar');
         mark('calendar', 'google');
       };
       if (overrides.lateCalendar) {
-        // The endpoint finished its handshake, so the report says so, but no read grant exists yet.
+        // The grant is durable, the transport is not up yet: exactly the host-start race on E1.
+        apply();
+        endpointStates.push({ id: 'calendar', connector: 'google', state: 'connecting' });
+        publishCalendar = connect;
+      } else if (overrides.ungrantedCalendar) {
+        // Connected per the endpoint report, with no read grant published at all.
         endpointStates.push({ id: 'calendar', connector: 'google', state: 'connected' });
         publishCalendar = connect;
       } else {
@@ -3049,7 +3062,7 @@ test('F4: a barge-in keeps THINKING while the call is still in flight, and her a
 });
 
 test('W10: a configured endpoint that cannot serve a research read is named unreachable, never dropped', async t => {
-  const h = await harness(t, { tools: true, calendar: true, lateCalendar: true });
+  const h = await harness(t, { tools: true, calendar: true, ungrantedCalendar: true });
   await attached(h, 'late-calendar-named');
   await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
   const reply = lastToolResponse(h);

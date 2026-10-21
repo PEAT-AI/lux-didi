@@ -38,7 +38,6 @@ cp "$root/server/test/mattermost-attention.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
 cp "$root/server/test/fixtures/stdio-mattermost-child.mjs" "$out/source/test/fixtures/"
 cp "$root/server/test/fixtures/stdio-mattermost-attention-child.mjs" "$out/source/test/fixtures/"
-cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/source/test/fixtures/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 inputs=()
@@ -46,10 +45,7 @@ while IFS= read -r -d '' f; do inputs+=("$f"); done < <(find "$out/source" -name
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${inputs[@]}"
-mkdir -p "$out/test/fixtures"
-cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/test/fixtures/"
 mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/stdio-mattermost-child.mjs" "$out/dist/test/fixtures/"
 cp "$root/server/test/fixtures/stdio-mattermost-attention-child.mjs" "$out/dist/test/fixtures/"
-cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/dist/test/fixtures/"
 node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js"

@@ -401,6 +401,7 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
   abandoned.abort();
   release();
   await firstRun;
+  await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(memo.calendar.size, 1, 'the window the cancelled run paid for is kept for the session');
   h.deps.execute = execute;
   const next = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());

@@ -942,6 +942,18 @@ for id in NativeNextSteps.connectorIDs {
 }
 let calendarStep = NativeNextSteps.lookup(id: "calendar", state: "missing", reason: "credential_missing")
 expect(calendarStep.command == nil && calendarStep.guideURL?.absoluteString == "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup", "portable calendar instructions link the public guide without a copy command")
+// R6, obligation 1: the next-steps surface carries the same key line as the menu bar, with the
+// pane that fixes it, so the owner has two ways to the one switch.
+let keyOffStep = NativeNextSteps.singleKeyStep(enabled: true, tapped: false)
+expect(keyOffStep.text == SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: false)
+    && keyOffStep.text == "Right Command is off: allow Input Monitoring for Naya",
+    "the next-steps row for the key says what to allow, in the same words as the menu bar")
+expect(keyOffStep.guideURL?.absoluteString == SingleKeyTrigger.grantSettingsURL
+    && keyOffStep.guideURL?.absoluteString.hasSuffix("Privacy_ListenEvent") == true,
+    "and its button opens the Input Monitoring pane")
+let keyOnStep = NativeNextSteps.singleKeyStep(enabled: true, tapped: true)
+expect(keyOnStep.text != keyOffStep.text && keyOnStep.text.contains("mutes and unmutes"),
+    "a key with a live tap gets the working line, never the warning")
 let mongooseStep = NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil)
 expect(mongooseStep.command == "mongoose-login", "the Mongoose next step offers exactly the sign-in action id")
 expect(mongooseStep.command != "cp" && !(mongooseStep.command ?? "").hasPrefix("cp ") && !(mongooseStep.command ?? "").contains("/"), "credential path is not a copy command")

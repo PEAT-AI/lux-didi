@@ -3899,9 +3899,10 @@ test('R6: a source that settles after the first answer is appended once, and sai
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
-  assert.equal(late[0]!['delivered'], 'commentary', 'a quiet turn hears it once');
+  assert.equal(late[0]!['delivered'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model is always told');
-  assert.deepEqual(fake.commentary.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
 });
 

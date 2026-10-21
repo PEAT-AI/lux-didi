@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -49,12 +49,12 @@ test('calendar dense week preserves later weekdays and unique evidence with reta
   const h = fixture(events, { token: 'second', pageSize: 12 });
   const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'calendar', query: 'calendar this week' }] }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'both upstream pages, exact duplicate window once');
-  assert.equal(first['canContinue'], true);
-  const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
-  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'retained events are not reread');
-  const text = JSON.stringify(second['findings']);
+  assert.equal(first['canContinue'], false, 'both pages of the window are read and spoken in the one run');
+  const text = JSON.stringify(first['findings']);
   assert.match(text, /Day 21/); assert.match(text, /Day 22/); assert.match(text, /Day 23/);
   assert.doesNotMatch(text, /27 of 24/);
+  await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'retained events are not reread');
 });
 
 test('calendar exact weekday intents read distinct days and unsupported dates dispatch nothing', async () => {
@@ -135,9 +135,10 @@ test('calendar selector uses the shared primary collector and never retries a fa
     assert.equal(calls, fail ? 1 : 2);
     assert.ok(h.calls.filter(call => call['name'] === 'calendar_list_events').every(call => call['calendarId'] === 'primary'));
     if (!fail) {
-      assert.equal(reply['canContinue'], true);
+      assert.equal(reply['canContinue'], false, 'both pages of the window are read in the one run');
+      assert.match(JSON.stringify(reply['findings']), /item 14/);
       const second = await runResearch(h.deps, { action: 'continue', researchId: String(reply['researchId']) }, signal());
-      assert.match(JSON.stringify(second['findings']), /item 14/);
+      assert.equal(JSON.stringify(second['findings']), '[]', 'a completed window leaves nothing to continue');
       assert.equal(calls, 2);
     }
   }
@@ -171,10 +172,14 @@ test('calendar collection keeps one source deadline across pages and resumes an 
 
 test('calendar delivery advances exact event identities even when bounded text is identical', async () => {
   const h = fixture(Array.from({ length: 10 }, (_, n) => ({ id: `event-${n}`, start: '2026-10-19T10:00:00Z', summary: 'Identical long title '.repeat(30) })));
+  h.deps.replyLimit = 1_000;
   const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
-  assert.equal((first['calendarCoverage'] as Record<string, unknown>)['shown'], 8);
+  const shown = Number((first['calendarCoverage'] as Record<string, unknown>)['shown']);
+  assert.ok(shown > 0 && shown < 10, 'a reply over its byte budget leaves identical events for the continuation');
+  assert.match(String(first['note']), /left out \d+ calendar events/u);
+  h.deps.replyLimit = 6_000;
   const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
-  assert.equal((second['calendarCoverage'] as Record<string, unknown>)['shown'], 2);
+  assert.equal((second['calendarCoverage'] as Record<string, unknown>)['shown'], 10 - shown, 'delivery advances by identity, never by identical text');
   assert.equal(second['canContinue'], false);
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1);
 });
@@ -196,9 +201,9 @@ test('calendar in-flight continuation retains received events and never replays 
   await started;
   assert.ok(due); due();
   const first = await firstPromise;
-  assert.equal((first['calendarCoverage'] as Record<string, unknown>)['shown'], 8);
+  assert.equal((first['calendarCoverage'] as Record<string, unknown>)['shown'], 12, 'the whole first page is spoken, not eight events of it');
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());
-  assert.equal((next['calendarCoverage'] as Record<string, unknown>)['shown'], 4);
+  assert.equal((next['calendarCoverage'] as Record<string, unknown>)['shown'], 0, 'every received event was delivered by the first reply');
   assert.equal((next['calendarCoverage'] as Record<string, unknown>)['failed'], true, 'the superseded pending page cannot be replayed');
   release(); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2);
@@ -340,4 +345,66 @@ test('every calendar read carries the run remaining source budget as an absolute
   const reads = h.calls.filter(call => call['name'] === 'calendar_list_events');
   assert.ok(reads.length > 0, 'the run read the calendar');
   for (const call of reads) assert.equal(call['deadlineAt'], fixedNow + 12_000, 'the connector is bounded by the caller budget, never by the 40 s constant');
+});
+
+test('E8: a whole calendar week comes back at once, one compact line per day', async () => {
+  const events = [...Array.from({ length: 8 }, (_, n) => event(19, n)), ...Array.from({ length: 8 }, (_, n) => event(20, n)), ...Array.from({ length: 4 }, (_, n) => event(21, n)), ...Array.from({ length: 2 }, (_, n) => event(22, n)), event(23)];
+  const h = fixture(events);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
+  assert.match(finding.text, /^calendar: 23 of 23 shown/u);
+  for (const title of ['Day 19 item 0', 'Day 19 item 7', 'Day 20 item 7', 'Day 21 item 3', 'Day 22 item 1', 'Day 23 item 0']) assert.match(finding.text, new RegExp(title, 'u'));
+  assert.equal(finding.text.split('\n').filter(line => line.startsWith('- ')).length, 5, 'one line per day, not one line per event');
+  assert.equal(reply['canContinue'], false);
+  assert.match(String(reply['note']), /covers Mon 19 Oct to Fri 23 Oct/u);
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the whole window is one read');
+  assert.ok(Number(h.calls.find(call => call['name'] === 'calendar_list_events')!['maxResults']) > 12, 'the read asks for the window, not one page of twelve');
+});
+
+test('E8: a trimmed calendar answer says how many events it left out', async () => {
+  const events = Array.from({ length: 30 }, (_, n) => ({ id: `e${n}`, start: `2026-10-${19 + Math.floor(n / 6)}T${String(10 + (n % 6)).padStart(2, '0')}:00:00Z`, summary: `Budget item ${n} with a long title that fills the reply budget` }));
+  const h = fixture(events);
+  h.deps.replyLimit = 900;
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const shown = Number((reply['calendarCoverage'] as Record<string, unknown>)['shown']);
+  assert.ok(shown > 0 && shown < 30, 'the byte budget trims the answer instead of the window being cut to eight events');
+  assert.match(String(reply['note']), /I left out \d+ calendar events to keep this answer short\./u);
+  assert.equal(reply['canContinue'], true, 'the left-out events are still reachable');
+});
+
+test('E8: one calendar list and one window read per live session', async () => {
+  const h = fixture(Array.from({ length: 6 }, (_, n) => event(20, n)));
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'what is on this week', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const second = await scheduler.call({ action: 'start', question: 'overview of the week ahead', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  assert.notEqual(first['researchId'], second['researchId']);
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the same window inside the turn window is never fetched twice');
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_calendars').length, 1, 'the calendar list is read once per session');
+  assert.match(JSON.stringify(second['findings']), /Day 20 item 0/u);
+});
+
+test('E8: a cancelled run keeps the window it paid for, and the next run reuses it', async () => {
+  const h = fixture(Array.from({ length: 6 }, (_, n) => event(21, n)));
+  const memo: ResearchMemo = { calendar: new Map() };
+  h.deps.memo = memo;
+  const abandoned = new AbortController();
+  let started!: () => void, release!: () => void;
+  const began = new Promise<void>(resolve => { started = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const execute = h.deps.execute;
+  h.deps.execute = async (calls, abort) => {
+    if (calls.some(call => call['name'] === 'calendar_list_events')) { started(); await held; }
+    return execute(calls, abort);
+  };
+  const firstRun = runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, abandoned.signal);
+  await began;
+  abandoned.abort();
+  release();
+  await firstRun;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(memo.calendar.size, 1, 'the window the cancelled run paid for is kept for the session');
+  h.deps.execute = execute;
+  const next = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the kept window is reused, never fetched again');
+  assert.match(JSON.stringify(next['findings']), /Day 21 item 0/u);
 });

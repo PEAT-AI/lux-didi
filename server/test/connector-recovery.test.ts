@@ -215,8 +215,8 @@ test('a retryable first call failure retries a bounded number of times and then 
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */
-function googleConfig(url: string, connector: 'gmail' | 'calendar', id: string, resource: string): Record<string, unknown> {
-  return { id, transport: 'streamable-http', url, connector, account: ACCOUNT, resource, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
+function googleConfig(url: string, id: string, resource: string): Record<string, unknown> {
+  return { id, transport: 'streamable-http', url, connector: 'google', account: ACCOUNT, resource, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
 }
 
 const GMAIL_TOOLS = [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }];
@@ -237,7 +237,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
     schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
-    endpoints: [googleConfig(gmail.url, 'gmail', 'gmail', 'mail'), googleConfig(calendar.url, 'calendar', 'calendar', 'calendar')],
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail'), googleConfig(calendar.url, 'calendar', 'calendar')],
   }), { mode: 0o600 });
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const identity: Array<{ connector: string; proven: boolean; match: boolean | null }> = [];
@@ -248,8 +248,8 @@ test('a gmail proof that runs out of time is retried until it proves the account
   });
   t.after(() => runtime.close());
   const first = runtime.status().endpoints;
-  const calendarFirst = first.find(row => row.connector === 'calendar')!;
-  const gmailFirst = first.find(row => row.connector === 'gmail')!;
+  const calendarFirst = first.find(row => row.id === 'calendar')!;
+  const gmailFirst = first.find(row => row.id === 'gmail')!;
   assert.equal(gmailFirst.state, 'error', 'the slow proof left gmail unproven');
   assert.equal(gmailFirst.reasonCode, 'identity_timeout', 'and the code names a timeout, never a mismatch');
   assert.equal(gmailFirst.retrying, true, 'so recovery is scheduled');
@@ -259,15 +259,16 @@ test('a gmail proof that runs out of time is retried until it proves the account
   // The retry answers immediately: gmail ends connected and calendar keeps its own state and handshake.
   await new Promise(resolve => setTimeout(resolve, FAST[0]! + 600));
   const settled = runtime.status().endpoints;
-  const gmailAfter = settled.find(row => row.connector === 'gmail')!;
-  const calendarAfter = settled.find(row => row.connector === 'calendar')!;
+  const gmailAfter = settled.find(row => row.id === 'gmail')!;
+  const calendarAfter = settled.find(row => row.id === 'calendar')!;
   assert.equal(gmailAfter.state, 'connected');
   assert.equal(gmailAfter.retrying, false);
   assert.equal(gmailAfter.error, undefined);
   assert.ok(runtime.registry.currentGrant('gmail'), 'the retried proof published a grant');
   assert.deepEqual({ state: calendarAfter.state, lastHandshakeAt: calendarAfter.lastHandshakeAt },
     { state: calendarFirst.state, lastHandshakeAt: calendarFirst.lastHandshakeAt }, 'calendar was never re-probed');
-  // One receipt per endpoint and per probe: gmail's timed out proof is unproven, and its own retry proved it.
-  assert.deepEqual(identity.filter(entry => entry.proven).map(entry => entry.connector).sort(), ['calendar', 'gmail']);
-  assert.equal(identity.some(entry => entry.connector === 'gmail' && !entry.proven), true);
+  // One receipt per probe, per endpoint: gmail's timed out proof is unproven, and its own retry proved it.
+  assert.equal(identity.length, 3, 'calendar once, gmail twice');
+  assert.equal(identity.filter(entry => entry.connector === 'gmail' && !entry.proven).length, 1);
+  assert.equal(identity.filter(entry => entry.proven).length, 2);
 });

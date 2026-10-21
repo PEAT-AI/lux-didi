@@ -113,6 +113,8 @@ interface Harness {
   calls: { name: string; args: unknown }[];
   readonly memorySelections: number;
   advance(ms: number): void;
+  /** W10: publishes the calendar grant the way the host does after a slow connector finishes. */
+  publishCalendar?(): Promise<void>;
 }
 
 async function harness(t: TestContext, overrides: {
@@ -127,6 +129,8 @@ async function harness(t: TestContext, overrides: {
   history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
+  /** W10: the calendar endpoint is registered and configured, but its grant publishes after a start. */
+  lateCalendar?: boolean;
   mail?: boolean;
   research?: ResearchSelector;
   mailData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
@@ -184,7 +188,15 @@ async function harness(t: TestContext, overrides: {
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
   let toolRegistry: McpRegistry | undefined;
   let exposedToolOwner: ReturnType<typeof createToolsOwner> | undefined;
+  let publishCalendar: (() => Promise<void>) | undefined;
   if (overrides.tools) {
+    // W10: the configured endpoint report the live host always supplies, so a start can name a
+    // connector that is not usable yet instead of silently narrowing its sources.
+    const endpointStates: { id: string; connector: string; state: string }[] = [];
+    const mark = (id: string, connector: string): void => {
+      const entry = endpointStates.find(state => state.id === id);
+      if (entry) entry.state = 'connected'; else endpointStates.push({ id, connector, state: 'connected' });
+    };
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
@@ -308,15 +320,25 @@ async function harness(t: TestContext, overrides: {
         bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
       assert.equal((await port.discover(mattermostEndpoint.id)).state, 'discovered');
       toolOwner.projectConnection('mattermost');
+      mark('mattermost', 'mattermost');
     }
     if (overrides.calendar && calendarEndpoint) {
-      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['calendar_list_calendars', 'calendar_list_events'], schemaDigest: canonicalToolDigest(calendarSchemas),
-        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
-        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
-        bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
-      assert.equal((await port.discover(calendarEndpoint.id)).state, 'discovered');
-      toolOwner.projectConnection('calendar');
+      const connect = async (): Promise<void> => {
+        toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
+          endpoint: { ...calendarEndpoint!, credentialRef: null }, toolNames: ['calendar_list_calendars', 'calendar_list_events'], schemaDigest: canonicalToolDigest(calendarSchemas),
+          sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+          route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+          bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+        assert.equal((await port.discover(calendarEndpoint!.id)).state, 'discovered');
+        toolOwner.projectConnection('calendar');
+        mark('calendar', 'google');
+      };
+      if (overrides.lateCalendar) {
+        endpointStates.push({ id: 'calendar', connector: 'google', state: 'connecting' });
+        publishCalendar = connect;
+      } else {
+        await connect();
+      }
     }
     if (overrides.mail) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mail', generation: 1, enabled: true, connector: 'google',
@@ -325,6 +347,7 @@ async function harness(t: TestContext, overrides: {
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 2048, maxSearchLimit: 50, maxGetIds: 3, maxEntityBytes: 65536, maxResultBytes: 65536 } });
       assert.equal((await port.discover('mail')).state, 'discovered'); toolOwner.projectConnection('mail');
+      mark('mail', 'google');
     }
     if (overrides.mongoose) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
@@ -334,9 +357,13 @@ async function harness(t: TestContext, overrides: {
         bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
       assert.equal((await port.discover('mongoose')).state, 'discovered');
       toolOwner.projectConnection('mongoose');
+      mark('mongoose', 'mongoose');
     }
     toolOwner.projectConnection('lux');
-    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : []), ...(overrides.mail ? ['mail'] : []), ...(overrides.mongoose ? ['mongoose'] : [])] };
+    mark('lux', 'lux-knowledge');
+    tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner,
+      connectionIds: () => endpointStates.filter(state => state.state === 'connected').map(state => state.id),
+      status: () => ({ endpoints: endpointStates.map(state => ({ ...state })) }) };
     if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); if (mongooseSdk) await mongooseSdk.close(); if (mailSdk) await mailSdk.close(); });
   }
@@ -355,7 +382,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(overrides.research ? { research: overrides.research } : {}), ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 /** Attach a session on a custom port: `attached` speaks the Gemini fixture's frames, which a fake port never sees. */
@@ -2677,6 +2704,14 @@ test('the calendar declarations never invite a list before an event read', () =>
   assert.match(descriptions.get('calendar_list_events')!, /Omit both for today in the host timezone\./);
 });
 
+/** W10: the reply the model received from the last tool call it made. */
+function lastToolResponse(h: Harness): string {
+  const frame = [...h.f.frames].reverse().find(item => typeof item === 'object' && item !== null && 'toolResponse' in item) as
+    { toolResponse: { functionResponses: { id: string; response: unknown }[] } } | undefined;
+  assert.ok(frame, 'a tool response reached the model');
+  return JSON.stringify(frame.toolResponse.functionResponses.at(-1));
+}
+
 function toolResponseCount(h: Harness): number {
   return h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).length;
 }
@@ -3006,6 +3041,28 @@ test('F4: a barge-in keeps THINKING while the call is still in flight, and her a
   for (let i = 0; i < 200 && h.owner.current().state !== 'speaking'; i++) await tick();
   assert.equal(h.owner.current().state, 'speaking', 'her answer ends THINKING');
   attachment.close(); await attachment.done;
+});
+
+test('W10: a configured endpoint that cannot serve a research read is named unreachable, never dropped', async t => {
+  const h = await harness(t, { tools: true, calendar: true, lateCalendar: true });
+  await attached(h, 'late-calendar-named');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /calendar: unavailable \(read grant not published\)/, 'the calendar source names its closed reason');
+});
+
+test('W10: a source whose grant publishes after the call started joins the next research call', async t => {
+  const h = await harness(t, { tools: true, calendar: true, lateCalendar: true });
+  await attached(h, 'late-calendar-join');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  assert.match(lastToolResponse(h), /calendar: unavailable/, 'the first call has no calendar grant');
+  await h.publishCalendar!();
+  h.advance(300);
+  const before = h.calls.length;
+  await settleLiveTool(h, 'r2', 'research', { action: 'start', question: 'what is on my calendar' });
+  const reply = lastToolResponse(h);
+  assert.doesNotMatch(reply, /calendar: unavailable/, 'the published grant is offered, not reported broken');
+  assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), 'the late source serves the read');
 });
 
 test('U1: research progress reaches the live channel with metadata only', async t => {

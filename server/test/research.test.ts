@@ -1302,3 +1302,17 @@ test('a google endpoint in configuration error is voiced as unreachable mail, ne
   assert.match(note, /could not reach mail/);
   assert.deepEqual(dispatched, [], 'a source known to be unreachable is not dispatched to');
 });
+
+test('W10: a connected endpoint whose read grant has not published is named, with a closed reason', () => {
+  const endpoints = [
+    { id: 'calendar', connector: 'google', state: 'connected' },
+    { connector: 'gmail', state: 'connected' },
+  ];
+  // Gmail published its grant; the calendar endpoint is connected but offers no read yet.
+  const named = configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message']);
+  assert.deepEqual(named, [{ source: 'calendar', reason: 'source_not_granted' }]);
+  // Every source has a granted read: nothing is reported unreachable.
+  assert.deepEqual(configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message', 'calendar_list_events']), []);
+  // Without a granted set the report is the one W9 wrote: a connected endpoint is not reported.
+  assert.deepEqual(configuredSourcesForEndpoints(endpoints), []);
+});

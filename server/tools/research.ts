@@ -2250,6 +2250,8 @@ function rememberCalendarWindow(deps: ResearchDeps, reads: readonly CalendarRead
   memo?.calendar.set('probe', { at, events: new Map() });
   if (memo === undefined) return;
   reads.forEach((read, n) => {
+    const result0 = results[slots[n]!];
+    memo.calendar.set(`probe-${read.failed ? 'failed' : read.nextPageToken !== undefined ? 'token' : result0?.ok !== true ? 'ok' : result0.calendarPage === undefined ? 'nopage' : result0.calendarPage.nextPageToken !== undefined ? 'pagetoken' : result0.calendarPage.unread > 0 ? 'unread' : 'write'}`, { at, events: new Map() });
     if (read.failed || read.nextPageToken !== undefined) return;
     const result = results[slots[n]!];
     const page = result?.calendarPage;

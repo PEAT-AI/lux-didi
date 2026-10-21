@@ -2384,7 +2384,7 @@ export class LiveSessionOwner {
     // tools come from the same registry the reads run against, so a connected endpoint whose read
     // grant has not published yet is named with `source_not_granted`, never dropped.
     return configuredSourcesForEndpoints((this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[],
-      handle.registry.map(tool => tool.name));
+      undefined);
   }
 
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {

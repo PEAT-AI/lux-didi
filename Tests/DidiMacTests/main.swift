@@ -497,6 +497,18 @@ expect(lateGrantReceipts.count == 3 && lateGrantReceipts[2]["tapCreated"] as? Bo
     && lateGrantReceipts[2]["trusted"] as? Bool == true,
     "a tap that goes away writes one receipt, so a key that dies mid-run is visible")
 SingleKeyTrigger.isEnabled = true
+// F13 (#1021): the live re-check is pinned by one seam, so the app can never poll a working key
+// and can never leave an untrusted one dead. Activation plus one slow timer, at most every 5 s.
+let waitingPlan = SingleKeyTrigger.grantWatchPlan(enabled: true, tapped: false)
+expect(waitingPlan.onActivation && waitingPlan.pollInterval != nil,
+    "an enabled key with no tap is re-checked on activation and on a timer")
+expect((waitingPlan.pollInterval ?? .infinity) <= 5,
+    "the untrusted poll is cheap, at most every five seconds")
+expect(SingleKeyTrigger.grantWatchPlan(enabled: true, tapped: true) == SingleKeyTrigger.grantWatchPlan(enabled: false, tapped: false)
+    && SingleKeyTrigger.grantWatchPlan(enabled: true, tapped: true).pollInterval == nil,
+    "a live tap and a key the owner turned off both owe no polling at all")
+expect(!SingleKeyTrigger.grantWatchPlan(enabled: false, tapped: false).onActivation,
+    "a key the owner turned off is never re-checked: no grant would turn it on")
 // The once-per-version prompt never gates the line, so a missed or dismissed prompt still
 // leaves the owner a way in (acceptance 3).
 let noticeSuite = "didi.single-key-notice.\(UUID().uuidString)"

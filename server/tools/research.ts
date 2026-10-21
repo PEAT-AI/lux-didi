@@ -792,9 +792,6 @@ function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars:
 }
 
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
-/** W12/F2: the words the owner hears for a read, kept apart from the compiled Gmail query. */
-const OWNER_QUERY = new WeakMap<IntentSubCall, string>();
-
 export function candidateSubs(kind: CandidateKind, config: { question: string; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined; timeZone?: string | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
   const keywords = contentKeywords(config.question).join(' ');
@@ -810,11 +807,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now(), config.timeZone);
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines }, 'cal0')];
   }
-  if (kind === 'mail_search') {
-    const mail = search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.mailLines }, 'm0');
-    if (config.query !== undefined) OWNER_QUERY.set(mail, config.query);
-    return [mail];
-  }
+  if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.mailLines }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: config.query ?? 'after:yesterday', limit: RESEARCH.chatLines }, 'c0')];
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
@@ -923,6 +916,8 @@ export interface RunState {
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number;
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
+  /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
+  ownerQueries: Map<string, string>;
   calendarScopeAttempted?: boolean;
   /** N3: the counted note the calendar list supports, for the routed answer that carries no raw list. */
   calendarNotRead?: string;
@@ -973,7 +968,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1894,7 +1889,11 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       ...(run.mailCursorRequested ? { cursor: run.mailCursorRequested } : {}),
     } : {};
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
-      .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
+      .map(group => {
+        // N3: the primary-calendar answer says what it did not read, from the list it carried.
+        const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
+        return { source: group.source, text: `${group.label}: ${group.lines.length} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`, chars: group.lines.join('\n').length };
+      });
     return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
@@ -1950,15 +1949,24 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
     ] };
   }
   if (lookup.source === 'knowledge') return { source: 'knowledge', kind: 'knowledge_search', subs: candidateSubs('knowledge_search', subsConfig) };
-  if (lookup.source === 'mail') return lookup.mail
-    ? {
-      source: 'mail', kind: 'id' in lookup.mail ? 'mail_open' : 'mail_search',
-      subs: [{
-        key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-        args: 'id' in lookup.mail ? { ...lookup.mail } : { ...lookup.mail, q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
-      }],
+  if (lookup.source === 'mail') {
+    const plan = lookup.mail
+      ? {
+        source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
+        subs: [{
+          key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...lookup.mail, q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
+        }],
+      }
+      : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
+    // F2: the live step speaks the owner's words, never the compiled Gmail query.
+    const owned = lookup.mail === undefined || !('q' in lookup.mail) ? lookup.query : lookup.mail.q;
+    for (const sub of plan.subs) {
+      const compiled = (sub.args as JsonObject)['q'];
+      if (typeof compiled === 'string' && owned !== undefined) context.run.ownerQueries.set(compiled, owned);
     }
-    : { source: 'mail', kind: 'mail_search', subs: candidateSubs('mail_search', subsConfig) };
+    return plan;
+  }
   return { source: 'chat', kind: 'chat_search', subs: candidateSubs('chat_search', subsConfig) };
 }
 
@@ -2266,9 +2274,7 @@ async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly 
   return plans.map(plan => {
     const key = owned.get(plan);
     const read = key === undefined ? undefined : run.calendar.get(key);
-    const first = key !== undefined && !credited.has(key);
-    const lines = read && first ? [...read.events.values()].map(event => event.line) : [];
-    if (first && run.calendarNotRead !== undefined && lines.length > 0) lines.push(run.calendarNotRead);
+    const lines = read && !credited.has(key!) ? [...read.events.values()].map(event => event.line) : [];
     if (key) credited.add(key);
     const outcome: LookupOutcome = !read ? 'unavailable' : read.events.size > 0 ? 'ok' : read.failed ? 'failed' : read.exhausted ? 'empty' : 'timeout';
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.calendarList, source: 'calendar', outcome, ms: now() - started, lines, total: read?.events.size ?? 0 };
@@ -2672,7 +2678,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const sources = [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
     const steps = sources.map(source => {
       const sub = subs.find(sub => sourceKindOfKindName(sub.name) === source)!;
-      const ownerQuery = OWNER_QUERY.get(sub);
+      const ownerQuery = run.ownerQueries.get(String(sub.args['q'] ?? ''));
       const subject = stepSubject(ownerQuery === undefined ? sub.args : { query: ownerQuery });
       const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
       return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
@@ -2921,6 +2927,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           let subs: IntentSubCall[];
           try { subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
           catch { run.unavailableReasons.set('calendar', 'unresolved_window'); run.sourcesFailed.add('calendar'); return; }
+          // F2: the live step speaks the owner's words, never the compiled Gmail query.
+          if (kind === 'mail_search' && action?.query !== undefined) for (const sub of subs) run.ownerQueries.set(String(sub.args['q']), action.query);
           if (subs.length === 0) return;
           widenFor(subs);
           readStarted.add(kind);

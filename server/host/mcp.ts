@@ -245,9 +245,18 @@ export async function composeMcpRuntime(options: {
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
 
   const eligible = new Map<string, { session: number; revision: number }>();
-  // Endpoints parked at `not_signed_in`: a login writes the credential, and the next recover()
-  // connects them, so the owner never restarts the host to finish a sign-in (R9).
-  const needsSignIn = new Set<string>();
+  // Endpoints parked on a sign-in reason: a login rewrites the credential, and the next recover()
+  // connects them, so the owner never restarts the host to finish a sign-in (R9). The parked value is
+  // a digest of the stored credential at park time, so a dead record is never re-probed and a fresh
+  // sign-in always is, whichever shape the endpoint stores (OAuth record or pasted bearer).
+  const needsSignIn = new Map<string, string>();
+  const storedCredentialDigest = (reference: string): string => {
+    let pasted = '';
+    try { pasted = readMcpCredential(configDir, reference); } catch { pasted = ''; }
+    return sha256(`${readMongooseOAuth(configDir, reference)?.refreshToken ?? ''}\u0000${pasted}`);
+  };
+  // Every credential-stage reason only a new sign-in fixes. A busy refresh is not one of them.
+  const signInReasons = new Set(['not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
   const bursts = new Map<string, { session: number; token: number | undefined }>();
   const flights = new Map<string, Promise<void>>();
   const recoverEndpoint = (id: string): Promise<void> => {
@@ -326,7 +335,7 @@ export async function composeMcpRuntime(options: {
       // no failing probe is logged at every launch: one typed status, and the next connect after a
       // login (the app refreshes the connector then) probes it for real.
       if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
-        needsSignIn.add(entry.id);
+        needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reportFailure(entry, 'credential', attempt, 'not_signed_in');
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
         return { retryable: false };
@@ -341,6 +350,9 @@ export async function composeMcpRuntime(options: {
       if (discovery.state !== 'discovered') {
         const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
         reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code);
+        // A refused refresh or an expired consent parks the endpoint for the next sign-in, exactly as
+        // a missing record does, so the login reconnects it without a restart (R9).
+        if (stage === 'credential' && signInReasons.has(discovery.reason) && entry.credentialRef) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
         // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
         // credential or configuration error is stable and a later refresh still reconnects it.
@@ -534,12 +546,13 @@ export async function composeMcpRuntime(options: {
     refresh: async () => { startPromise = undefined; await run(); },
     recover: async () => {
       // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
-      // again with a new generation, exactly as a first connect would (R9).
-      await Promise.all([...needsSignIn].map(async id => {
+      // again with a new generation, exactly as a first connect would (R9). Only a changed credential
+      // counts as a landing, so a parked dead record is never re-probed.
+      await Promise.all([...needsSignIn].map(async ([id, parked]) => {
         const entry = active.find(candidate => candidate.id === id);
         if (closed || entry === undefined || entry.credentialRef == null) return;
-        const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
-        if (!stored) return;
+        const landed = storedCredentialDigest(entry.credentialRef);
+        if (landed === parked) return;
         needsSignIn.delete(id);
         const token = (generations.get(id) ?? 0) + 1;
         generations.set(id, token);

@@ -192,7 +192,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const reasonCode = state === 'connected' || state === 'connecting' || (state === 'configured' && !error) ? null
               : configurationError ? 'configuration_error'
               : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
-              : /^not_signed_in$/.test(error) ? 'not_signed_in'
+              : /^(not_signed_in|credential-(missing|refresh-failed|consent-expired))$/.test(error) ? 'needs_sign_in'
               : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
               : /discovery/.test(error) ? 'discovery_failed'
               : /handshake/.test(error) ? 'handshake_failed'

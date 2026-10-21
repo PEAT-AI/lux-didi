@@ -187,7 +187,8 @@ test('K4: a project hint reaches the wire as project_hint, and an unknown search
     await reader.search({ query: 'wriggler pipeline', limit: 6, project: 'Wriggler' });
     assert.deepEqual(f.calls[1], { name: 'search_knowledge', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project: 'Wriggler' } });
     const refused = await reader.search({ query: 'wriggler pipeline', limit: 6, sort: 'score' } as unknown as Parameters<typeof reader.search>[0]);
-    assert.deepEqual({ state: 'refused' in refused ? refused.state : 'allowed', reason: 'refused' in refused ? refused.reason : '' }, { state: 'refused', reason: 'invalid-search-input' });
+    assert.equal('state' in refused ? refused.state : 'completed', 'refused');
+    assert.equal((refused as { reason?: string }).reason, 'invalid-search-input');
   } finally { await adapter.close(); await f.close(); }
 });
 

@@ -38,6 +38,10 @@ export interface LuxKnowledgeSearchInput {
   maxChars?: number;
   /** 3r: the search's own time budget, within the server's own 500..30000 range. */
   deadlineMs?: number;
+  /** K4: rank inside one project tag. The owner's own corpus is project tagged; a filter is never guessed. */
+  project?: string;
+  /** K4: boost one project's entries without excluding any other. */
+  projectHint?: string;
 }
 export interface LuxKnowledgeGetInput { ids: number[]; include_links?: boolean }
 
@@ -172,7 +176,7 @@ interface Settings extends Budgets {
 }
 
 function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
-  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs']);
+  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint']);
   if (record === undefined) return { ok: false, reason: 'invalid-search-input' };
   const query = record['query']!.value;
   const limit = record['limit']!.value;
@@ -181,6 +185,11 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
   const detail = record['detail']?.value;
   const maxChars = record['maxChars']?.value;
   const deadlineMs = record['deadlineMs']?.value;
+  const project = record['project']?.value;
+  const projectHint = record['projectHint']?.value;
+  // K4: a project tag is a name the corpus carries, never a pattern the model composed.
+  const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
+  if (!projectName(project) || !projectName(projectHint)) return { ok: false, reason: 'invalid-project' };
   if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies') return { ok: false, reason: 'invalid-detail' };
   if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return { ok: false, reason: 'max-chars-out-of-range' };
   if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return { ok: false, reason: 'deadline-ms-out-of-range' };
@@ -191,6 +200,8 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
       ...(detail === undefined ? {} : { detail: detail as 'snippets' | 'bodies' }),
       ...(maxChars === undefined ? {} : { maxChars: maxChars as number }),
       ...(deadlineMs === undefined ? {} : { deadlineMs: deadlineMs as number }),
+      ...(project === undefined ? {} : { project: project as string }),
+      ...(projectHint === undefined ? {} : { projectHint: projectHint as string }),
     },
   };
 }
@@ -284,6 +295,8 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (validated.args.detail !== undefined) args['detail'] = validated.args.detail;
       if (validated.args.maxChars !== undefined) args['max_chars'] = validated.args.maxChars;
       if (validated.args.deadlineMs !== undefined) args['deadline_ms'] = validated.args.deadlineMs;
+      if (validated.args.project !== undefined) args['project'] = validated.args.project;
+      if (validated.args.projectHint !== undefined) args['project_hint'] = validated.args.projectHint;
       return dispatch('search_knowledge', args, signal);
     },
     async get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {

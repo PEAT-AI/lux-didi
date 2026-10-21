@@ -15,6 +15,10 @@ npm run build
 # The new owner suite, the live summary suite (#363), the trace store suite, the warm-context pre-assembly
 # suite, the debug journal suites and the accepted Live adapter regression suite run together, with the
 # voice fault-replay scenarios (release gate F1): the real adapter and the real host, driven over a virtual clock.
+# The knowledge use this release changes: her opened bodies (#1021), her clipped query, her project hint,
+# the confidence line she now hears, and the connector fields that carry it. Those suites run nowhere else.
+node_test_files --test-reporter=tap --test-timeout=30000 dist/test/research-knowledge.test.js dist/test/research.test.js dist/test/research-routed.test.js dist/test/research-shape.test.js dist/test/knowledge-connector.test.js | tee "$work/knowledge.log"
+grep -Eq '^# fail 0$' "$work/knowledge.log" || { echo 'Selected knowledge suites failed' >&2; exit 1; }
 node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js dist/test/research-steps.test.js dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/trace.test.js dist/test/voice-replay.test.js | tee "$work/test.log"
 
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; exit 1; }

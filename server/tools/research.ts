@@ -2205,7 +2205,8 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     if (scopeSlot !== undefined) {
       const scope = results[scopeSlot];
       if (scope?.ok && scope.calendarScope) run.calendarScope = scope.calendarScope;
-      if (scope !== undefined) run.calendarNotRead = calendarNotRead([scope]);
+      const notRead = scope === undefined ? undefined : calendarNotRead([scope]);
+      if (notRead !== undefined) run.calendarNotRead = notRead; else delete run.calendarNotRead;
       if (scope?.binding && reads[0]) reads[0].bindings.push(scope.binding);
     }
     reads.forEach((read, n) => {

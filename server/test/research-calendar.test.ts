@@ -400,9 +400,9 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
   await began;
   abandoned.abort();
   release();
-  await firstRun;
+  const abandonedReply = await firstRun;
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(memo.calendar.size, 1, 'the window the cancelled run paid for is kept for the session');
+  assert.equal(memo.calendar.size, 1, `kept=${JSON.stringify([...memo.calendar.keys()])} calls=${JSON.stringify(h.calls)} reply=${JSON.stringify(abandonedReply)}`);
   h.deps.execute = execute;
   const next = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, `the kept window is reused, never fetched again: ${JSON.stringify(h.calls.map(call => call['name']))}`);

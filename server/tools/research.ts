@@ -2279,10 +2279,11 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
   const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(RESEARCH.sourceDeadline.calendar, remainingMs)))]);
   while (now() < sourceDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     // E8: a window this session already read inside the turn window costs no transport call.
+    deps.memo?.calendar.set('probe2', { at: now(), events: new Map() });
     for (const [key, read] of run.calendar) {
       if (read.exhausted || read.failed || read.inflight || read.nextPageToken !== undefined) continue;
       const hit = deps.memo?.calendar.get(key);
-      if (hit === undefined || now() - hit.at > RESEARCH.coalesceWindowMs) continue;
+      if (hit === undefined || now() - hit.at > RESEARCH.coalesceWindowMs) { deps.memo?.calendar.set('probe3', { at: now(), events: new Map() }); continue; }
       for (const [eventKey, event] of hit.events) read.events.set(eventKey, event);
       read.exhausted = true;
     }

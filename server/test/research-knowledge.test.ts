@@ -45,7 +45,7 @@ const selectorOf = (...outputs: SelectorOutput[]): ResearchSelector => ({
 /** A real search reply shape: the H1 header, the italic retrieval metadata, one cut hit. */
 const CUT_SEARCH = [
   '# Knowledge Search',
-  '_confidence: low · mode: reranked · top score: 0.21 · relevant candidate: yes_',
+  '_confidence: medium · mode: reranked · top score: 0.37 · relevant candidate: yes_',
   '**#123** [TECHNICAL_DECISION] Retrieval deadline',
   'the deadline is the fifteenth of the month',
   'Score: 0.467 · status: live · score: 0.37',
@@ -86,7 +86,7 @@ test('K6: a question with no content words asks rather than searching filler', (
 
 test('K5 and K7: the confidence line reaches the finding, and the two score scales do not', () => {
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', CUT_SEARCH)]);
-  assert.equal(block.lines[0], 'knowledge: confidence=low top=0.21 candidates=yes');
+  assert.equal(block.lines[0], 'knowledge: confidence=medium top=0.37 candidates=yes');
   assert.ok(!block.text.includes('Score:'), 'the incomparable per-hit score line is dropped');
   assert.ok(block.lines.some(line => line.endsWith('cut at 1200 chars')), 'a search snippet stays short');
   const bare = shapeBlock('knowledge_search', [sub('search_knowledge', '**#9** [PATTERN] A plain hit')]);
@@ -128,26 +128,31 @@ test('K1: a reply that proved its hit complete opens nothing', async () => {
   const calls: IntentSubCall[] = [];
   const h = harness({
     selector: searched,
-    execute: async subs => { for (const call of subs) calls.push(call); return subs.map(call => sub(call.name, '**#123** [PATTERN] A whole hit\ntruncated: no', true, call.key)); },
+    execute: async subs => { for (const call of subs) calls.push(call); return subs.map(call => sub(call.name, '**#123** [PATTERN] A whole hit\nthe whole stored body\ntruncated: no', true, call.key)); },
   });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   assert.equal(calls.filter(call => call.name === 'get_insight').length, 0);
 });
 
 test('K1 and K5: a reply that calls its own match weak never triggers a body read', async () => {
-  const low = CUT_SEARCH;
-  assert.deepEqual(knowledgeHydrateIds(low, new Set()), [], 'a low-confidence match is not opened');
-  assert.deepEqual(knowledgeHydrateIds(low.replace('_confidence: low', '_confidence: high'), new Set()), [123]);
-  assert.deepEqual(knowledgeHydrateIds(low.replace('_confidence: low', '_confidence: high'), new Set([123])), [], 'a complete hit is not opened');
+  const low = CUT_SEARCH.replace('_confidence: medium', '_confidence: low');
+  assert.deepEqual(knowledgeHydrateIds(low, new Set()), [], 'a weak match is not opened');
+  assert.deepEqual(knowledgeHydrateIds(CUT_SEARCH, new Set()), [123]);
+  assert.deepEqual(knowledgeHydrateIds(CUT_SEARCH, new Set([123])), [], 'a hit the server proved complete is not opened');
 });
 
 test('K8: knowledge latency is stated at its measured p50, and the log carries the read span not the wait', async () => {
   assert.equal(RESEARCH.p50Seconds.knowledge, 2.9);
   let clock = 0;
-  const searched = selectorOf(
-    { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } },
-  );
-  const selector: ResearchSelector = { select: async () => { clock += 3_000; return searched.select({} as never, new AbortController().signal); } };
+  // The selector is slow and the read fast: the read settles first, its own end is stamped, and the
+  // log line is written long after. Two microtask hops between them model that overlap honestly.
+  const selector: ResearchSelector = {
+    select: async () => {
+      await Promise.resolve(); await Promise.resolve();
+      clock += 3_000;
+      return { questionClass: 'cross_source' as const, actions: [{ kind: 'knowledge_search' as const }], pUseful: { knowledge_search: 0.9 } };
+    },
+  };
   const h = harness({
     selector,
     now: () => clock,

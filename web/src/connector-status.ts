@@ -2,6 +2,7 @@
 import { escapeHtml } from './markdown.ts';
 const REASONS: Record<string, [string, string]> = {
   credential_missing: ['Credential missing', 'add the credential file under provider-config and restart'],
+  needs_sign_in: ['Sign-in needed', 'sign in with the button in Settings, then it reconnects on its own'],
   unreachable: ['Service unreachable', 'start the service, then restart Lux Didi'],
   discovery_failed: ['Tool discovery failed', 'check the service tool configuration, then restart Lux Didi'],
   handshake_failed: ['Handshake failed', 'check the service is ready, then restart Lux Didi'],

@@ -8,7 +8,7 @@ struct NativeNextStep {
 }
 enum NativeNextSteps {
     static let connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose"]
-    static let reasonCodes = ["credential_missing", "unreachable", "discovery_failed", "handshake_failed", "unknown"]
+    static let reasonCodes = ["credential_missing", "needs_sign_in", "unreachable", "discovery_failed", "handshake_failed", "unknown"]
     static let credentialSteps: [String: NativeNextStep] = [
         "lux-knowledge": NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
         "gmail": NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
@@ -25,9 +25,10 @@ enum NativeNextSteps {
                        command: nil,
                        guideURL: URL(string: SingleKeyTrigger.grantSettingsURL))
     }
+    static let signInStep = NativeNextStep(text: "Sign in to Mongoose in Settings: the Sign in button is on the Mongoose row, and the connector reconnects by itself when you finish.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup"))
     static let table: [String: [String: NativeNextStep]] = Dictionary(uniqueKeysWithValues: connectorIDs.map { id in
         (id, Dictionary(uniqueKeysWithValues: reasonCodes.map { reason in
-            (reason, reason == "credential_missing" ? credentialSteps[id]! : failureStep)
+            (reason, id == "mongoose" && reason == "needs_sign_in" ? signInStep : reason == "credential_missing" ? credentialSteps[id]! : failureStep)
         }))
     })
     static func lookup(id: String, state: String, reason: String?) -> NativeNextStep {

@@ -606,3 +606,55 @@ test('a refused token refresh reports credential-refresh-failed and one closed l
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// SIGNIN: a refused refresh parks the endpoint, and the sign-in that lands in place reconnects it.
+// The owner finishes a sign-in and the connector comes back with no host restart (R9).
+test('a refused refresh parks mongoose and the landing sign-in reconnects it', async () => {
+  const f = await fixture({ requireBearer: true });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-landing-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  let refreshes = 0;
+  const tokenServer = createServer((req, res) => {
+    req.resume(); req.on('end', () => {
+      refreshes += 1;
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_grant' }));
+    });
+  });
+  tokenServer.listen(0, '127.0.0.1'); await once(tokenServer, 'listening');
+  const tokenPort = (tokenServer.address() as { port: number }).port;
+  const NOW = Date.now();
+  const record = (refreshToken: string, accessToken: string, expiresAt: number) => JSON.stringify({
+    schemaVersion: 2, base: `http://127.0.0.1:${tokenPort}`, clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
+    accessToken, refreshToken, expiresAt, consentStartedAt: NOW - 1_000,
+  });
+  writeFileSync(join(configDir, 'mongoose-mcp.json'), record('refresh-token', 'stale-token', NOW - 60_000), { mode: 0o600 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads',
+    endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT,
+      resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'sensitive' }],
+  }), { mode: 0o600 });
+  let store: Store | undefined;
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  try {
+    store = new Store(join(dir, 'data'), toolsMigrations);
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    assert.equal(runtime.status().endpoints[0]?.error, 'credential-refresh-failed', 'the refused refresh is a credential failure');
+    // Nothing was signed in, so a recover pass must not re-probe the same dead record.
+    await runtime.recover();
+    assert.equal(refreshes, 1, `the dead record is not re-probed, saw ${refreshes} refreshes`);
+    assert.equal(runtime.status().endpoints[0]?.error, 'credential-refresh-failed');
+    // The sign-in lands: a fresh record with a valid access token replaces the refused one.
+    writeFileSync(join(configDir, 'mongoose-mcp.json'), record('fresh-refresh', 'test-token', NOW + 3_600_000), { mode: 0o600 });
+    await runtime.recover();
+    const after = runtime.status().endpoints[0];
+    assert.equal(after?.state, 'connected', `the signed-in connector reconnects, saw ${JSON.stringify(after)}`);
+    assert.equal(after?.error, undefined);
+  } finally {
+    if (runtime) await runtime.close();
+    store?.close(); await f.close();
+    tokenServer.closeAllConnections(); await new Promise<void>(done => tokenServer.close(() => done()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySum
 import { ConnectedView } from './connected';
 import { Orb, orbSurfaceVisible, type VoiceState } from './orb';
 import { createStateDebounce } from './orb-states';
-import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
+import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive, startMongooseSignIn } from './api';
 import { activityMarkup, connectingBeforeFirstSpeech, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
@@ -445,6 +445,10 @@ function bind() {
   document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
   document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
   document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
+  button('mongoose-signin',()=>void mutate(async (signal,version)=>{
+    const started=await startMongooseSignIn(signal);assertAuthority(version);
+    notice=started.status==='started'?'Sign in to Mongoose in the browser window. The connector reconnects by itself when you finish.':'Sign-in did not finish. Use the Sign in button to try again.';
+  }));
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>) {
   if(!writable())return;

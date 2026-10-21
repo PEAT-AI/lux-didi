@@ -54,6 +54,23 @@ export function withProvenance(next: WarmContextSections, previous: WarmContextS
   return { ...next, summaryIds: [...previous.summaryIds], summaryOmitted: [...previous.summaryOmitted] };
 }
 
+/**
+ * The one line at call start when a connector waits on a sign-in only the owner can finish. It is said
+ * once, in the instruction, so a later turn never repeats it.
+ */
+export const SIGN_IN_REASONS = new Set(['needs_sign_in', 'not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
+export function signInNote(endpoints: readonly unknown[]): string | undefined {
+  const waiting = endpoints.some(value => {
+    const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+    // Mongoose is the one connector the owner can sign in to, so no other connector is announced.
+    if (row.connector !== 'mongoose') return false;
+    // The host report names one of these closed codes; the browser projection names needs_sign_in.
+    return SIGN_IN_REASONS.has(String(row.reasonCode)) || SIGN_IN_REASONS.has(String(row.error));
+  });
+  if (!waiting) return undefined;
+  return 'Mongoose is waiting on a sign-in, so company knowledge cannot be read yet. Say that once, briefly, at the start of this call, and say the Sign in button is in Settings.';
+}
+
 /** Sections in priority order, each trimmed to what the instruction budget has left. */
 export function assembleContext(sections: WarmContextSections, budget: number): string {
   const blocks: string[] = [];

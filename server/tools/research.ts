@@ -1939,7 +1939,8 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
   // The calendar list rides along only so the result can say what it did not read.
   if (lookup.source === 'calendar') {
     let range: { timeMin: string; timeMax: string };
-    try { range = windowRange(calendarWindowOf(query, 'week'), context.now(), context.timeZone); }
+    // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
+    try { range = windowRange(calendarWindowOf(query, ''), context.now(), context.timeZone); }
     catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
       { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines } as JsonObject },

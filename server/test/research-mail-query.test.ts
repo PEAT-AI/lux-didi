@@ -217,12 +217,14 @@ test('W12-R1: an answered run that named a source unavailable is never coalesced
 
 // ROUTE-R2: the run log says why a source was skipped, so a grant gap is never read as an outage.
 test('ROUTE-R2: a gmail endpoint that failed its proof is logged as an endpoint outage', async () => {
-  const h = mailHarness(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...mailPage(['m1']) })));
+  let dispatched = 0;
+  const h = mailHarness(async subs => { dispatched += 1; return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...mailPage(['m1']) })); });
   const logs: ResearchRunLog[] = [];
   h.deps.log = event => logs.push(event);
   h.deps.unavailableNow = () => [{ source: 'mail', reason: 'identity_unverified' }];
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did Dana email me about the invoice' }, new AbortController().signal);
-  assert.equal(h.sources.length, 0, 'a dead endpoint is never dispatched to');
+  assert.equal(dispatched, 0, 'a dead endpoint is never dispatched to');
+  assert.deepEqual(h.sources.map(entry => entry.outcome), ['unavailable'], 'the source log states the dead endpoint once');
   const row = logs.at(-1)!.sources.find(entry => entry.kind === 'mail')!;
   assert.deepEqual({ disposition: row.disposition, reason: row.reason }, { disposition: 'skipped', reason: 'endpoint_unavailable' });
   assert.ok(safeEvent(logs.at(-1)!) !== undefined, 'the host log keeps that sub-reason');
@@ -232,7 +234,7 @@ test('ROUTE-R2: a gmail endpoint that failed its proof is logged as an endpoint 
 test('ROUTE-R2: the host log keeps a skip reason only from the closed set', () => {
   const receipt = {
     event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered', ops: 1,
-    elapsedMs: 1, deadAirMs: 0, selectorMs: 0, fallbackUsed: true, replyBytes: 1, unchecked: [], canContinue: false,
+    elapsedMs: 1, deadAirMs: 0, selectorMs: 0, fallbackUsed: true, replyBytes: 1, unchecked: [], canContinue: false, findingChars: [],
     sources: [{ kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'not_granted' }],
   };
   const kept = safeEvent(receipt);

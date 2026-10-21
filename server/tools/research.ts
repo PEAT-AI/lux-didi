@@ -459,7 +459,7 @@ const MAIL_FILLER = new Set([
   'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
 ]);
 /** The correspondence verbs that make "mail from or to that person" explicit. */
-const MAIL_DIRECTION = /\b(?:from|to|sent|send|received|receive|reply|replied|wrote|written|emailed|hear from|heard from)\b/iu;
+const MAIL_DIRECTION = /\b(?:from|to|sent|send|received|receive|reply|replied|wrote|written|email|emails|emailed|mailed|hear from|heard from)\b/iu;
 /** Words capitalised for another reason than being a name. */
 const NOT_A_NAME = new Set([
   'gmail', 'google', 'slack', 'mattermost', 'lux', 'didi', 'i',
@@ -567,7 +567,7 @@ export function mailQueryShape(q: string): MailQueryShape {
     if (match === null) { if (token.toUpperCase() !== 'OR') terms += 1; continue; }
     const operator = match[1]!.toLowerCase();
     if (!operators.includes(operator)) operators.push(operator);
-    if (WINDOW_OPERATORS.has(operator)) window = token;
+    if (WINDOW_OPERATORS.has(operator) && window === undefined) window = token;
   }
   return { terms, operators, ...(window === undefined ? {} : { window }) };
 }

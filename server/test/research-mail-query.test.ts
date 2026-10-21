@@ -73,5 +73,5 @@ test('E5: the search shape is counts and operators, never the words', () => {
 test('E5: the reply says how it searched: the words and the window, never an operator', () => {
   assert.equal(mailSearchPhrase('from:dana OR to:dana invoice newer_than:14d'), ' for "invoice" in the last two weeks');
   assert.equal(mailSearchPhrase('in:inbox newer_than:1d'), ' with a keyword filter in the last day');
-  assert.equal(mailSearchPhrase('from:neha OR to:neha after:2026/10/22 before:2026/10/24'), ' between 2026/10/22 and 2026/10/24');
+  assert.equal(mailSearchPhrase('from:neha OR to:neha after:2026/10/22 before:2026/10/24'), ' with a keyword filter between 2026/10/22 and 2026/10/24');
 });

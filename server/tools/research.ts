@@ -1848,10 +1848,12 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
   };
   const days = new Map<string, string[]>();
   for (const event of events) {
+    // Two shapes reach here: the connector's `- start, title` line and this module's parsed `start | title` line.
     const body = event.line.replace(/^- /u, '').replace(/ \[id [^\]\s]+\]$/u, '');
-    const comma = body.indexOf(', ');
-    const head = comma < 0 ? body : body.slice(0, comma);
-    const rest = comma < 0 ? '' : body.slice(comma + 2);
+    const separator = body.includes(' | ') ? ' | ' : ', ';
+    const cut = body.indexOf(separator);
+    const head = cut < 0 ? body : body.slice(0, cut);
+    const rest = cut < 0 ? '' : body.slice(cut + separator.length);
     const at = Date.parse(event.start);
     const day = Number.isFinite(at) ? format({ weekday: 'short', day: 'numeric', month: 'short' }, at) ?? head : head;
     const time = Number.isFinite(at) ? format({ hour: '2-digit', minute: '2-digit', hour12: false }, at) ?? '' : '';

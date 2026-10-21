@@ -95,7 +95,14 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
   return a.runId === h.runId && a.actorId === h.actorId && a.authorityEpoch === h.authorityEpoch && a.revision === h.revision;
 }
 
-export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
+/**
+ * W10: the connections a run may use are frozen at acceptance, so a `connectionIds()` that only
+ * names the connectors that already finished their handshake drops a slow one for the whole call.
+ * The durable policies are the ones this owner has already published, and they are the set a start
+ * freezes, whether or not the transport has come up yet.
+ */
+export interface LiveRunConnections { durableConnectionIds?(tx: Transaction): string[] }
+export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
@@ -389,7 +396,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       hostLogEvent({event:'tool_diagnostic_capture',reason,runId:scope?.call.runId ?? null,executionId:scope?.call.executionId ?? null});
     },
   });
-  const owner: ToolsOwner = {
+  const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
@@ -470,6 +477,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       const existing = tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [ownerId, acceptance.runId]);
       if (existing) { if (existing.snapshot_json !== bytes) throw Error('run_snapshot_collision'); return { sha256: hash }; }
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
+    },
+    durableConnectionIds(tx) {
+      return tx.all('SELECT connection_id FROM tool_connections WHERE owner_id=? ORDER BY connection_id', [ownerId])
+        .map(row => String(row['connection_id']))
+        .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } });
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
     liveDefinitions(runId, rememberNote) {

@@ -1303,6 +1303,7 @@ test('a google endpoint in configuration error is voiced as unreachable mail, ne
   assert.deepEqual(dispatched, [], 'a source known to be unreachable is not dispatched to');
 });
 
+
 // W9-B1: a session opened before the connect round publishes still names what it cannot reach.
 test('a session opened before publication names mail and calendar with a closed reason', () => {
   const connected = [
@@ -1328,4 +1329,18 @@ test('a refused mongoose refresh is voiced as sign in again, never as an unknown
   assert.deepEqual(named, [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
   // The reply speaks REASON_WORDS, so the closed code reads as an instruction, not a code.
   assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
+});
+
+test('W10: a connected endpoint whose read grant has not published is named, with a closed reason', () => {
+  const endpoints = [
+    { id: 'calendar', connector: 'google', state: 'connected' },
+    { connector: 'gmail', state: 'connected' },
+  ];
+  // Gmail published its grant; the calendar endpoint is connected but offers no read yet.
+  const named = configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message']);
+  assert.deepEqual(named, [{ source: 'calendar', reason: 'source_not_granted' }]);
+  // Every source has a granted read: nothing is reported unreachable.
+  assert.deepEqual(configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message', 'calendar_list_events']), []);
+  // Without a granted set the report is the one W9 wrote: a connected endpoint is not reported.
+  assert.deepEqual(configuredSourcesForEndpoints(endpoints), []);
 });

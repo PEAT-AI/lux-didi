@@ -959,6 +959,9 @@ struct RootView: View {
             var rows = NativeGettingStartedItems.rows(microphone: model.voice.microphone.rawValue,
                 notifications: model.notificationStatus.rawValue, login: login,
                 connections: model.connections.map { ($0.id, $0.state, $0.reasonCode) })
+            let keyStep = NativeNextSteps.singleKeyStep(enabled: SingleKeyTrigger.isEnabled, tapped: singleKey.tapCreated)
+            rows.append(NativeGettingStartedItem(title: "Right Command", detail: keyStep.text, command: nil,
+                                                guideURL: keyStep.guideURL))
             if model.connectionsError != nil {
                 rows.append(NativeGettingStartedItem(title: "Connections unavailable",
                     detail: "Refresh status after the service is ready; use Copy diagnostics if it still fails.", command: nil))

@@ -17,6 +17,14 @@ enum NativeNextSteps {
         "mongoose": NativeNextStep(text: "Mongoose session expired, reconnect Mongoose: sign in once in your browser, then restart Lux Didi.", command: "mongoose-login", guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
     ]
     static let failureStep = NativeNextStep(text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu.", command: nil)
+    /// R6: the key's own step, so the next-steps surface names why the key is off and offers the
+    /// pane that fixes it, with the same words and the same address as the menu bar notice.
+    @MainActor static func singleKeyStep(enabled: Bool, tapped: Bool) -> NativeNextStep {
+        NativeNextStep(text: SingleKeyTrigger.grantNoticeTitle(enabled: enabled, tapped: tapped)
+                        ?? "On: a bare Right Command tap mutes and unmutes her.",
+                       command: nil,
+                       guideURL: URL(string: SingleKeyTrigger.grantSettingsURL))
+    }
     static let table: [String: [String: NativeNextStep]] = Dictionary(uniqueKeysWithValues: connectorIDs.map { id in
         (id, Dictionary(uniqueKeysWithValues: reasonCodes.map { reason in
             (reason, reason == "credential_missing" ? credentialSteps[id]! : failureStep)

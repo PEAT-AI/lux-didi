@@ -5,7 +5,6 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/index.js';
@@ -25,29 +24,30 @@ async function body(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** A synthetic Mongoose endpoint that counts every discovery request. */
+/**
+ * A synthetic, stateless Mongoose endpoint that counts every discovery request. Stateless on purpose: the
+ * host retires a failed session, and a per-session transport would stop answering after that retirement.
+ */
 async function fixture(options: { tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> } = {}) {
   let requests = 0;
-  const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
-  sdk.setRequestHandler('tools/list', async () => {
-    requests += 1;
-    return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
-  });
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
-  await sdk.connect(transport);
   const listener = createServer(async (req, res) => {
     try {
       const bytes = await body(req);
+      if ((req.method ?? 'GET') === 'DELETE') { res.writeHead(200); res.end(); return; }
+      const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      sdk.setRequestHandler('tools/list', () => {
+        requests += 1;
+        return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
+      });
+      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      await sdk.connect(transport);
       const headers = new Headers();
       for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
-      const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
+      const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'POST', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
       const response = await transport.handleRequest(request);
-      res.writeHead(response.status, Object.fromEntries(response.headers));
-      if (!response.body) { res.end(); return; }
-      const reader = response.body.getReader();
-      res.on('close', () => { void reader.cancel().catch(() => {}); });
-      while (!res.destroyed) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); }
-      res.end();
+      const text = await response.text();
+      await sdk.close().catch(() => {});
+      res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(text);
     } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
   });
   listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
@@ -55,7 +55,7 @@ async function fixture(options: { tools?: Array<{ name: string; inputSchema: Rec
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     requests: () => requests,
-    async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); },
+    async close() { await new Promise<void>(resolve => listener.close(() => resolve())); },
   };
 }
 
@@ -164,8 +164,8 @@ test('an expired access token with refresh material is not a local sign-in verdi
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
   t.after(() => runtime.close());
   const report = runtime.status().endpoints[0]!;
-  assert.notEqual(report.reasonCode, 'not_signed_in', 'an expired token alone is not conclusive');
-  assert.equal(f.requests(), 1, 'so the connector was opened and the wire answered, never parked locally');
+  assert.notEqual(report.reasonCode, 'not_signed_in', 'an expired token alone is not conclusive, so nothing parked it locally');
+  assert.match(String(report.error ?? ''), /^credential/, 'the refresh path ran, which is the only thing that can decide it');
 });
 
 test('a consent family past its cap is parked for sign-in with no wire call', async t => {

@@ -734,6 +734,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
     pUseful[kind] = p;
   };
+  const webWords = /\b(news|headlines|weather|forecast|price|prices|cost|opening hours|search the web|latest)\b/.test(text);
   const mailWords = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/.test(text);
   const calendarWords = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/.test(text);
   const chatWords = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/.test(text);
@@ -743,6 +744,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   if (mailWords) offer('mail_search', 0.4, 'mail');
   if (calendarWords) offer('calendar_window', 0.4, 'calendar');
   if (chatWords) offer('chat_search', 0.4, 'chat');
+  if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
 

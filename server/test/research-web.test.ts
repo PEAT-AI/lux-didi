@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, SELECTOR_SYSTEM, candidateSubs, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, SELECTOR_SYSTEM, candidateSubs, fallbackSelection, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
 import { safeEvent } from '../host/log.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -226,4 +226,48 @@ test('the web receipt and the web candidate survive the host log gate', () => {
   const down = safeEvent({ event: 'research_source', researchId: 'r-1', source: 'web', outcome: 'unavailable', ms: 4, deadlineMs: 4000, coalesced: 1 });
   assert.equal(down?.['source'], 'web', 'a typed web failure is kept, never dropped');
   assert.equal(JSON.stringify(receipt).includes('bridge'), false, 'the receipt never carries the query text');
+});
+
+// --- M2: a dropped chunk never re-points a later citation, and an out-of-range index never crashes ---
+
+test('a dropped chunk keeps every later citation on its own source', async () => {
+  const dropped = body() as { candidates: { groundingMetadata: { groundingChunks: unknown[]; groundingSupports: { segment: { text: string }; groundingChunkIndices: number[] }[] } }[] };
+  dropped.candidates[0]!.groundingMetadata.groundingChunks = [
+    { web: { uri: 'http://insecure.example/x', title: 'Insecure' } },
+    { web: { uri: 'https://example.org/works', title: 'Council works list' } },
+    { web: { uri: 'https://example.net/notes', title: 'Traffic notes' } },
+  ];
+  dropped.candidates[0]!.groundingMetadata.groundingSupports = [
+    { segment: { text: 'The bridge reopened to traffic last Tuesday.' }, groundingChunkIndices: [1] },
+    { segment: { text: 'The council lists the works as finished.' }, groundingChunkIndices: [2] },
+  ];
+  const port = createWebSearch({ credentials: KEY, transport: transportOf([], async () => json(dropped)) });
+  const outcome = await port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(outcome.evidence.sources.map(source => source.title), ['Council works list', 'Traffic notes']);
+  assert.deepEqual(outcome.evidence.claims.map(claim => claim.sourceIndexes), [[0], [1]], 'citation one points at the works list, two at the notes');
+  assert.equal(webEvidenceText(outcome.evidence).includes('[Council works list]'), true);
+});
+
+test('an out-of-range chunk index is dropped instead of crashing the reply path', async () => {
+  const broken = body() as { candidates: { groundingMetadata: { groundingSupports: { segment: { text: string }; groundingChunkIndices: number[] }[] } }[] };
+  broken.candidates[0]!.groundingMetadata.groundingSupports = [
+    { segment: { text: 'The bridge reopened to traffic last Tuesday.' }, groundingChunkIndices: [9] },
+    { segment: { text: 'The council lists the works as finished.' }, groundingChunkIndices: [1] },
+  ];
+  const port = createWebSearch({ credentials: KEY, transport: transportOf([], async () => json(broken)) });
+  const outcome = await port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(outcome.evidence.claims.map(claim => claim.sourceIndexes), [[1]]);
+  assert.equal(outcome.evidence.sources.length, 3, 'no undefined card reaches the reply');
+  assert.equal(webFooter(outcome.evidence.sources).includes('undefined'), false);
+});
+
+test('the deterministic fallback offers the web read for a public question once web is configured', () => {
+  const offered = fallbackSelection('what is the latest news on the bridge', ['web']);
+  assert.ok(offered.actions.some(action => action.kind === 'web_search'), JSON.stringify(offered.actions));
+  assert.deepEqual(fallbackSelection('what is the latest news on the bridge', []).actions.filter(action => action.kind === 'web_search'), [], 'nothing offered without the web source');
+  assert.deepEqual(fallbackSelection('where does the release stand', ['web']).actions.filter(action => action.kind === 'web_search'), []);
 });

@@ -86,7 +86,8 @@ function capped(answer: string, sources: readonly WebSource[], claims: readonly 
   const words = answer.split(/\s+/);
   const spoken = words.length > WEB_WORDS_CAP ? words.slice(0, WEB_WORDS_CAP).join(' ') : answer;
   const kept = claims.filter(claim => claim.sourceIndexes.length > 0 && spoken.includes(claim.text));
-  const used = [...new Set(kept.flatMap(claim => claim.sourceIndexes))].sort((a, b) => a - b).slice(0, WEB_SOURCE_CAP);
+  const used = [...new Set(kept.flatMap(claim => claim.sourceIndexes))]
+    .filter(index => sources[index] !== undefined).sort((a, b) => a - b).slice(0, WEB_SOURCE_CAP);
   const mapping = new Map(used.map((index, next) => [index, next]));
   return {
     answer: spoken,
@@ -107,15 +108,18 @@ function grounded(body: unknown, retrievedAt: string): WebOutcome {
   if (metadata === undefined) return { ok: false, code: 'web_ungrounded' };
   const chunks = Array.isArray(metadata['groundingChunks']) ? metadata['groundingChunks'] : [];
   const sources: WebSource[] = [];
-  for (const chunk of chunks) {
+  // A dropped chunk must never re-point a later citation, so every kept chunk remembers where it moved.
+  const moved = new Map<number, number>();
+  chunks.forEach((chunk, original) => {
     const web = object(chunk) && object(chunk['web']) ? chunk['web'] : undefined;
-    if (web === undefined) continue;
+    if (web === undefined) return;
     const url = httpURL(text(web['uri']) ?? '');
     const title = text(web['title']);
-    if (url === undefined || title === undefined) continue;
+    if (url === undefined || title === undefined) return;
     const publishedAt = publishedOf(web);
+    moved.set(original, sources.length);
     sources.push(publishedAt === undefined ? { title, url } : { title, url, publishedAt });
-  }
+  });
   const supports = Array.isArray(metadata['groundingSupports']) ? metadata['groundingSupports'] : [];
   const claims: WebClaim[] = [];
   for (const support of supports) {
@@ -127,7 +131,9 @@ function grounded(body: unknown, retrievedAt: string): WebOutcome {
         : undefined);
     const indexes = Array.isArray(support['groundingChunkIndices']) ? support['groundingChunkIndices'] : [];
     if (claim === undefined || claim.length === 0) continue;
-    claims.push({ text: claim, sourceIndexes: indexes.filter((index): index is number => typeof index === 'number') });
+    const sourceIndexes = indexes.flatMap(index => typeof index === 'number' && moved.has(index) ? [moved.get(index)!] : []);
+    if (sourceIndexes.length === 0) continue;
+    claims.push({ text: claim, sourceIndexes });
   }
   if (answer.length === 0 || sources.length === 0) return { ok: false, code: 'web_ungrounded' };
   const searchEntryPoint = text(metadata['searchEntryPoint'] && object(metadata['searchEntryPoint']) ? metadata['searchEntryPoint']['renderedContent'] : undefined);

@@ -41,3 +41,12 @@ test('the sign-in row belongs to Mongoose alone, so no other connector borrows i
     assert.doesNotMatch(step.text, /Mongoose|Settings/, `${id} keeps its own behaviour`);
   }
 });
+
+test('an unreachable Mongoose offers the sign-in button only once the retries are spent', () => {
+  assert.equal(nextStep('mongoose', 'error', 'unreachable', true).signIn, undefined, 'a scheduled retry needs no button');
+  assert.match(nextStep('mongoose', 'error', 'unreachable', true).text, /retries in the background/);
+  assert.equal(nextStep('mongoose', 'error', 'unreachable', false).signIn, true, 'a spent round leaves the owner the button');
+  assert.match(nextStep('mongoose', 'error', 'unreachable', false).text, /stopped retrying/);
+  assert.equal(nextStep('gmail', 'error', 'unreachable', false).signIn, undefined, 'only Mongoose has an owner sign-in');
+  assert.equal(nextStep('mongoose', 'error', 'needs_sign_in').signIn, true);
+});

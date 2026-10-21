@@ -71,8 +71,14 @@ test('the Mongoose consent button appears on its row only while Mongoose needs a
   assert.match(html, /<button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose<\/button>/);
   const healthy = settingsMarkup({ status, connections: [{ id: 'mongoose', state: 'connected', tools: 3, lastHandshakeAt: '2026-10-12T14:52:00Z', reasonCode: null }] });
   assert.doesNotMatch(healthy, /id="mongoose-signin"/, 'a connected connector offers no sign-in');
-  const otherFailure = settingsMarkup({ status, connections: [{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'unreachable' }] });
-  assert.doesNotMatch(otherFailure, /id="mongoose-signin"/, 'only a sign-in reason offers the button');
+  // CONNECT-R3: unreachable with no retry left offers the sign-in button, because the stored login may
+  // be the cause; while a retry is still scheduled the owner is told to wait instead.
+  const spent = settingsMarkup({ status, connections: [{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'unreachable', retrying: false }] });
+  assert.match(spent, /id="mongoose-signin"/, 'the owner still has a way out of an unreachable Mongoose');
+  assert.match(spent, /Naya has stopped retrying/);
+  const retrying = settingsMarkup({ status, connections: [{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'unreachable', retrying: true }] });
+  assert.doesNotMatch(retrying, /id="mongoose-signin"/, 'a scheduled retry offers no button yet');
+  assert.match(retrying, /Naya retries in the background/);
   const otherConnector = settingsMarkup({ status, connections: [{ id: 'gmail', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }] });
   assert.doesNotMatch(otherConnector, /id="mongoose-signin"/, 'the button never points a non-Mongoose row at a Mongoose sign-in');
   assert.doesNotMatch(otherConnector, /Sign in to Mongoose/, 'and the row keeps its own wording');

@@ -6,6 +6,7 @@ import {
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
 import { declarationsFor } from '../tools/declarations.js';
+import { shapeGmailList } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -593,4 +594,64 @@ test('a routed run that throws still writes its terminal run line, once, with a 
   assert.equal(h.logs[0]!.status, 'failed');
   assert.equal(h.logs[0]!.stopReason, 'failed', 'a closed error code, never an exception message');
   assert.equal(JSON.stringify(h.logs[0]).includes('beat sink gone'), false, 'no exception text leaves in the line');
+});
+
+// --- E4/E5: the mail query is Gmail syntax, and an empty search retries once ---------------------
+
+test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence', async () => {
+  const sent: string[] = [];
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      sent.push(String(call.args['q'] ?? call.name));
+      return { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: [{ id: 'm1', headers: [{ name: 'Subject', value: 'Invoice' }] }] }) };
+    }),
+  });
+  await runResearch(h.deps, {
+    action: 'start', question: 'What did Dana send me about the invoice?',
+    lookups: [{ source: 'mail', query: 'could you look for the email where Dana sent the invoice?' }],
+  }, new AbortController().signal);
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice newer_than:14d'], 'one compiled query on the wire, never the sentence');
+});
+
+test('E5: a search that matched nothing runs exactly one broader retry and logs both shapes', async () => {
+  const sent: string[] = [];
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      sent.push(String(call.args['q'] ?? call.name));
+      const found = sent.length > 1;
+      return {
+        key: call.key, name: call.name, ok: true,
+        ...shapeGmailList({ messages: found ? [{ id: 'm9', headers: [{ name: 'Subject', value: 'Invoice' }, { name: 'From', value: 'Dana' }] }] : [] }),
+      };
+    }),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'What did Dana send me about the invoice?',
+    lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
+  }, new AbortController().signal);
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice newer_than:14d', 'from:dana OR to:dana invoice newer_than:30d'], 'the query, then exactly one broader retry');
+  const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
+  assert.deepEqual(receipt.mail, {
+    terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:14d',
+    retried: { terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:30d' },
+  }, 'both queries by shape: term count, operators and window, never the words');
+  assert.equal(JSON.stringify(receipt).includes('invoice'), false, 'no query word reaches the receipt');
+  assert.ok((reply['findings'] as unknown[]).length > 0, 'what the broader search found reaches the reply');
+});
+
+test('E5: an empty retry says how it searched, naming the window it used', async () => {
+  const sent: string[] = [];
+  const h = harness({
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      sent.push(String(call.args['q'] ?? call.name));
+      return { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: [] }) };
+    }),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'What did Dana send me about the invoice?',
+    lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
+  }, new AbortController().signal);
+  assert.equal(sent.length, 2, 'exactly one retry, never a loop');
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /I searched your mail for "invoice" in the last month and found nothing matching/, 'the reply says what it matched and the window it used');
 });

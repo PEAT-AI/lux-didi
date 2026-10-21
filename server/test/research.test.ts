@@ -267,6 +267,29 @@ test('an identical start while a run is in flight joins that exact intent', asyn
   assert.deepEqual(h.joined, [minted], 'the join is logged as research_joined');
 });
 
+// E7: the same intent recurs inside one live turn (5 research calls and 6 chat searches in 90 s in the
+// audit). A start whose question and sources match a run already answered in the window is the same
+// question: it answers from that run instead of reading every source again.
+test('E7: three identical research calls in the live turn window read each source once', async () => {
+  let clock = 1_000;
+  const h = harness({ now: () => clock, selector: knowledge });
+  const scheduler = new ResearchScheduler(h.deps);
+  const replies: Record<string, unknown>[] = [];
+  for (let n = 0; n < 3; n += 1) {
+    replies.push(await scheduler.call({ action: 'start', question: 'Where does the release stand?', sources: 'knowledge' }, new AbortController().signal));
+    clock += 5_000;
+  }
+  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 1, 'the question was researched once, not three times');
+  assert.equal(new Set(replies.map(reply => reply['researchId'])).size, 1, 'every call answers the run the host minted');
+  assert.deepEqual(h.joined, [replies[0]!['researchId'], replies[0]!['researchId']], 'both later calls are logged as joins');
+  const other = await scheduler.call({ action: 'start', question: 'What did the board decide about hiring?', sources: 'knowledge' }, new AbortController().signal);
+  assert.notEqual(String(other['researchId']), String(replies[0]!['researchId']), 'a different question is its own run');
+  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 2, 'and it is read');
+  clock += RESEARCH.coalesceWindowMs + 1;
+  await scheduler.call({ action: 'start', question: 'Where does the release stand?', sources: 'knowledge' }, new AbortController().signal);
+  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 3, 'outside the window the same question is researched again');
+});
+
 test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {
   const h = harness({ selector: knowledge });
   const scheduler = new ResearchScheduler(h.deps);

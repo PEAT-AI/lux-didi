@@ -102,7 +102,7 @@ export const RESEARCH = Object.freeze({
   replyLimitChars: 6_000,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
-  mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
+  mailLines: 8, chatLines: 8, knowledgeLines: 40,
   /**
    * E8: ask for the whole reply-worthy page in one call, so no loop pages a window or a query at a time.
    * 50 is the connector's own ceiling (GOOGLE_DEFAULTS.maxListResults); asking more is refused outright.
@@ -1476,7 +1476,7 @@ const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   mail_search: RESEARCH.mailLines, mail_open: 2,
   chat_search: RESEARCH.chatLines, chat_thread: 12,
-  knowledge_search: RESEARCH.knowledgeLines, calendar_window: RESEARCH.calendarLines,
+  knowledge_search: RESEARCH.knowledgeLines,
   brief: RESEARCH.mailLines,
 };
 
@@ -1567,9 +1567,12 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
   return items;
 }
 
-/** Merge the connector's shaped event lines: dedupe by event id and sort by start (the connector already merged). */
-function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
-  const merged: { start: string; line: string }[] = [];
+/**
+ * Merge the connector's shaped event lines and lay the whole window out one line per day, never a silent cut:
+ * the only bound is the reply budget, and a trimmed block names how many events it left out (E8, U2).
+ */
+function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | undefined): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+  const merged: RetainedCalendarEvent[] = [];
   const seen = new Set<string>();
   for (const result of results) {
     if (!result.ok || result.name !== INTERNAL.calendarList || !result.text.trim()) continue;
@@ -1577,15 +1580,20 @@ function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string
       const dedupe = event.id || `${event.start}|${event.line}`;
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
-      merged.push({ start: event.start, line: event.line });
+      merged.push({ ...event, bodyTruncated: false });
     }
   }
   merged.sort((a, b) => a.start.localeCompare(b.start));
-  const lines = merged.map(entry => entry.line);
-  const shown = lines.slice(0, RESEARCH.calendarLines);
   const notRead = calendarNotRead(results);
-  if (!shown.length) return { text: '', source: 'calendar', lines: [], total: 0 };
-  return { text: `calendar: ${shown.length} of ${Math.max(lines.length, shown.length)} shown\n${shown.join('\n')}${notRead ? `\n${notRead}` : ''}`, source: 'calendar', lines: shown, total: Math.max(lines.length, shown.length) };
+  let kept = merged.length;
+  let lines = calendarDayLines(compactCalendarWindow(merged, zone));
+  const render = (): string => `calendar: ${kept} of ${merged.length} shown\n${lines.join('\n')}${kept === merged.length ? '' : `\nI left out ${merged.length - kept} calendar ${merged.length - kept === 1 ? 'event' : 'events'} to keep this answer short.`}${notRead ? `\n${notRead}` : ''}`;
+  while (kept > 1 && render().length > RESEARCH.replyLimitChars) {
+    kept -= 1;
+    lines = calendarDayLines(compactCalendarWindow(merged.slice(0, kept), zone));
+  }
+  if (kept === 0) return { text: '', source: 'calendar', lines: [], total: 0 };
+  return { text: render(), source: 'calendar', lines, total: merged.length };
 }
 
 /**
@@ -1629,9 +1637,9 @@ export function cutLineOf(results: readonly IntentSubResult[]): string | undefin
  * Q1-R0: one telegraphic line per item, a per-source count line, never prose. Item ids ride in the
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
-export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'calendar_window') {
-    const block = shapeCalendarBlock(results);
+    const block = shapeCalendarBlock(results, zone);
     const cutLine = cutLineOf(results);
     return cutLine === undefined ? block : { ...block, text: `${block.text}\n${cutLine}` };
   }
@@ -2464,7 +2472,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const cutShort = signal.aborted;
   reads.forEach((plan, index) => {
     const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
-    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own);
+    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone);
     // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     const missed = own.some(result => !result.ok);
@@ -3155,7 +3163,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // one is credited and delivered on its own instead of the whole batch going uncredited.
           const parts = creditableSources(kind, results);
           for (const [index, part] of parts.entries()) {
-            const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
+            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone);
             // E5: the mail read's own queries, for the receipt's shape and the reply's "how I searched".
             const mailInfo = part.source !== 'mail' || mailCalls.length === 0 ? undefined : mailQueryInfo(mailRead(run, mailCalls[0]!.args));
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });

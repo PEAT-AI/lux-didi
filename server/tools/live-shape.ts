@@ -341,7 +341,10 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
-    if (names.length) lines.push(`  attendees: ${names.join(', ')}`);
+    // R6: the helper caps the list at 25 and sets attendeesOmitted, so a long list is never spoken as complete.
+    if (names.length) lines.push(`  attendees: ${names.join(', ')}${entry['attendeesOmitted'] === true ? ' and others' : ''}`);
+    const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
+    if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
     if (conference) lines.push('  conference: yes');
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');

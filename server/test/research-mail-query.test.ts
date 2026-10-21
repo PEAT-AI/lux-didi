@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  ResearchLedger, broaderMailQuery, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
+  ResearchLedger, ResearchScheduler, broaderMailQuery, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
   type ResearchDeps, type ResearchSourceLog,
 } from '../tools/research.js';
 import { shapeGmailList } from '../tools/live-shape.js';
@@ -190,4 +190,27 @@ test('E5: the host log accepts the mail shape only as counts and closed tokens, 
   const plain: ResearchSourceLog = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 5, deadlineMs: 12_000, coalesced: 1 };
   assert.deepEqual(safeEvent(plain)?.['mail'], undefined);
   assert.equal(safeEvent({ ...plain, extra: 1 }), undefined, 'the top-level key list is still closed');
+});
+
+// W12-R1 / behaviour 3: the answered-run half of the coalescing rule. A run whose answer named a source
+// unavailable is not the same research when the identical start repeats inside the coalesce window, so
+// the owner is never handed a stale outage; a clean answer still coalesces, as E7 requires.
+test('W12-R1: an answered run that named a source unavailable is never coalesced', async () => {
+  const start = {
+    action: 'start' as const, question: 'What did Dana send me about the invoice?',
+    lookups: [{ source: 'mail' as const, query: 'invoice' }],
+  };
+  const down = mailHarness(async () => []);
+  const downScheduler = new ResearchScheduler({ ...down.deps, unavailableNow: () => ['mail'] });
+  const first = await downScheduler.call(start, new AbortController().signal);
+  assert.deepEqual(first['unavailable'], { mail: 'connector_unavailable' }, 'the first answer names mail unavailable');
+  const again = await downScheduler.call(start, new AbortController().signal);
+  assert.notEqual(String(again['researchId']), String(first['researchId']), 'an answer that named a source unavailable is read again, never reused');
+
+  const clean = mailHarness(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, ...mailPage(['m1']) } as IntentSubResult)));
+  const cleanScheduler = new ResearchScheduler(clean.deps);
+  const answered = await cleanScheduler.call(start, new AbortController().signal);
+  assert.equal(answered['unavailable'], undefined, 'a clean answer names no unavailable source');
+  const joined = await cleanScheduler.call(start, new AbortController().signal);
+  assert.equal(String(joined['researchId']), String(answered['researchId']), 'and a clean answer still coalesces');
 });

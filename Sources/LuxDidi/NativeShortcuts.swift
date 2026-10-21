@@ -2,16 +2,15 @@ import Foundation
 import Carbon
 
 enum NativeNoteAction { static let label = "Save note" }
-/// Council 2026-10-17 (P1-R1), Q2 2026-10-18: the Right Command key drives one presence
-/// machine. A tap starts when idle and stops when live, a hold is push-to-talk, and a click
-/// on the mini orb keeps the mute toggle. The binding lives here, as one function the app
-/// installs and the seam test calls, so a test proves the assignment the app really uses
-/// rather than a copy of it.
+/// Council 2026-10-17 (P1-R1), owner spec 2026-10-21: the bare Right Command tap is the
+/// one gesture, and it is the presence machine's own toggle: cold starts her, live mutes
+/// her, muted lets her listen again. A held key and a chord do nothing, and a click on the
+/// mini orb asks the same toggle. The binding lives here, as one function the app installs
+/// and the seam test calls, so a test proves the assignment the app really uses rather than
+/// a copy of it.
 @MainActor
 func bindRightCommandKey(_ singleKey: SingleKeyTrigger, to presence: NativePresence, present: @escaping () -> Void = {}) {
     singleKey.onTap = { [weak presence] in present(); presence?.tap(.hotkey) }
-    singleKey.onHoldStart = { [weak presence] in present(); presence?.holdStarted(.hotkey) }
-    singleKey.onHoldEnd = { [weak presence] in presence?.holdEnded(.hotkey) }
 }
 enum ShortcutStatus {
     static func describe(code: Int32) -> String {

@@ -154,10 +154,12 @@ enum MiniOrbFrameRestore {
     static let size = CGSize(width: 220, height: 220)
     /// The gap between the menu bar and the top of the pill.
     static let topMargin: CGFloat = 6
-    /// The default: top-center, just below the menu bar.
+    /// The gap between the orb's right edge and the screen's, so it sits under the clock.
+    static let rightMargin: CGFloat = 24
+    /// The default: top right, just below the menu bar clock (owner spec 2026-10-21).
     static func defaultFrame(in visible: CGRect) -> CGRect {
         let width = min(size.width, visible.width), height = min(size.height, visible.height)
-        return clamp(CGRect(x: visible.midX - width / 2, y: visible.maxY - height - topMargin,
+        return clamp(CGRect(x: visible.maxX - width - rightMargin, y: visible.maxY - height - topMargin,
                             width: width, height: height), into: visible)
     }
 

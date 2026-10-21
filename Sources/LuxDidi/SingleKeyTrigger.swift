@@ -163,10 +163,7 @@ enum SingleKeyGesture: Equatable {
 
 /// What one accepted press did, in the `single_key_tap` receipt's own words.
 enum SingleKeyTapAction: String, Equatable {
-    case start, stop, ignored
-    /// Q2: the held press opened the mic, and its release closed the fence.
-    case holdStart = "hold_start"
-    case holdEnd = "hold_end"
+    case start, stop, mute, unmute, ignored
 }
 
 /// One tap's receipt, built from the presence machine's state on both sides of the
@@ -176,18 +173,17 @@ struct SingleKeyTapOutcome: Equatable {
     let action: SingleKeyTapAction
     let reason: String
 
-    /// A move to COLD or hot-muted stops Naya, any other move starts it, and a state
-    /// that did not change is ignored and names the state it stayed in.
+    /// One bare tap starts her from cold, mutes her from live and lets her listen again
+    /// from muted; a tap she did not move is ignored and names the state it stayed in.
     init(from before: PresenceState, to after: PresenceState) {
         reason = after.rawValue
-        guard before != after else { action = .ignored; return }
-        action = after == .cold || after == .hotMuted ? .stop : .start
-    }
-
-    /// A hold's receipt names the gesture itself, and the state it left the machine in.
-    init(action: SingleKeyTapAction, state: PresenceState) {
-        self.action = action
-        reason = state.rawValue
+        switch (before, after) {
+        case _ where before == after: action = .ignored
+        case (_, .cold): action = .stop
+        case (_, .hotMuted): action = .mute
+        case (.hotMuted, _): action = .unmute
+        default: action = .start
+        }
     }
 }
 
@@ -223,24 +219,21 @@ struct SingleKeyGrantPrompt {
 final class SingleKeyTrigger {
     /// On by default; only an explicit `false` turns the single key off.
     static let enabledKey = "DidiSingleKeyTriggerEnabled"
-    static let explanation = "Naya starts and stops with a tap of the Right Command key, "
-        + "and talks while you hold it. "
-        + "macOS needs Accessibility (or Input Monitoring) permission for that key; "
+    static let explanation = "A tap of the Right Command key mutes Naya and a second tap lets "
+        + "her listen again. macOS needs Input Monitoring permission for that key; "
         + "Control-Option-Space keeps working without it."
 
     /// The grant and the tap itself, as two seams: a test proves the launch receipt and
     /// the tap receipt with a fake trust provider, no event tap, no TCC prompt and no
     /// keyboard. A nil `install` uses the real tap below.
     struct System {
-        var trusted: () -> Bool = { AXIsProcessTrusted() }
+        var grants: () -> Grants = { SingleKeyTrigger.currentGrants() }
         var install: (() -> Bool)?
     }
 
     var system = System()
     var onTap: (() -> Void)?
     /// Q2: the held press opened the mic, and its release closed the fence.
-    var onHoldStart: (() -> Void)?
-    var onHoldEnd: (() -> Void)?
     /// The clock the hold threshold is measured on, the same monotonic clock the event
     /// tap stamps events with. Injected, so a seam test never waits for a real 400 ms.
     var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -261,6 +254,9 @@ final class SingleKeyTrigger {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var detector = RightCommandTapDetector()
+    private var reportedGrants: Grants?
+    private var reportedTap: Bool?
+    private var reportedEnabled: Bool?
     /// Bumped on every press, so a hold timer left over from an earlier press is inert.
     private var holdToken = 0
 
@@ -269,15 +265,39 @@ final class SingleKeyTrigger {
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
-    /// The Accessibility (or Input Monitoring) grant the tap needs.
-    nonisolated static var isGranted: Bool { AXIsProcessTrusted() }
+    /// The two grants a listen-only tap can stand on (ruling HOTKEY-R2). Input Monitoring is
+    /// the one the tap needs; Accessibility also works and older installs already have it.
+    struct Grants: Equatable {
+        let listenEvent: Bool
+        let accessibility: Bool
+        var any: Bool { listenEvent || accessibility }
+    }
 
-    /// The launch receipt: the three facts that decide whether a silent key is silent,
-    /// so it can never again be a guess. `signing` is `adhoc`, `identity` or `unknown`.
-    nonisolated static func stateReceipt(enabled: Bool, trusted: Bool, tapCreated: Bool,
+    /// The system's answer, as one value, so a test proves the gate with no TCC prompt.
+    nonisolated static func currentGrants(listenEvent: Bool = CGPreflightListenEventAccess(),
+                                         accessibility: Bool = AXIsProcessTrusted()) -> Grants {
+        Grants(listenEvent: listenEvent, accessibility: accessibility)
+    }
+
+    nonisolated static var isGranted: Bool { currentGrants().any }
+
+    /// The launch and change receipt: the facts that decide whether a silent key is silent,
+    /// both grants reported apart (R2). `signing` is `adhoc`, `identity` or `unknown`.
+    nonisolated static func stateReceipt(enabled: Bool, grants: Grants, tapCreated: Bool,
                                          signing: String) -> [String: Any] {
-        ["event": "single_key_state", "enabled": enabled, "trusted": trusted,
+        ["event": "single_key_state", "enabled": enabled, "trusted": grants.any,
+         "listenEvent": grants.listenEvent, "accessibility": grants.accessibility,
          "tapCreated": tapCreated, "signing": signing]
+    }
+
+    /// The pane the grant lives in, and the one address the off item opens.
+    static let grantSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+
+    /// The one line the status menu carries while the key cannot work, and nothing once the
+    /// tap is live. It reads the grant and the tap, never the once-per-version prompt, so a
+    /// dismissed prompt still leaves the owner a way in.
+    static func grantNoticeTitle(enabled: Bool, tapped: Bool) -> String? {
+        enabled && !tapped ? "Right Command is off: allow Input Monitoring for Naya" : nil
     }
 
     /// `adhoc`, `identity` or `unknown` for one set of code-signature flags. The
@@ -316,38 +336,68 @@ final class SingleKeyTrigger {
     static func requestGrantIfNeeded(for kind: LaunchKind, version: String,
                                      defaults: UserDefaults = .standard,
                                      enabled: Bool = SingleKeyTrigger.isEnabled,
-                                     trusted: Bool = SingleKeyTrigger.isGranted,
+                                     granted: Bool = SingleKeyTrigger.isGranted,
                                      prompt: () -> Void = requestGrantNow) {
         guard kind == .interactive else { return }
         var store = SingleKeyGrantPrompt(
             askedVersion: { defaults.string(forKey: SingleKeyGrantPrompt.versionKey) },
             remember: { defaults.set($0, forKey: SingleKeyGrantPrompt.versionKey) })
-        guard store.askOnce(enabled: enabled, trusted: trusted, version: version) else { return }
+        guard store.askOnce(enabled: enabled, trusted: granted, version: version) else { return }
         prompt()
     }
 
-    /// The owner turning the key back on is a fresh ask, so the system prompt
-    /// follows the explanation without waiting for another launch.
+    /// The owner turning the key back on is a fresh ask, so the system prompt follows the
+    /// explanation without waiting for another launch. R2: the tap is a listen-only tap, so
+    /// the prompt is the Input Monitoring one, which adds Naya to that list by itself.
     static func requestGrantNow() {
         let alert = NSAlert()
-        alert.messageText = "A Right Command tap starts Naya"
+        alert.messageText = "A Right Command tap mutes Naya"
         alert.informativeText = explanation
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Not now")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+        requestListenEventAccess()
+    }
+
+    /// The system prompt for the grant a listen-only tap needs. False when nothing was granted.
+    @discardableResult
+    nonisolated static func requestListenEventAccess() -> Bool {
+        CGRequestListenEventAccess()
     }
 
     /// Installs the listen-only tap. False when the key is off, the grant is missing or
-    /// the system refused the tap, so the caller can say which.
+    /// the system refused the tap, so the caller can say which. Safe to ask again: the app
+    /// calls it on activation and on a slow timer, and the tap goes in the moment a grant
+    /// that arrived after launch is there. Every change of trust or tap is one
+    /// `single_key_state` receipt.
     @discardableResult
     func start() -> Bool {
+        let live = installIfPossible()
+        reportIfChanged()
+        return live
+    }
+
+    private func installIfPossible() -> Bool {
         guard Self.isEnabled else { return false }
         guard tap == nil, !tapCreated else { return true }
-        guard system.trusted() else { return false }
+        guard system.grants().any else { return false }
         guard system.install?() ?? installLiveTap() else { return false }
         tapCreated = true
         return true
+    }
+
+    /// One receipt per trust or tap change: the launch, the grant arriving, the owner
+    /// turning the key off. A re-check that changes nothing writes nothing.
+    private func reportIfChanged() {
+        let grants = system.grants()
+        let enabled = Self.isEnabled
+        guard reportedGrants != grants || reportedTap != tapCreated || reportedEnabled != enabled
+        else { return }
+        reportedGrants = grants
+        reportedTap = tapCreated
+        reportedEnabled = enabled
+        onReceipt?(Self.stateReceipt(enabled: enabled, grants: grants,
+                                     tapCreated: tapCreated, signing: Self.signing))
     }
 
     /// The real tap: listen-only, on the session, never swallowing an event.
@@ -384,6 +434,7 @@ final class SingleKeyTrigger {
         tap = nil
         tapCreated = false
         detector = RightCommandTapDetector()
+        reportIfChanged()
     }
 
     /// Feeds one event to the detector on the main actor and performs the gestures it
@@ -409,20 +460,23 @@ final class SingleKeyTrigger {
     }
 
     private func perform(_ gesture: SingleKeyGesture) {
-        let before = presenceState()
+        // Revised 2026-10-21: the bare tap is the one gesture. A held key and a chord
+        // leave the machine where it is and say so.
         switch gesture {
-        case .tap: onTap?()
-        case .holdStart: onHoldStart?()
-        case .holdEnd: onHoldEnd?()
         case .ignored(let reason):
             onReceipt?(["event": "single_key_tap", "action": SingleKeyTapAction.ignored.rawValue,
                         "reason": reason])
             return
+        case .holdStart, .holdEnd:
+            onReceipt?(["event": "single_key_tap", "action": SingleKeyTapAction.ignored.rawValue,
+                        "reason": "hold"])
+            return
+        case .tap:
+            break
         }
-        let after = presenceState()
-        let outcome = gesture == .tap
-            ? SingleKeyTapOutcome(from: before, to: after)
-            : SingleKeyTapOutcome(action: gesture == .holdStart ? .holdStart : .holdEnd, state: after)
+        let before = presenceState()
+        onTap?()
+        let outcome = SingleKeyTapOutcome(from: before, to: presenceState())
         onReceipt?(["event": "single_key_tap", "action": outcome.action.rawValue, "reason": outcome.reason])
     }
 }

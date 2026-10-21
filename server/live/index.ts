@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesFromToolNames, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -1268,9 +1268,8 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
-      host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
-        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+      registry = this.#liveRegistry(liveSessionId);
+      host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision, grants: this.#hostGrants(registry) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
@@ -2366,37 +2365,66 @@ export class LiveSessionOwner {
     }
   }
 
-  #unreachableSources(): (ResearchSourceKind | UnavailableSource)[] {
+  /** The session's frozen tool registry, rebuilt from the run's current bindings (W10). */
+  #liveRegistry(liveSessionId: string): readonly ToolDefinition[] {
+    return Object.freeze(this.#tools!.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()))
+      .map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+  }
+
+  /** The read grants the host carries for a registry: what dispatch may reach, nothing more. */
+  #hostGrants(registry: readonly ToolDefinition[]): HostContext['grants'] {
+    return registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory')
+      .map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId }));
+  }
+
+  /**
+   * W10 behaviour 1: the registry a call opened with is a snapshot, so a connector whose grant
+   * publishes after the start (a slow stdio or HTTP connector) used to be missing for the whole call.
+   * The run adopts the connections that are published now and the registry is rebuilt, so the next
+   * model turn and every research call offer the source. The provider's own tool declarations cannot
+   * change mid-call; the research tool it was already given can, and it names the new sources.
+   */
+  #refreshSources(handle: ActiveSession): void {
+    if (!this.#tools || this.#settled(handle)) return;
+    const adopted = this.#store.transaction(tx => {
+      if (!tx.get('SELECT 1 FROM live_tool_acceptances WHERE live_session_id=?', [handle.liveSessionId])) return false;
+      const { acceptance, sha256 } = this.#tools!.owner.adoptLateConnections(tx, handle.liveSessionId, this.#tools!.connectionIds());
+      tx.run('UPDATE live_tool_acceptances SET acceptance_json=?, accepted_run_hash=? WHERE live_session_id=?', [JSON.stringify(acceptance), sha256, handle.liveSessionId]);
+      return true;
+    });
+    if (!adopted) return;
+    const registry = this.#liveRegistry(handle.liveSessionId);
+    if (registry.length === handle.registry.length && registry.every((tool, index) => tool.name === handle.registry[index]!.name)) return;
+    handle.registry = registry;
+    if (handle.host) handle.host.grants = this.#hostGrants(registry);
+    // The digest belongs to the calendar source: a calendar grant that arrives mid-call refreshes it.
+    if (registry.some(tool => tool.name === 'calendar_list_events') && this.#calendarState !== 'present') this.#calendarDigest?.refresh();
+  }
+
+  #unreachableSources(handle: ActiveSession): (ResearchSourceKind | UnavailableSource)[] {
     // P5-R5 (F3) / W9-R3: the endpoint report carries why it is not connected, and the owner's reply
     // names it. Codes and closed enums only: never the free-text `error`, so no connector text can
-    // reach a reply. One owner for the endpoint-to-source naming, in research.ts.
-    return configuredSourcesForEndpoints((this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[]);
+    // reach a reply. One owner for the endpoint-to-source naming, in research.ts. W10: the granted
+    // tools come from the same registry the reads run against, so a connected endpoint whose read
+    // grant has not published yet is named with `source_not_granted`, never dropped.
+    return configuredSourcesForEndpoints((this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[],
+      handle.registry.map(tool => tool.name));
   }
 
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {
-    const names = new Set(handle.registry.map(tool => tool.name));
-    const sources: ResearchSourceKind[] = [];
-    if (names.has(HISTORY_IDENTITY.name)) sources.push('memory');
-    if (names.has('search_knowledge')) sources.push('knowledge');
-    // Outcome 3: detect a source by the tool its read actually uses, never a sibling, so a calendar
-    // read is never advertised when the connection only grants the calendar-list sibling.
-    if (names.has('calendar_list_events')) sources.push('calendar');
-    if (names.has('gmail_search_messages')) sources.push('mail');
-    if (names.has('mattermost_search')) sources.push('chat');
-    if (names.has('search_mongoose')) sources.push('mongoose');
-    // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
-    // reply can report them unreachable instead of silently narrowing to the sources still up.
-    for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
-      if (endpoint.state === 'connected') continue;
-      for (const source of researchSourcesForConnector(endpoint.connector)) {
-        if (!sources.includes(source)) sources.push(source);
-      }
-    }
+    // Outcome 3: a source is detected by the tool its read actually uses, never a sibling, so a
+    // calendar read is never advertised when the connection only grants the calendar-list sibling.
+    const sources = researchSourcesFromToolNames(handle.registry.map(tool => tool.name));
+    // Outcome 2: an approved connector that is down, or up without a usable read grant, keeps its
+    // sources in the configured set, so the reply reports them unreachable instead of narrowing.
+    for (const entry of this.#unreachableSources(handle)) if (!sources.includes(entry.source)) sources.push(entry.source);
     return sources;
   }
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
   async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    // W10: a grant that published since the start joins this call before its sources are resolved.
+    this.#refreshSources(handle);
     const configured = this.#researchSources(handle);
     const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
@@ -2444,7 +2472,7 @@ export class LiveSessionOwner {
       configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
-      unavailableNow: () => this.#unreachableSources(), selector: this.#research, execute,
+      unavailableNow: () => this.#unreachableSources(handle), selector: this.#research, execute,
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.

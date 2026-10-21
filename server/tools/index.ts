@@ -95,7 +95,14 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
   return a.runId === h.runId && a.actorId === h.actorId && a.authorityEpoch === h.authorityEpoch && a.revision === h.revision;
 }
 
-export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
+/**
+ * W10: the tools a run may use were frozen at acceptance. A connector whose grant publishes after the
+ * call started joins the run here: only connections that are published now and not yet bound are
+ * added, every existing binding stays byte-identical, and the same run row is rewritten so the
+ * later authority checks (`readRun`, `currentPolicies`) see the extended acceptance.
+ */
+export interface LateRunConnections { adoptLateConnections(tx: Transaction, runId: string, connectionIds: readonly string[]): { acceptance: RunAcceptance; sha256: string } }
+export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LateRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
@@ -462,6 +469,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       const existing = tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [ownerId, acceptance.runId]);
       if (existing) { if (existing.snapshot_json !== bytes) throw Error('run_snapshot_collision'); return { sha256: hash }; }
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
+    },
+    adoptLateConnections(tx, runId, connectionIds) {
+      const { snapshot, hash } = readRun(tx, runId);
+      const added = connectionIds.filter(id => !snapshot.acceptance.connectionIds.includes(id));
+      if (added.length === 0) return { acceptance: snapshot.acceptance, sha256: hash };
+      const acceptance = validateAcceptance({ ...snapshot.acceptance, connectionIds: [...snapshot.acceptance.connectionIds, ...added] });
+      const next: RunSnapshot = { acceptance, connections: [...snapshot.connections, ...added.map(id => connection(tx, id))] };
+      const bytes = canonicalJSON(next); const nextHash = sha256(bytes);
+      tx.run('UPDATE tool_runs SET snapshot_json=?, snapshot_sha256=? WHERE owner_id=? AND run_id=?', [bytes, nextHash, ownerId, runId]);
+      return { acceptance, sha256: nextHash };
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
     liveDefinitions(runId, rememberNote) {

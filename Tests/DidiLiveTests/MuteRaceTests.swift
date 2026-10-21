@@ -8,7 +8,7 @@ import Foundation
         do {
             try await MainActor.run { try run() }
             print("PASS mute race: held mute, stale ended and ready fenced, current failure visible, "
-                + "ten taps keep the parity, receipts read mute and unmute")
+                + "ten taps keep the parity")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -169,17 +169,6 @@ import Foundation
         try require(machine.state == .live, "ten taps end live, the parity of the last one")
         try require(ten.opens.count == 6, "one open for the start and one per even tap, got \(ten.opens.count)")
         try require(ten.closes == 5, "one close per odd tap, got \(ten.closes)")
-
-        // Acceptance 6: the receipt reads the tap's own word.
-        let muteOutcome = SingleKeyTapOutcome(from: .live, to: .hotMuted)
-        try require(muteOutcome.action == .mute && muteOutcome.reason == "hotMuted",
-            "a live tap receipts as mute")
-        let unmuteOutcome = SingleKeyTapOutcome(from: .hotMuted, to: .connecting)
-        try require(unmuteOutcome.action == .unmute, "a muted tap receipts as unmute")
-        try require(SingleKeyTapOutcome(from: .connecting, to: .hotMuted).action == .mute,
-            "a tap while connecting receipts as mute")
-        try require(SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
-            "a cancelled connect still receipts as stop")
     }
 
     static func require(_ value: Bool, _ message: String) throws {

@@ -416,7 +416,16 @@ public actor LiveSessionCoordinator {
         captureEpoch = epoch; captureMuted = muted
         if muted, captureSubmissions > 0 {
             await withCheckedContinuation { captureDrainWaiters.append($0) }
+        } else {
+            releaseCaptureDrain()
         }
+    }
+
+    /// A mute only waits for the frames already in flight. Opening the fence, or ending the
+    /// call, releases it at once, so no mute can outlive the capture it was waiting for.
+    private func releaseCaptureDrain() {
+        let waiters = captureDrainWaiters; captureDrainWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     /// O1b-N: one playback receipt frame, forwarded over the live socket the call already holds. A
@@ -441,10 +450,7 @@ public actor LiveSessionCoordinator {
         defer {
             if submittedEpoch != nil {
                 captureSubmissions -= 1
-                if captureSubmissions == 0 {
-                    let waiters = captureDrainWaiters; captureDrainWaiters.removeAll()
-                    for waiter in waiters { waiter.resume() }
-                }
+                if captureSubmissions == 0 { releaseCaptureDrain() }
             }
         }
         if state == .rebuilding { if count { captureDiagnostics.rebuildingDrops += 1 }; return }
@@ -512,6 +518,7 @@ public actor LiveSessionCoordinator {
 
     @discardableResult
     public func close(trigger: LiveStopTrigger = .other) async -> LiveStopReceipt? {
+        releaseCaptureDrain()
         freezeCaptureDiagnostics()
         let stopRequestedAt = Date()
         guard !teardownIssued, state != .idle, !settled else { return nil }

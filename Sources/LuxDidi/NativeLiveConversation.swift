@@ -60,6 +60,8 @@ enum State: String, CaseIterable {
     /// Z2: when the one automatic restart after an unrequested capture interruption last ran.
     private var lastAutomaticRestartAt: Date?
     private var muteTask: Task<Void, Never>?
+    /// The mute request the owner made last: only it may clear the settled mute task.
+    private var muteRequest: UInt64 = 0
     private var captureSummaryTask: Task<Void, Never>?
     private var captureDiagnosticOwner: UInt64?
     var isMuted: Bool { muted }
@@ -323,14 +325,18 @@ enum State: String, CaseIterable {
     /// target, the fence advances before the caller reports the mute, and muting drops
     /// the model speech already queued so silence is immediate.
     func setMuted(_ value: Bool) {
-        guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
-        guard value != muted, muteTask == nil else { return }
+        guard [.listening, .speaking, .muted, .pausedForInput, .connecting].contains(state) else { return }
+        guard value != muted else { return }
         muted = value; device.setMuted(muted)
+        muteRequest &+= 1
+        let request = muteRequest
         let epoch = device.captureEpoch, requestedMute = muted, token = generation
+        let previous = muteTask
         muteTask = Task { [weak self, coordinator] in
+            await previous?.value
             await coordinator.setCaptureMuted(requestedMute, epoch: epoch)
             guard let self else { return }
-            self.muteTask = nil
+            if self.muteRequest == request { self.muteTask = nil }
             guard self.generation == token, self.state != .pausedForInput else { return }
             self.state = requestedMute ? .muted : (self.speaking ? .speaking : .listening)
         }

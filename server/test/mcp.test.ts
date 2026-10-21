@@ -823,10 +823,10 @@ function writeGoogleConfig(configDir: string, endpoints: readonly Record<string,
 }
 
 /** The durable approval row the previous release wrote: same endpoint, the pre-rename Google tool names. */
-function seedStaleGoogleRow(store: Store, id: string, endpoint: Record<string, unknown>): void {
+function seedStaleGoogleRow(store: Store, id: string, endpoint: Record<string, unknown>, enabled = true): void {
   const policy = {
     schemaVersion: 1, bindingMode: 'connection', ownerId: store.assistantId, connectionId: id, generation: 2,
-    enabled: true, connector: 'google',
+    enabled, connector: 'google',
     endpoint: {
       id, transport: 'stdio', command: endpoint['command'], args: endpoint['args'],
       env: endpoint['env'], account: ACCOUNT, resource: `google-${id}`, credentialRef: null,
@@ -842,7 +842,7 @@ function seedStaleGoogleRow(store: Store, id: string, endpoint: Record<string, u
   const bytes = canonicalJSON(policy);
   store.transaction(tx => tx.run(
     'INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)',
-    [store.assistantId, id, id, 2, 1, bytes, sha256(bytes)]));
+    [store.assistantId, id, id, 2, Number(enabled), bytes, sha256(bytes)]));
 }
 
 test('a durable approval row from the previous tool names reconnects under owner-trusted-reads', { skip: process.platform === 'win32' }, async () => {
@@ -862,7 +862,11 @@ test('a durable approval row from the previous tool names reconnects under owner
     try {
       const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail');
       assert.equal(report?.state, 'connected', JSON.stringify(report));
-      assert.equal(report?.tools, 3, 'the renames publish the three gmail reads');
+      const storedNames = JSON.parse(String(store.transaction(tx => tx.get(
+        "SELECT policy_json FROM tool_connections WHERE connection_id='gmail'"))?.['policy_json'] ?? '{}')).toolNames as string[];
+      assert.equal(report?.tools, storedNames.length, 'the grant publishes exactly the reconciled row');
+      assert.ok(storedNames.includes('gmail_search_messages') && storedNames.includes('calendar_list_events'));
+      assert.ok(!storedNames.includes('gmail_list') && !storedNames.includes('gcal_calendars'), 'no pre-rename name survives');
       assert.ok(runtime.connectionIds().includes('gmail'), 'the source is in connectionIds()');
       assert.deepEqual(failures, [], 'a reconciled source is not a failure');
       const row = store.transaction(tx => tx.get(
@@ -882,8 +886,7 @@ test('a stored revocation is honoured even when its row no longer validates', { 
   writeGoogleConfig(configDir, [endpoint]);
   const store = new Store(join(dir, 'data'), toolsMigrations);
   try {
-    seedStaleGoogleRow(store, 'gmail', endpoint);
-    store.transaction(tx => tx.run("UPDATE tool_connections SET enabled=0 WHERE connection_id='gmail'"));
+    seedStaleGoogleRow(store, 'gmail', endpoint, false);
     const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
     try {
       assert.equal(runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail')?.state, 'error');

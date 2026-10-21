@@ -1821,7 +1821,7 @@ export class LiveSessionOwner {
   #conversationInTx(tx: Transaction, assistantId: string): string {
     const row = tx.get('SELECT conversation_id FROM live_conversations WHERE owner_assistant_id=?', [assistantId]);
     if (row) return String(row['conversation_id']);
-    const previous = tx.get('SELECT conversation_id FROM live_sessions WHERE owner_assistant_id=? AND conversation_id IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1', [assistantId]);
+    const previous = tx.get('SELECT c.conversation_id AS conversation_id FROM live_session_conversations c JOIN live_sessions s ON s.live_session_id=c.live_session_id WHERE s.owner_assistant_id=? ORDER BY s.created_at DESC, s.rowid DESC LIMIT 1', [assistantId]);
     const conversationId = previous ? String(previous['conversation_id']) : randomUUID();
     tx.run('INSERT INTO live_conversations(owner_assistant_id,conversation_id,started_at) VALUES(?,?,?)', [assistantId, conversationId, this.#now()]);
     return conversationId;

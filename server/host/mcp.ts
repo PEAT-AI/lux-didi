@@ -1,6 +1,6 @@
 import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
-import { McpRegistry } from '../adapters/mcp/registry.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
@@ -188,6 +188,8 @@ export async function composeMcpRuntime(options: {
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
   const generations = new Map<string, number>();
+  // The per-tool digest of each endpoint's readable names as of its last approved round.
+  const approvedSchemas = new Map<string, Map<string, string>>();
   let closed = false;
   // W9: exactly one closed connector_failure line per endpoint that did not connect at host start,
   // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
@@ -358,6 +360,7 @@ export async function composeMcpRuntime(options: {
         return { retryable: false };
       }
       // Reconcile through the owner projection; the durable row is authoritative over local config.
+      const schemas = new Map(discovery.tools.map(tool => [tool.name, canonicalToolDigest([tool])] as const));
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
       const policy: ConnectionPolicy = {
         schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
@@ -405,9 +408,12 @@ export async function composeMcpRuntime(options: {
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
-        // Only an explicit approval mode needs a fresh owner approval for a catalog change: under
-        // owner-trusted-reads the reviewed envelope is what the owner already granted.
-        if (!trusted && (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]))) {
+        const previousSchemas = approvedSchemas.get(entry.id);
+        const readableChanged = previousSchemas !== undefined && names.some(name => previousSchemas.get(name) !== schemas.get(name));
+        // Only an explicit approval mode needs a fresh owner approval for any catalog change: under
+        // owner-trusted-reads the reviewed envelope is the approval, so only a change to the contract of
+        // a name that envelope already makes readable needs the owner again.
+        if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]) || (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest)) {
           reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
@@ -426,6 +432,7 @@ export async function composeMcpRuntime(options: {
         }
         if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
+      approvedSchemas.set(entry.id, schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;

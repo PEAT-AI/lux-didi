@@ -126,8 +126,10 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 3_000,
-  /** K1: how many ids one opened lookup reads, and the confidence below which a body is not worth it. */
+  /** K1: how many ids the hydration hop reads, and the confidence below which a body is not worth it. */
   knowledgeOpenIds: 2,
+  /** K1: the hydration hop's own key. Its body is shown at the read window; a named id stays whole. */
+  knowledgeHydrateKey: 'kz',
   knowledgeReadMinConfidence: 'medium',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
@@ -1734,8 +1736,9 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       lines.push([head['from'] ?? '', head['subject'] ?? '(no subject)', head['date'] ?? '', body].filter(value => value !== '').join(' | '));
       total += 1;
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
-      // K2: a search snippet stays short, and the body a hit was opened for gets the wider window.
-      const items = insightItems(raw, result.name === INTERNAL.knowledgeRead ? RESEARCH.knowledgeBodyChars : undefined);
+      // K2: a search snippet stays short, the hydration hop's body gets the wider window, and an
+      // explicit read by id stays whole, as Q5-R1 promises.
+      const items = insightItems(raw, result.key === RESEARCH.knowledgeHydrateKey ? RESEARCH.knowledgeBodyChars : undefined);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
       const items = calendarEvents(raw).map(event => event.line);
@@ -3115,7 +3118,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           if (kind === 'knowledge_search') {
             // K1: the second hop is the body read finding 1 is about, gated by the reply's own confidence.
             const ids = knowledgeHydrateIds(primaryText, completeKnowledgeIds(results));
-            if (ids.length) second.push({ key: 'kz', name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
+            if (ids.length) second.push({ key: RESEARCH.knowledgeHydrateKey, name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
           }
           if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
             const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);

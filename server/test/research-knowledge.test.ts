@@ -97,10 +97,15 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
 });
 
 test('K2: an opened body renders at 3000 characters and a search hit keeps the server window', () => {
-  const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
+  const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY, true, RESEARCH.knowledgeHydrateKey)]);
   assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
   assert.ok(opened.lines[0]!.endsWith('cut at 3000 chars'), opened.lines[0]!.slice(-40));
   assert.equal(opened.source, 'knowledge');
+  // F3: the wider window belongs to the hydration hop only. An explicit read by id stays whole.
+  const deepBody = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
+  const named = shapeBlock('knowledge_search', [sub('get_insight', `### Release 3p scope [id 412]\n${deepBody}`, true, 'kr0')]);
+  assert.ok(named.lines[0]!.includes('End of the entry.'), 'a named-id read is never clipped by the host');
+  assert.ok(named.lines[0]!.length > RESEARCH.replyLimitChars);
   // P5-R1 holds: a search hit is bounded by the server's own window, never cut again in the host.
   const whole = 'x'.repeat(4_000);
   const searched = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${whole}`)]);

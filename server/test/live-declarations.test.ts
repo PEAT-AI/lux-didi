@@ -72,7 +72,7 @@ test('chat TOOLS conduct is in the compiled instruction and its audited capabili
     evidence: [], history: [{ schemaVersion: 1 as const, ownerId: 'fixture', dataClass: 'ordinary' as const, id: 'turn', role: 'user' as const, text: 'Read the evidence' }],
     budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 } };
   const enabled = compilePrompt({ ...base, capabilities: chatCapabilities(registry, []) });
-  assert.match(enabled.system, /TOOLS: Call approved read tools/);
+  assert.match(enabled.system, /TOOLS: Use only the approved read tools advertised for this turn when the question needs external evidence/);
   const capabilityText = enabled.system.split('[capabilities]\n')[1]!;
   assert.equal(enabled.manifest.sections.find(section => section.id === 'capabilities')?.hash, createHash('sha256').update(capabilityText).digest('hex'));
   const disabled = compilePrompt({ ...base, capabilities: chatCapabilities([], []) });

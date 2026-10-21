@@ -658,7 +658,7 @@ const WRAPPER_3O_CHARS = 6603;
 const WRAPPER_W5_CHARS = 10_546;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
+    'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is

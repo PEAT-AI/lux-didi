@@ -3763,8 +3763,10 @@ test('progress speech fires once about 6 s into an open delegation, and not befo
   // The lookup is still running: this is the delegation the owner is waiting on.
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  assert.deepEqual(fake.thinking, ['Reading knowledge. Nothing has been sent or booked while that runs.'], 'one silent line says what is running');
-  assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 1);
+  // VOICE-R1: the host injects no waiting text, so a research call sends none and the owner hears silence.
+  assert.deepEqual(fake.thinking, [], 'no host-authored waiting line reaches the provider');
+  assert.deepEqual(fake.texts, [], 'no host-authored text reaches the provider during the call');
+  assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 0);
   h.advance(5_999); scheduler.runDue(); await settlePort();
   assert.deepEqual(fake.commentary, [], 'nothing is said before the first deadline');
   h.advance(1); scheduler.runDue(); await settlePort();
@@ -4243,8 +4245,8 @@ test('W4: a research-only batch still gets its silent line', async t => {
   // so a batch of nothing but research looked like a batch of nothing at all and no line went out.
   fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
   await settlePort();
-  assert.equal(fake.thinking.length, 1, 'the research lookup reaches the silent channel');
-  assert.match(fake.thinking[0]!, /Running a lookup across your sources/, 'and the line names the fan-out, not a source');
+  assert.equal(fake.thinking.length, 0, 'the research lookup injects no waiting line');
+  assert.equal(fake.texts.length, 0, 'and no host text either');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
@@ -4262,8 +4264,8 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
   const { session } = await openPort(h, 'research-progress');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();
-  assert.equal(fake.thinking.length, 1, 'silent truth goes out for a research lookup');
-  assert.match(fake.thinking[0]!, /Running a lookup across your sources\. Nothing has been sent or booked while that runs\./);
+  assert.equal(fake.thinking.length, 0, 'silent truth goes out for a research lookup');
+  assert.equal(fake.texts.length, 0, 'the host says nothing while the lookup runs');
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.commentary.length, 1, 'progress speech goes out for a research lookup');
   // The line names a source the run actually opened and its settled receipt, never the requested list.

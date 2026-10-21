@@ -1281,19 +1281,24 @@ test('a google endpoint in configuration error names mail and calendar as unreac
   ], 'both google reads keep their source name with the closed reason');
 });
 
-test('a configured but unreachable mail source is not skipped: the reply says it could not be reached', async () => {
+test('a google endpoint in configuration error is voiced as unreachable mail, never silently dropped', async () => {
+  // The configured set and the unreachable reasons come from the same endpoint report the host writes.
+  const named = configuredSourcesForEndpoints([
+    { connector: 'google', state: 'error', configurationError: 'unknown-class-invalid' },
+  ]);
+  const unreachable = named.map(entry => entry.source);
   const dispatched: string[] = [];
   const deps: ResearchDeps = {
-    now: () => 0, configured: ['calendar', 'mail'], unavailableNow: () => ['calendar', 'mail'],
+    now: () => 0, configured: unreachable, unavailableNow: () => unreachable,
     execute: async subs => {
       for (const call of subs) dispatched.push(call.name);
       return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0, received: { shape: 'list', items: 1 } } as never));
     },
     emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'invoice' }, { kind: 'calendar_lookup', query: 'tomorrow' }] }) } as unknown as ResearchSelector,
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'invoice' }] }) } as unknown as ResearchSelector,
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'did I get the invoice and what is on tomorrow' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'did I get the invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
-  assert.match(note, /could not reach/);
-  assert.match(note, /mail|calendar/, 'the reply names the configured source it could not reach');
+  assert.match(note, /could not reach mail/);
+  assert.deepEqual(dispatched, [], 'a source known to be unreachable is not dispatched to');
 });

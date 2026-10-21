@@ -2252,7 +2252,8 @@ function rememberCalendarWindow(deps: ResearchDeps, reads: readonly CalendarRead
     if (read.failed || read.nextPageToken !== undefined) return;
     const result = results[slots[n]!];
     const page = result?.calendarPage;
-    if (result?.ok !== true || page === undefined || page.nextPageToken !== undefined || page.unread > 0) return;
+    // A round the caller cut still carries the page it paid for, so the next run reuses it instead of refetching.
+    if ((result?.ok !== true && result?.code !== 'round_cancelled') || page === undefined || page.nextPageToken !== undefined || page.unread > 0) return;
     const events = new Map<string, RetainedCalendarEvent>();
     for (const [index, event] of page.events.entries()) {
       const instant = Date.parse(event.start);
@@ -2814,13 +2815,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const fresh = results.flatMap(result => result.binding ? [result.binding] : []);
     if (run.stopped || run.cancelled || dispatchSignal.aborted || deps.ledger.find(run.researchId) !== run) {
       deps.ledger.discardEvidence(fresh);
-      return results.map(result => {
-        const { hostEvidence: _evidence, ...rest } = result;
-        // E8: a window the provider already answered is kept for the session, so the run that replaced this
-        // one never pays for the same days again. Its evidence was discarded above and never reaches a reply.
-        if (result.name === INTERNAL.calendarList && result.ok) { const { binding: _binding, ...page } = rest; return page; }
-        return { ...rest, ok: false, text: '', code: 'round_cancelled' };
-      });
+      return results.map(result => { const { hostEvidence: _evidence, ...rest } = result; return { ...rest, ok: false, text: '', code: 'round_cancelled' }; });
     }
     for (const result of results) {
       if (!result.ok || !result.binding || result.hostEvidence?.kind !== 'remote-body') continue;

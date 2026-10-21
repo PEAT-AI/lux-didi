@@ -2247,6 +2247,7 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
  */
 function rememberCalendarWindow(deps: ResearchDeps, reads: readonly CalendarRead[], results: readonly IntentSubResult[], slots: readonly number[], at: number): void {
   const memo = deps.memo;
+  memo?.calendar.set('probe', { at, events: new Map() });
   if (memo === undefined) return;
   reads.forEach((read, n) => {
     if (read.failed || read.nextPageToken !== undefined) return;

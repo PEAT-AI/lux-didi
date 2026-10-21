@@ -193,9 +193,13 @@ async function harness(t: TestContext, overrides: {
     // W10: the configured endpoint report the live host always supplies, so a start can name a
     // connector that is not usable yet instead of silently narrowing its sources.
     const endpointStates: { id: string; connector: string; state: string }[] = [];
+    // W10: the two are not the same thing. A connector can report `connected` while its read grant
+    // is still unpublished; only `published` carries the grant the run may actually dispatch.
+    const published: string[] = [];
     const mark = (id: string, connector: string): void => {
       const entry = endpointStates.find(state => state.id === id);
       if (entry) entry.state = 'connected'; else endpointStates.push({ id, connector, state: 'connected' });
+      if (!published.includes(id)) published.push(id);
     };
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
@@ -334,7 +338,8 @@ async function harness(t: TestContext, overrides: {
         mark('calendar', 'google');
       };
       if (overrides.lateCalendar) {
-        endpointStates.push({ id: 'calendar', connector: 'google', state: 'connecting' });
+        // The endpoint finished its handshake, so the report says so, but no read grant exists yet.
+        endpointStates.push({ id: 'calendar', connector: 'google', state: 'connected' });
         publishCalendar = connect;
       } else {
         await connect();
@@ -362,7 +367,7 @@ async function harness(t: TestContext, overrides: {
     toolOwner.projectConnection('lux');
     mark('lux', 'lux-knowledge');
     tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner,
-      connectionIds: () => endpointStates.filter(state => state.state === 'connected').map(state => state.id),
+      connectionIds: () => [...published],
       status: () => ({ endpoints: endpointStates.map(state => ({ ...state })) }) };
     if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); if (mongooseSdk) await mongooseSdk.close(); if (mailSdk) await mailSdk.close(); });

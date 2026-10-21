@@ -1567,7 +1567,7 @@ export function knowledgeOpenIds(raw: string): number[] {
 const KNOWLEDGE_TRUNCATED = /^truncated: (yes|no)\b/u;
 
 /** Knowledge headings collapse to `#id title | body`, one per insight, in the shaped and raw forms. */
-function insightItems(raw: readonly string[], bodyWindow: number = RESEARCH.knowledgeMaxChars): string[] {
+function insightItems(raw: readonly string[], bodyWindow?: number): string[] {
   const items: string[] = [];
   // K5: the ranker's confidence line leads the finding, so the model can hedge a weak match.
   const confidence = knowledgeConfidenceOf(raw);
@@ -1587,9 +1587,10 @@ function insightItems(raw: readonly string[], bodyWindow: number = RESEARCH.know
       return !KNOWLEDGE_SCORE.test(line);
     });
     const joined = kept.join(' ');
-    const bounded = clip(joined, bodyWindow);
+    const bounded = bodyWindow === undefined ? joined : clip(joined, bodyWindow);
     const text = `${heading.id ? `#${heading.id} ` : ''}${heading.title}${bounded ? ` | ${bounded}` : ''}`;
-    items.push(cut || bounded !== joined ? `${text} | cut at ${bodyWindow} chars` : text);
+    const window = bodyWindow ?? RESEARCH.knowledgeMaxChars;
+    items.push(cut || bounded !== joined ? `${text} | cut at ${window} chars` : text);
     heading = undefined; body = [];
   };
   for (const line of raw) {
@@ -1740,7 +1741,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       total += 1;
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
       // K2: a search snippet stays short, and the body a hit was opened for gets the wider window.
-      const items = insightItems(raw, result.name === INTERNAL.knowledgeRead ? RESEARCH.knowledgeBodyChars : RESEARCH.knowledgeMaxChars);
+      const items = insightItems(raw, result.name === INTERNAL.knowledgeRead ? RESEARCH.knowledgeBodyChars : undefined);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
       const items = calendarEvents(raw).map(event => event.line);

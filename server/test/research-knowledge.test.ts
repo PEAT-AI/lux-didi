@@ -91,13 +91,15 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });
 
-test('K2: an opened body renders at 3000 characters while a search snippet stays at 1200', () => {
+test('K2: an opened body renders at 3000 characters and a search hit keeps the server window', () => {
   const opened = shapeBlock('knowledge_open', [sub('get_insight', LONG_BODY)]);
   assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
   assert.ok(opened.lines[0]!.endsWith('cut at 3000 chars'), opened.lines[0]!.slice(-40));
   assert.equal(opened.source, 'knowledge');
-  const snippet = shapeBlock('knowledge_search', [sub('search_knowledge', CUT_SEARCH)]);
-  assert.ok(!snippet.text.includes('cut at 3000 chars'));
+  // P5-R1 holds: a search hit is bounded by the server's own window, never cut again in the host.
+  const whole = 'x'.repeat(4_000);
+  const searched = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${whole}`)]);
+  assert.ok(searched.lines[0]!.endsWith(whole));
 });
 
 test('K1: a cut search reply is followed by a read of the top id, inside the same run', async () => {

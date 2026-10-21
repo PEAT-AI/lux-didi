@@ -392,3 +392,13 @@ test('a knowledge tool result never starts with an H1 or H2', () => {
   assert.equal(/^#{1,2} /m.test(shaped.text), false, 'no H1/H2 heading survives shaping');
   assert.match(shaped.text, /### Insight 1 \(PATTERN \| 2026-10-14\) \[id 1\]/);
 });
+
+test('R6: organizer renders, and a capped attendee list says and others', () => {
+  const shaped = shapeGcalList({ events: [{
+    summary: 'Third-party sync', start: { dateTime: '2024-01-01T09:00:00Z' },
+    attendees: [{ displayName: 'Dana', responseStatus: 'accepted' }, { email: 'kim@example.invalid', responseStatus: 'tentative' }],
+    attendeesOmitted: true, organizer: { email: 'rob@example.invalid', displayName: 'Rob' },
+  }] });
+  assert.match(shaped.text, /attendees: Dana, kim@example\.invalid and others/u);
+  assert.match(shaped.text, /organizer: Rob/u);
+});

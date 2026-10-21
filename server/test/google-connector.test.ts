@@ -415,11 +415,11 @@ test('gmail_search_messages projects an SSE MCP entity from separately decodedRe
 
 const CALENDAR_DIGEST = 'synthetic-calendar-digest';
 
-async function calendarReader(port: McpPort, overrides: Partial<GoogleConfig> = {}) {
+async function calendarReader(port: McpPort, overrides: Partial<GoogleConfig> = {}, eventProperties?: Record<string, unknown>) {
   const registry = new McpRegistry();
   const endpoint = config('calendar-fake', 'ok', join(tmpdir(), 'calendar-fake.pid'));
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
-  const tools = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object' } }];
+  const tools = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object' } }, { name: 'calendar_list_events', inputSchema: { type: 'object', ...(eventProperties === undefined ? {} : { properties: eventProperties }) } }];
   const digest = registry.observed('calendar-fake', tools, registry.revision('calendar-fake'));
   registry.approve({ endpointId: 'calendar-fake', schemaDigest: digest, toolNames: ['calendar_list_calendars', 'calendar_list_events'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
   return createGoogleReader({ port, registry, config: { endpointId: 'calendar-fake', account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, ...overrides, family: 'calendar' } });
@@ -465,6 +465,20 @@ function fakeCalendarPort(options: { calendars: { id: string; summary: string; p
   };
   return { port, listArgs, peak: () => peak, pending: () => gates.length, release: () => { for (const gate of gates.splice(0)) gate(); } };
 }
+
+test('R5: an older helper without an include property is never sent one', async () => {
+  const fake = fakeCalendarPort({ calendars: [{ id: 'a', summary: 'Alpha' }], eventsFor: () => timedEvent });
+  await (await calendarReader(fake.port)).gcalList({});
+  assert.equal(fake.listArgs.length, 1);
+  assert.equal('include' in fake.listArgs[0]!, false, 'the old helper refuses any argument it does not declare');
+});
+
+test('R5/R6: a helper that advertises include is asked for attendees and organizer', async () => {
+  const fake = fakeCalendarPort({ calendars: [{ id: 'a', summary: 'Alpha' }], eventsFor: () => timedEvent });
+  await (await calendarReader(fake.port, {}, { include: { type: 'array', items: { type: 'string' } } })).gcalList({});
+  assert.equal(fake.listArgs.length, 1);
+  assert.deepEqual(fake.listArgs[0]!['include'], ['attendees', 'organizer']);
+});
 
 test('a calendar read with no id resolves every selected calendar and merges, sorts, dedupes and tags', async () => {
   const shared = { id: 'e-shared', summary: 'Standup', start: { dateTime: '2026-10-16T09:00:00+05:30' } };

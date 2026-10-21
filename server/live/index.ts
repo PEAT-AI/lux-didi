@@ -2633,12 +2633,14 @@ export class LiveSessionOwner {
     hostLogEvent({ event: 'thinking_sent', chars: block.length });
     const reason = this.#lateCommentaryReason(handle, event);
     if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
-    const speak = handle.session.sendCommentary;
+    // U4/R4(b): every commentary append the provider saw was refused on delegation_id, and a late finding rides
+    // that same door. Findings are the answer to a question already asked, not progress, so they travel on the
+    // normal response channel, which the provider accepts. No progress line is added anywhere.
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
-    try { speak!.call(handle.session, { text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
+    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
     handle.lateCommentaryFor = event.researchId;
-    hostLogEvent({ event: 'commentary_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
-    hostLogEvent({ ...receipt, delivered: 'commentary', reason: 'quiet' });
+    hostLogEvent({ event: 'late_findings_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
+    hostLogEvent({ ...receipt, delivered: 'response', reason: 'quiet' });
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
@@ -2646,7 +2648,6 @@ export class LiveSessionOwner {
     const now = this.#now();
     const answeredAt = handle.researchAnsweredAt ?? now;
     if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
-    if (typeof handle.session.sendCommentary !== 'function') return 'no_commentary_channel';
     if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
     // A question begun after the first answer means the owner moved on: the block stays context only.
     if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';

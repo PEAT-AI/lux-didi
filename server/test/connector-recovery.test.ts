@@ -28,7 +28,13 @@ async function body(req: IncomingMessage): Promise<Buffer> {
  * A synthetic, stateless Mongoose endpoint that counts every discovery request. Stateless on purpose: the
  * host retires a failed session, and a per-session transport would stop answering after that retirement.
  */
-async function fixture(options: { tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> } = {}) {
+interface FixtureOptions {
+  tools?: Array<{ name: string; inputSchema: Record<string, unknown> }>;
+  /** Per tool call: how long the answer takes and the JSON payload it carries. */
+  call?: (tool: string) => { delayMs?: number; payload: unknown };
+}
+
+async function fixture(options: FixtureOptions = {}) {
   let requests = 0;
   const listener = createServer(async (req, res) => {
     try {
@@ -38,6 +44,12 @@ async function fixture(options: { tools?: Array<{ name: string; inputSchema: Rec
       sdk.setRequestHandler('tools/list', () => {
         requests += 1;
         return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
+      });
+      sdk.setRequestHandler('tools/call', async request => {
+        const tool = (request.params as { name: string }).name;
+        const answer = options.call?.(tool) ?? { payload: {} };
+        await new Promise(resolve => setTimeout(resolve, answer.delayMs ?? 0));
+        return { content: [{ type: 'text', text: JSON.stringify(answer.payload) }] } as never;
       });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       await sdk.connect(transport);
@@ -200,4 +212,62 @@ test('a retryable first call failure retries a bounded number of times and then 
   const settled = runtime.status().endpoints[0]!;
   assert.equal(settled.retrying, false, 'the round is over and no further attempt is pending');
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
+});
+
+/** Two Google endpoints of one owner account, each proving itself with its own family's tool. */
+function googleConfig(url: string, connector: 'gmail' | 'calendar', id: string, resource: string): Record<string, unknown> {
+  return { id, transport: 'streamable-http', url, connector, account: ACCOUNT, resource, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
+}
+
+const GMAIL_TOOLS = [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }];
+const CALENDAR_TOOLS = [{ name: 'calendar_list_calendars', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }];
+
+test('a gmail proof that runs out of time is retried until it proves the account, and calendar is never touched', async t => {
+  let gmailProbes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => {
+    gmailProbes += 1;
+    // The first probe is the late one the owner's session lost the endpoint to; the retry answers.
+    return gmailProbes === 1 ? { delayMs: 400, payload: { emailAddress: ACCOUNT } } : { payload: { emailAddress: ACCOUNT } };
+  } });
+  t.after(() => gmail.close());
+  const calendar = await fixture({ tools: CALENDAR_TOOLS, call: () => ({ payload: { calendars: [{ id: ACCOUNT, primary: true }] } }) });
+  t.after(() => calendar.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-recovery-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: ACCOUNT,
+    endpoints: [googleConfig(gmail.url, 'gmail', 'gmail', 'mail'), googleConfig(calendar.url, 'calendar', 'calendar', 'calendar')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const identity: Array<{ connector: string; proven: boolean; match: boolean | null }> = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 200, recoveryDelaysMs: FAST,
+    identityLog: (connector, proven, match) => { identity.push({ connector, proven, match }); },
+  });
+  t.after(() => runtime.close());
+  const first = runtime.status().endpoints;
+  const calendarFirst = first.find(row => row.connector === 'calendar')!;
+  const gmailFirst = first.find(row => row.connector === 'gmail')!;
+  assert.equal(gmailFirst.state, 'error', 'the slow proof left gmail unproven');
+  assert.equal(gmailFirst.reasonCode, 'identity_timeout', 'and the code names a timeout, never a mismatch');
+  assert.equal(gmailFirst.retrying, true, 'so recovery is scheduled');
+  assert.equal(connectionReasonCode({ state: gmailFirst.state, error: gmailFirst.error ?? '', signIn: false }), 'unreachable');
+  assert.equal(calendarFirst.state, 'connected', 'calendar proved itself and never depended on gmail');
+  assert.equal(calendarFirst.error, undefined);
+  // The retry answers immediately: gmail ends connected and calendar keeps its own state and handshake.
+  await new Promise(resolve => setTimeout(resolve, FAST[0]! + 600));
+  const settled = runtime.status().endpoints;
+  const gmailAfter = settled.find(row => row.connector === 'gmail')!;
+  const calendarAfter = settled.find(row => row.connector === 'calendar')!;
+  assert.equal(gmailAfter.state, 'connected');
+  assert.equal(gmailAfter.retrying, false);
+  assert.equal(gmailAfter.error, undefined);
+  assert.ok(runtime.registry.currentGrant('gmail'), 'the retried proof published a grant');
+  assert.deepEqual({ state: calendarAfter.state, lastHandshakeAt: calendarAfter.lastHandshakeAt },
+    { state: calendarFirst.state, lastHandshakeAt: calendarFirst.lastHandshakeAt }, 'calendar was never re-probed');
+  // One receipt per endpoint and per probe: gmail's timed out proof is unproven, and its own retry proved it.
+  assert.deepEqual(identity.filter(entry => entry.proven).map(entry => entry.connector).sort(), ['calendar', 'gmail']);
+  assert.equal(identity.some(entry => entry.connector === 'gmail' && !entry.proven), true);
 });

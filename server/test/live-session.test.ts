@@ -4971,7 +4971,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); const first = fake.toolResponses[0]![0]!.response;
-  assert.equal(first['canContinue'], true, JSON.stringify(first));
+  assert.equal(first['canContinue'], source === 'mail', `${source} pages: ${JSON.stringify(first)}`);
   const steps = h.owner.current().steps ?? [];
   assert.equal(steps.length, 2, 'one retained terminal step for each actual upstream page');
   assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));

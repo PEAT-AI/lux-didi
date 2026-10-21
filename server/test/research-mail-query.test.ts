@@ -31,7 +31,7 @@ const FIXTURES: readonly { question: string; authored?: string; q: string }[] = 
   // The three shapes the 04:06Z call really sent (described, never quoted from the log): a bare first
   // name with no window, a long natural-language sentence, and one with a person and a time word.
   { question: 'Davian', q: 'davian newer_than:14d' },
-  { question: 'could you check whether anything important came in from Priya about the security review this week?', q: 'from:priya OR to:priya security review newer_than:7d' },
+  { question: 'could you check whether anything important came in from Priya about the security review this week?', q: 'is:important from:priya OR to:priya security review newer_than:7d' },
   { question: 'I think there was something in my inbox earlier this week about the new pricing sheet from the finance team, can you find it?', q: 'pricing sheet finance newer_than:7d' },
 ];
 

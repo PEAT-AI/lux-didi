@@ -482,11 +482,11 @@ function mailPersonName(question: string): string | undefined {
 }
 
 /** At most four salient terms: names, words and numbers survive; filler and time words do not. */
-export function mailTerms(text: string, max = 4): string[] {
+export function mailTerms(text: string, max = 4, skip?: ReadonlySet<string>): string[] {
   const words = text.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
   const terms: string[] = [];
   for (const word of words) {
-    if (STOP_WORDS.has(word) || MAIL_FILLER.has(word)) continue;
+    if (STOP_WORDS.has(word) || MAIL_FILLER.has(word) || skip?.has(word) === true) continue;
     if (!/\d/u.test(word) && word.length < 3) continue;
     if (terms.includes(word)) continue;
     terms.push(word);
@@ -547,7 +547,7 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const lower = question.toLowerCase();
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const flags = [/\bunread\b/u.test(lower) ? 'is:unread' : '', /\bimportant\b/u.test(lower) ? 'is:important' : ''].filter(Boolean);
-  const terms = mailTerms(text).filter(term => term !== person);
+  const terms = mailTerms(text, 4, person === undefined ? undefined : new Set([person]));
   const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
   if (leading.length === 0 && terms.length === 0) return `in:inbox ${mailWindow(question, nowMs, timeZone)}`;
   return [...leading, ...terms, mailWindow(question, nowMs, timeZone)].join(' ').slice(0, RESEARCH.queryLimitChars);
@@ -1938,7 +1938,8 @@ async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: re
   const retries = reads.map(read => {
     if (read.messages.size > 0 || read.failed) return undefined;
     const q = read.args['q'];
-    if (typeof q !== 'string') return undefined;
+    // Only a keyword search is broadened: a bare filter has nothing further to ask.
+    if (typeof q !== 'string' || mailQueryShape(q).terms === 0) return undefined;
     const broader = broaderMailQuery(q);
     if (broader === undefined || broader === q) return undefined;
     const retry = mailRead(run, { ...read.args, q: broader });

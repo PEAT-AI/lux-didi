@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ResearchLedger, ResearchScheduler, broaderMailQuery, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
-  type ResearchDeps, type ResearchSourceLog,
+  type ResearchDeps, type ResearchRunLog, type ResearchSourceLog,
 } from '../tools/research.js';
 import { shapeGmailList } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
@@ -213,4 +213,31 @@ test('W12-R1: an answered run that named a source unavailable is never coalesced
   assert.equal(answered['unavailable'], undefined, 'a clean answer names no unavailable source');
   const joined = await cleanScheduler.call(start, new AbortController().signal);
   assert.equal(String(joined['researchId']), String(answered['researchId']), 'and a clean answer still coalesces');
+});
+
+// ROUTE-R2: the run log says why a source was skipped, so a grant gap is never read as an outage.
+test('ROUTE-R2: a gmail endpoint that failed its proof is logged as an endpoint outage', async () => {
+  const h = mailHarness(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...mailPage(['m1']) })));
+  const logs: ResearchRunLog[] = [];
+  h.deps.log = event => logs.push(event);
+  h.deps.unavailableNow = () => [{ source: 'mail', reason: 'identity_unverified' }];
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did Dana email me about the invoice' }, new AbortController().signal);
+  assert.equal(h.sources.length, 0, 'a dead endpoint is never dispatched to');
+  const row = logs.at(-1)!.sources.find(entry => entry.kind === 'mail')!;
+  assert.deepEqual({ disposition: row.disposition, reason: row.reason }, { disposition: 'skipped', reason: 'endpoint_unavailable' });
+  assert.ok(safeEvent(logs.at(-1)!) !== undefined, 'the host log keeps that sub-reason');
+  assert.match(String(reply['note'] ?? ''), /could not reach mail/u, 'and the reply still says mail was not reached');
+});
+
+test('ROUTE-R2: the host log keeps a skip reason only from the closed set', () => {
+  const receipt = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered', ops: 1,
+    elapsedMs: 1, deadAirMs: 0, selectorMs: 0, fallbackUsed: true, replyBytes: 1, unchecked: [], canContinue: false,
+    sources: [{ kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'not_granted' }],
+  };
+  const kept = safeEvent(receipt);
+  assert.ok(kept !== undefined, 'a skipped row keeps its closed reason');
+  assert.deepEqual((kept['sources'] as Record<string, unknown>[])[0], { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'not_granted' });
+  assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'identity_unverified' }] }), undefined, 'an open word is refused');
+  assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 4, reason: 'timeout' }] }), undefined, 'a served row carries no skip reason');
 });

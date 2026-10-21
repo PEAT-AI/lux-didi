@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "grantMode": "owner-trusted-reads",
   "ownerIdentity": "owner@example.invalid",
-  "ownerChatUsername": "owner",
+  "ownerChatUsername": "robert",
   "endpoints": [
     {
       "id": "lux-knowledge",

@@ -1273,8 +1273,7 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const seed = this.#seedHistory(liveSessionId, inputClass);
-    const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
+    const history = this.#jobHistory(liveSessionId, inputClass);
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
     const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || OPEN_TOOL_NAMES.has(tool.name));
@@ -1837,58 +1836,25 @@ export class LiveSessionOwner {
     return conversationId;
   }
 
-  /** The conversation a persisted session belongs to, minted if an older row predates the column. */
-  #conversationOf(liveSessionId: string): string {
-    return this.#store.transaction(tx => {
-      const row = tx.get('SELECT conversation_id FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
-      const known = row?.['conversation_id'];
-      if (known !== null && known !== undefined) return String(known);
-      const conversationId = this.#conversationInTx(tx, this.#store.assistantId);
-      tx.run('UPDATE live_sessions SET conversation_id=? WHERE live_session_id=?', [conversationId, liveSessionId]);
-      return conversationId;
-    });
-  }
-
-  /** Seed for a new provider session: the conversation's recent exchanges, never half an exchange. */
-  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
-    const conversationId = this.#conversationOf(liveSessionId);
+  /** Build the seeded history for a fresh recovery from this session's journal, bounded to SEED_CHAR_LIMIT. */
+  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
     const rows = this.#store.transaction(tx => tx.all(
-      "SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id WHERE s.conversation_id=? AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id",
-      [conversationId]));
-    const runs: { role: 'user' | 'model'; text: string }[] = [];
+      "SELECT kind,text,finished FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') AND text IS NOT NULL ORDER BY journal_id",
+      [liveSessionId]));
+    const turns: { role: 'user' | 'model'; text: string }[] = [];
     let role: 'user' | 'model' | undefined; let pending = '';
-    const flush = () => { if (role !== undefined && pending.trim().length) runs.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
+    const flush = () => { if (role !== undefined && pending.trim().length) turns.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
     for (const row of rows) {
       const next: 'user' | 'model' = String(row['kind']) === 'inputTranscription' ? 'user' : 'model';
       if (role !== undefined && role !== next) flush();
       role = next; pending += String(row['text'] ?? '');
       if (Number(row['finished']) === 1) flush();
     }
-    // An unfinished model run is speech the owner never heard, so it never becomes history here.
-    if (role === 'model') pending = '';
     flush();
-    const exchanges: { role: 'user' | 'model'; text: string }[][] = [];
-    for (const run of runs) {
-      if (run.role === 'user' || exchanges.length === 0) exchanges.push([run]);
-      else exchanges[exchanges.length - 1]!.push(run);
-    }
-    const charsOf = (exchange: { role: 'user' | 'model'; text: string }[]) => exchange.reduce((sum, run) => sum + run.text.length, 0);
-    let chars = exchanges.reduce((sum, exchange) => sum + charsOf(exchange), 0);
-    let condensed = false;
-    // The latest exchange is the anchor: older exchanges go whole, and a latest exchange over budget is condensed.
-    while (exchanges.length > 1 && chars > SEED_CHAR_LIMIT) { chars -= charsOf(exchanges[0]!); exchanges.shift(); }
-    if (exchanges.length === 1 && chars > SEED_CHAR_LIMIT) {
-      const anchor = exchanges[0]!;
-      for (const run of anchor) {
-        const room = SEED_CHAR_LIMIT - (chars - run.text.length);
-        if (run.text.length <= room) continue;
-        const keep = Math.max(room - 3, 0);
-        run.text = keep > 0 ? `...${run.text.slice(run.text.length - keep)}` : '...';
-        chars = charsOf(anchor); condensed = true;
-      }
-    }
-    const kept = exchanges.flat().slice(-128).map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
-    return { turns: kept, chars, condensed };
+    let start = 0; let chars = turns.reduce((sum, turn) => sum + turn.text.length, 0);
+    while (start < turns.length && chars > SEED_CHAR_LIMIT) { chars -= turns[start]!.text.length; start += 1; }
+    const kept = turns.slice(start).slice(-128).map(turn => ({ role: turn.role, text: turn.text, dataClass: inputClass }));
+    return { turns: kept, chars };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */

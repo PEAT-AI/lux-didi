@@ -3370,7 +3370,7 @@ test('a delegated response with no audible output is nudged, and audible progres
   assert.deepEqual(phases(), ['armed', 'nudged'], 'silence after the completed result earns the nudge');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
-  // Audible progress speech is output, so it defers the deadline to 8 s from that frame (amendment A).
+  // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
@@ -3605,7 +3605,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   attachment.close();
 });
 
-test('D3: a progress line followed by silence still recovers on the same clock', async t => {
+test('D3: an audible frame followed by silence still recovers on the same clock', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-progress-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -3617,7 +3617,7 @@ test('D3: a progress line followed by silence still recovers on the same clock',
   await attachment.ready;
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'k3', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
   await settlePort();
-  // Progress speech: audible, then silence again with no answer.
+  // Audible output, then silence again with no answer.
   fake.emit(audibleFrame);
   for (let elapsed = 0; elapsed < 16_000; elapsed += 1_000) {
     h.advance(1_000);
@@ -3625,8 +3625,8 @@ test('D3: a progress line followed by silence still recovers on the same clock',
     await settlePort();
   }
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
-  assert.ok(stall, 'progress speech is not fulfilment, so the stall is still witnessed');
-  assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible progress frame');
+  assert.ok(stall, 'audible output is not fulfilment, so the stall is still witnessed');
+  assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible frame');
   assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
@@ -3750,7 +3750,7 @@ function progressPort() {
 
 const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 };
 
-test('progress speech fires once about 6 s into an open delegation, and not before', async t => {
+test('VOICE-R4: a lookup sends no host-authored commentary, not on dead air and not on the six second beat', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -3763,19 +3763,23 @@ test('progress speech fires once about 6 s into an open delegation, and not befo
   // The lookup is still running: this is the delegation the owner is waiting on.
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  assert.deepEqual(fake.thinking, ['Reading knowledge. Nothing has been sent or booked while that runs.'], 'one silent line says what is running');
-  assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 1);
+  // VOICE-R1: the host injects no waiting text, so a research call sends none and the owner hears silence.
+  assert.deepEqual(fake.thinking, [], 'no host-authored waiting line reaches the provider');
+  assert.deepEqual(fake.texts, [], 'no host-authored text reaches the provider during the call');
+  assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 0);
   h.advance(5_999); scheduler.runDue(); await settlePort();
   assert.deepEqual(fake.commentary, [], 'nothing is said before the first deadline');
   h.advance(1); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, ['Still reading the knowledge.'], 'one factual line, built from the ledger');
-  assert.deepEqual(receipts.filter(entry => entry['event'] === 'commentary_sent').map(entry => entry['reason']), ['dead_air']);
+  assert.deepEqual(fake.commentary, [], 'dead air is silent: the host speaks no status line');
+  h.advance(12_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, [], 'and it stays silent however long the lookup runs');
+  assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'no commentary send was ever recorded');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
 
-test('progress speech is suppressed while the owner speaks', async t => {
+test('no commentary steps on the owner while a lookup runs', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
@@ -3789,7 +3793,7 @@ test('progress speech is suppressed while the owner speaks', async t => {
   fake.emit({ type: 'inputTranscription', text: 'wait a moment', finished: false });
   await settlePort();
   h.advance(1_000); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, [], 'no progress speech over a speaking owner');
+  assert.deepEqual(fake.commentary, [], 'no commentary over a speaking owner');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
@@ -3800,7 +3804,7 @@ test('progress speech is suppressed while the owner speaks', async t => {
 
 // --- W4: no long silence while a call is in flight ------------------------------------------------
 
-test('W4: a turn gets at most two progress lines, and never two inside six seconds', async t => {
+test('VOICE-R4: no commentary goes out over three six second beats of one lookup', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -3813,23 +3817,19 @@ test('W4: a turn gets at most two progress lines, and never two inside six secon
   const { session } = await openPort(h, 'progress-cap');
   fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
   await settlePort();
-  h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 1, 'the first line goes out about six seconds into the call');
-  h.advance(5_999); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 1, 'a second line waits the full six seconds');
-  h.advance(1); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 2, 'the second line is six seconds after the first');
-  h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 2, 'a turn never speaks a third progress line');
-  const skips = receipts.filter(entry => entry['event'] === 'commentary_skipped').map(entry => entry['reason']);
-  assert.ok(skips.includes('budget'), `the refused line leaves a receipt, not silence: ${JSON.stringify(skips)}`);
+  for (const beat of [1, 2, 3]) {
+    h.advance(6_000); scheduler.runDue(); await settlePort();
+    assert.deepEqual(fake.commentary, [], `beat ${beat} of the lookup is silent`);
+  }
+  const sent = receipts.filter(entry => entry['event'] === 'commentary_sent');
+  assert.deepEqual(sent, [], 'the host-composed status line is gone from the ledger too');
   assert.deepEqual(fake.texts, [], 'the fake owner turn is never sent on the GPT-Live path');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
 
-test('W4: no progress line once the tool result has been sent', async t => {
+test('VOICE-R4: no commentary once the tool result has been sent', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -3842,11 +3842,11 @@ test('W4: no progress line once the tool result has been sent', async t => {
   assert.equal(fake.toolResponses.length, 1, 'the result is already with the model');
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.deepEqual(fake.commentary, [], 'a turn with nothing in flight never says it is still reading');
-  assert.ok(receipts.some(entry => entry['event'] === 'commentary_skipped'), 'the decision is on the record');
+  assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'and nothing was sent');
   h.owner.revoke(session.liveSessionId);
 });
 
-test('W4: a refused commentary is a receipt, never a claimed send', async t => {
+test('VOICE-R4: a transport that refuses commentary is never asked to speak a status line', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -3860,10 +3860,9 @@ test('W4: a refused commentary is a receipt, never a claimed send', async t => {
   fake.emit({ type: 'toolCall', calls: [{ id: 'ref1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, [], 'the transport refused it, so the owner heard nothing');
-  const refused = receipts.filter(entry => entry['event'] === 'commentary_skipped').map(entry => entry['reason']);
-  assert.ok(refused.includes('no_delegation'), `the skip names why: ${JSON.stringify(refused)}`);
-  assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'and nothing claims it was sent');
+  assert.deepEqual(fake.commentary, [], 'no append is attempted, so nothing is refused and nothing is heard');
+  assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'and nothing claims a send');
+  assert.equal(receipts.filter(entry => entry['event'] === 'commentary_skipped').length, 0, 'and no skip is invented');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
@@ -4102,7 +4101,7 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   const stalls = receipts.filter(entry => entry['event'] === 'gptlive_delegation_stalled');
   assert.equal(stalls.length, 1, 'one stall receipt, not a stream of them');
   assert.deepEqual(stalls[0], { event: 'gptlive_delegation_stalled', ms: 25_000 });
-  assert.deepEqual(fake.commentary.at(-1), 'the knowledge lookup is done.', 'the line names the execution receipt');
+  assert.deepEqual(fake.commentary, [], 'a stalled delegation is silent: the receipt is the only record');
   // S4a-R2 (b): the stall deadline is diagnostic. Escalation is S2's, so the receipts show its recovery and the
   // session count shows the stall started nothing of its own.
   const recoveries = receipts.filter(entry => entry['event'] === 'live_recovery');
@@ -4174,7 +4173,7 @@ test('S4a-R2 (a): a call cancelled before execution keeps its own receipt and is
   h.owner.revoke(session.liveSessionId);
 });
 
-test('S4a-R2 (e): thinking never claims nothing changed around a write, and the line names execution state', async t => {
+test('VOICE-R4: a write in the batch says nothing about progress and claims nothing about changes', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
@@ -4183,17 +4182,17 @@ test('S4a-R2 (e): thinking never claims nothing changed around a write, and the 
   const { session } = await openPort(h, 'thinking-write');
   fake.emit({ type: 'toolCall', calls: [{ id: 'w2', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } }] });
   await settlePort();
-  assert.deepEqual(fake.thinking, ['Reading memory.'], 'a write in the batch means no claim about what changed');
+  assert.deepEqual(fake.thinking, [], 'a write in the batch means no claim about what changed');
   h.advance(6_000); scheduler.runDue(); await settlePort();
-  // S4a-R2 (e): the host waits for the owner transcript before a remember_note is dispatched, so the honest
-  // word is queued, never "reading".
-  assert.deepEqual(fake.commentary, ['waiting on the memory.'], 'a queued call is never described as being read');
+  // S4a-R2 (e): the host waits for the owner transcript before a remember_note is dispatched, so it must not
+  // describe the call as reading either.
+  assert.deepEqual(fake.commentary, [], 'a queued call is never described as being read');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
 
-test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t => {
+test('S4a-R2 (f): silence on the commentary channel never satisfies the answer watchdog', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -4204,18 +4203,18 @@ test('S4a-R2 (f): a commentary ack never satisfies the answer watchdog', async t
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const nudges = (): number => receipts.filter(entry => entry['event'] === 'live_dead_air_nudge').length;
 
-  // The ack path: the progress line goes out and the debt is still owed, so the watchdog escalates anyway.
+  // The silent-lookup path: nothing goes out for the call and the debt is still owed, so the watchdog escalates.
   const acked = await openPort(h, 'ack-watchdog');
   fake.emit({ type: 'toolCall', calls: [{ id: 'a1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  // W4: a progress line only goes out while the call is in flight, so the ack under test is spoken here.
+  // W4: the lookup is in flight and nothing is spoken for it, so the owed answer stays owed.
   h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 1, 'the progress line went out: that is the ack under test');
-  assert.equal(nudges(), 0, 'the ack is not a delivery and the watchdog has not spoken yet');
+  assert.deepEqual(fake.commentary, [], 'no status line goes out for the lookup');
+  assert.equal(nudges(), 0, 'nothing is a delivery and the watchdog has not spoken yet');
   release();
   await settlePort();
   h.advance(8_000); scheduler.runDue(); await settlePort();
-  assert.equal(nudges(), 1, 'the watchdog still escalated after the commentary ack');
+  assert.equal(nudges(), 1, 'the watchdog still escalated over the silent lookup');
   acked.attachment.close();
   await settlePort();
 
@@ -4243,14 +4242,14 @@ test('W4: a research-only batch still gets its silent line', async t => {
   // so a batch of nothing but research looked like a batch of nothing at all and no line went out.
   fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
   await settlePort();
-  assert.equal(fake.thinking.length, 1, 'the research lookup reaches the silent channel');
-  assert.match(fake.thinking[0]!, /Running a lookup across your sources/, 'and the line names the fan-out, not a source');
+  assert.equal(fake.thinking.length, 0, 'the research lookup injects no waiting line');
+  assert.equal(fake.texts.length, 0, 'and no host text either');
   release();
   await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
 
-test('review F1/F2: the research lookup, the one the model can call, speaks and thinks', async t => {
+test('review F1/F2: the research lookup, the one the model can call, sends no host text at all', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
@@ -4262,13 +4261,10 @@ test('review F1/F2: the research lookup, the one the model can call, speaks and 
   const { session } = await openPort(h, 'research-progress');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();
-  assert.equal(fake.thinking.length, 1, 'silent truth goes out for a research lookup');
-  assert.match(fake.thinking[0]!, /Running a lookup across your sources\. Nothing has been sent or booked while that runs\./);
+  assert.equal(fake.thinking.length, 0, 'silent truth goes out for a research lookup');
+  assert.equal(fake.texts.length, 0, 'the host says nothing while the lookup runs');
   h.advance(6_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 1, 'progress speech goes out for a research lookup');
-  // The line names a source the run actually opened and its settled receipt, never the requested list.
-  assert.match(fake.commentary[0]!, /chat/, 'the research source is named from its own step');
-  assert.match(fake.commentary[0]!, /is done|failed|Still reading/, 'with the status the run reported');
+  assert.equal(fake.commentary.length, 0, 'no status line goes out for a research lookup');
   // Review F2: the OpenAI path never sends the dead-air user turn.
   assert.deepEqual(fake.texts, [], 'no Continue. user message on the Responses-delegation path');
   release();
@@ -4914,7 +4910,7 @@ test('Lux body integration: exact received opaque content reaches its retained t
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
 
-for (const route of ['typed', 'selector'] as const) test(`progress recovery: ${route} research speaks only verified work at six seconds`, async t => {
+for (const route of ['typed', 'selector'] as const) test(`VOICE-R4: ${route} research sends no status line at six seconds`, async t => {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => receipts.push(raw as Record<string, unknown>) }); t.after(detach);
   let selectCalls = 0;
@@ -4929,16 +4925,16 @@ for (const route of ['typed', 'selector'] as const) test(`progress recovery: ${r
   if (route === 'selector') assert.ok(selectCalls > 0, 'actual selector path ran');
   h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, []);
   h.advance(1); scheduler.runDue(); await settlePort();
-  assert.equal(fake.commentary.length, 1); assert.match(fake.commentary[0]!, /Still reading the chat/);
+  assert.deepEqual(fake.commentary, [], 'the six second beat stays silent');
   const progress = receipts.filter(entry => entry['event'] === 'research_progress');
   assert.ok(progress.some(entry => (entry['sourcesPending'] as string[]).includes('chat')));
   assert.ok(progress.every(entry => !(entry['sourcesPending'] as string[]).includes('calendar')), 'configured but undispatched calendar is never pending');
   release(); for (let n = 0; n < 50 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); assert.equal(fake.toolResponses[0]![0]!.response['error'], undefined);
-  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'result does not reset the six-second speech interval');
-  h.advance(1); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, 'a result cannot cause a six-second repeat');
+  h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, [], 'the result changes nothing on the wire');
+  h.advance(1); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, [], 'a result cannot cause a repeat');
   // W4: the turn's only lookup has answered, so no line may claim one is still running.
-  h.advance(2_000); scheduler.runDue(); await settlePort(); assert.equal(fake.commentary.length, 1, `a finished lookup is not progress: ${JSON.stringify(fake.commentary)}`);
+  h.advance(2_000); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, [], 'a finished lookup is not progress');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -5006,7 +5002,7 @@ test('progress recovery: actual local history is represented and fast work stays
   assert.deepEqual(fake.commentary, []); h.owner.revoke(session.liveSessionId);
 });
 
-test('progress recovery: a slow next mail page is running rather than simultaneously done', async t => {
+test('VOICE-R4: a slow next mail page sends no status line while it runs', async t => {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => receipts.push(raw as Record<string, unknown>) }); t.after(detach);
   const scheduler = new DeadlineClock(), fake = progressPort();
@@ -5019,7 +5015,7 @@ test('progress recovery: a slow next mail page is running rather than simultaneo
   for (let n = 0; n < 100 && h.calls.length < 2; n++) await settlePort(); assert.equal(h.calls.length, 2);
   h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, []);
   h.advance(1); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, ['Still reading the mail.']);
+  assert.deepEqual(fake.commentary, [], 'the six second beat stays silent');
   const progress = receipts.filter(entry => entry['event'] === 'research_progress');
   assert.ok(progress.every(entry => !(entry['sourcesPending'] as string[]).some(source => (entry['sourcesDone'] as string[]).includes(source))), 'a source cannot be both pending and done');
   release(); for (let n = 0; n < 50 && (h.owner.current().steps ?? []).some(step => step.phase === 'start'); n++) await settlePort();

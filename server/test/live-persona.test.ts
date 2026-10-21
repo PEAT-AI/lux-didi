@@ -343,10 +343,10 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '8e8f657c333fcab1e14e69a3127599afe1c1aeb2733b7a94dac6abdf93169543');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'ebe82555d71952862192514ba00a7a267db3b54c7f930f1c04976597648e1cd4');
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'fe0c181f6049070157ee54d268c554bcf1d2f1fd548179f26eb5cc92ebf18a97');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '14f198566d3e535cfd0d033d592487e4b7593cb194ecc689a1b2b822576a8194');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), 'e4dc62c74ef312cd084ae047c104dfe5dd99d81e3232006d33b37a2a6e34653b');
+  assert.equal(sha(NAYA_TOOLS), '585a9155024d27e7723a5e564dff42ad2a0792bcb847180ca60012197ba8c22e');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -655,10 +655,10 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // keeps its wording.
 const WRAPPER_3O_CHARS = 6603;
 /** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. */
-const WRAPPER_W5_CHARS = 10_546;
+const WRAPPER_W5_CHARS = 10_942;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
-    'Before an actual lookup, say at most five words about what you are checking, then call the tool.',
+    'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
     'Never ask yourself a question and answer it; say the answer.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
@@ -673,9 +673,10 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   assert.equal(wrapper.includes('Before any tool call'), false, 'the retired cue sentence is gone');
   // W5-R1: the bound stays, the positive half does not: the variety rule and its duplicates left the wrapper.
   // W5-R1: the 3o base plus its 2,000 cap no longer bounds the wrapper, because the S4b delegation added the
-  // backend guide to it; the bound keeps both halves and carries the measured growth of 3,943 at this sha.
+  // backend guide to it; the bound keeps both halves and carries the measured growth at this sha (3,943, then
+  // 4,339 once VOICE-R1 replaced the retired five-word cue with the contract's one silence rule).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
-  const cap = 4_100;
+  const cap = 4_500;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1130,7 +1131,7 @@ const W5_REPLACED = [
   'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
 ];
 /** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
-const W5_VOICE_BEFORE = 6993;
+const W5_VOICE_BEFORE = 7376;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

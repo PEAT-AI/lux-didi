@@ -500,6 +500,54 @@ expect(SingleKeyTrigger.signingLabel(codeFlags: { adhocFlags | developerIDFlags 
     "the injected stub cannot turn ad-hoc flags into identity")
 SingleKeyTrigger.isEnabled = singleKeyWasEnabled
 
+// #1021: the key can never be silently dead. The menu line that says why, the deep link
+// behind it and the re-check that installs the tap when the grant arrives late are the
+// three facts the seams prove without TCC, a real tap or a keyboard.
+SingleKeyTrigger.isEnabled = true
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: false) == "Right Command is off: allow Accessibility",
+    "a key with no tap carries one line that names the fix")
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: true) == nil,
+    "the line is gone once the tap is live, so a working key never shows it")
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: false, tapped: false) == nil,
+    "a key the owner turned off shows no grant line, because no grant would fix it")
+expect(URL(string: SingleKeyTrigger.grantSettingsURL)?.scheme == "x-apple.systempreferences",
+    "the notice opens the Accessibility pane, not a copy of its address")
+// The launch is untrusted, the grant arrives while the app runs, and the next re-check
+// installs the tap: no restart, and one receipt for the change (acceptance 1).
+let lateGrantKey = SingleKeyTrigger()
+var lateGrantTrusted = false
+lateGrantKey.system = .init(trusted: { lateGrantTrusted }, install: { true })
+var lateGrantReceipts: [[String: Any]] = []
+lateGrantKey.onReceipt = { lateGrantReceipts.append($0) }
+expect(lateGrantKey.start() == false && lateGrantKey.tapCreated == false, "an untrusted launch has no tap")
+expect(lateGrantReceipts.count == 1 && lateGrantReceipts[0]["event"] as? String == "single_key_state"
+    && lateGrantReceipts[0]["trusted"] as? Bool == false && lateGrantReceipts[0]["tapCreated"] as? Bool == false,
+    "the untrusted launch writes one single_key_state receipt")
+lateGrantTrusted = true
+expect(lateGrantKey.start() && lateGrantKey.tapCreated, "the next re-check installs the tap the moment the grant is there")
+expect(lateGrantReceipts.count == 2 && lateGrantReceipts[1]["event"] as? String == "single_key_state"
+    && lateGrantReceipts[1]["trusted"] as? Bool == true && lateGrantReceipts[1]["tapCreated"] as? Bool == true,
+    "the grant arriving writes one receipt that says the tap is live")
+expect(lateGrantKey.start() && lateGrantReceipts.count == 2,
+    "a re-check with the tap already live writes no second receipt")
+// Turning the key off is a state change too, so it is one receipt and no live tap.
+lateGrantKey.stop()
+expect(lateGrantReceipts.count == 3 && lateGrantReceipts[2]["enabled"] as? Bool == false
+    && lateGrantReceipts[2]["tapCreated"] as? Bool == false, "turning the key off writes one receipt with no tap")
+SingleKeyTrigger.isEnabled = true
+// The once-per-version prompt never gates the line, so a missed or dismissed prompt still
+// leaves the owner a way in (acceptance 3).
+let noticeSuite = "didi.single-key-notice.\(UUID().uuidString)"
+let noticeDefaults = UserDefaults(suiteName: noticeSuite)!
+var noticePrompts = 0
+SingleKeyTrigger.requestGrantIfNeeded(for: .interactive, version: "3t", defaults: noticeDefaults, enabled: true,
+                                     trusted: false, prompt: { noticePrompts += 1 })
+expect(noticePrompts == 1, "the prompt still asks once for a version")
+expect(SingleKeyTrigger.grantNoticeTitle(enabled: true, tapped: false) != nil,
+    "a version that already asked keeps the line, so a missed prompt is not a dead key")
+noticeDefaults.removePersistentDomain(forName: noticeSuite)
+SingleKeyTrigger.isEnabled = singleKeyWasEnabled
+
 let miniScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
 // MINI2: the pill is 64x26, sits top-center just below the menu bar (the screens
 // are visible frames, so on a notched display the menu bar carries the notch).

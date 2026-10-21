@@ -170,4 +170,9 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     // tables inside the start-up transaction, and both grow with every session the owner speaks.
     `CREATE INDEX live_sessions_terminal_at ON live_sessions(terminal_at) WHERE terminal_at IS NOT NULL`,
     `CREATE INDEX live_journal_content ON live_journal(live_session_id) WHERE text IS NOT NULL OR tool_json IS NOT NULL`,
+]}, { owner: 'live', version: 11, statements: [
+    // The conversation outlives every provider connection: mute, expiry, restart and midnight keep it.
+    `ALTER TABLE live_sessions ADD COLUMN conversation_id TEXT`,
+    `UPDATE live_sessions SET conversation_id=live_session_id WHERE conversation_id IS NULL`,
+    `CREATE TABLE live_conversations (owner_assistant_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, started_at TEXT NOT NULL)`,
 ]}];

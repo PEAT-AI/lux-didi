@@ -135,7 +135,7 @@ export function answerMarkup(text: string): string {
 /** A friendly, owner-facing connector name; an unknown tool returns '' so its card shows no name. */
 const TOOL_LABELS: readonly [RegExp, string][] = [
   [/^gmail_/, 'Gmail'],
-  [/^gcal_/, 'Calendar'],
+  [/^(gcal_|calendar_)/, 'Calendar'],
   [/^mattermost_/, 'Mattermost'],
   [/^(search_knowledge|get_insight|knowledge_|lux_)/, 'Knowledge'],
   [/^mongoose/, 'Mongoose'],
@@ -269,7 +269,9 @@ export function evidenceRow(tool: ToolEvidence, block: { fields: string[]; snipp
     const leftover = parts.filter((_part, index) => index !== 0 && index !== fromIndex && index !== dateIndex);
     return { line: [sender, parts[0], relativeWords(stamp, now)].filter(Boolean).join(' · '), snippet: clipWords(leftover.join(' ')) || snippet, at: stampOf(stamp) };
   }
-  if (/^gcal_/.test(tool.name)) {
+  // The app's own calendar tool is `calendar_list_events`; `gcal_` is the older name, kept for
+  // the answers already stored. Without both, a calendar row fell through to the raw line.
+  if (/^(gcal_|calendar_)/.test(tool.name)) {
     const pieces = (parts[0] ?? '').split(',').map(piece => piece.trim());
     return { line: [eventWords(pieces[0] ?? '', now), pieces[1]].filter(Boolean).join(' · '), snippet: clipWords(pieces.slice(2).join(', ')) || snippet, at: stampOf(pieces[0] ?? '') };
   }

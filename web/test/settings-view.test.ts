@@ -75,6 +75,7 @@ test('the Mongoose consent button appears on its row only while Mongoose needs a
   assert.doesNotMatch(otherFailure, /id="mongoose-signin"/, 'only a sign-in reason offers the button');
   const otherConnector = settingsMarkup({ status, connections: [{ id: 'gmail', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }] });
   assert.doesNotMatch(otherConnector, /id="mongoose-signin"/, 'the button never points a non-Mongoose row at a Mongoose sign-in');
+  assert.doesNotMatch(otherConnector, /Sign in to Mongoose/, 'and the row keeps its own wording');
 });
 
 test('renders limits in whole minutes and rejects unsafe values', () => {

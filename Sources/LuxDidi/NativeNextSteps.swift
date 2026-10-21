@@ -20,7 +20,7 @@ enum NativeNextSteps {
     static let signInStep = NativeNextStep(text: "Sign in to Mongoose in Settings: the Sign in button is on the Mongoose row, and the connector reconnects by itself when you finish.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup"))
     static let table: [String: [String: NativeNextStep]] = Dictionary(uniqueKeysWithValues: connectorIDs.map { id in
         (id, Dictionary(uniqueKeysWithValues: reasonCodes.map { reason in
-            (reason, reason == "needs_sign_in" ? signInStep : reason == "credential_missing" ? credentialSteps[id]! : failureStep)
+            (reason, id == "mongoose" && reason == "needs_sign_in" ? signInStep : reason == "credential_missing" ? credentialSteps[id]! : failureStep)
         }))
     })
     static func lookup(id: String, state: String, reason: String?) -> NativeNextStep {

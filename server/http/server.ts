@@ -23,6 +23,10 @@ import { createLiveUpgrader, liveServiceError, type LiveService } from './live-u
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
 const equal = (a: string, b: string) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
+/** Mongoose is the one connector the owner can sign in to, so the sign-in reason is scoped to it. */
+function signInConnector(row: Record<string, unknown>): boolean {
+  return row.connector === 'mongoose';
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value !== null && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
@@ -189,10 +193,12 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             // Classify privately; return only closed reason tokens, never the original diagnostic.
             const error = typeof row.error === 'string' ? row.error : '';
             const configurationError = ['unknown-class-missing', 'unknown-class-invalid', 'owner-approval-required', 'ambiguous-legacy-policy'].includes(String(row.configurationError)) ? String(row.configurationError) : undefined;
+            // Only Mongoose has an owner sign-in, so only its rows can carry the sign-in reason.
             const reasonCode = state === 'connected' || state === 'connecting' || (state === 'configured' && !error) ? null
               : configurationError ? 'configuration_error'
               : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
-              : /^(not_signed_in|credential-(missing|refresh-failed|consent-expired))$/.test(error) ? 'needs_sign_in'
+              : /^not_signed_in$/.test(error) ? (signInConnector(row) ? 'needs_sign_in' : 'not_signed_in')
+              : /^credential-(missing|refresh-failed|consent-expired)$/.test(error) ? (signInConnector(row) ? 'needs_sign_in' : 'unknown')
               : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
               : /discovery/.test(error) ? 'discovery_failed'
               : /handshake/.test(error) ? 'handshake_failed'

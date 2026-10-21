@@ -394,17 +394,19 @@ test('T13b a pending connector is projected as connecting, never error', async (
 
 test('sign-in reasons the owner can act on project as needs_sign_in, never unknown', async () => {
   const f = await fixture(undefined, () => ({ endpoints: [
-    { id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, error: 'credential-refresh-failed' },
-    { id: 'signed-out', state: 'error', tools: 0, lastHandshakeAt: null, error: 'not_signed_in' },
-    { id: 'busy', state: 'error', tools: 0, lastHandshakeAt: null, error: 'credential-refresh-busy' },
+    { id: 'mongoose', connector: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, error: 'credential-refresh-failed' },
+    { id: 'signed-out', connector: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, error: 'not_signed_in' },
+    { id: 'busy', connector: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, error: 'credential-refresh-busy' },
+    { id: 'gmail', connector: 'google', state: 'error', tools: 0, lastHandshakeAt: null, error: 'credential-refresh-failed' },
+    { id: 'mattermost', connector: 'mattermost', state: 'error', tools: 0, lastHandshakeAt: null, error: 'not_signed_in' },
   ] }));
   try {
     const browser = await pair(f);
     const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'sec-fetch-site': 'same-origin' } });
     assert.equal(response.status, 200);
     const body = await response.json() as { data: Array<{ reasonCode: string | null }> };
-    assert.deepEqual(body.data.map(row => row.reasonCode), ['needs_sign_in', 'needs_sign_in', 'unknown'],
-      'a refused refresh and a missing record both ask for a sign-in; a busy refresh is not one');
+    assert.deepEqual(body.data.map(row => row.reasonCode), ['needs_sign_in', 'needs_sign_in', 'unknown', 'unknown', 'not_signed_in'],
+      'a Mongoose refused refresh and a missing record both ask for a sign-in; a busy refresh is not one, and no other connector changes');
   } finally { await f.cleanup(); }
 });
 

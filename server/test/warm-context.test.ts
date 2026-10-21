@@ -343,5 +343,8 @@ test('a parked sign-in is one short line at call start and nothing when Mongoose
   // The host report carries the bare credential code and error, which is the shape Live really passes.
   assert.ok(signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'error', error: 'credential-refresh-failed' }]));
   assert.equal(signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'error', error: 'credential-refresh-busy' }]), undefined, 'a busy refresh is not a sign-in');
+  // F3: the line is Mongoose only, so no other connector can make Naya say a Mongoose sentence.
+  assert.equal(signInNote([{ id: 'gmail', connector: 'google', state: 'error', reasonCode: 'needs_sign_in' }]), undefined);
+  assert.equal(signInNote([{ id: 'mattermost', connector: 'mattermost', state: 'error', error: 'credential-missing' }]), undefined, 'a Mattermost credential fault is not a Mongoose sign-in');
   assert.equal(signInNote([]), undefined);
 });

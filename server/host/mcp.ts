@@ -352,7 +352,7 @@ export async function composeMcpRuntime(options: {
         reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code);
         // A refused refresh or an expired consent parks the endpoint for the next sign-in, exactly as
         // a missing record does, so the login reconnects it without a restart (R9).
-        if (stage === 'credential' && signInReasons.has(discovery.reason) && entry.credentialRef) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
+        if (stage === 'credential' && entry.connector === 'mongoose' && signInReasons.has(discovery.reason) && entry.credentialRef) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
         // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
         // credential or configuration error is stable and a later refresh still reconnects it.

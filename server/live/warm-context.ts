@@ -62,6 +62,8 @@ export const SIGN_IN_REASONS = new Set(['needs_sign_in', 'not_signed_in', 'crede
 export function signInNote(endpoints: readonly unknown[]): string | undefined {
   const waiting = endpoints.some(value => {
     const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+    // Mongoose is the one connector the owner can sign in to, so no other connector is announced.
+    if (row.connector !== 'mongoose') return false;
     // The host report names one of these closed codes; the browser projection names needs_sign_in.
     return SIGN_IN_REASONS.has(String(row.reasonCode)) || SIGN_IN_REASONS.has(String(row.error));
   });

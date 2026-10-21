@@ -13,7 +13,7 @@ const credentialSteps: Record<string, NextStep> = {
 };
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 export const nextSteps: Record<string, Record<string, NextStep>> = Object.fromEntries(connectorIDs.map(id => [
-  id, Object.fromEntries(reasonCodes.map(reason => [reason, reason === 'needs_sign_in' ? signInStep : reason === 'credential_missing' ? credentialSteps[id]! : failureStep])),
+  id, Object.fromEntries(reasonCodes.map(reason => [reason, reason === 'needs_sign_in' && id === 'mongoose' ? signInStep : reason === 'credential_missing' ? credentialSteps[id]! : failureStep])),
 ]));
 export function nextStep(id: string, state: string, reason?: string): NextStep {
   if (state === 'connected') return { text: 'no action needed' };

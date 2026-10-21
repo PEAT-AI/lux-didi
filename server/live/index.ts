@@ -2187,8 +2187,7 @@ export class LiveSessionOwner {
           this.#armProgress(handle);
           // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
-          void this.#toolBatch(handle, event, generation).catch(error => {
-            hostLogEvent({ event: 'w10_debug_failed', message: String(error) });
+          void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }

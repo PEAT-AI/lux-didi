@@ -2001,8 +2001,7 @@ export function lookupBound(source: SourceKind, lookups: number, remainingMs: nu
  * sub-results, so a cut or failed read never takes the others down.
  */
 function evidenceAllowed(deps: ResearchDeps, run: RunState, signal: AbortSignal): boolean {
-  if (run.cancelled || run.stopped || signal.aborted) return false;
-  return authorizedEvidence(deps, run, signal);
+  return !signal.aborted && authorizedEvidence(deps, run, signal);
 }
 /** The authority half alone: a cut read still reports what it read under this run's own grants. */
 function authorizedEvidence(deps: ResearchDeps, run: RunState, signal: AbortSignal): boolean {

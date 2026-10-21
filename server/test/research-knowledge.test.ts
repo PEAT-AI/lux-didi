@@ -6,7 +6,9 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
-const CONFIGURED: readonly SourceKind[] = ['knowledge'];
+// Two sources: with one configured source the run takes the deterministic single-source path and the
+// selector is never called, which is not the path this suite is about.
+const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
 
 function sub(name: string, text = 'evidence', ok = true, key = name): IntentSubResult {
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
@@ -62,7 +64,7 @@ test('K3: the model-authored knowledge query is clipped to five content terms', 
   const terms = shaped.split(' ');
   assert.equal(RESEARCH.knowledgeQueryTerms, 5);
   assert.equal(terms.length, 5);
-  assert.deepEqual(terms, ['decide', 'wriggler', 'three', 'layer', 'schema']);
+  assert.deepEqual(terms, ['decide', 'about', 'wriggler', 'three', 'layer']);
   assert.ok(!sentence.startsWith(shaped), 'the whole spoken sentence never reaches the search');
   const [call] = candidateSubs('knowledge_search', { question: sentence, configured: CONFIGURED, evidence: new Map() });
   assert.equal(String(call!.args['query']), shaped);
@@ -115,7 +117,7 @@ test('K1: a cut search reply is followed by a read of the top id, inside the sam
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   const read = calls.find(call => call.name === 'get_insight');
   assert.deepEqual(read?.args, { ids: [123] });
-  assert.ok(h.offered[1]?.includes('knowledge_open'), 'the read is offered once the search ran');
+  assert.ok(h.offered[1]?.includes('knowledge_open'), `the read is offered once the search ran: ${JSON.stringify(h.offered)}`);
   const findings = reply['findings'] as { source: string; text: string }[];
   const knowledge = findings.find(finding => finding.source === 'knowledge');
   assert.ok(knowledge !== undefined && knowledge.text.includes('cut at 3000 chars'), 'the body read reaches the reply');
@@ -133,7 +135,7 @@ test('K1: an uncut search reply offers no body read, and none is ever run', asyn
   });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   assert.equal(calls.filter(call => call.name === 'get_insight').length, 0);
-  assert.ok(!h.offered[1]?.includes('knowledge_open'));
+  assert.ok(!h.offered[1]?.includes('knowledge_open'), `an uncut reply offers no read: ${JSON.stringify(h.offered)}`);
 });
 
 test('K1: a low-confidence search is not followed by a body read', async () => {

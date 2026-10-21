@@ -316,6 +316,21 @@ test('E8/U2: a 31-event week comes back whole, one line per day, never cut at tw
   assert.doesNotMatch(block.text, /left out/u);
 });
 
+test('CALM-R11: a connector line with a location keeps its title, the calendar is never its stand-in', () => {
+  const line = '- 2026-10-16T09:00:00+05:30, Standup, Room 1 | Primary [id e1]';
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', line)], 'Asia/Kolkata');
+  assert.match(block.text, /09:00 Standup, Room 1/u, 'the title and the place ride the day line');
+  assert.doesNotMatch(block.text, /Primary/u, 'the calendar name never stands in for the title');
+  assert.deepEqual(block.lines, ['- Fri 16 Oct: 09:00 Standup, Room 1']);
+});
+
+test('CALM-R11: an event with no location and a calendar still keeps its title', () => {
+  const line = '- 2026-10-16T09:00:00+05:30, Standup | Primary [id e1]';
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', line)], 'Asia/Kolkata');
+  assert.deepEqual(block.lines, ['- Fri 16 Oct: 09:00 Standup'], 'a bare title survives the pipe segment');
+  assert.doesNotMatch(block.text, /Primary/u);
+});
+
 test('E8/U2: a trimmed calendar block says how many events it left out', () => {
   const lines = Array.from({ length: 40 }, (_, n) => `- 2026-10-25T10:${String(n % 60).padStart(2, '0')}:00Z, Synthetic long week event ${n} with a title that fills the block ${'x'.repeat(120)} [id t${n}]`);
   const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');

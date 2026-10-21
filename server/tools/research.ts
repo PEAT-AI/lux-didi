@@ -1558,7 +1558,9 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
       const start = parts[0] ?? '';
       const title = parts[1] ?? '(no title)';
       const location = parts.slice(2).join(', ');
-      current = { id, start, line: `${start} | ${title}${location ? ` | ${location}` : ''}${calendar ? ` | ${calendar}` : ''}` };
+      // One grammar for a calendar line, the connector's: `start, title, location | calendar`, so a reader
+      // never has to guess whether a pipe segment is a place or a calendar name.
+      current = { id, start, line: `${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}` };
     } else if (line.startsWith('attendees: ') && current !== undefined) {
       attendees = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
     }
@@ -1848,12 +1850,13 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
   };
   const days = new Map<string, string[]>();
   for (const event of events) {
-    // Two shapes reach here: the connector's `- start, title` line and this module's parsed `start | title` line.
+    // One grammar: `start, title, location | calendar`, so the comma fields are the event and the last
+    // pipe segment is the calendar it came from, never a title.
     const body = event.line.replace(/^- /u, '').replace(/ \[id [^\]\s]+\]$/u, '');
-    const separator = body.includes(' | ') ? ' | ' : ', ';
-    const cut = body.indexOf(separator);
-    const head = cut < 0 ? body : body.slice(0, cut);
-    const rest = cut < 0 ? '' : body.slice(cut + separator.length);
+    const pipeAt = body.indexOf(' | ');
+    const fields = (pipeAt < 0 ? body : body.slice(0, pipeAt)).split(', ');
+    const head = fields[0] ?? '';
+    const rest = fields.slice(1).filter(part => part.length > 0).join(', ');
     const at = Date.parse(event.start);
     const day = Number.isFinite(at) ? format({ weekday: 'short', day: 'numeric', month: 'short' }, at) ?? head : head;
     const time = Number.isFinite(at) ? format({ hour: '2-digit', minute: '2-digit', hour12: false }, at) ?? '' : '';

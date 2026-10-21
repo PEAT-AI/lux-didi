@@ -49,12 +49,12 @@ test('calendar dense week preserves later weekdays and unique evidence with reta
   const h = fixture(events, { token: 'second', pageSize: 12 });
   const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'calendar', query: 'calendar this week' }] }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'both upstream pages, exact duplicate window once');
-  assert.equal(first['canContinue'], true);
-  const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
-  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'retained events are not reread');
-  const text = JSON.stringify(second['findings']);
+  assert.equal(first['canContinue'], false, 'both pages of the window are read and spoken in the one run');
+  const text = JSON.stringify(first['findings']);
   assert.match(text, /Day 21/); assert.match(text, /Day 22/); assert.match(text, /Day 23/);
   assert.doesNotMatch(text, /27 of 24/);
+  await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'retained events are not reread');
 });
 
 test('calendar exact weekday intents read distinct days and unsupported dates dispatch nothing', async () => {
@@ -135,9 +135,10 @@ test('calendar selector uses the shared primary collector and never retries a fa
     assert.equal(calls, fail ? 1 : 2);
     assert.ok(h.calls.filter(call => call['name'] === 'calendar_list_events').every(call => call['calendarId'] === 'primary'));
     if (!fail) {
-      assert.equal(reply['canContinue'], true);
+      assert.equal(reply['canContinue'], false, 'both pages of the window are read in the one run');
+      assert.match(JSON.stringify(reply['findings']), /item 14/);
       const second = await runResearch(h.deps, { action: 'continue', researchId: String(reply['researchId']) }, signal());
-      assert.match(JSON.stringify(second['findings']), /item 14/);
+      assert.equal(JSON.stringify(second['findings']), '[]', 'a completed window leaves nothing to continue');
       assert.equal(calls, 2);
     }
   }
@@ -171,7 +172,7 @@ test('calendar collection keeps one source deadline across pages and resumes an 
 
 test('calendar delivery advances exact event identities even when bounded text is identical', async () => {
   const h = fixture(Array.from({ length: 10 }, (_, n) => ({ id: `event-${n}`, start: '2026-10-19T10:00:00Z', summary: 'Identical long title '.repeat(30) })));
-  h.deps.replyLimit = 3_000;
+  h.deps.replyLimit = 1_000;
   const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
   const shown = Number((first['calendarCoverage'] as Record<string, unknown>)['shown']);
   assert.ok(shown > 0 && shown < 10, 'a reply over its byte budget leaves identical events for the continuation');
@@ -346,13 +347,13 @@ test('every calendar read carries the run remaining source budget as an absolute
 });
 
 test('E8: a whole calendar week comes back at once, one compact line per day', async () => {
-  const events = [...Array.from({ length: 8 }, (_, n) => event(19, n)), ...Array.from({ length: 4 }, (_, n) => event(20, n)), event(21), event(22), event(23)];
+  const events = [...Array.from({ length: 8 }, (_, n) => event(19, n)), ...Array.from({ length: 8 }, (_, n) => event(20, n)), ...Array.from({ length: 4 }, (_, n) => event(21, n)), ...Array.from({ length: 2 }, (_, n) => event(22, n)), event(23)];
   const h = fixture(events);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
   assert.match(finding.text, /^calendar: 23 of 23 shown/u);
-  for (const title of ['Day 19 item 0', 'Day 19 item 7', 'Day 20 item 3', 'Day 21 item 0', 'Day 23 item 0']) assert.match(finding.text, new RegExp(title, 'u'));
-  assert.equal(finding.text.split('\n').length - 1, 5, 'one line per day, not one line per event');
+  for (const title of ['Day 19 item 0', 'Day 19 item 7', 'Day 20 item 7', 'Day 21 item 3', 'Day 22 item 1', 'Day 23 item 0']) assert.match(finding.text, new RegExp(title, 'u'));
+  assert.equal(finding.text.split('\n').filter(line => line.startsWith('- ')).length, 5, 'one line per day, not one line per event');
   assert.equal(reply['canContinue'], false);
   assert.equal(reply['note'], undefined, 'a whole window needs no trim line');
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the whole window is one read');
@@ -400,6 +401,6 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
   await firstRun;
   h.deps.execute = execute;
   const next = await scheduler.call({ action: 'start', question: 'and the week ahead', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
-  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the window the cancelled run paid for is reused, never fetched again');
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, `the window the cancelled run paid for is reused, never fetched again: ${JSON.stringify(h.calls.map(call => call['name']))}`);
   assert.match(JSON.stringify(next['findings']), /Day 21 item 0/u);
 });

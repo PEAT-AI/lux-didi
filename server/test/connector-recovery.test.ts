@@ -29,10 +29,10 @@ async function body(req: IncomingMessage): Promise<Buffer> {
 async function fixture(options: { delayMs?: number; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> } = {}) {
   let requests = 0;
   const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
-  sdk.setRequestHandler({ method: 'tools/list' } as never, async () => {
+  sdk.setRequestHandler('tools/list', async () => {
     requests += 1;
     if (options.delayMs !== undefined) await new Promise(resolve => setTimeout(resolve, options.delayMs));
-    return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] };
+    return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   await sdk.connect(transport);
@@ -40,11 +40,16 @@ async function fixture(options: { delayMs?: number; tools?: Array<{ name: string
     try {
       const bytes = await body(req);
       const headers = new Headers();
-      for (const [key, value] of Object.entries(req.headers)) if (typeof value === 'string') headers.set(key, value);
-      const response = await transport.handleRequest(new Request(`http://127.0.0.1${req.url ?? '/'}`, { method: req.method ?? 'POST', headers, body: bytes.length ? new Uint8Array(bytes) : undefined }));
-      const text = await response.text();
-      res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json' }); res.end(text);
-    } catch { res.writeHead(500); res.end(); }
+      for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
+      const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
+      const response = await transport.handleRequest(request);
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      if (!response.body) { res.end(); return; }
+      const reader = response.body.getReader();
+      res.on('close', () => { void reader.cancel().catch(() => {}); });
+      while (!res.destroyed) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); }
+      res.end();
+    } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
   });
   listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const address = listener.address(); assert(address && typeof address !== 'string');

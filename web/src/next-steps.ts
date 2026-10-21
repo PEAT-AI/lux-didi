@@ -12,8 +12,10 @@ const credentialSteps: Record<string, NextStep> = {
   "mongoose": { text: "Mongoose session expired, reconnect Mongoose: sign in once in your browser, then restart Lux Didi.", command: "mongoose-login", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
 };
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
+/** A transport timeout: Naya retries on its own, so the owner is told that, not asked to fix anything. */
+const unreachableStep: NextStep = { text: "Mongoose is not reachable right now. Naya retries in the background and reconnects by itself when Mongoose answers." };
 export const nextSteps: Record<string, Record<string, NextStep>> = Object.fromEntries(connectorIDs.map(id => [
-  id, Object.fromEntries(reasonCodes.map(reason => [reason, reason === 'needs_sign_in' && id === 'mongoose' ? signInStep : reason === 'credential_missing' ? credentialSteps[id]! : failureStep])),
+  id, Object.fromEntries(reasonCodes.map(reason => [reason, reason === 'needs_sign_in' && id === 'mongoose' ? signInStep : reason === 'unreachable' && id === 'mongoose' ? unreachableStep : reason === 'credential_missing' ? credentialSteps[id]! : failureStep])),
 ]));
 export function nextStep(id: string, state: string, reason?: string): NextStep {
   if (state === 'connected') return { text: 'no action needed' };

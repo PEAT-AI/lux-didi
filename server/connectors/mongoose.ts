@@ -123,14 +123,28 @@ export const MONGOOSE_FAILURE_STAGES = ['credential', 'spawn', 'handshake', 'fir
 export type MongooseFailureStage = (typeof MONGOOSE_FAILURE_STAGES)[number];
 
 /**
- * What a start does about this endpoint's stored credential (H19): a mongoose endpoint with no stored
- * credential is simply not signed in yet, and the host says that once instead of opening the connector
- * to fail at every launch. Every other endpoint, and a mongoose one that does hold a credential, is
- * probed as before; a signed-in mongoose endpoint reconnects on the next connect after a login.
+ * The only stored record fields a local credential verdict may read (key names, never values): whether
+ * refresh material exists, and when the consent family started. An access token's own expiry is not
+ * one of them, because an expired token alone proves nothing about whether a refresh will work.
  */
-export function mongooseCredentialAtStart(connector: string, storedCredential: boolean): 'probe' | 'not_signed_in' {
+export const MONGOOSE_LOCAL_CREDENTIAL_FIELDS = ['refreshToken', 'consentStartedAt'] as const;
+
+export interface MongooseLocalCredential {
+  /** A usable refresh token is on disk, so no new sign-in is implied. */
+  hasRefreshMaterial: boolean;
+  /** The consent family is past its absolute cap, so only a new re-authorisation can succeed. */
+  consentExpired: boolean;
+}
+
+/**
+ * What a start does about this endpoint's stored credential (H19,D4): a mongoose endpoint with no stored
+ * credential, or one whose consent family is past its cap, is not signed in, and the host says that once
+ * instead of opening the connector to fail at every launch. Every other endpoint is probed as before; a
+ * signed-in mongoose endpoint reconnects on the next connect after a login.
+ */
+export function mongooseCredentialAtStart(connector: string, stored: MongooseLocalCredential): 'probe' | 'not_signed_in' {
   if (connector !== 'mongoose') return 'probe';
-  return storedCredential ? 'probe' : 'not_signed_in';
+  return stored.hasRefreshMaterial && !stored.consentExpired ? 'probe' : 'not_signed_in';
 }
 
 /**

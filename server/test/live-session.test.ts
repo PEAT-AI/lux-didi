@@ -3064,10 +3064,13 @@ test('W10: a source whose grant publishes after the call started joins the next 
   await h.publishCalendar!();
   h.advance(300);
   const before = h.calls.length;
+  const debug: unknown[] = [];
+  const detachDebug = attachHostLogSink({ event: raw => { if ((raw as { event?: string }).event === 'w10_debug_failed') debug.push(raw); } });
   await settleLiveTool(h, 'r2', 'research', { action: 'start', question: 'what is on my calendar' });
+  detachDebug();
   const reply = lastToolResponse(h);
   assert.doesNotMatch(reply, /calendar: unavailable/, 'the published grant is offered, not reported broken');
-  assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), `the late source serves the read: calls=${JSON.stringify(h.calls.map(call => call.name))} reply=${reply}`);
+  assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), `the late source serves the read: calls=${JSON.stringify(h.calls.map(call => call.name))} reply=${reply} debug=${JSON.stringify(debug)}`);
 });
 
 test('U1: research progress reaches the live channel with metadata only', async t => {

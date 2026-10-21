@@ -2453,6 +2453,8 @@ export class LiveSessionOwner {
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), selector: this.#research, execute,
+      // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
+      ...(this.#research?.web === undefined ? {} : { web: this.#research.web }),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.

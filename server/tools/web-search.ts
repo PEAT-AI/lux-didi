@@ -198,7 +198,26 @@ export function webSourceCards(evidence: WebEvidence): { title: string; url: str
   return evidence.sources.map(source => ({ title: source.title, url: source.url }));
 }
 
+/**
+ * Gemini's grounding attribution, honoured: the search entry point Google returns is markup, so only its
+ * https links survive here, and they ride the transcript next to the sources. Never spoken.
+ */
+export function webAttribution(rendered: string | undefined): { title: string; url: string }[] {
+  if (rendered === undefined) return [];
+  const links: { title: string; url: string }[] = [];
+  for (const match of rendered.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/giu)) {
+    const url = httpURL(match[1]!);
+    const title = (match[2] ?? '').replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 96);
+    if (url === undefined || !title || links.some(link => link.url === url)) continue;
+    links.push({ title, url });
+    if (links.length >= WEB_SOURCE_CAP) break;
+  }
+  return links;
+}
+
 /** One compact sources line of markdown links, which is what the chat's source cards are read from. */
-export function webFooter(cards: readonly { title: string; url: string }[]): string {
-  return cards.slice(0, WEB_SOURCE_CAP).map(card => `[${card.title.replace(/[\[\]]/g, '')}](${card.url})`).join(' · ');
+export function webFooter(cards: readonly { title: string; url: string }[], attribution: readonly { title: string; url: string }[] = []): string {
+  const label = (title: string): string => title.replace(/[\[\]]/g, '');
+  return [...cards.slice(0, WEB_SOURCE_CAP), ...attribution.slice(0, WEB_SOURCE_CAP)]
+    .map(card => `[${label(card.title)}](${card.url})`).join(' · ');
 }

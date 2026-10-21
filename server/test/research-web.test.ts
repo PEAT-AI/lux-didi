@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, SELECTOR_SYSTEM, candidateSubs, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
-import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
+import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
+import { safeEvent } from '../host/log.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const KEY = { resolve: async () => 'test-key' };
@@ -188,4 +189,40 @@ test('a web failure names the web part as missing instead of answering as if it 
   assert.match(unavailable, /web_timeout/, 'the reply carries the typed code');
   assert.match(JSON.stringify(reply), /the web: unavailable \(web_timeout\)/, 'Naya is told the web part is missing');
   assert.equal(JSON.stringify(reply).includes('bridge reopening date'), false);
+});
+
+// --- B2: the grounding attribution is honoured, and B4: the web receipt survives the log gate ---
+
+test('the search entry point links are honoured in the transcript, https only', () => {
+  const rendered = '<div class="g-search"><a href="https://www.google.com/search?q=bridge" target="_blank">Search bridge</a>'
+    + '<a href="javascript:alert(1)">bad</a><a href="http://insecure.example">plain http</a></div>';
+  const links = webAttribution(rendered);
+  assert.deepEqual(links, [{ title: 'Search bridge', url: 'https://www.google.com/search?q=bridge' }], 'only an https entry point link survives');
+  const footer = webFooter([{ title: 'Bridge reopening', url: 'https://example.com/bridge' }], links);
+  assert.match(footer, /\[Bridge reopening\]\(https:\/\/example\.com\/bridge\)/);
+  assert.match(footer, /\[Search bridge\]\(https:\/\/www\.google\.com\/search\?q=bridge\)/, 'the attribution rides the transcript');
+  assert.deepEqual(webAttribution(undefined), []);
+});
+
+test('the loop puts the attribution link in the reply markdown and never in the spoken findings', async () => {
+  const h = harness({ ok: true, evidence: {
+    answer: 'The bridge reopened to traffic last Tuesday.',
+    claims: [{ text: 'The bridge reopened to traffic last Tuesday.', sourceIndexes: [0] }],
+    sources: [{ title: 'Bridge reopening', url: 'https://example.com/bridge' }],
+    retrievedAt: '2026-10-21T12:00:00.000Z',
+    searchEntryPoint: '<div><a href="https://www.google.com/search?q=bridge">Search bridge</a></div>',
+  } });
+  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
+  assert.match(String(reply['markdown']), /\[Search bridge\]\(https:\/\/www\.google\.com/);
+  assert.deepEqual(reply['webAttribution'], [{ title: 'Search bridge', url: 'https://www.google.com/search?q=bridge' }]);
+  const findings = reply['findings'] as { text: string }[];
+  assert.equal(findings.some(finding => finding.text.includes('google.com')), false);
+});
+
+test('the web receipt and the web candidate survive the host log gate', () => {
+  const receipt = safeEvent({ event: 'research_source', researchId: 'r-1', source: 'web', outcome: 'ok', ms: 812, deadlineMs: 4000, coalesced: 1 });
+  assert.deepEqual(receipt, { event: 'research_source', researchId: 'r-1', source: 'web', outcome: 'ok', ms: 812, deadlineMs: 4000, coalesced: 1 });
+  const down = safeEvent({ event: 'research_source', researchId: 'r-1', source: 'web', outcome: 'unavailable', ms: 4, deadlineMs: 4000, coalesced: 1 });
+  assert.equal(down?.['source'], 'web', 'a typed web failure is kept, never dropped');
+  assert.equal(JSON.stringify(receipt).includes('bridge'), false, 'the receipt never carries the query text');
 });

@@ -7,7 +7,7 @@ import type { ToolResultBinding, JsonObject, ModelPort, ModelRequest } from '../
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_SEARCH_ACTION, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_SEARCH_ACTION, webAttribution, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -322,6 +322,8 @@ export interface SelectorOutput {
 
 export interface ResearchSelector {
   select(input: SelectorInput, signal: AbortSignal): Promise<SelectorOutput | null>;
+  /** The public web read this selector was built with, so production wires the same binding the selector uses. */
+  web?: WebSearchPort | undefined;
 }
 
 export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answer one owner question, and you write the query each read runs. '
@@ -404,8 +406,9 @@ export function parseSelector(text: string): SelectorOutput | null {
 }
 
 /** The real selector: the same-provider Gemini text adapter, one structured request, its deadline is selectorDeadlineMs. */
-export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1'): ResearchSelector {
+export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1', web?: WebSearchPort): ResearchSelector {
   return {
+    ...(web === undefined ? {} : { web }),
     async select(input, signal) {
       const { system, user } = buildSelectorPrompt(input);
       const request: ModelRequest = {
@@ -942,6 +945,8 @@ export interface RunState {
   evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
   /** WEB: the transcript cards and retrieval time of the web read this run made, so the chat keeps the links. */
   web: { title: string; url: string; retrievedAt: string }[];
+  /** WEB: Gemini's search entry point links, shown in the transcript as the grounding attribution. */
+  webAttribution: { title: string; url: string }[];
   /** Read signatures already issued this run, so an identical duplicate read is never executed twice. */
   calls: Set<string>;
   /** Per source, the query shape a search that matched nothing used, for a line the model can voice. */
@@ -976,7 +981,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), web: [],
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), web: [], webAttribution: [],
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -997,7 +1002,7 @@ export class ResearchLedger {
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
-      unavailableReasons: new Map(existing.unavailableReasons), web: [...existing.web],
+      unavailableReasons: new Map(existing.unavailableReasons), web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
     existing.cancelled = true; existing.progressAbort.abort();
@@ -1911,7 +1916,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
         return { source: group.source, text: `${group.label}: ${group.lines.length} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`, chars: group.lines.join('\n').length };
       });
-    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...(run.web.length > 0 ? { markdown: webFooter(run.web), webSources: run.web.map(({ title, url }) => ({ title, url })) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: groups.find(group => group.source === 'calendar')?.lines.length ?? 0, localRemaining: Math.max(0, remaining.length - (groups.find(group => group.source === 'calendar')?.lines.length ?? 0)) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;
@@ -3009,6 +3014,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal });
               if (!outcome.ok) { run.unavailableReasons.set('web', outcome.code); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
+              run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
               run.evidence.set('web_search', outcome.evidence.answer);
               const text = webEvidenceText(outcome.evidence);
               return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };

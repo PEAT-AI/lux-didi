@@ -11,8 +11,8 @@ import { join } from 'node:path';
 const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
-const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory'];
-const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
+const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web'];
+const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
@@ -28,7 +28,7 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
   'tool', 'settle', 'rebuild', 'poll'] as const;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
-const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
+const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
 /** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
 const LATE_DELIVERIES = ['commentary', 'thinking', 'dropped'];
 const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',

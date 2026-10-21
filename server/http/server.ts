@@ -27,6 +27,25 @@ const equal = (a: string, b: string) => timingSafeEqual(Buffer.from(hash(a)), Bu
 function signInConnector(row: Record<string, unknown>): boolean {
   return row.connector === 'mongoose';
 }
+
+/**
+ * The one closed reason code a connection row carries to the browser. A transport that never answered is
+ * unreachable whatever layer timed it out, including an identity probe that ran out of time; a
+ * cancellation whose origin is not known is not reported as a dead endpoint, because it is not one.
+ */
+export function connectionReasonCode(input: { state: string; error: string; reasonCode?: string | undefined; configurationError?: string | undefined; signIn: boolean }): string | null {
+  const { state, error, configurationError, signIn } = input;
+  if (state === 'connected' || state === 'connecting' || (state === 'configured' && !error)) return null;
+  if (configurationError) return 'configuration_error';
+  if (/^credential .* missing or invalid$/.test(error)) return 'credential_missing';
+  if (/^not_signed_in$/.test(error)) return signIn ? 'needs_sign_in' : 'not_signed_in';
+  if (/^credential-(missing|refresh-failed|consent-expired)$/.test(error)) return signIn ? 'needs_sign_in' : 'unknown';
+  // An identity probe that ran out of time says nothing about whose account it is, so it is unreachable.
+  if (input.reasonCode === 'identity_timeout' || /timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|unreachable/.test(error)) return 'unreachable';
+  if (/discovery/.test(error)) return 'discovery_failed';
+  if (/handshake/.test(error)) return 'handshake_failed';
+  return /identity/.test(error) ? 'identity_mismatch' : 'unknown';
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value !== null && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
@@ -194,21 +213,15 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const error = typeof row.error === 'string' ? row.error : '';
             const configurationError = ['unknown-class-missing', 'unknown-class-invalid', 'owner-approval-required', 'ambiguous-legacy-policy'].includes(String(row.configurationError)) ? String(row.configurationError) : undefined;
             // Only Mongoose has an owner sign-in, so only its rows can carry the sign-in reason.
-            const reasonCode = state === 'connected' || state === 'connecting' || (state === 'configured' && !error) ? null
-              : configurationError ? 'configuration_error'
-              : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
-              : /^not_signed_in$/.test(error) ? (signInConnector(row) ? 'needs_sign_in' : 'not_signed_in')
-              : /^credential-(missing|refresh-failed|consent-expired)$/.test(error) ? (signInConnector(row) ? 'needs_sign_in' : 'unknown')
-              : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
-              : /discovery/.test(error) ? 'discovery_failed'
-              : /handshake/.test(error) ? 'handshake_failed'
-              : /identity/.test(error) ? 'identity_mismatch' : 'unknown';
+            const reasonCode = connectionReasonCode({ state, error, reasonCode: typeof row.reasonCode === 'string' ? row.reasonCode : undefined, configurationError, signIn: signInConnector(row) });
             const identity = projectIdentity(row.identity);
             return {
               id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
               lastHandshakeAt: typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : null,
               reasonCode,
+              // True only while a bounded recovery attempt is really scheduled for this endpoint.
+              retrying: row.retrying === true,
               ...(identity ? { identity } : {}),
               ...(configurationError ? { configurationError } : {}),
             };

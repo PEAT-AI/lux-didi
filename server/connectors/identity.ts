@@ -29,7 +29,7 @@ export interface IdentitySource {
  * The closed code set a Google helper refuses with (lux-cli E2). Only a code from this set ever
  * reaches a spoken source reason, so neither an address nor a token path can travel with it.
  */
-export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing'] as const;
+export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing', 'identity_timeout'] as const;
 export type IdentityErrorCode = (typeof IDENTITY_ERROR_CODES)[number];
 
 function closedCode(token: string | undefined): IdentityErrorCode | undefined {
@@ -163,7 +163,7 @@ export async function proveIdentity(input: {
   try {
     const result = await Promise.race([
       input.call(input.source.tool, input.source.args),
-      new Promise<ConnectorResult>(resolve => { timer = setTimeout(() => resolve({ state: 'unknown', reason: 'identity-timeout' }), timeoutMs); }),
+      new Promise<ConnectorResult>(resolve => { timer = setTimeout(() => resolve({ state: 'unknown', reason: 'identity_timeout' }), timeoutMs); }),
     ]);
     return classifyIdentity(result, input.source, input.expected);
   } catch {

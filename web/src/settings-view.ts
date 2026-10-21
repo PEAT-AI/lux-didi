@@ -106,8 +106,8 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
   const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
-  const step = nextStep(id, state, reason);
-  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(reason === 'needs_sign_in' ? { signIn: true } : {}) };
+  const step = nextStep(id, state, reason, row.retrying === true);
+  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(reason === 'needs_sign_in' || step.signIn === true ? { signIn: true } : {}) };
 }
 
 function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {

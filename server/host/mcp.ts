@@ -8,7 +8,7 @@ import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
-import { MongooseCredentialError, mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
+import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -73,7 +73,7 @@ export interface McpRuntimeComposition {
   port: McpPort;
   owner: ToolsOwner;
   connectionIds(): string[];
-  status(): { endpoints: (McpEndpointReport & { connector: string })[] };
+  status(): { endpoints: (McpEndpointReport & { connector: string; retrying: boolean })[] };
   /** Idempotent first connector round. The supervised host writes the ready frame before this. */
   start(): Promise<void>;
   refresh(): Promise<void>;
@@ -134,6 +134,47 @@ export interface ConnectorFailureDetail {
   attempt?: 'first-connect' | 'refresh';
 }
 
+/**
+ * Whether an unproven identity proof is worth a bounded background retry. A probe that ran out of time is
+ * inconclusive and worth one; a mismatch, or a refusal that only a new sign-in fixes, is not.
+ */
+export function identityFailureRetryable(proof: IdentityProof): boolean {
+  return proof.match !== false && proof.code !== 'credential_missing';
+}
+
+/** Every restart delay of one bounded background recovery round, after a retryable connect failure. */
+export const CONNECTOR_RECOVERY_DELAYS_MS = [5_000, 20_000, 60_000] as const;
+
+/**
+ * One bounded recovery round per endpoint: at most one timer per endpoint, the delays in order, then it
+ * stops and stays stopped until the next explicit reconnect or host start. `next` returns whether an
+ * attempt is pending now, so the status projection can say "retrying" only while one really is.
+ */
+export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_RECOVERY_DELAYS_MS) {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const spent = new Map<string, number>();
+  return {
+    pending: (id: string): boolean => timers.has(id),
+    attempts: (id: string): number => spent.get(id) ?? 0,
+    stop: (id: string): void => {
+      const timer = timers.get(id);
+      if (timer !== undefined) { clearTimeout(timer); timers.delete(id); }
+      spent.delete(id);
+    },
+    stopAll: (): void => { for (const id of [...timers.keys()]) { clearTimeout(timers.get(id)!); } timers.clear(); spent.clear(); },
+    next: (id: string, run: () => void): boolean => {
+      if (timers.has(id)) return true;
+      const used = spent.get(id) ?? 0;
+      if (used >= delays.length) return false;
+      spent.set(id, used + 1);
+      const timer = setTimeout(() => { timers.delete(id); run(); }, delays[used]);
+      timer.unref?.();
+      timers.set(id, timer);
+      return true;
+    },
+  };
+}
+
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
   log?: ToolsOwnerOptions['log'];
@@ -144,6 +185,8 @@ export async function composeMcpRuntime(options: {
   now?: () => number;
   /** Test seam: override the endpoint read deadline; production uses {@link ENDPOINT_CALL_DEADLINE_MS}. */
   callDeadlineMs?: number;
+  /** Test seam: override the bounded recovery delays; production uses {@link CONNECTOR_RECOVERY_DELAYS_MS}. */
+  recoveryDelaysMs?: readonly number[];
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
   deferConnectors?: boolean;
 }): Promise<McpRuntimeComposition> {
@@ -188,6 +231,7 @@ export async function composeMcpRuntime(options: {
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
   const generations = new Map<string, number>();
+  const recovery = createRecoverySchedule(options.recoveryDelaysMs);
   // The per-tool digest of each endpoint's readable names as of its last approved round.
   const approvedSchemas = new Map<string, Map<string, string>>();
   let closed = false;
@@ -321,6 +365,21 @@ export async function composeMcpRuntime(options: {
 
   // One proof per endpoint per connect round: an in-flight probe is shared, a settled one is not, so a
   // refresh verifies the account again instead of inheriting the boot-time proof.
+  // A retryable failure schedules one bounded background round: a fresh generation, a fresh proof and a
+  // full settle, so a late result from the failed round is fenced out instead of overwriting this one.
+  const retryEndpoint = async (entry: McpEndpointEntry): Promise<{ retryable: boolean }> => {
+    if (closed) return { retryable: false };
+    const token = (generations.get(entry.id) ?? 0) + 1;
+    generations.set(entry.id, token);
+    ready.delete(entry.id);
+    registry.suspend(entry.id);
+    return settle(entry, token, 'refresh', identityProofMemo()).catch(() => ({ retryable: false }));
+  };
+  const scheduleRecovery = (entry: McpEndpointEntry): void => {
+    recovery.next(entry.id, () => {
+      void retryEndpoint(entry).then(result => { if (result.retryable) scheduleRecovery(entry); else recovery.stop(entry.id); });
+    });
+  };
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
@@ -334,10 +393,12 @@ export async function composeMcpRuntime(options: {
     // A schemaVersion 2 OAuth record counts as present on its refresh token alone: no refresh happens here.
     if (entry.credentialRef) {
       const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
-      // H19: a mongoose endpoint with no stored credential is not signed in yet. Nothing is opened and
-      // no failing probe is logged at every launch: one typed status, and the next connect after a
-      // login (the app refreshes the connector then) probes it for real.
-      if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
+      // H19,D4: no stored refresh material, or a consent family past its absolute cap, means only a new
+      // sign-in can work. That is conclusive local evidence, so the connector is never opened for it, and
+      // an expired access token alone is not evidence: the refresh may still succeed.
+      const record = entry.connector === 'mongoose' ? readMongooseOAuth(configDir, entry.credentialRef) : undefined;
+      const local = { hasRefreshMaterial: stored, consentExpired: record !== undefined && now() >= record.consentStartedAt + MONGOOSE_CONSENT_CAP_MS };
+      if (mongooseCredentialAtStart(entry.connector, local) === 'not_signed_in') {
         needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reportFailure(entry, 'credential', attempt, 'not_signed_in');
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
@@ -477,14 +538,17 @@ export async function composeMcpRuntime(options: {
           // A strict source refuses an unproven identity too. The reason code is a closed helper code,
           // so the reply names the source without ever carrying the account or a token path.
           const code = refusalCode(identity);
+          // A probe that ran out of time is inconclusive, not a refusal: it schedules the bounded
+          // background recovery. Only a definite refusal stays failed until the next reconnect.
+          const retryable = identityFailureRetryable(identity);
           reportFailure(entry, 'handshake', attempt, code);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
-          return { retryable: false };
+          return { retryable };
         }
         if (!identity.proven) {
           reportFailure(entry, 'handshake', attempt, 'identity_unverified');
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', identity });
-          return { retryable: false };
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', ...(identity.code ? { reasonCode: identity.code } : {}), identity });
+          return { retryable: identityFailureRetryable(identity) };
         }
       } else if (identitySource && expectedIdentities.length === 0) {
         // No owner identity configured and a non-strict source: the explicit no-comparison policy.
@@ -535,12 +599,17 @@ export async function composeMcpRuntime(options: {
       eligible.delete(entry.id); bursts.delete(entry.id);
       const token = (generations.get(entry.id) ?? 0) + 1;
       generations.set(entry.id, token);
+      // A fresh connect round owns the endpoint again: a recovery round left pending by an earlier
+      // failure is dropped so the two can never probe at the same time.
+      recovery.stop(entry.id);
       // Any generation bump revokes the superseded grant before a replacement can publish, so an
       // already-admitted session snapshot cannot dispatch through the old generation.
       registry.suspend(entry.id);
-      // The startup path makes one connect pass only. A first_call failure is reported and left for
-      // a background retry; it must never double the five-second startup bound.
-      await settle(entry, token, 'first-connect', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
+      // The startup path makes one connect pass only and never doubles the five-second startup bound:
+      // a retryable failure is reported here and its bounded recovery runs afterwards, in the background.
+      await settle(entry, token, 'first-connect', identityOnce)
+        .then(result => { if (result.retryable) scheduleRecovery(entry); else recovery.stop(entry.id); })
+        .catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
   const composition: McpRuntimeComposition = {
@@ -550,6 +619,7 @@ export async function composeMcpRuntime(options: {
     connectionIds: () => active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id),
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report,
       ...(report.state === 'connected' && report.tools > 0 && !registry.currentGrant(report.id) ? { state: 'error' as const, tools: 0, error: 'connector-unavailable' } : {}),
+      retrying: recovery.pending(report.id),
       connector: connectors.get(report.id) ?? report.id })) }),
     start: () => (startPromise ??= run()),
     refresh: async () => { startPromise = undefined; await run(); },
@@ -566,12 +636,15 @@ export async function composeMcpRuntime(options: {
         needsSignIn.delete(id);
         const token = (generations.get(id) ?? 0) + 1;
         generations.set(id, token);
+        recovery.stop(id);
         registry.suspend(id);
-        await settle(entry, token, 'refresh', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
+        await settle(entry, token, 'refresh', identityOnce)
+          .then(result => { if (result.retryable) scheduleRecovery(entry); })
+          .catch(() => { /* the per-connector report already carries the failure */ });
       }));
       await Promise.all([...eligible.keys()].map(recoverEndpoint));
     },
-    close: () => { closed = true; for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } eligible.clear(); bursts.clear(); const closing = port.close(); return Promise.all([closing, ...flights.values()]).then(() => {}); },
+    close: () => { closed = true; recovery.stopAll(); for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } eligible.clear(); bursts.clear(); const closing = port.close(); return Promise.all([closing, ...flights.values()]).then(() => {}); },
   };
   if (options.deferConnectors !== true) await composition.start();
   return composition;

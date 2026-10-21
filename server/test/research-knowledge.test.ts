@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, knowledgeHydrateIds, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type ResearchSelector, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -94,7 +94,7 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
 });
 
 test('K2: an opened body renders at 3000 characters and a search hit keeps the server window', () => {
-  const opened = shapeBlock('knowledge_open', [sub('get_insight', LONG_BODY)]);
+  const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
   assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
   assert.ok(opened.lines[0]!.endsWith('cut at 3000 chars'), opened.lines[0]!.slice(-40));
   assert.equal(opened.source, 'knowledge');
@@ -104,10 +104,9 @@ test('K2: an opened body renders at 3000 characters and a search hit keeps the s
   assert.ok(searched.lines[0]!.endsWith(whole));
 });
 
-test('K1: a cut search reply is followed by a read of the top id, inside the same run', async () => {
+test('K1: a cut search reply is followed by a read of the top id, inside the same read', async () => {
   const searched = selectorOf(
     { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } },
-    { questionClass: 'cross_source', actions: [{ kind: 'knowledge_open' }], pUseful: { knowledge_open: 0.9 } },
   );
   const calls: IntentSubCall[] = [];
   const h = harness({
@@ -117,16 +116,14 @@ test('K1: a cut search reply is followed by a read of the top id, inside the sam
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   const read = calls.find(call => call.name === 'get_insight');
   assert.deepEqual(read?.args, { ids: [123] });
-  assert.ok(h.offered[1]?.includes('knowledge_open'), `the read is offered once the search ran: ${JSON.stringify(h.offered)}`);
   const findings = reply['findings'] as { source: string; text: string }[];
   const knowledge = findings.find(finding => finding.source === 'knowledge');
-  assert.ok(knowledge !== undefined && knowledge.text.includes('cut at 3000 chars'), 'the body read reaches the reply');
+  assert.ok(knowledge !== undefined && knowledge.text.includes('cut at 3000 chars'), 'the opened body reaches the reply');
 });
 
-test('K1: an uncut search reply offers no body read, and none is ever run', async () => {
+test('K1: a reply that proved its hit complete opens nothing', async () => {
   const searched = selectorOf(
     { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } },
-    { questionClass: 'cross_source', actions: [{ kind: 'knowledge_open' }], pUseful: { knowledge_open: 0.9 } },
   );
   const calls: IntentSubCall[] = [];
   const h = harness({
@@ -135,11 +132,13 @@ test('K1: an uncut search reply offers no body read, and none is ever run', asyn
   });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   assert.equal(calls.filter(call => call.name === 'get_insight').length, 0);
-  assert.ok(!h.offered[1]?.includes('knowledge_open'), `an uncut reply offers no read: ${JSON.stringify(h.offered)}`);
 });
 
-test('K1: a low-confidence search is not followed by a body read', async () => {
-  assert.deepEqual(candidateSubs('knowledge_open', { question: 'tell me more', configured: CONFIGURED, evidence: new Map() }), []);
+test('K1 and K5: a reply that calls its own match weak never triggers a body read', async () => {
+  const low = CUT_SEARCH;
+  assert.deepEqual(knowledgeHydrateIds(low, new Set()), [], 'a low-confidence match is not opened');
+  assert.deepEqual(knowledgeHydrateIds(low.replace('_confidence: low', '_confidence: high'), new Set()), [123]);
+  assert.deepEqual(knowledgeHydrateIds(low.replace('_confidence: low', '_confidence: high'), new Set([123])), [], 'a complete hit is not opened');
 });
 
 test('K8: knowledge latency is stated at its measured p50, and the log carries the read span not the wait', async () => {

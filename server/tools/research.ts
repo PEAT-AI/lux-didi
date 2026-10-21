@@ -21,7 +21,7 @@ export type ResearchAction = 'start' | 'continue' | 'stop';
 export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
 export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose';
 export type CandidateKind =
-  | 'knowledge_search' | 'knowledge_open' | 'calendar_window' | 'mail_search' | 'mail_open'
+  | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
   | 'chat_search' | 'chat_thread' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
@@ -34,7 +34,6 @@ export interface Candidate {
 
 export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'knowledge_search', source: 'knowledge' },
-  { kind: 'knowledge_open', source: 'knowledge', requires: 'knowledge_search' },
   { kind: 'calendar_window', source: 'calendar' },
   { kind: 'mail_search', source: 'mail' },
   { kind: 'mail_open', source: 'mail', requires: 'mail_search' },
@@ -342,7 +341,6 @@ export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answ
   + 'mail_search query: Gmail syntax, e.g. in:inbox newer_than:2d is:unread is:important from:alice@example.com subject:invoice "exact phrase". '
   + 'chat_search query: Mattermost keywords (a few words, not a sentence), optional from:, in:, after:YYYY-MM-DD. '
   + 'knowledge_search query: 3 to 5 content keywords, no filler. '
-  + 'knowledge_open: read the full body of the entries a knowledge_search just returned; choose it when the question wants the whole entry, not the gist. '
   + 'calendar_window: use today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD date. Unresolved or contradictory windows are refused; never widen them. ';
 
 export function buildSelectorPrompt(input: SelectorInput): { system: string; user: string } {
@@ -838,12 +836,6 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     // K6: no content words is no question to search; an empty query is skipped, not filled with a guess.
     if (!query) return [];
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'k0')];
-  }
-  if (kind === 'knowledge_open') {
-    // K1: the ids come from the search reply this run already read, so a body is opened only after a
-    // hit was found and cut; the server's own body cap bounds the answer.
-    const ids = (config.evidence.get('knowledge_search') ?? '').split(',').map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
-    return ids.length ? [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'ko0')] : [];
   }
   if (kind === 'calendar_window') {
     // Research keeps the declared primary-calendar scope.
@@ -1552,16 +1544,14 @@ function knowledgeConfidenceLine(confidence: KnowledgeConfidence): string {
 }
 
 /**
- * K1: the ids a body read may open, from the search reply this run read: only a hit the server cut is
- * worth a second read, and only when the reply did not call its own match weak.
+ * K1: the ids a search reply's body read may open. The hydration already skips a hit the server proved
+ * complete; a reply that calls its own match weak is not worth a second read at all.
  */
-export function knowledgeOpenIds(raw: string): number[] {
-  const lines = raw.split('\n');
-  if (!lines.some(line => KNOWLEDGE_TRUNCATED.exec(line.trim())?.[1] === 'yes')) return [];
+export function knowledgeHydrateIds(raw: string, complete: ReadonlySet<number>): number[] {
+  const confidence = knowledgeConfidenceOf(raw.split('\n'));
   const floor = CONFIDENCE_RANK[RESEARCH.knowledgeReadMinConfidence] ?? 0;
-  const confidence = knowledgeConfidenceOf(lines);
   if (confidence !== undefined && (CONFIDENCE_RANK[confidence.confidence] ?? floor) < floor) return [];
-  return extractInsightIds(raw, RESEARCH.knowledgeOpenIds);
+  return extractInsightIds(raw, RESEARCH.knowledgeHits).filter(id => !complete.has(id)).slice(0, RESEARCH.knowledgeOpenIds);
 }
 /** The server's own bounded-body flag: `truncated: yes (5,432 chars stored)` under a hit. */
 const KNOWLEDGE_TRUNCATED = /^truncated: (yes|no)\b/u;
@@ -2931,9 +2921,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       }
 
       const completedKinds = [...run.readKinds];
-      // K1: a body read is offered only when this run's search found a cut hit worth opening.
-      const offerable = offerableCandidates(configured, completedKinds)
-        .filter(kind => kind !== 'knowledge_open' || (run.evidence.get('knowledge_search') ?? '') !== '');
+      const offerable = offerableCandidates(configured, completedKinds);
       let selection: SelectorOutput;
       let usedFallbackThisRound = false;
       let narrowed: CandidateKind[] | undefined;
@@ -3121,8 +3109,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const second: IntentSubCall[] = [];
           const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
           if (kind === 'knowledge_search') {
-            const complete = completeKnowledgeIds(results);
-            const ids = extractInsightIds(primaryText, RESEARCH.knowledgeHits).filter(id => !complete.has(id)).slice(0, 3);
+            // K1: the second hop is the body read finding 1 is about, gated by the reply's own confidence.
+            const ids = knowledgeHydrateIds(primaryText, completeKnowledgeIds(results));
             if (ids.length) second.push({ key: 'kz', name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
           }
           if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
@@ -3175,14 +3163,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           }
           // A source that answered counts as read, so an empty result is never re-offered as pending.
           if (results.some(result => result.ok)) run.readKinds.add(kind);
-          const found = results.filter(result => result.ok).map(result => result.text).join('\n');
-          const id = extractId(kind, found);
+          const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
           if (id) run.evidence.set(kind, id);
-          // K1: the search's own cut hits are the ids a body read may open.
-          if (kind === 'knowledge_search') {
-            const openIds = knowledgeOpenIds(found);
-            if (openIds.length) run.evidence.set(kind, openIds.join(','));
-          }
           const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
           // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
           // `results` is `[...issued, ...freshSecond]`, so position is the stable key.

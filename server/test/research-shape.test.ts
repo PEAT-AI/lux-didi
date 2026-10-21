@@ -35,8 +35,6 @@ test('SELECTOR_SYSTEM teaches the per-source query syntax', () => {
   assert.match(SELECTOR_SYSTEM, /newer_than/);
   assert.match(SELECTOR_SYSTEM, /after:YYYY-MM-DD/);
   assert.match(SELECTOR_SYSTEM, /3 to 5 content keywords/);
-  // #1021: the selector is told the second knowledge step exists, so it can ask for a whole entry.
-  assert.match(SELECTOR_SYSTEM, /knowledge_open: read the full body/);
   assert.match(SELECTOR_SYSTEM, /window/);
 });
 

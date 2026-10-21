@@ -800,7 +800,11 @@ export function projectHintOf(question: string): string | undefined {
 
 /** K3: the model writes sentences, and a long string costs ranker score, so the query is keywords. */
 export function knowledgeQuery(text: string): string {
-  return contentKeywords(text, RESEARCH.knowledgeQueryTerms).join(' ');
+  const kept = contentKeywords(text, RESEARCH.knowledgeQueryTerms);
+  if (kept.length > 0) return kept.join(' ');
+  // A query the model wrote is already keywords: `team` or `notes` is a stop word for a spoken
+  // question, never for a search string, so it is clipped and kept instead of dropped.
+  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(Boolean).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
 }
 
 /** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree. */
@@ -832,8 +836,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     const ids = namedInsightIds(config.question, config.query);
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
-    const query = knowledgeQuery(config.query ?? config.question);
-    // K6: no content words is no question to search; an empty query is skipped, not filled with a guess.
+    // K6: with no model query, a question of pure filler is no question to search at all.
+    const query = config.query === undefined ? contentKeywords(config.question, RESEARCH.knowledgeQueryTerms).join(' ') : knowledgeQuery(config.query);
     if (!query) return [];
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'k0')];
   }

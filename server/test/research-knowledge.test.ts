@@ -82,6 +82,9 @@ test('K4: a known project name in the question supplies a hint, and never a hard
 test('K6: a question with no content words asks rather than searching filler', () => {
   assert.deepEqual(candidateSubs('knowledge_search', { question: 'what is that', configured: CONFIGURED, evidence: new Map() }), []);
   assert.equal(candidateSubs('knowledge_search', { question: 'wriggler pipeline', configured: CONFIGURED, evidence: new Map() }).length, 1);
+  // A model query of one domain word survives: it is a search string, never a spoken sentence.
+  const [one] = candidateSubs('knowledge_search', { question: 'who is on my team', query: 'team', configured: CONFIGURED, evidence: new Map() });
+  assert.equal(one!.args['query'], 'team');
 });
 
 test('K5 and K7: the confidence line reaches the finding, and the two score scales do not', () => {

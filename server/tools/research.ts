@@ -457,6 +457,8 @@ const MAIL_FILLER = new Set([
   'week', 'weeks', 'month', 'months', 'day', 'days', 'last', 'past', 'ago', 'since', 'today', 'yesterday', 'tomorrow',
   'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
   'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+  'whether', 'if', 'actually', 'someone', 'anyone', 'still', 'currently', 'recently', 'earlier', 'later', 'think',
+  'came', 'come', 'coming', 'went', 'gone', 'arrived', 'thanks', 'thank', 'cheers', 'regards', 'hello', 'hi', 'hey',
 ]);
 /** The correspondence verbs that make "mail from or to that person" explicit. */
 const MAIL_DIRECTION = /\b(?:from|to|sent|send|received|receive|reply|replied|wrote|written|email|emails|emailed|mailed|hear from|heard from)\b/iu;

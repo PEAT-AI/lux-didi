@@ -28,6 +28,11 @@ const FIXTURES: readonly { question: string; authored?: string; q: string }[] = 
   { question: 'Any mail from Neha on Friday?', q: 'from:neha OR to:neha after:2026/10/22 before:2026/10/24' },
   { question: 'Check my email for anything from the city council about parking this morning', q: 'city council parking newer_than:1d' },
   { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract draft board newer_than:14d' },
+  // The three shapes the 04:06Z call really sent (described, never quoted from the log): a bare first
+  // name with no window, a long natural-language sentence, and one with a person and a time word.
+  { question: 'Davian', q: 'davian newer_than:14d' },
+  { question: 'could you check whether anything important came in from Priya about the security review this week?', q: 'from:priya OR to:priya security review newer_than:7d' },
+  { question: 'I think there was something in my inbox earlier this week about the new pricing sheet from the finance team, can you find it?', q: 'pricing sheet finance newer_than:7d' },
 ];
 
 test('E4: a prose question becomes at most four Gmail terms and a window', () => {

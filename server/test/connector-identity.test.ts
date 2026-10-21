@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import {
@@ -132,7 +133,21 @@ test('the identity memo proves one account once and retries an unproven connecto
 });
 
 // Real refusal wiring: one fake Gmail endpoint, the real host compose path, synthetic identities only.
-const webRoot = resolve(import.meta.dirname, '../../../web/dist');
+/**
+ * A private web build for this file. The identity fixtures must not share web/dist with host.test.ts,
+ * which plants a symlink in assets/ for its own escape test; a parallel startHost then refuses that
+ * build and the identity tests fail for a reason that has nothing to do with identity (W9 review round).
+ */
+function scratchWebRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'didi-identity-web-'));
+  writeFileSync(join(root, 'index.html'),
+    '<!doctype html><html><head><link rel="stylesheet" href="/assets/app.css"></head><body><script src="/assets/app.js"></script></body></html>');
+  for (const name of ['sw.js', 'manifest.webmanifest', 'icon.svg']) writeFileSync(join(root, name), name === 'sw.js' ? '' : '{}');
+  mkdirSync(join(root, 'assets'), { recursive: true });
+  for (const name of ['app.js', 'app.css']) writeFileSync(join(root, 'assets', name), '');
+  return root;
+}
+const webRoot = scratchWebRoot();
 
 async function gmailHost(email: string) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));

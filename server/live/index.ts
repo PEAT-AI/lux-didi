@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, markCalendarReply, refusedResearchRunLog, refusalCode, researchSourcesForConnector, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type UnavailableSource } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForSession, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, unreachableSourcesForSession } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2366,22 +2366,16 @@ export class LiveSessionOwner {
     }
   }
 
-  #unreachableSources(): (ResearchSourceKind | UnavailableSource)[] {
-    const sources: (ResearchSourceKind | UnavailableSource)[] = [];
-    // P5-R5 (F3): the endpoint report carries why it is not connected, and the owner's reply names it.
-    // Codes and closed enums only: never the free-text `error`, so no connector text can reach a reply.
-    const endpoints = (this.#tools?.status?.().endpoints ?? []) as unknown as readonly {
-      connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
-    }[];
-    for (const endpoint of endpoints) {
-      if (endpoint.state === 'connected') continue;
-      const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
-      for (const source of researchSourcesForConnector(endpoint.connector)) {
-        if (sources.some(entry => (typeof entry === 'string' ? entry : entry.source) === source)) continue;
-        sources.push({ source, reason });
-      }
-    }
-    return sources;
+  #configuredEndpoints(): readonly ConfiguredEndpointStatus[] {
+    return (this.#tools?.status?.().endpoints ?? []) as unknown as readonly ConfiguredEndpointStatus[];
+  }
+
+  #unreachableSources(handle: ActiveSession): (ResearchSourceKind | UnavailableSource)[] {
+    // P5-R5 (F3) / W9-R3 / W9-B1: the endpoint report carries why this session cannot read a source,
+    // and the owner's reply names it. Codes and closed enums only: never the free-text `error`, so no
+    // connector text can reach a reply. One owner for the endpoint-to-source naming, in research.ts.
+    const served = researchSourcesFromToolNames(handle.registry.map(tool => tool.name));
+    return unreachableSourcesForSession(served, this.#configuredEndpoints());
   }
 
   #researchSources(handle: ActiveSession): ResearchSourceKind[] {
@@ -2395,15 +2389,10 @@ export class LiveSessionOwner {
     if (names.has('gmail_search_messages')) sources.push('mail');
     if (names.has('mattermost_search')) sources.push('chat');
     if (names.has('search_mongoose')) sources.push('mongoose');
-    // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
-    // reply can report them unreachable instead of silently narrowing to the sources still up.
-    for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
-      if (endpoint.state === 'connected') continue;
-      for (const source of researchSourcesForConnector(endpoint.connector)) {
-        if (!sources.includes(source)) sources.push(source);
-      }
-    }
-    return sources;
+    // Outcome 2 / W9-B1: every configured endpoint keeps its sources in the configured set, whether it
+    // is down or connected-but-not-yet-published into this session, so the reply reports them
+    // unreachable instead of silently narrowing to the sources still up.
+    return configuredSourcesForSession(sources, this.#configuredEndpoints());
   }
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
@@ -2455,7 +2444,7 @@ export class LiveSessionOwner {
       configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
-      unavailableNow: () => this.#unreachableSources(), selector: this.#research, execute,
+      unavailableNow: () => this.#unreachableSources(handle), selector: this.#research, execute,
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
-  parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
+  configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
@@ -1266,4 +1266,66 @@ test('a selector round still delivers every source the selector chose', async ()
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team say about the deploy freeze' }, new AbortController().signal);
   assert.equal((reply['unchecked'] as string[]).includes('chat'), false, 'the selector pick is still read and credited');
   assert.ok(h.executed.some(call => JSON.stringify(call.args).includes('deploy freeze')), 'the selector query is the one read');
+});
+
+// W9-R3: a configured source that cannot be reached is named to the model, never silently dropped,
+// and a configuration-time rejection speaks in a closed code rather than a free-text error.
+test('a google endpoint in configuration error names mail and calendar as unreachable', () => {
+  const named = configuredSourcesForEndpoints([
+    { connector: 'google', state: 'error', configurationError: 'unknown-class-invalid', reasonCode: 'unknown-class-invalid' },
+    { connector: 'mattermost', state: 'connected' },
+  ]);
+  assert.deepEqual(named, [
+    { source: 'calendar', reason: 'unknown-class-invalid' },
+    { source: 'mail', reason: 'unknown-class-invalid' },
+  ], 'both google reads keep their source name with the closed reason');
+});
+
+test('a google endpoint in configuration error is voiced as unreachable mail, never silently dropped', async () => {
+  // The configured set and the unreachable reasons come from the same endpoint report the host writes.
+  const named = configuredSourcesForEndpoints([
+    { connector: 'google', state: 'error', configurationError: 'unknown-class-invalid' },
+  ]);
+  const unreachable = named.filter(entry => entry.source === 'mail').map(entry => entry.source);
+  const dispatched: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: unreachable, unavailableNow: () => unreachable,
+    execute: async subs => {
+      for (const call of subs) dispatched.push(call.name);
+      return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0, received: { shape: 'list', items: 1 } } as never));
+    },
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'invoice' }] }) } as unknown as ResearchSelector,
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'did I get the invoice' }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /could not reach mail/);
+  assert.deepEqual(dispatched, [], 'a source known to be unreachable is not dispatched to');
+});
+
+// W9-B1: a session opened before the connect round publishes still names what it cannot reach.
+test('a session opened before publication names mail and calendar with a closed reason', () => {
+  const connected = [
+    { connector: 'google', state: 'connected' },
+    { connector: 'mattermost', state: 'connected' },
+  ];
+  const named = unreachableSourcesForSession(['chat'], connected);
+  assert.deepEqual(named, [
+    { source: 'calendar', reason: UNPUBLISHED_SOURCE_REASON },
+    { source: 'mail', reason: UNPUBLISHED_SOURCE_REASON },
+  ], 'a connected endpoint whose reads this session never got is named, not dropped');
+
+  // The configured set carries the same sources, so a research call can ask for them at all.
+  assert.deepEqual(configuredSourcesForSession(['chat'], connected), ['chat', 'calendar', 'mail']);
+
+  // Once the reads are published into the session, nothing is called unreachable.
+  assert.deepEqual(unreachableSourcesForSession(['chat', 'calendar', 'mail'], connected), []);
+});
+
+// W9-R4 / #502: a refused Mongoose refresh reaches the owner as a closed sign-in-again reason.
+test('a refused mongoose refresh is voiced as sign in again, never as an unknown failure', () => {
+  const named = configuredSourcesForEndpoints([{ connector: 'mongoose', state: 'error', reasonCode: 'credential-refresh-failed' }]);
+  assert.deepEqual(named, [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
+  // The reply speaks REASON_WORDS, so the closed code reads as an instruction, not a code.
+  assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
 });

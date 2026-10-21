@@ -26,7 +26,7 @@ cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/
 cp "$root/server/config/files.ts" "$out/source/config/"
 # Red baseline may not have the new implementation yet; dynamic imports fail observably.
 inputs=("$out/source/test/mcp-config.test.ts")
-for file in config/mcp.ts config/mcp-cli.ts host/mcp.ts; do
+for file in config/mcp.ts config/mcp-cli.ts host/mcp.ts host/mongoose-auth.ts connectors/mongoose.ts; do
   if [[ -f "$root/server/$file" ]]; then cp "$root/server/$file" "$out/source/$file"; inputs+=("$out/source/$file"); fi
 done
 cp "$root/server/test/mcp-config.test.ts" "$out/source/test/"

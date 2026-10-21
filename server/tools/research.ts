@@ -169,6 +169,11 @@ export interface ResearchSourceLog {
 /** A source that cannot serve a read right now, with the reason its connector gave. */
 export interface UnavailableSource { source: SourceKind; reason: string }
 
+/** The endpoint report fields an unreachable source name may read: closed codes only. */
+export interface ConfiguredEndpointStatus {
+  connector: string; state: string; reasonCode?: string; configurationError?: string; exception?: { code: string };
+}
+
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
 export function normalizeLookups(value: unknown): ResearchLookup[] {
   if (!Array.isArray(value)) return [];
@@ -1002,6 +1007,42 @@ const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
+/** The closed reason a connected endpoint carries when this session cannot call its reads yet. */
+export const UNPUBLISHED_SOURCE_REASON = 'tools-unpublished';
+
+/**
+ * W9/B1: a session's configured sources are what its published reads serve plus every source a
+ * configured endpoint covers, so a session opened before the connect round still names what it
+ * cannot reach instead of silently narrowing.
+ */
+export function configuredSourcesForSession(published: readonly SourceKind[], endpoints: readonly ConfiguredEndpointStatus[]): SourceKind[] {
+  const sources = [...published];
+  for (const endpoint of endpoints) {
+    for (const source of researchSourcesForConnector(endpoint.connector)) if (!sources.includes(source)) sources.push(source);
+  }
+  return sources;
+}
+
+/**
+ * W9/B1: the sources this session cannot read, with a closed reason each. `served` is what the
+ * session's own tool set can call, so a connected endpoint whose reads were not published into this
+ * session is named as unpublished rather than vanishing.
+ */
+export function unreachableSourcesForSession(served: readonly SourceKind[],
+  endpoints: readonly ConfiguredEndpointStatus[]): UnavailableSource[] {
+  const sources: UnavailableSource[] = [];
+  for (const endpoint of endpoints) {
+    const reason = endpoint.state === 'connected'
+      ? UNPUBLISHED_SOURCE_REASON
+      : endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+    for (const source of researchSourcesForConnector(endpoint.connector)) {
+      if (served.includes(source) || sources.some(entry => entry.source === source)) continue;
+      sources.push({ source, reason });
+    }
+  }
+  return sources;
+}
+
 export function researchSourcesFromToolNames(names: Iterable<string>): SourceKind[] {
   const present = new Set(names);
   const found = new Set<SourceKind>();
@@ -1019,6 +1060,24 @@ export function researchSourcesForConnector(connector: string): SourceKind[] {
   if (connector === 'lux-knowledge') return ['knowledge'];
   if (connector === 'mongoose') return ['mongoose'];
   return [];
+}
+
+/**
+ * W9-R3: the configured sources one endpoint set covers, and the closed reason for every endpoint
+ * that did not connect, so a source the owner configured is spoken as unreachable instead of
+ * vanishing. Only a closed code travels: never the free-text error, a url or a credential.
+ */
+export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndpointStatus[]): UnavailableSource[] {
+  const sources: UnavailableSource[] = [];
+  for (const endpoint of endpoints) {
+    if (endpoint.state === 'connected') continue;
+    const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+    for (const source of researchSourcesForConnector(endpoint.connector)) {
+      if (sources.some(entry => entry.source === source)) continue;
+      sources.push({ source, reason });
+    }
+  }
+  return sources;
 }
 
 /** The configured sources named for the model, joined as "a, b and c". */
@@ -1415,11 +1474,15 @@ interface ReplyFinding { source: string; text: string; chars: number }
 const REASON_WORDS: Record<string, string> = {
   not_configured: 'not configured',
   not_signed_in: 'not signed in',
+  // #502: a refresh the identity server refused means one thing to the owner: sign in again.
+  'credential-refresh-failed': 'sign in again',
   unresolved_window: 'could not resolve that date or window',
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',
 };
+/** The plain words a closed failure code gets in a reply, never a bare code. */
+export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
 const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
 
@@ -1435,7 +1498,7 @@ function sourceTroubleLine(run: RunState): string | undefined {
     if (!cut && !run.sourcesFailed.has(source)) continue;
     const code = run.unavailableReasons.get(source);
     if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
-    else parts.push(`${label}: unavailable (${(code !== undefined ? REASON_WORDS[code] ?? code.replace(/_/gu, ' ') : undefined) ?? 'no answer'})`);
+    else parts.push(`${label}: unavailable (${(code !== undefined ? plainReason(code) : undefined) ?? 'no answer'})`);
   }
   return parts.length === 0 ? undefined : parts.join('; ');
 }

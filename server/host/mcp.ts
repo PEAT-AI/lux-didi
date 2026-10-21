@@ -8,7 +8,7 @@ import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
-import { mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
+import { MongooseCredentialError, mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -116,6 +116,15 @@ class ProbeRegistry extends McpRegistry {
     }
   }
 }
+/** A registration-class rejection reduced to one closed token, never the thrown message. */
+function registrationCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(message) ? message : 'registration-rejected';
+}
+
+/** The closed connect-time stages a connector_failure line may carry. */
+export type ConnectStage = 'credential' | 'config' | 'spawn' | 'handshake' | 'first_call';
+
 /** Bounded connect-time detail on a connector_failure line: closed tokens only, never free text. */
 export interface ConnectorFailureDetail {
   reason?: string;
@@ -159,9 +168,16 @@ export async function composeMcpRuntime(options: {
     try {
       return await mongooseAccessToken(configDir, reference, {
         now,
-        notify: reason => { if (owner) options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
+        // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
+        // (credential-refresh-failed), never twice through this notice as well. A consent notice has no
+        // such line, so it still speaks here.
+        notify: reason => { if (owner && reason === 'consent-expiring') options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
       });
-    } catch {
+    } catch (error) {
+      // #502: a typed credential refusal keeps its closed code, so the endpoint report and the one
+      // connector_failure line name the real cause (a refused refresh is a sign-in again, never an
+      // unknown transport failure). Only an untyped failure gets the generic owner text below.
+      if (error instanceof MongooseCredentialError) throw error;
       // One owner line: the browser surfaces this exact text as the credential status and renders the
       // "reconnect Mongoose" next step. The closed refresh code stayed in the connector log above.
       throw Error(`credential ${reference} missing or invalid`);
@@ -173,6 +189,16 @@ export async function composeMcpRuntime(options: {
   const ready = new Set<string>();
   const generations = new Map<string, number>();
   let closed = false;
+  // W9: exactly one closed connector_failure line per endpoint that did not connect at host start,
+  // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
+  // can ride out, and a retried or repeated pass never doubles the line.
+  const failuresReported = new Set<string>();
+  const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
+    reason: string, exceptionCode?: string): void => {
+    if (attempt !== 'first-connect' || failuresReported.has(entry.id)) return;
+    failuresReported.add(entry.id);
+    options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}) });
+  };
   const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
     if (!previous) return;
@@ -187,22 +213,36 @@ export async function composeMcpRuntime(options: {
     return empty;
   }
   const { grantMode, endpoints } = selection.catalog;
+  const trusted = grantMode === 'owner-trusted-reads';
   // Reject local capability mismatches before any transport starts, including disabled entries.
+  const rejected = new Set<string>();
   for (const entry of endpoints) {
     if (!Object.hasOwn(CONNECTOR_DESCRIPTORS, entry.connector)) throw new ConnectorCompositionError('unknown_connector', entry.id, entry.connector);
     if (entry.enabled) {
-      if (entry.transport === 'stdio') {
-        registry.register({ id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource });
-      } else {
-        registry.register({ id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, ...(entry.credentialRef ? { credentialRef: entry.credentialRef } : {}) });
+      try {
+        if (entry.transport === 'stdio') {
+          registry.register({ id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource });
+        } else {
+          registry.register({ id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, ...(entry.credentialRef ? { credentialRef: entry.credentialRef } : {}) });
+        }
+        registry.enable(entry.id);
+        if (entry.allowEgress) registry.allowEgress(entry.id);
+      } catch (error) {
+        // W9-B2: a registration-class rejection (a moved helper, an unapproved env) never admits the
+        // endpoint, so nothing can settle it. It is still reported and still says why, and the rest of
+        // the composition continues: one bad endpoint must never take every source down with it.
+        const code = registrationCode(error);
+        rejected.add(entry.id);
+        reportFailure(entry, 'config', 'first-connect', code);
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: null, error: code, exception: { class: 'Registration', code } });
+        connectors.set(entry.id, entry.connector);
+        continue;
       }
-      registry.enable(entry.id);
-      if (entry.allowEgress) registry.allowEgress(entry.id);
     }
     reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
     connectors.set(entry.id, entry.connector);
   }
-  const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
+  const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
 
   const eligible = new Map<string, { session: number; revision: number }>();
   // Endpoints parked at `not_signed_in`: a login writes the credential, and the next recover()
@@ -275,6 +315,7 @@ export async function composeMcpRuntime(options: {
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
     if (entry.configurationError || entry.unknownClass === null) {
       const code = entry.configurationError ?? 'unknown-class-missing';
+      reportFailure(entry, 'config', attempt, code);
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return { retryable: false };
     }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
@@ -286,19 +327,20 @@ export async function composeMcpRuntime(options: {
       // login (the app refreshes the connector then) probes it for real.
       if (mongooseCredentialAtStart(entry.connector, stored) === 'not_signed_in') {
         needsSignIn.add(entry.id);
+        reportFailure(entry, 'credential', attempt, 'not_signed_in');
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
         return { retryable: false };
       }
       needsSignIn.delete(entry.id);
       try { if (!stored) readMcpCredential(configDir, entry.credentialRef); }
-      catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
+      catch { reportFailure(entry, 'credential', attempt, 'credential-unavailable'); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
     try {
       const discovery = await port.discover(entry.id);
       if (stale()) return { retryable: false };
       if (discovery.state !== 'discovered') {
         const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
-        options.connectorLog?.(entry.connector, stage, { reason: discovery.reason, ...(discovery.exception?.code ? { exceptionCode: discovery.exception.code } : {}), endpointId: entry.id, attempt });
+        reportFailure(entry, stage, attempt, discovery.reason, discovery.exception?.code);
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
         // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
         // credential or configuration error is stable and a later refresh still reconnects it.
@@ -330,16 +372,42 @@ export async function composeMcpRuntime(options: {
       if (row) {
         const bytes = String(row.policy_json);
         if (sha256(bytes) !== row.policy_sha256) throw Error('connection_policy_binding');
-        const stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy);
+        // W9: the durable row approves a connector envelope, and a release may rename that envelope's
+        // read tools (ab755604 renamed every Google read). A row that no longer validates is a catalog
+        // change, never a fatal settle. Under owner-trusted-reads the owner already granted the
+        // reviewed envelope, so the row is reconciled from this discovery; a stored revocation still
+        // wins, and explicit mode keeps its owner-approval refusal.
+        let stored: ConnectionPolicy | null = null;
+        let sameEndpoint = false;
+        let enabledInRow = false;
+        try {
+          const parsed = JSON.parse(bytes) as { enabled?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } };
+          sameEndpoint = parsed.endpoint?.id === policy.endpoint.id
+            && parsed.endpoint?.account === policy.endpoint.account
+            && parsed.endpoint?.resource === policy.endpoint.resource;
+          enabledInRow = parsed.enabled !== false;
+          stored = validatePolicy(parsed as unknown as ConnectionPolicy);
+        } catch { stored = null; }
+        // Only the same endpoint's own approval may be reconciled, and never a revoked one: a tampered,
+        // foreign or revoked row keeps the owner-approval refusal.
+        if (!stored && (!trusted || !sameEndpoint || !enabledInRow)) {
+          reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
+        }
+        if (stored) {
         if (stored.ownerId !== ownerId || stored.connectionId !== entry.id || stored.generation !== Number(row.generation)) throw Error('connection_policy_binding');
         const legacy = stored.bindingMode === undefined;
         if (legacy && stored.route.identity !== stored.endpoint.id) {
+          reportFailure(entry, 'handshake', attempt, 'ambiguous-legacy-policy');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'ambiguous-legacy-policy', configurationError: 'ambiguous-legacy-policy' }); return { retryable: false };
         }
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
-        if (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass])) {
+        // Only an explicit approval mode needs a fresh owner approval for a catalog change: under
+        // owner-trusted-reads the reviewed envelope is what the owner already granted.
+        if (!trusted && (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]))) {
+          reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
         // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
@@ -354,7 +422,8 @@ export async function composeMcpRuntime(options: {
           policy.sourcePolicy.revision += 1;
           policy.route = { ...stored.route, allowedClasses: replaceClass(stored.route.allowedClasses) };
         }
-        if (canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+        }
+        if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
       // Identity proof before any read grant. A failed proof never falls back to publication.
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
@@ -388,10 +457,12 @@ export async function composeMcpRuntime(options: {
           // A strict source refuses an unproven identity too. The reason code is a closed helper code,
           // so the reply names the source without ever carrying the account or a token path.
           const code = refusalCode(identity);
+          reportFailure(entry, 'handshake', attempt, code);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
           return { retryable: false };
         }
         if (!identity.proven) {
+          reportFailure(entry, 'handshake', attempt, 'identity_unverified');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', identity });
           return { retryable: false };
         }
@@ -416,7 +487,10 @@ export async function composeMcpRuntime(options: {
         registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames, effect: 'read' });
         return true;
       });
-      if (!published) { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false }; }
+      if (!published) {
+        reportFailure(entry, 'handshake', attempt, stale() ? 'generation-superseded' : 'connection-policy-changed');
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false };
+      }
       ready.add(entry.id);
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
       return { retryable: false };
@@ -427,6 +501,7 @@ export async function composeMcpRuntime(options: {
         class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
         code: error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown',
       };
+      reportFailure(entry, mongooseFailureStage(exception.code ?? 'unavailable'), attempt, exception.code ?? 'unavailable');
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable', exception });
       return { retryable: false };
     }

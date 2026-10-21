@@ -139,7 +139,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
     // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
-    const stages = ['credential', 'spawn', 'handshake', 'first_call'];
+    const stages = ['config', 'credential', 'spawn', 'handshake', 'first_call'];
     const attempts = ['first-connect', 'refresh'];
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');

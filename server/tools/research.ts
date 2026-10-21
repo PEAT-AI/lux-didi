@@ -3233,7 +3233,9 @@ export class ResearchScheduler {
       }
       // E7: the same question and sources, answered moments ago in this turn, is the same research.
       const recent = this.#recent.get(coalesceKey(call));
-      if (recent !== undefined && recent.reachable === reachable && recent.reply['unavailableReasons'] === undefined
+      // Behaviour 3: an answer that named a source unavailable is not reusable, so the key is the one
+      // buildReply publishes the reasons under, and a recovered source is read again instead.
+      if (recent !== undefined && recent.reachable === reachable && recent.reply['unavailable'] === undefined
         && this.#deps.now() - recent.at <= RESEARCH.coalesceWindowMs) {
         this.#deps.logJoined?.(recent.id);
         return Promise.resolve(structuredClone(recent.reply));

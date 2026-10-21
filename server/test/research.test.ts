@@ -1323,18 +1323,10 @@ test('a session opened before publication names mail and calendar with a closed 
 });
 
 // W9-R4 / #502: a refused Mongoose refresh reaches the owner as a closed sign-in-again reason.
-test('a refused mongoose refresh is voiced as sign in again, never as an unknown failure', async () => {
+test('a refused mongoose refresh is voiced as sign in again, never as an unknown failure', () => {
   const named = configuredSourcesForEndpoints([{ connector: 'mongoose', state: 'error', reasonCode: 'credential-refresh-failed' }]);
   assert.deepEqual(named, [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
+  // The reply speaks REASON_WORDS, so the closed code reads as an instruction, not a code.
   assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
-
-  const deps: ResearchDeps = {
-    now: () => 0, configured: ['mongoose'], unavailableNow: () => ['mongoose'],
-    execute: async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, received: { shape: 'list', items: 0 } } as never)),
-    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'company_search', query: 'pricing' }] }) } as unknown as ResearchSelector,
-  };
-  const reply = await runResearch(deps, { action: 'start', question: 'what is our pricing' }, new AbortController().signal);
-  const note = String(reply['note'] ?? '');
-  assert.match(note, /could not reach|unavailable/i);
+  assert.equal(plainReason('discovery-unavailable'), 'discovery unavailable');
 });

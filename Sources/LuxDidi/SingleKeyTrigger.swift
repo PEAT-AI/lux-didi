@@ -293,6 +293,21 @@ final class SingleKeyTrigger {
     /// The pane the grant lives in, and the one address the off item opens.
     static let grantSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
 
+    /// F13: when the key must look again for its grant. A tap that is live owes nothing, and a key
+    /// the owner turned off owes nothing either; an enabled key with no tap is re-checked on app
+    /// activation and on this one slow timer, so a grant that arrives later installs it at once.
+    struct GrantWatchPlan: Equatable {
+        let onActivation: Bool
+        let pollInterval: TimeInterval?
+    }
+
+    static let grantPollInterval: TimeInterval = 5
+
+    static func grantWatchPlan(enabled: Bool, tapped: Bool) -> GrantWatchPlan {
+        guard enabled, !tapped else { return GrantWatchPlan(onActivation: false, pollInterval: nil) }
+        return GrantWatchPlan(onActivation: true, pollInterval: grantPollInterval)
+    }
+
     /// The one line the status menu carries while the key cannot work, and nothing once the
     /// tap is live. It reads the grant and the tap, never the once-per-version prompt, so a
     /// dismissed prompt still leaves the owner a way in.

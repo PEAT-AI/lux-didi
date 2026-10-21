@@ -912,9 +912,11 @@ struct RootView: View {
     /// on a slow timer while it has no tap. Nothing here prompts; the polling stops the
     /// moment the tap is live.
     private func syncSingleKeyGrantWatch() {
-        if !SingleKeyTrigger.isEnabled || singleKey.tapCreated { stopSingleKeyGrantWatch(); return }
+        let plan = SingleKeyTrigger.grantWatchPlan(enabled: SingleKeyTrigger.isEnabled,
+                                                  tapped: singleKey.tapCreated)
+        guard plan.onActivation, let interval = plan.pollInterval else { stopSingleKeyGrantWatch(); return }
         guard singleKeyGrantTimer == nil else { return }
-        singleKeyGrantTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        singleKeyGrantTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.recheckSingleKeyGrant() }
         }
         singleKeyGrantMonitor = NotificationCenter.default.addObserver(

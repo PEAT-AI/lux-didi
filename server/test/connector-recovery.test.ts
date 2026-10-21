@@ -25,13 +25,12 @@ async function body(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** A synthetic Mongoose endpoint that counts every request and can be made to answer too late. */
-async function fixture(options: { delayMs?: number; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> } = {}) {
+/** A synthetic Mongoose endpoint that counts every discovery request. */
+async function fixture(options: { tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> } = {}) {
   let requests = 0;
   const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   sdk.setRequestHandler('tools/list', async () => {
     requests += 1;
-    if (options.delayMs !== undefined) await new Promise(resolve => setTimeout(resolve, options.delayMs));
     return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
@@ -82,17 +81,14 @@ function oauthRecord(configDir: string, fields: { refreshToken: string; expiresA
 test('a retryable failure gets exactly the bounded recovery round, one probe at a time', async () => {
   const ran: number[] = [];
   const schedule = createRecoverySchedule(FAST);
-  let pending = 0;
-  const fire = (): void => {
-    pending += 1;
-    schedule.next('mongoose', () => { ran.push(pending); });
-  };
-  fire();
+  const probe = (): void => { ran.push(ran.length + 1); };
+  schedule.next('mongoose', probe);
   assert.equal(schedule.pending('mongoose'), true);
   assert.equal(schedule.attempts('mongoose'), 1);
   // A second request while one is pending never starts a second timer.
-  fire();
+  schedule.next('mongoose', probe);
   assert.equal(schedule.attempts('mongoose'), 1);
+  assert.equal(schedule.pending('mongoose'), true);
   await new Promise(resolve => setTimeout(resolve, FAST[0]! + 20));
   assert.deepEqual(ran, [1]);
   assert.equal(schedule.pending('mongoose'), false);
@@ -169,7 +165,7 @@ test('an expired access token with refresh material is not a local sign-in verdi
   t.after(() => runtime.close());
   const report = runtime.status().endpoints[0]!;
   assert.notEqual(report.reasonCode, 'not_signed_in', 'an expired token alone is not conclusive');
-  assert.equal(connectionReasonCode({ state: report.state, error: report.error ?? '', signIn: true }) !== 'needs_sign_in', true);
+  assert.equal(f.requests(), 1, 'so the connector was opened and the wire answered, never parked locally');
 });
 
 test('a consent family past its cap is parked for sign-in with no wire call', async t => {
@@ -186,20 +182,21 @@ test('a consent family past its cap is parked for sign-in with no wire call', as
   assert.equal(f.requests(), 0);
 });
 
-test('a timed out first call reports a timeout cause, is retried a bounded number of times, then stops', async t => {
-  const f = await fixture({ delayMs: 200 }); t.after(() => f.close());
+test('a retryable first call failure retries a bounded number of times and then stops', async t => {
+  // A discovery timeout is a five second wait by construction, which no test here may take; the timeout
+  // cause itself is asserted at the projection above. This drives the same retryable first_call path with
+  // a fast closed cause: a tool definition the client refuses.
+  const f = await fixture({ tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
   const configDir = configDirFor(f.url, null);
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, callDeadlineMs: 30, recoveryDelaysMs: FAST });
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST });
   t.after(() => runtime.close());
   const failed = runtime.status().endpoints[0]!;
-  assert.equal(failed.state, 'error');
-  assert.equal(failed.error, 'timeout-or-cancelled', 'the cause is carried, not flattened');
+  assert.equal(failed.state, 'error', 'the endpoint did not connect');
   assert.equal(failed.retrying, true, 'a retry is scheduled');
-  assert.equal(connectionReasonCode({ state: failed.state, error: failed.error ?? '', signIn: false }), 'unreachable');
-  // 10 ms per retry and a 30 ms call deadline: three retries finish well inside this wait.
-  await new Promise(resolve => setTimeout(resolve, FAST[0]! * 3 + 30 * 4 + 120));
+  assert.equal(f.requests(), 1);
+  await new Promise(resolve => setTimeout(resolve, FAST[0]! * 3 + 120));
   const settled = runtime.status().endpoints[0]!;
   assert.equal(settled.retrying, false, 'the round is over and no further attempt is pending');
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');

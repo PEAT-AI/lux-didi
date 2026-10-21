@@ -1474,11 +1474,15 @@ interface ReplyFinding { source: string; text: string; chars: number }
 const REASON_WORDS: Record<string, string> = {
   not_configured: 'not configured',
   not_signed_in: 'not signed in',
+  // #502: a refresh the identity server refused means one thing to the owner: sign in again.
+  'credential-refresh-failed': 'sign in again',
   unresolved_window: 'could not resolve that date or window',
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',
 };
+/** The plain words a closed failure code gets in a reply, never a bare code. */
+export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
 const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
 
@@ -1494,7 +1498,7 @@ function sourceTroubleLine(run: RunState): string | undefined {
     if (!cut && !run.sourcesFailed.has(source)) continue;
     const code = run.unavailableReasons.get(source);
     if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
-    else parts.push(`${label}: unavailable (${(code !== undefined ? REASON_WORDS[code] ?? code.replace(/_/gu, ' ') : undefined) ?? 'no answer'})`);
+    else parts.push(`${label}: unavailable (${(code !== undefined ? plainReason(code) : undefined) ?? 'no answer'})`);
   }
   return parts.length === 0 ? undefined : parts.join('; ');
 }

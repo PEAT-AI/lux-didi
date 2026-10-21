@@ -94,7 +94,8 @@ function failureStage(error: unknown, operation: Operation, session: Session, ca
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
 /** All HTTP egress passes this supported SDK fetch seam; native Host, no global patch. */
-function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets, onFatal: () => void): typeof fetch {
+function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets, onFatal: () => void,
+  onCredentialRefusal: (endpointId: string, code: string) => void): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
@@ -113,7 +114,14 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     const headers = new Headers(request.headers);
     if (config.credentialRef) {
       if (!options.resolveCredential) throw new PolicyError('credential-unavailable');
-      const token = await bounded(options.resolveCredential(config.credentialRef), signal);
+      // #502: a typed credential refusal keeps its closed code. The host's credential seam throws a
+      // MongooseCredentialError ('credential-refresh-failed' and friends); without this it would leave
+      // as an unclassified fetch error and the endpoint would report an unknown transport failure.
+      const token = await bounded(options.resolveCredential(config.credentialRef), signal).catch((error: unknown) => {
+        const code = (error as { code?: unknown })?.code;
+        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code); throw new PolicyError(code); }
+        throw error;
+      });
       if (!token || /[\r\n]/.test(token)) throw new PolicyError('credential-unavailable');
       headers.set('authorization', `Bearer ${token}`);
     }
@@ -281,6 +289,9 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   let sessionSequence = 0;
   const deaths = new Map<string, number>();
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
+  // #502: the credential seam's closed refusal, kept so the connect/discovery classification can name
+  // it after the SDK has wrapped the fetch error into an unclassified one.
+  const credentialRefusals = new Map<string, string>();
   const schemaValidator = new AjvJsonSchemaValidator();
   let closed = false;
   function suspend(id: string): void {
@@ -325,7 +336,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       stdio.start = async () => { const pending = start(); captureChild(stdio); return pending; };
       transport = stdio;
     } else {
-      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id), (endpointId, code) => credentialRefusals.set(endpointId, code)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     }
     sessions.set(config.id, session);
     try { await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs)); }
@@ -393,8 +404,12 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       } catch (error) {
         // Do not leak remote errors, response bodies, credentials or endpoints in diagnostics.
         if (sessions.has(endpointId)) { suspend(endpointId); await retire(endpointId); }
-        const className = error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown';
+        const credential = credentialRefusals.get(endpointId);
+        if (credential !== undefined) credentialRefusals.delete(endpointId);
+        const className = credential !== undefined ? 'CredentialError'
+          : error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown';
         const localCodes = ['discovery-invalidated', 'source-egress-not-approved', 'invalid-endpoint-config', 'unknown-endpoint'];
+        if (credential !== undefined) return { state: 'unavailable', reason: credential, exception: { class: 'CredentialError', code: credential } };
         if (error instanceof ConnectorStartFailure) return { state: 'unavailable', reason: 'connector-unavailable', exception: { class: error.className, code: error.code } };
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';

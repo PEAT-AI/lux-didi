@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
-  configuredSourcesForEndpoints, configuredSourcesForSession, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
+  configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
@@ -1320,4 +1320,21 @@ test('a session opened before publication names mail and calendar with a closed 
 
   // Once the reads are published into the session, nothing is called unreachable.
   assert.deepEqual(unreachableSourcesForSession(['chat', 'calendar', 'mail'], connected), []);
+});
+
+// W9-R4 / #502: a refused Mongoose refresh reaches the owner as a closed sign-in-again reason.
+test('a refused mongoose refresh is voiced as sign in again, never as an unknown failure', async () => {
+  const named = configuredSourcesForEndpoints([{ connector: 'mongoose', state: 'error', reasonCode: 'credential-refresh-failed' }]);
+  assert.deepEqual(named, [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
+  assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
+
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['mongoose'], unavailableNow: () => ['mongoose'],
+    execute: async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, received: { shape: 'list', items: 0 } } as never)),
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'company_search', query: 'pricing' }] }) } as unknown as ResearchSelector,
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'what is our pricing' }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /could not reach|unavailable/i);
 });

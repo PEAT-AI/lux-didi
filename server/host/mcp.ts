@@ -8,7 +8,7 @@ import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
-import { mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
+import { MongooseCredentialError, mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -170,7 +170,11 @@ export async function composeMcpRuntime(options: {
         now,
         notify: reason => { if (owner) options.connectorLog?.(owner.connector, 'credential', { reason, endpointId: owner.id }); },
       });
-    } catch {
+    } catch (error) {
+      // #502: a typed credential refusal keeps its closed code, so the endpoint report and the one
+      // connector_failure line name the real cause (a refused refresh is a sign-in again, never an
+      // unknown transport failure). Only an untyped failure gets the generic owner text below.
+      if (error instanceof MongooseCredentialError) throw error;
       // One owner line: the browser surfaces this exact text as the credential status and renders the
       // "reconnect Mongoose" next step. The closed refresh code stayed in the connector log above.
       throw Error(`credential ${reference} missing or invalid`);

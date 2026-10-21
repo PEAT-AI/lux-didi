@@ -15,6 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { isStdioEndpoint } from '../adapters/mcp/port.js';
+import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import type { CallRequest, EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 
 // Synthetic local stdio/HTTP bindings only: no real account, network or credential.
@@ -528,4 +529,121 @@ test('a soft failure leaves the connector usable; a dead child respawns until th
       assert.equal(adapter.visibleTools('cls').length, 0, 'the third child death suspends the connector');
     } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+// --- W9: every configured source is reachable, and a source that is not says why. ---
+
+const googleChild = join(here, 'fixtures', 'google-mcp-child.mjs');
+const OWNER = 'owner@example.invalid';
+
+/** A google endpoint exactly as the installed profile shapes one: stdio helper, approved env, private class. */
+function googleEndpoint(id: string, unknownClass: string): Record<string, unknown> {
+  return {
+    id, transport: 'stdio', command: process.execPath,
+    args: [googleChild, 'ok'],
+    env: { HOME: '/home/fixture', PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'google', account: ACCOUNT, resource: `google-${id}`, credentialRef: null, enabled: true,
+    allowEgress: true, unknownClass,
+  };
+}
+
+function writeGoogleConfig(configDir: string, endpoints: readonly Record<string, unknown>[]): void {
+  writeFileSync(join(configDir, 'mcp.json'),
+    JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints }),
+    { mode: 0o600 });
+}
+
+/** The durable approval row the previous release wrote: same endpoint, the pre-rename Google tool names. */
+function seedStaleGoogleRow(store: Store, id: string, endpoint: Record<string, unknown>): void {
+  const policy = {
+    schemaVersion: 1, bindingMode: 'connection', ownerId: store.assistantId, connectionId: id, generation: 2,
+    enabled: true, connector: 'google',
+    endpoint: {
+      id, transport: 'stdio', command: endpoint['command'], args: endpoint['args'],
+      env: endpoint['env'], account: ACCOUNT, resource: `google-${id}`, credentialRef: null,
+    },
+    toolNames: id === 'gmail'
+      ? ['gmail_get_profile', 'gmail_list', 'gmail_read']
+      : ['gcal_calendars', 'gcal_list'],
+    schemaDigest: 'a'.repeat(64),
+    sourcePolicy: { id, revision: 2, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: id, allowedClasses: ['private'] },
+    bounds: { maxEntityBytes: 1048576, maxGetIds: 100, maxQueryChars: 16384, maxResultBytes: 1048576, maxSearchLimit: 100 },
+  };
+  const bytes = canonicalJSON(policy);
+  store.transaction(tx => tx.run(
+    'INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)',
+    [store.assistantId, id, id, 2, 1, bytes, sha256(bytes)]));
+}
+
+test('a durable approval row from the previous tool names reconnects under owner-trusted-reads', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-stale-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const endpoint = googleEndpoint('gmail', 'private');
+  writeGoogleConfig(configDir, [endpoint]);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
+  try {
+    seedStaleGoogleRow(store, 'gmail', endpoint);
+    const runtime = await host.composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
+    });
+    try {
+      const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail');
+      assert.equal(report?.state, 'connected', JSON.stringify(report));
+      assert.equal(report?.tools, 3, 'the renames publish the three gmail reads');
+      assert.ok(runtime.connectionIds().includes('gmail'), 'the source is in connectionIds()');
+      assert.deepEqual(failures, [], 'a reconciled source is not a failure');
+      const row = store.transaction(tx => tx.get(
+        "SELECT policy_json, generation FROM tool_connections WHERE connection_id='gmail'"));
+      const stored = JSON.parse(String(row?.['policy_json'])) as { toolNames: string[]; generation: number };
+      assert.deepEqual(stored.toolNames, ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message']);
+      assert.equal(Number(row?.['generation']), 3, 'the reconciled approval is a new generation');
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a stored revocation is honoured even when its row no longer validates', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-revoked-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const endpoint = googleEndpoint('gmail', 'private');
+  writeGoogleConfig(configDir, [endpoint]);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  try {
+    seedStaleGoogleRow(store, 'gmail', endpoint);
+    store.transaction(tx => tx.run("UPDATE tool_connections SET enabled=0 WHERE connection_id='gmail'"));
+    const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    try {
+      assert.equal(runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail')?.state, 'error');
+      assert.deepEqual(runtime.connectionIds(), [], 'a revoked approval is never re-published');
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a configured endpoint that cannot connect logs exactly one closed connector_failure line', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-configerr-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  // 'secret' is not one of ordinary/private/sensitive: a configuration-time rejection, never a spawn.
+  writeGoogleConfig(configDir, [googleEndpoint('gmail', 'secret')]);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
+  try {
+    const runtime = await host.composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
+    });
+    try {
+      assert.equal(runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail')?.configurationError, 'unknown-class-invalid');
+      assert.equal(failures.length, 1, `exactly one line, saw ${JSON.stringify(failures)}`);
+      assert.equal(failures[0]?.connector, 'google');
+      assert.equal(failures[0]?.detail?.endpointId, 'gmail');
+      assert.equal(failures[0]?.detail?.reason, 'unknown-class-invalid');
+      assert.match(failures[0]?.stage ?? '', /^[a-z_]{1,16}$/, 'a closed stage token, never free text');
+      assert.deepEqual(runtime.connectionIds(), []);
+    } finally { await runtime.close(); }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

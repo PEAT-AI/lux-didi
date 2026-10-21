@@ -94,7 +94,7 @@ export function limitMinutes(value: unknown): string | undefined {
 }
 
 /** Whitelist one connection row: id, state and reasonCode, mapped to a fixed state name and next step. */
-export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string } | undefined {
+export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string; signIn?: boolean } | undefined {
   const row = record(value);
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
@@ -105,9 +105,9 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   if (state === 'connected') return withIdentity({ id, state: 'Connected', next: nextStep(id, state).text });
   if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
-  const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : 'Failed';
+  const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
   const step = nextStep(id, state, reason);
-  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}) };
+  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(reason === 'needs_sign_in' ? { signIn: true } : {}) };
 }
 
 function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
@@ -166,7 +166,7 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
   const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signIn && row.id === 'mongoose' ? ' <button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose</button>' : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

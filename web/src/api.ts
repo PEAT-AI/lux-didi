@@ -120,6 +120,11 @@ export async function fetchLiveSummary(signal?: AbortSignal): Promise<LiveSummar
   return request<LiveSummary>('/live/summary', { signal });
 }
 
+/** One owner click starts the Mongoose sign-in; the host opens the browser and answers with a closed outcome. */
+export async function startMongooseSignIn(signal?: AbortSignal): Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> {
+  return request<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>('/connectors/mongoose/sign-in', { method: 'POST', body: {}, signal });
+}
+
 /** Fetch SSE uses the same current browser authority; no URL tokens or resend. */
 export async function stream(path: string, signal: AbortSignal, onFrame: (value: unknown) => void, onOpen?: () => void): Promise<void> {
   const version = authorityVersion();

@@ -31,11 +31,11 @@ const domain = {
     throw new ServiceError('NOT_FOUND', 'Synthetic not found', 404);
   }
 } as DomainPort;
-async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus']) {
+async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus'], mongooseSignIn?: Parameters<typeof listenService>[0]['mongooseSignIn']) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
   let time = Date.now();
-  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}) });
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}), ...(mongooseSignIn ? { mongooseSignIn } : {}) });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
   return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
@@ -341,6 +341,37 @@ test('owner memory delete requires a principal, is idempotent and reports unknow
     const unknown = await fetch(`${f.service.origin}/api/v1/entries/00000000-0000-4000-8000-000000000000`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-unknown' }, body: '{}' });
     assert.equal(unknown.status, 404);
     assert.equal((await unknown.json()).error.code, 'NOT_FOUND');
+  } finally { await f.cleanup(); }
+});
+
+test('the Mongoose sign-in route starts only on an explicit owner click and answers with the consent URL', async () => {
+  let started = 0;
+  const f = await fixture(undefined, undefined, async () => {
+    started += 1;
+    return { status: 'started' as const, url: 'http://127.0.0.1:8768/authorize?state=synthetic' };
+  });
+  try {
+    const browser = await pair(f);
+    assert.equal(started, 0, 'pairing a browser never opens a sign-in');
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json', 'Idempotency-Key': 'mongoose-sign-in-1' };
+    const refused = await fetch(`${f.service.origin}/api/v1/connectors/mongoose/sign-in`, { method: 'POST', headers: { ...headers, 'X-Didi-CSRF': 'stale' }, body: '{}' });
+    assert.equal(refused.status, 403, 'the click needs this browser authority');
+    const response = await fetch(`${f.service.origin}/api/v1/connectors/mongoose/sign-in`, { method: 'POST', headers, body: '{}' });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { data: { status: string; url?: string } };
+    assert.equal(body.data.status, 'started');
+    assert.equal(body.data.url, 'http://127.0.0.1:8768/authorize?state=synthetic');
+    assert.equal(started, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('a sign-in that cannot start answers with a named reason, never unknown', async () => {
+  const f = await fixture(undefined, undefined, async () => ({ status: 'failed' as const, reason: 'port-in-use' }));
+  try {
+    const browser = await pair(f);
+    const response = await fetch(`${f.service.origin}/api/v1/connectors/mongoose/sign-in`, { method: 'POST', headers: { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json', 'Idempotency-Key': 'mongoose-sign-in-2' }, body: '{}' });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data, { status: 'failed', reason: 'port-in-use' });
   } finally { await f.cleanup(); }
 });
 

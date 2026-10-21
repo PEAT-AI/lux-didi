@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestRefreshMs, calendarDigestStartWaitMs, chooseStartContext, collectSections, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestRefreshMs, calendarDigestStartWaitMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
 import { CALENDAR_DIGEST_READ_MS, readCalendarDigest, type CalendarDigestRead, type GcalListInput, type GoogleResult } from '../connectors/google.js';
 import { NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 
@@ -329,4 +329,19 @@ test('1015: the background owner reads at host start and on every interval until
   cache.stop();
   t.mock.timers.tick(calendarDigestRefreshMs * 4);
   assert.equal(read.calls.length, 3, 'a stopped host reads nothing');
+});
+
+test('a parked sign-in is one short line at call start and nothing when Mongoose is fine', () => {
+  const parked = [{ id: 'mongoose', connector: 'mongoose', state: 'error', reasonCode: 'needs_sign_in' }];
+  const line = signInNote(parked);
+  assert.ok(line, 'a parked sign-in is said once');
+  assert.match(line!, /say that once/i);
+  assert.match(line!, /Settings/);
+  assert.doesNotMatch(line!, /token|bearer|http/i, 'the line carries no credential or URL');
+  assert.equal(signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'connected', reasonCode: null }]), undefined);
+  assert.equal(signInNote([{ id: 'gmail', connector: 'google', state: 'error', reasonCode: 'unreachable' }]), undefined);
+  // The host report carries the bare credential code and error, which is the shape Live really passes.
+  assert.ok(signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'error', error: 'credential-refresh-failed' }]));
+  assert.equal(signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'error', error: 'credential-refresh-busy' }]), undefined, 'a busy refresh is not a sign-in');
+  assert.equal(signInNote([]), undefined);
 });

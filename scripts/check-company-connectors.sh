@@ -48,4 +48,6 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
 mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/stdio-mattermost-child.mjs" "$out/dist/test/fixtures/"
 cp "$root/server/test/fixtures/stdio-mattermost-attention-child.mjs" "$out/dist/test/fixtures/"
+mkdir -p "$out/test/fixtures"
+cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/test/fixtures/"
 node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js"

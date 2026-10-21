@@ -627,7 +627,7 @@ test('a refused refresh parks mongoose and the landing sign-in reconnects it', a
   const NOW = Date.now();
   const record = (refreshToken: string, accessToken: string, expiresAt: number) => JSON.stringify({
     schemaVersion: 2, base: `http://127.0.0.1:${tokenPort}`, clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
-    resource: RESOURCE, accessToken, refreshToken, expiresAt, consentStartedAt: NOW - 1_000,
+    accessToken, refreshToken, expiresAt, consentStartedAt: NOW - 1_000,
   });
   writeFileSync(join(configDir, 'mongoose-mcp.json'), record('refresh-token', 'stale-token', NOW - 60_000), { mode: 0o600 });
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({

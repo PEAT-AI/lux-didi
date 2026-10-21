@@ -87,6 +87,12 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   -target "$target" \
   Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/NativePresenceTests.swift -o "$work/native-presence"
 "$work/native-presence"
+# The held-mute race (D5): a fake host delivers every session callback late. No socket,
+# no engine, no panel and no wait.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -target "$target" \
+  Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/MuteRaceTests.swift -o "$work/mute-race"
+"$work/mute-race"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \

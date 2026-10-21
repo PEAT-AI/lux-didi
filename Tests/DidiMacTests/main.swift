@@ -259,12 +259,12 @@ expect(hotkey.presence.state == .live && hotkey.fences.last == false, "readiness
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
-expect(hotkey.presence.state == .hotMuted && hotkey.closed == 0,
-    "a live tap mutes her and keeps the session; it no longer stops it")
+expect(hotkey.presence.state == .hotMuted && hotkey.closed == 1,
+    "a live tap mutes her and ends the provider session at once (R4)")
 expect(hotkey.presence.posture.muted, "the mute is on the surface the orb reads, so it can go purple")
 expect(hotkey.fences.last == true, "the mute closes Naya's own capture fence")
 expect(hotkey.presence.dropDeadline == hotkey.clock + NativePresence.hotMutedGrace,
-    "the mute enters the five minute grace, which is now only a connection policy")
+    "the mute still carries the five minute deadline, which only ends a session left open")
 expect(hotkey.lastAction() == "mute" && hotkey.lastReason() == "hotMuted", "the live tap logs single_key_tap mute")
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
@@ -273,25 +273,30 @@ expect(hotkey.presence.state == .live && hotkey.fences.last == false && !hotkey.
     "a second tap lets her listen again, with the fence open")
 expect(hotkey.lastAction() == "unmute" && hotkey.lastReason() == "live", "the muted tap logs single_key_tap unmute")
 
-// Acceptance 2: muted for six minutes. The session's grace drops it to cold, the owner
-// still sees MUTED, and the next tap reconnects and opens the mic.
+// Acceptance 2: muted for six minutes. The session goes at the mute, the owner still sees
+// MUTED (purple) the whole time, and the next tap reconnects and opens the mic.
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
 expect(hotkey.presence.state == .hotMuted, "the day's mute starts from a live session")
+hotkey.presence.sessionEnded()
+expect(hotkey.presence.state == .cold && hotkey.presence.posture.muted,
+    "the session's end after a mute keeps the owner on MUTED, never the grey cold orb")
 hotkey.clock += NativePresence.hotMutedGrace + 60
 hotkey.presence.tick()
-expect(hotkey.presence.state == .cold, "six minutes of mute let the internal session go, so a tap reconnects")
-expect(hotkey.presence.posture.muted, "and the owner still sees muted, never the grey cold orb")
+expect(hotkey.presence.state == .cold && hotkey.presence.posture.muted,
+    "six minutes of mute change nothing the owner sees, and restart no session")
 var openedBeforeLateTap = hotkey.opened
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
 expect(hotkey.presence.state == .connecting && hotkey.opened == openedBeforeLateTap + 1,
     "the tapping owner reconnects her instead of starting a quiet session")
+expect(hotkey.presence.state == .connecting && !hotkey.presence.posture.muted,
+    "the reconnect shows the existing connecting look until the new session is ready (R4)")
 hotkey.presence.ready()
 expect(hotkey.presence.state == .live && !hotkey.presence.posture.muted && hotkey.fences.last == false,
-    "and the reconnect opens the mic, so she hears the owner again")
+    "and readiness opens the mic, so she hears the owner again")
 // The explicit Stop, and sleep, are the two things that end a mute.
 hotkey.clock += 1
 hotkey.presence.tap(.hotkey)

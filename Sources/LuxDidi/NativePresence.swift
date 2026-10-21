@@ -152,7 +152,9 @@ final class NativePresence {
         }
     }
 
-    /// The app's explicit mute: LIVE goes hot-muted, anything else is a no-op.
+    /// The owner's mute (R4): the fence closes, queued speech goes, and the provider session
+    /// ends at once, so nothing is sent while she waits. The mute itself is what stays: purple
+    /// until the next tap, however long, and the next tap reconnects and opens the mic.
     func mute(_ trigger: PresenceTrigger) {
         guard state == .live else { return }
         // The fence closes before the state says muted, so no frame outlives the receipt.
@@ -162,6 +164,8 @@ final class NativePresence {
         mutedAt = now()
         effects.cancelPlayback()
         effects.providerInputMute(true)
+        connectingTrigger = nil
+        effects.closeSession()
     }
 
     /// The app's explicit unmute: instant, the session was never closed.
@@ -174,9 +178,12 @@ final class NativePresence {
         effects.providerInputMute(false)
     }
 
-    /// The grace timer. A tick before the deadline changes nothing.
+    /// The grace timer. R4 ends the provider session at the mute itself, so a muted tick has
+    /// nothing left to end; any other hot-muted state (an app mute the key did not make) still
+    /// drops the session here.
     func tick() {
         guard let deadline = dropDeadline, now() >= deadline else { return }
+        if mutedHeld { mutedAt = nil; return }
         teardown(.timer)
     }
 

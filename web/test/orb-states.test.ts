@@ -41,15 +41,21 @@ test('every state has one visual, and the colours are the mini palette tokens', 
   assert.equal(ORB_VISUALS.thinking.hue, ORB_VISUALS.tool.hue);
   assert.ok(Math.abs(ORB_VISUALS.thinking.hue - ORB_VISUALS.listening.hue) > 60,
     'the amber is far from the listening teal');
-  // Cold and hot-muted share the quiet colour; hot-muted is the slightly more opaque
-  // grey, and cold breathes the slowest of every state.
-  assert.equal(ORB_VISUALS['hot-muted'].hue, ORB_VISUALS.cold.hue);
+  // Owner spec 2026-10-21: muted is PURPLE, and cold stays the grey it always was, so the
+  // owner can tell "she waits, muted" from "she is off" at a glance.
+  const purple = ORB_VISUALS['hot-muted'].hue;
+  assert.ok(purple >= 260 && purple <= 290, `hot-muted is purple, got hue ${purple}`);
+  assert.ok(Math.abs(purple - ORB_VISUALS.cold.hue) > 40, 'muted can never be read as cold');
+  assert.equal(ORB_VISUALS['hot-muted'].grey, 0, 'the purple keeps its colour, unlike the grey cold orb');
+  assert.ok(ORB_VISUALS.cold.grey > 0.9, 'cold is still the grey orb');
   assert.ok(ORB_VISUALS.cold.opacity === 0.30, `cold base is 30 percent, got ${ORB_VISUALS.cold.opacity}`);
-  assert.ok(ORB_VISUALS['hot-muted'].opacity > ORB_VISUALS.cold.opacity, 'hot-muted is slightly more opaque');
   assert.ok(ORB_VISUALS.cold.breatheMs >= 9000, 'cold breathes very slowly');
   assert.ok(ORB_VISUALS['hot-muted'].breatheMs < ORB_VISUALS.cold.breatheMs, 'hot-muted breathes faster than cold');
   assert.deepEqual([ORB_VISUALS.cold.posture, ORB_VISUALS['hot-muted'].posture], ['quiet', 'quiet'], 'a slow breathe, not a swirl');
-  assert.ok(ORB_VISUALS.cold.grey > 0.9 && ORB_VISUALS['hot-muted'].grey === 1, 'both are grey');
+  // The transition into and out of purple is the same eased crossfade every state uses.
+  const intoMuted = mixVisual(ORB_VISUALS.listening, ORB_VISUALS['hot-muted'], 0.5);
+  assert.deepEqual({ from: intoMuted.mixing?.from, to: intoMuted.mixing?.to },
+    { from: ORB_VISUALS.listening.hue, to: purple }, 'live to muted crossfades, it does not jump');
   assert.equal(ORB_VISUALS.listening.followsMic, true, 'listening reacts to the owner');
   assert.equal(ORB_VISUALS.speaking.followsOutput, true, 'speaking reacts to Naya');
   for (const state of ['cold', 'connecting', 'thinking', 'tool', 'hot-muted'] as MiniVisualState[]) {

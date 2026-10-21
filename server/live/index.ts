@@ -2176,8 +2176,6 @@ export class LiveSessionOwner {
         }
         if (IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
-          // TEMP diagnostic only.
-          let debugError: string | undefined;
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;
           handle.thinking = true;
@@ -2191,9 +2189,8 @@ export class LiveSessionOwner {
           this.#noteState(handle, 'tool');
           void this.#toolBatch(handle, event, generation).catch(error => {
             hostLogEvent({ event: 'w10_debug_failed', message: String(error) });
-            debugError = String(error);
             if (this.#settled(handle) || generation !== handle.generation) return;
-            const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed', message: debugError } }));
+            const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
             if (responses.length) this.#armDeadAir(handle);

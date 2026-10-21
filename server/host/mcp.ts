@@ -1,6 +1,6 @@
 import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
-import { McpRegistry } from '../adapters/mcp/registry.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
@@ -188,6 +188,8 @@ export async function composeMcpRuntime(options: {
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
   const generations = new Map<string, number>();
+  // The per-tool digest of each endpoint's readable names as of its last approved round.
+  const approvedSchemas = new Map<string, Map<string, string>>();
   let closed = false;
   // W9: exactly one closed connector_failure line per endpoint that did not connect at host start,
   // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
@@ -308,8 +310,9 @@ export async function composeMcpRuntime(options: {
     }
   };
 
-  const identityOnce = identityProofMemo();
-  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh'): Promise<{ retryable: boolean }> => {
+  // One proof per endpoint per connect round: an in-flight probe is shared, a settled one is not, so a
+  // refresh verifies the account again instead of inheriting the boot-time proof.
+  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
@@ -357,6 +360,7 @@ export async function composeMcpRuntime(options: {
         return { retryable: false };
       }
       // Reconcile through the owner projection; the durable row is authoritative over local config.
+      const schemas = new Map(discovery.tools.map(tool => [tool.name, canonicalToolDigest([tool])] as const));
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
       const policy: ConnectionPolicy = {
         schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
@@ -404,9 +408,12 @@ export async function composeMcpRuntime(options: {
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
-        // Only an explicit approval mode needs a fresh owner approval for a catalog change: under
-        // owner-trusted-reads the reviewed envelope is what the owner already granted.
-        if (!trusted && (stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]))) {
+        const previousSchemas = approvedSchemas.get(entry.id);
+        const readableChanged = previousSchemas !== undefined && names.some(name => previousSchemas.get(name) !== schemas.get(name));
+        // Only an explicit approval mode needs a fresh owner approval for any catalog change: under
+        // owner-trusted-reads the reviewed envelope is the approval, so only a change to the contract of
+        // a name that envelope already makes readable needs the owner again.
+        if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]) || (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest)) {
           reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
@@ -425,6 +432,7 @@ export async function composeMcpRuntime(options: {
         }
         if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
+      approvedSchemas.set(entry.id, schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;
@@ -443,7 +451,7 @@ export async function composeMcpRuntime(options: {
           // H19 with D2's strict per-endpoint source: a proof belongs to one endpoint of one account.
           // Sharing it across a mailbox and a calendar of one account made the second endpoint inherit
           // a proof of the other family's tool, so a strict source refused it (or raced the first
-          // endpoint's proof). Each endpoint proves itself once per boot.
+          // endpoint's proof). One proof per endpoint per round lives in settle's caller.
           const proofKey = `${entry.id}\u0000${policy.endpoint.account ?? ''}`;
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
@@ -510,6 +518,7 @@ export async function composeMcpRuntime(options: {
   let startPromise: Promise<void> | undefined;
   const run = async (): Promise<void> => {
     if (closed) return;
+    const identityOnce = identityProofMemo();
     await Promise.all(active.map(async entry => {
       eligible.delete(entry.id); bursts.delete(entry.id);
       const token = (generations.get(entry.id) ?? 0) + 1;
@@ -519,7 +528,7 @@ export async function composeMcpRuntime(options: {
       registry.suspend(entry.id);
       // The startup path makes one connect pass only. A first_call failure is reported and left for
       // a background retry; it must never double the five-second startup bound.
-      await settle(entry, token, 'first-connect').catch(() => { /* the per-connector report already carries the failure */ });
+      await settle(entry, token, 'first-connect', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
   const composition: McpRuntimeComposition = {
@@ -535,6 +544,7 @@ export async function composeMcpRuntime(options: {
     recover: async () => {
       // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
       // again with a new generation, exactly as a first connect would (R9).
+      const identityOnce = identityProofMemo();
       await Promise.all([...needsSignIn].map(async id => {
         const entry = active.find(candidate => candidate.id === id);
         if (closed || entry === undefined || entry.credentialRef == null) return;
@@ -544,7 +554,7 @@ export async function composeMcpRuntime(options: {
         const token = (generations.get(id) ?? 0) + 1;
         generations.set(id, token);
         registry.suspend(id);
-        await settle(entry, token, 'refresh').catch(() => { /* the per-connector report already carries the failure */ });
+        await settle(entry, token, 'refresh', identityOnce).catch(() => { /* the per-connector report already carries the failure */ });
       }));
       await Promise.all([...eligible.keys()].map(recoverEndpoint));
     },

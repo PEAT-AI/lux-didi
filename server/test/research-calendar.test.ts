@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -177,6 +177,7 @@ test('calendar delivery advances exact event identities even when bounded text i
   const shown = Number((first['calendarCoverage'] as Record<string, unknown>)['shown']);
   assert.ok(shown > 0 && shown < 10, 'a reply over its byte budget leaves identical events for the continuation');
   assert.match(String(first['note']), /left out \d+ calendar events/u);
+  h.deps.replyLimit = 6_000;
   const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
   assert.equal((second['calendarCoverage'] as Record<string, unknown>)['shown'], 10 - shown, 'delivery advances by identity, never by identical text');
   assert.equal(second['canContinue'], false);
@@ -355,7 +356,7 @@ test('E8: a whole calendar week comes back at once, one compact line per day', a
   for (const title of ['Day 19 item 0', 'Day 19 item 7', 'Day 20 item 7', 'Day 21 item 3', 'Day 22 item 1', 'Day 23 item 0']) assert.match(finding.text, new RegExp(title, 'u'));
   assert.equal(finding.text.split('\n').filter(line => line.startsWith('- ')).length, 5, 'one line per day, not one line per event');
   assert.equal(reply['canContinue'], false);
-  assert.equal(reply['note'], undefined, 'a whole window needs no trim line');
+  assert.match(String(reply['note']), /covers Mon 19 Oct to Fri 23 Oct/u);
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the whole window is one read');
   assert.ok(Number(h.calls.find(call => call['name'] === 'calendar_list_events')!['maxResults']) > 12, 'the read asks for the window, not one page of twelve');
 });
@@ -384,7 +385,8 @@ test('E8: one calendar list and one window read per live session', async () => {
 
 test('E8: a cancelled run keeps the window it paid for, and the next run reuses it', async () => {
   const h = fixture(Array.from({ length: 6 }, (_, n) => event(21, n)));
-  const scheduler = new ResearchScheduler(h.deps);
+  const memo: ResearchMemo = { calendar: new Map() };
+  h.deps.memo = memo;
   const abandoned = new AbortController();
   let started!: () => void, release!: () => void;
   const began = new Promise<void>(resolve => { started = resolve; });
@@ -394,13 +396,14 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
     if (calls.some(call => call['name'] === 'calendar_list_events')) { started(); await held; }
     return execute(calls, abort);
   };
-  const firstRun = scheduler.call({ action: 'start', question: 'what is on this week', lookups: [{ source: 'calendar', query: 'this week' }] }, abandoned.signal);
+  const firstRun = runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, abandoned.signal);
   await began;
   abandoned.abort();
   release();
   await firstRun;
+  assert.equal(memo.calendar.size, 1, 'the window the cancelled run paid for is kept for the session');
   h.deps.execute = execute;
-  const next = await scheduler.call({ action: 'start', question: 'and the week ahead', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
-  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, `the window the cancelled run paid for is reused, never fetched again: ${JSON.stringify(h.calls.map(call => call['name']))}`);
+  const next = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, `the kept window is reused, never fetched again: ${JSON.stringify(h.calls.map(call => call['name']))}`);
   assert.match(JSON.stringify(next['findings']), /Day 21 item 0/u);
 });

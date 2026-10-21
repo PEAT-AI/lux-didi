@@ -42,7 +42,8 @@ async function localSource(t: TestContext) {
       return { tools: [list[index]!], ...(index === 0 || repeat ? { nextCursor: 'second' } : {}) } as never;
     });
     sdk.setRequestHandler('tools/call', async req => {
-      executed++;
+      // The identity proof is not a read: it runs once per boot before any grant, by design.
+      if (req.params.name !== 'gmail_get_profile' && req.params.name !== 'calendar_list_calendars') executed++;
       if (callDelayMs) await new Promise(resolve => setTimeout(resolve, callDelayMs));
       const args = req.params.arguments ?? {};
       const ids = args['ids'] as number[] | undefined;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -481,4 +481,26 @@ test('ROUTE-R2: an unpublished calendar grant is logged as not_granted, not as a
   await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
   const row = h.logs.at(-1)!.sources.find(entry => entry.kind === 'calendar');
   assert.deepEqual({ disposition: row?.disposition, reason: row?.reason }, { disposition: 'skipped', reason: 'not_granted' });
+});
+
+// ROUTE-1022: the host registry keys the two Google endpoints `gmail` and `calendar`, both with
+// connector `google`. Availability must follow the endpoint id, never the connector.
+test('ROUTE-1022: end-to-end availability follows the endpoint id, not the shared connector', () => {
+  assert.deepEqual(configuredSourcesForEndpoints([
+    { id: 'calendar', connector: 'google', state: 'connected' },
+    { id: 'gmail', connector: 'google', state: 'error', reasonCode: 'identity_unverified' },
+  ]), [{ source: 'mail', reason: 'identity_unverified' }], 'a failed gmail proof names mail alone');
+  assert.deepEqual(configuredSourcesForEndpoints([
+    { id: 'gmail', connector: 'google', state: 'connected' },
+    { id: 'calendar', connector: 'google', state: 'error', reasonCode: 'not_signed_in' },
+  ]), [{ source: 'calendar', reason: 'not_signed_in' }], 'and a calendar failure never speaks for mail');
+});
+
+test('ROUTE-1022: a general question about the week does not force a calendar read', async () => {
+  const mailOnly: ResearchSelector = {
+    select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:7d' }], pUseful: { mail_search: 0.5 } }),
+  };
+  const h = scheduleFixture({ selector: mailOnly });
+  await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
+  assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'the schedule rule stays with the questions the defect named');
 });

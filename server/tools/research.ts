@@ -3242,14 +3242,17 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   first.snapshot = () => ({ run, configured, limit });
 
   if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
-  if (call.action === 'continue' && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);
-  if (call.action === 'continue' && run.mail.size > 0 && call.lookups === undefined) {
+  // RUN-R8 F2: L23 stops body-slice paging after a complete reply. A continue that brings a new direction or
+  // lookups is a new question, so it dispatches its reads instead of paging the last answer.
+  const freshQuestion = call.direction !== undefined || call.lookups !== undefined;
+  if (call.action === 'continue' && !freshQuestion && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);
+  if (call.action === 'continue' && !freshQuestion && run.mail.size > 0 && call.lookups === undefined) {
     const pendingLocal = [...mailMessages(run).keys()].some(key => !run.mailDelivered.has(key));
     if (!pendingLocal) await collectMail(deps, run, signal, Math.min(RESEARCH.sourceDeadline.mail, run.deadlineMs), now);
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
     return buildReply(run, 'answered', configured, false, limit);
   }
-  if (call.action === 'continue' && run.calendar.size > 0 && call.lookups === undefined) {
+  if (call.action === 'continue' && !freshQuestion && run.calendar.size > 0 && call.lookups === undefined) {
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
     const pendingLocal = [...run.calendar.values()].some(read => [...read.events].some(([key]) => !run.calendarDelivered.has(key)));
     if (!pendingLocal) await collectCalendar(deps, run, signal, Math.min(RESEARCH.sourceDeadline.calendar, run.deadlineMs), now);

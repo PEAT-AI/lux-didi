@@ -1445,3 +1445,24 @@ test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one 
   assert.equal(partial['canContinue'], true);
   assert.match(String(partial['note']), /calendar/, 'a partial reply names exactly what is still reading');
 });
+
+// --- F3: the selector never holds the first answer ----------------------------------------------
+
+test('F3: a selector that answers in three seconds never delays the first answer', async () => {
+  const clock = fakeClock();
+  let selectorCalls = 0;
+  const slow: ResearchSelector = {
+    select: async () => {
+      selectorCalls += 1;
+      await new Promise<void>(resolve => { clock.schedule(() => { resolve(); }, 3_000); });
+      return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } };
+    },
+  };
+  const readAt: number[] = [];
+  const h = harness({ selector: slow, now: clock.now, schedule: clock.schedule, execute: async subs => { readAt.push(clock.now()); return subs.map(call => sub(call.name, '### Release 3p scope [id 7]\nThe part that fits.')); } });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what happened this week' }, new AbortController().signal);
+  assert.equal(selectorCalls, 1, 'the selector is still asked, beside the run');
+  assert.deepEqual(readAt[0], 0, 'the keyword plan goes out at once, never three seconds later');
+  assert.equal(h.logs[0]!.driver, 'fallback', 'and the run records the path it took');
+  assert.equal(reply['status'] === 'failed', false, 'the run answers without the selector');
+});

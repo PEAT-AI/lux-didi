@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -593,4 +593,26 @@ test('a routed run that throws still writes its terminal run line, once, with a 
   assert.equal(h.logs[0]!.status, 'failed');
   assert.equal(h.logs[0]!.stopReason, 'failed', 'a closed error code, never an exception message');
   assert.equal(JSON.stringify(h.logs[0]).includes('beat sink gone'), false, 'no exception text leaves in the line');
+});
+
+// --- F8: the schedule router reads schedule words, never the product's daily words ---------------
+
+test('F8: a daily word is not schedule intent, and a schedule question still is', async () => {
+  assert.equal(ownerScheduleQuestion('any calls today'), false, 'calls and today are the product vocabulary, not a schedule');
+  assert.equal(ownerScheduleQuestion('did Dana send that today'), false, 'today alone never routes the calendar');
+  assert.equal(ownerScheduleQuestion('what is on my calendar today'), true, 'the owner naming her calendar still routes it');
+  assert.equal(ownerScheduleQuestion('any meetings this week'), true);
+  assert.equal(ownerScheduleQuestion('add it to the agenda'), true);
+});
+
+// --- F6: an identical read inside one live session is paid once ---------------------------------
+
+test('F6: the same knowledge read twice inside the session window is dispatched once', async () => {
+  const h = harness({});
+  h.deps.memo = { calendar: new Map() };
+  const first = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  const second = await runResearch(h.deps, { action: 'start', question: 'remind me of the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  assert.notEqual(first['researchId'], second['researchId'], 'two distinct questions, two distinct runs');
+  assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the second run reuses the answer instead of paying for it again');
+  assert.match(JSON.stringify(second['findings']), /Release 3k scope/u, 'the reused read still reaches the reply');
 });

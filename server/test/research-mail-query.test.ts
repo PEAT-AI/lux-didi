@@ -243,3 +243,50 @@ test('ROUTE-R2: the host log keeps a skip reason only from the closed set', () =
   assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'identity_unverified' }] }), undefined, 'an open word is refused');
   assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 4, reason: 'timeout' }] }), undefined, 'a served row carries no skip reason');
 });
+
+// --- F2: one pagination per query, continuation from the cursor, honest coverage -----------------
+
+const pageOf = (page: number, count: number, more: boolean): Partial<IntentSubResult> => shapeGmailList({
+  messages: Array.from({ length: count }, (_, n) => ({ id: `m${page}-${n}`, headers: [{ name: 'Subject', value: `Invoice ${page}-${n}` }, { name: 'From', value: 'Dana' }] })),
+  ...(more ? { nextPageToken: `p${page + 1}` } : {}),
+});
+
+test('F2: one mail query pages once to its cap with a stable page size, and the same query on a follow-up reads no page again', async () => {
+  const sent: { page: string; maxResults: unknown }[] = [];
+  const h = mailHarness(async subs => subs.map(call => {
+    const token = call.args['pageToken'];
+    const page = typeof token === 'string' ? Number(token.slice(1)) : 1;
+    sent.push({ page: `${page}`, maxResults: call.args['maxResults'] });
+    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(page, page < 4 ? 25 : 4, page < 4) };
+  }));
+  h.deps.memo = { calendar: new Map() };
+  const start = { action: 'start' as const, question: 'which invoices did I get', lookups: [{ source: 'mail' as const, mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] };
+  const first = await runResearch(h.deps, start, new AbortController().signal);
+  assert.deepEqual(sent.map(entry => entry.page), ['1', '2', '3', '4'], 'the 79 matches take four pages, one dispatch each');
+  assert.deepEqual([...new Set(sent.map(entry => entry.maxResults))], [25], 'one stable page size for the query');
+  assert.equal((first['mailCoverage'] as Record<string, unknown>)['received'], 79, 'all 79 matches came back');
+  const afterFirst = sent.length;
+  const second = await runResearch(h.deps, { ...start, lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 10 } }] }, new AbortController().signal);
+  assert.equal(sent.length, afterFirst, 'the follow-up continues the session read instead of paging from page 1');
+  assert.equal((second['mailCoverage'] as Record<string, unknown>)['received'], 79, 'and it still holds every message the session already read');
+});
+
+test('F2: a rate-limited page waits once and then closes the read, and page 1 is never read again', async () => {
+  const sent: string[] = [];
+  let waits = 0;
+  const h = mailHarness(async subs => subs.map(call => {
+    const token = call.args['pageToken'];
+    const page = typeof token === 'string' ? token : 'first';
+    sent.push(page);
+    if (page === 'p2') return { key: call.key, name: call.name, ok: false, text: 'provider failure: http 429 rateLimitExceeded', originalCharacters: 0, omittedCharacters: 0, code: 'connector_error' };
+    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) };
+  }));
+  h.deps.memo = { calendar: new Map() };
+  h.deps.schedule = callback => { waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
+  assert.deepEqual(sent, ['first', 'p2', 'p2'], 'the failed page is retried once after a wait, and page 1 is never refetched');
+  assert.equal(waits, 1, 'exactly one delayed retry');
+  const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
+  assert.equal(receipt.outcome, 'failed', 'a read that stopped mid-way is not ok, even though it carried its first page');
+  assert.match(String(reply['note']), /mail search stopped/u, 'the reply says the mailbox was not read to the end');
+});

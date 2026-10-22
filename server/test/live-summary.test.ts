@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import {
   SUMMARY_BOOT_REQUEUE_DELAY_MS, SUMMARY_HOST_START_LIMIT, SUMMARY_MAX_RETRIES, SUMMARY_RETRY_BACKOFF_MS,
@@ -141,6 +142,7 @@ function seedConversation(store: Store, id: string, endedAt = SUMMARY_NOW): void
     tx.run(`INSERT INTO live_grants (grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes,
         chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [`grant-${id}`, id, 'gemini', 'synthetic-live', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']), 'ordinary', 1, endedAt]);
+    recordHistorySession(tx, id, 'owner', ['ordinary', 'private'], [], endedAt);
     for (const text of ['one', 'two']) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
         [id, 'inputTranscription', text, text.length, endedAt]);

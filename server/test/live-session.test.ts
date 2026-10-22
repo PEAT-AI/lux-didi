@@ -5500,14 +5500,14 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
   h.f.send({ serverContent: { outputTranscription: { text: 'the last answer of the dead call', finished: true } } });
   await drain(h, session.liveSessionId, 2);
   // The network goes away: every recovery socket dies until the budget settles the call resume_failed.
-  h.f.remoteClose('', 1006);
+  h.f.remoteClose('', 1011);
   let settled = false;
   for (let i = 0; i < 24 && !settled; i++) {
     h.advance(10_000); scheduler.runDue(); await tick();
     settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
     if (settled) break;
     await h.f.frame(h.f.frames.length + 1);
-    h.f.remoteClose('', 1006);
+    h.f.remoteClose('', 1011);
   }
   assert.equal(settled, true, 'the previous call settled resume_failed');
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'resume_failed' });

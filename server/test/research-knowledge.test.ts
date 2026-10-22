@@ -170,3 +170,29 @@ test('K8: knowledge latency is stated at its measured p50, and the log carries t
   const knowledge = h.sources.find(entry => entry.source === 'knowledge');
   assert.equal(knowledge?.ms, 1_200, 'the batch wait the prime read spent before selection is not its latency');
 });
+
+// --- ROUTE-1022 (#526): one knowledge call, full bodies -----------------------------------------
+
+test('ROUTE-1022: a knowledge question is one search call, with the full body window and no second hop', async () => {
+  const executed: IntentSubCall[] = [];
+  const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }),
+    execute: async subs => subs.map(call => {
+      executed.push(call);
+      return sub(call.name, CUT_SEARCH, true, call.key);
+    }) });
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'exactly one knowledge call');
+  assert.equal(executed.filter(call => call.name === 'get_insight').length, 0, 'no get_insight hop');
+  const search = executed.find(call => call.name === 'search_knowledge')!;
+  assert.equal(search.args['max_chars'], RESEARCH.knowledgeBodyChars);
+  assert.equal(RESEARCH.knowledgeOpenIds, 0);
+});
+
+test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimmed to the hits that fit', async () => {
+  const longBody = Array.from({ length: 6 }, (_, index) => `**#${index + 1}** [PATTERN] Hit ${index} | ${'x'.repeat(2_900)}`).join('\n');
+  const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }),
+    execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  const bytes = JSON.stringify(reply).length;
+  assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} budget`);
+});

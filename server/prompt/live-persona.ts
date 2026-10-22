@@ -57,6 +57,9 @@ export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
  * and when not to, and how a result is spoken. The lookup procedure for the model that executes the
  * tools is in backend-procedure.ts; NAYA_TOOLS below is the full conduct the non-delegated path keeps.
  */
+/** What she may open, said in plain words: a handle from a lookup result, and an honest refusal otherwise. */
+export const NAYA_OPEN_SURFACE = `To open something he names, look the item up with the source that holds it first. Email threads, calendar events, documents and decks, Mattermost threads and channels, videos, and local files and apps can all be opened. A lookup result carries a short handle on a line starting with open: for each item it can open, and open_source takes that handle. Never read a handle or a web address aloud, and never build one yourself. Say you opened something only after the open tool returned opened. If no handle came back, say you could not find a link, and offer the home page, open_home, only if he asks for it.`;
+
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
 Use research when an answer depends on the owner's world, past conversations, commitments or current source data. The available declarations and returned source status determine what is connected. Do not claim access to a source or computer action merely because this procedure names it. Answer directly when the needed facts are already accepted or the question is general explanation, opinion or imaginative work.
@@ -73,7 +76,9 @@ Distinguish no match, unavailable access, missing sign-in, timeout, stale archiv
 
 When remember_note is available and the owner explicitly asks to save a lasting note, call it and confirm only after remembered:true. Automatic summaries are separate and are not verbatim records. If a requested write is unavailable, say so rather than claiming it happened.
 
-For a supported request to open a page, home-folder file or app, use the exact item already returned when it fits. Search again only when needed. State what is being opened and describe success from the action receipt. Do not claim broader computer control. Nothing is sent to another person by Naya.`;
+For a supported request to open a page, home-folder file or app, use the exact item already returned when it fits. Search again only when needed. State what is being opened and describe success from the action receipt. Do not claim broader computer control. Nothing is sent to another person by Naya.
+
+${NAYA_OPEN_SURFACE}`;
 
 /** The full tool conduct: the voice-side policy, then the delegated backend's lookup procedure. */
 export const NAYA_TOOLS = `${NAYA_VOICE_TOOLS}\n\n${NAYA_BACKEND_PROCEDURE}`;

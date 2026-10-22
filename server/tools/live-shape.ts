@@ -16,6 +16,7 @@
  * for one requested message), and 8 calendar events of 150 characters. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
+import { knowledgeSourceLinks, withOpenHandles } from './open-handles.js';
 export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
@@ -126,12 +127,12 @@ export function stripModelOnlyNotes(text: string): string {
  * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and
  * how to ask for the rest, so the whole text (note included) stays within `budget`. */
 export function capped(result: ShapedResult, budget: number = LIVE_RESULT_CHARS): ShapedResult {
-  if (result.text.length <= budget) return result;
+  if (result.text.length <= budget) return withOpenHandles(result);
   const note = (omitted: number): string => `\n\n[omitted: ${omitted} characters to keep this result under ${budget}; ask a narrower question or for fewer items for the rest]`;
   const first = cutAtSentence(result.text, budget);
   const recut = cutAtSentence(result.text, Math.max(0, budget - note(first.omitted).length));
   const text = `${recut.text}${note(recut.omitted)}`.slice(0, budget);
-  return { ...result, text, partial: true, omittedCharacters: result.omittedCharacters + recut.omitted };
+  return withOpenHandles({ ...result, text, partial: true, omittedCharacters: result.omittedCharacters + recut.omitted });
 }
 /** Drop dial-in boilerplate that a calendar invite appends to its description: phone numbers, PIN
  * codes and "more phone numbers" links are noise no spoken answer needs. */
@@ -586,19 +587,19 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       const body = field(parsed, 'content', 'text', 'body');
       if (body || parsed['insights'] === undefined && parsed['results'] === undefined) {
         const hit = knowledgeBody(parsed);
-        return { text: hit.text, partial: hit.omitted > 0, originalCharacters: hit.original, omittedCharacters: hit.omitted };
+        return withOpenHandles({ text: hit.text, partial: hit.omitted > 0, originalCharacters: hit.original, omittedCharacters: hit.omitted, sources: knowledgeSourceLinks(hit.text) });
       }
     }
   }
   const clean = stripKnowledgePreamble(raw);
   const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return { text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted };
+  return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: knowledgeSourceLinks(cut.text) });
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
   const body = listed(shapedHits.map(hit => hit.text), KNOWLEDGE_HITS, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
-  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted });
+  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => knowledgeSourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
 }

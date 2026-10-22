@@ -1912,8 +1912,8 @@ export class LiveSessionOwner {
     }
     // A call that ended while an attempt was waiting for its ready event owes no further attempt.
     if (this.#settled(handle)) return false;
-    handle.recoveries += 1;
     this.#logRecovery(handle, path, 'open_failed', closeCode, reason, seed);
+    handle.recoveries += 1;
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     // A refusal pays its own backoff before the next attempt rather than ending the call.
     await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);

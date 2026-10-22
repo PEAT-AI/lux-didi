@@ -4856,6 +4856,7 @@ test('mail body integration: a source completion after research Stop cannot resu
   const { session } = await attached(h, 'body-stop-pending'); t.after(() => release.resolve());
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined; let siblingReady = false;
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'calendar_list_events') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
   let dispatched = false; void entered.promise.then(() => { dispatched = true; }); for (let n = 0; n < 2000 && !dispatched; n++) await tick(); assert(dispatched);
   const progress = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 500 }).fragments.find(fragment => fragment.kind === 'researchProgress'); assert(progress?.text);
@@ -4938,6 +4939,7 @@ for (const route of ['typed', 'selector'] as const) test(`VOICE-R4: ${route} res
   let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); t.after(release);
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits, ...(route === 'selector' ? { research: { async select() { selectCalls++; return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'Synthetic progress lookup' }], pUseful: { chat_search: 0.99 } })); } } } : {}) });
   const { session } = await openPort(h, `progress-${route}`);
+  await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'typed-read', name: 'research', args: { action: 'start', question: 'Synthetic progress lookup', ...(route === 'typed' ? { lookups: [{ source: 'chat', query: 'Synthetic progress lookup' }] } : {}) } }] });
   for (let n = 0; n < 50 && !h.calls.length; n++) await settlePort();
   assert.equal(h.calls.filter(call => call.name.startsWith('mattermost_')).length, 1, 'one actual SDK chat read');

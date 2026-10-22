@@ -33,6 +33,9 @@ export const KNOWLEDGE_HITS = 3;
 /** A get_insight fetch is the explicit "read the whole entry" path, so it keeps the generous final
  * bound (W7-R4: >= 20000) instead of the 2000-character single-result ceiling. */
 export const KNOWLEDGE_BODY_CHARS = 20000;
+/** A ranked Markdown search reply shows every hit: one sentence-cut excerpt each, under one total bound. */
+export const KNOWLEDGE_RANKED_EXCERPT_CHARS = 600;
+export const KNOWLEDGE_RANKED_TOTAL_CHARS = 4000;
 /** Hard ceiling on the shaped text of any single model-visible Live tool result, and the larger
  * ceiling for a result that combines several sources (for example a brief). */
 export const LIVE_RESULT_CHARS = 2000;
@@ -591,10 +594,47 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       }
     }
   }
+  const ranked = knowledgeRanked(raw);
+  if (ranked) return ranked;
   const clean = stripKnowledgePreamble(raw);
   const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
   return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: knowledgeSourceLinks(cut.text) });
+}
+
+const KNOWLEDGE_HIT_START = /^\*\*#([0-9]+)\*\*/u;
+const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
+
+/** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
+function knowledgeRanked(raw: string): ShapedResult | undefined {
+  const parts = stripKnowledgePreamble(raw).split(/^(?=\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
+  if (parts.length === 0) return undefined;
+  const kept: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  let original = 0;
+  let trimmed = 0;
+  for (const part of parts) {
+    const block = part.trim();
+    original += block.length;
+    const lines = block.split('\n');
+    const header = lines[0] ?? block;
+    let scoreAt = -1;
+    for (let index = lines.length - 1; index > 0; index -= 1) { if (KNOWLEDGE_SCORE_LINE.test(lines[index]!)) { scoreAt = index; break; } }
+    const inner = lines.slice(1, scoreAt > 0 ? scoreAt : lines.length).join('\n').trim();
+    const score = scoreAt > 0 ? lines[scoreAt]!.trim() : '';
+    const cut = cutAtSentence(inner, KNOWLEDGE_RANKED_EXCERPT_CHARS);
+    const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
+    const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; call get_insight with ids=[${id ?? 'the id above'}] for the whole insight]` : '';
+    const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
+    if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
+    kept.push(text);
+    used += text.length + 2;
+    omitted += cut.omitted;
+  }
+  const tail = trimmed > 0 ? `\n\n[showing ${kept.length} of ${parts.length} hits; ask a narrower question or a higher limit for the rest]` : '';
+  const text = `${kept.join('\n\n')}${tail}`;
+  return withOpenHandles({ text, partial: trimmed > 0 || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: knowledgeSourceLinks(text) });
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {

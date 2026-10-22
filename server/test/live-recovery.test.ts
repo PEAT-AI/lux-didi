@@ -107,12 +107,15 @@ const SELECTOR: ResearchSelector = { async select(input) {
 } };
 
 /** Every `tools/call` the fake knowledge connector answered, in order. */
-type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | undefined }[]; hold(): void; release(): void };
+type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | undefined }[]; hold(): void; release(): void;
+  /** The run's acceptance the delivery gate reads: `false` refuses the gate for the batches inside the window. */
+  authority(up: boolean): void };
 
 /** One fake knowledge connector, its tool call counted: a dispatch the test can see, never a real endpoint. */
 async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<typeof validateLiveProfile>): Promise<{ tools: LiveToolsComposition; hook: ConnectorHook }> {
   const schemas = [{ name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } }];
   const calls: ConnectorHook['calls'] = [];
+  let authorityUp = true;
   let held: Promise<void> | undefined;
   let release: (() => void) | undefined;
   const registry = new McpRegistry();
@@ -135,7 +138,7 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
     resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 5_000 } });
   const toolOwner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
-    lookupAuthority: async runId => ownerRef?.lookupAuthority(runId) ?? ownerRef?.lookupJobAuthority(runId) ?? null });
+    lookupAuthority: async runId => authorityUp ? ownerRef?.lookupAuthority(runId) ?? ownerRef?.lookupJobAuthority(runId) ?? null : null });
   toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge'], schemaDigest: canonicalToolDigest(schemas),
     sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
@@ -145,7 +148,8 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
   toolOwner.projectConnection('lux');
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   return { tools: { owner: toolOwner, connectionIds: () => ['lux'] },
-    hook: { calls, hold: () => { held = new Promise<void>(resolve => { release = resolve; }); }, release: () => { held = undefined; release?.(); release = undefined; } } };
+    hook: { calls, hold: () => { held = new Promise<void>(resolve => { release = resolve; }); },
+      release: () => { held = undefined; release?.(); release = undefined; }, authority: up => { authorityUp = up; } } };
 }
 
 let ownerRef: LiveSessionOwner | undefined;
@@ -159,6 +163,8 @@ interface Harness {
   /** Held while set: the fake connector's next answer waits for `releaseTool`. */
   holdTool(): void;
   releaseTool(): void;
+  /** Withhold or restore the run acceptance the delivery gate reads, for one batch window. */
+  authority(up: boolean): void;
 }
 
 async function harness(t: TestContext): Promise<Harness> {
@@ -180,7 +186,7 @@ async function harness(t: TestContext): Promise<Harness> {
     now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
   ownerRef = owner;
   t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });
-  return { owner, store, port, clock, ctx, receipts, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release,
+  return { owner, store, port, clock, ctx, receipts, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release, authority: hook.authority,
     advance: async ms => { clock.now += ms; clock.runDue(); await flush(); } };
 }
 
@@ -349,4 +355,26 @@ test('F5/F3: tool_output_sent measures the span from the frame that asked for it
   const receipt = h.receipts.find(entry => entry['event'] === 'tool_output_sent');
   assert.ok(receipt, 'the output write was receipted');
   assert.equal(receipt['msSinceArrived'], 1_200, 'the span is measured from the call that arrived, not from a lost clock');
+});
+
+test('F1: a lookup the gate denied never withholds the next allowed one', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'research-gate', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  await ownerSpoke(h);
+  // The delivery gate refuses every dispatch of this batch: the run answers with nothing fetched.
+  h.authority(false);
+  h.port.emit(research('r0'));
+  await answered(h, 1);
+  assert.equal(h.connectorCalls.length, 0, 'the refused batch reached no connector');
+  // The gate is healthy again, and the owner asks something new: this lookup must be able to dispatch.
+  h.authority(true);
+  await ownerSpoke(h, 'what do we know about the budget');
+  h.port.emit(research('r1', 'what do we know about the budget'));
+  await answered(h, 2);
+  assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 1,
+    'the allowed lookup dispatched even though the batch that built the scheduler was denied');
 });

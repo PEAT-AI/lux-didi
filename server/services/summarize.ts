@@ -201,7 +201,7 @@ function failureCode(result: ModelResult): SummaryFailureCode {
 }
 
 const pause = (delay: SummarizerOptions['delay'], ms: number): Promise<void> =>
-  ms > 0 ? (delay ? delay(ms) : new Promise<void>(resolve => setTimeout(resolve, ms))) : Promise.resolve();
+  ms > 0 ? (delay ? delay(ms) : new Promise<void>(resolve => { setTimeout(resolve, ms).unref(); })) : Promise.resolve();
 
 export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
@@ -315,16 +315,17 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
   }
 
   /**
-   * Host start: retry summaries that failed for a transient reason. The pass waits out the start-up window
-   * first, because connectors and credentials are not up in the first seconds after a boot. A row that already
-   * spent its attempt budget across host starts, or is older than the age cap, is closed with a final reason
-   * instead of being retried. Only the newest `SUMMARY_RECOVERY_LIMIT` are considered in one start.
+   * Host start: retry summaries that failed for a transient reason. When there is anything to retry, the pass
+   * waits out the start-up window first, because connectors and credentials are not up in the first seconds
+   * after a boot; with nothing to retry it never arms a timer. A row that already spent its attempt budget
+   * across host starts, or is older than the age cap, is closed with a final reason instead of being retried.
+   * Only the newest `SUMMARY_RECOVERY_LIMIT` are considered in one start.
    */
   async function requeueFailed(): Promise<void> {
     if (!options.model) return;
-    await pause(options.delay, SUMMARY_BOOT_REQUEUE_DELAY_MS);
     const candidates = options.store.transaction(tx => summaries.failedRetryableSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
     const total = options.store.transaction(tx => summaries.countFailedRetryableSessionsWithJournal(tx));
+    if (candidates.length > 0) await pause(options.delay, SUMMARY_BOOT_REQUEUE_DELAY_MS);
     const now = options.now();
     let requeued = 0;
     let skipped = Math.max(0, total - candidates.length);

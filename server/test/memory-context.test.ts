@@ -501,7 +501,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     } finally { raw.close(); }
     const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(domainVersions(f3.store), domainMigrations.map(m => m.version));
       assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
     } finally { f3.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

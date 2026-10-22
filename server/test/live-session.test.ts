@@ -2349,7 +2349,7 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   const events: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
   t.after(() => sink());
-  await attached(h, 'reply-receipt');
+  const { session } = await attached(h, 'reply-receipt');
   // The provider speaks with no output transcript at all, which is exactly the missing-row case.
   for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_first_audio'); i++) {
     h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
@@ -2358,7 +2358,10 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   assert.ok(events.some(entry => entry.event === 'live_first_audio'), 'the reply was audible');
   h.f.send({ serverContent: { turnComplete: true } });
   await tick(); await tick();
-  assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 1, 'the spoken reply is receipted');
+  // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [session.liveSessionId]));
+  assert.ok(rows.length >= 1, 'the first spoken reply of the call has its transcript row');
+  assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 0, 'and the unjournalled receipt stays silent when a row exists');
 });
 
 test('L14: a tag split across two deltas is stripped from the assembled seed, and other brackets survive', async t => {

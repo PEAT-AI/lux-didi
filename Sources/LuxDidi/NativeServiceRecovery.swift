@@ -66,8 +66,8 @@ import Foundation
     }
     func unavailable() { authority = nil; clear() }
     func ownerStart(make: () -> Session) -> Session {
-        if let retained { return retained }
-        let session = make(); retained = session; publish(session); return session
+        let session = retained ?? make()
+        retained = session; publish(session); return session
     }
     func clear() {
         let previous = retained; retained = nil

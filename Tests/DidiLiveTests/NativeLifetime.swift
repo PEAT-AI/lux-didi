@@ -185,6 +185,10 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
             let first = start()
             try require(first.state == .connecting && owner.ownerStart(make: make) === first,
                         "connecting retains the actual conversation")
+            // #523: live call pickup nils the sink directly, so a start must republish what it retains.
+            published = nil
+            try require(owner.ownerStart(make: make) === first && published === first,
+                        "#523 a start republishes the session retained when the sink was cleared")
             try await observeUntil { await MainActor.run { first.state == .outcomeUnknown } }
             try require(!first.isCapturing && !first.device.hasEngine, "failed attach releases capture")
             authority.refuseSocket = false

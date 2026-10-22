@@ -1276,7 +1276,9 @@ test('a quick_fact continuation reads deterministically: no second selector roun
   const scheduler = new ResearchScheduler(h.deps);
   const first = await scheduler.call({ action: 'start', question: 'what is the landlord invoice number' }, new AbortController().signal);
   assert.equal(selects, 1);
-  assert.equal(first['canContinue'], true, 'the first round leaves a continuation open');
+  // ROUTE-1022: the round that read the prime source and stopped says nothing more is to fetch.
+  assert.equal(first['canContinue'], false, 'a complete reply invites no continuation');
+  assert.equal(first['status'], 'complete');
   const readsBefore = h.executed.length;
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');

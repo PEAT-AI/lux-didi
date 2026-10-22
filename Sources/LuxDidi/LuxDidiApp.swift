@@ -346,6 +346,9 @@ import WebKit
     func setPresenceCaptureMuted(_ muted: Bool) { live?.setMuted(muted) }
     /// Queued model speech goes the instant the machine mutes.
     func cancelPresencePlayback() { live?.device.cancelPlayback() }
+    /// The provider learns about the mute over the control channel the call already holds, so the host
+    /// stops forwarding and holds any answer that arrives while the owner is silent.
+    func setPresenceProviderInputMute(_ muted: Bool) { live?.setProviderInputMuted(muted) }
     /// The presence receipt: a `presence_state` record in the native log, never audio or text.
     func appendPresenceReceipt(_ record: [String: Any]) { liveJournal.append(record) }
     /// The surface receipts of this launch. `mini_present_failed` and `mini_presented` name the
@@ -566,6 +569,7 @@ struct RootView: View {
         closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
+        providerInputMute: { [weak self] muted in self?.model.setPresenceProviderInputMute(muted) },
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
         prewarm: { [weak self] in self?.model.prewarmWarmContext() }))

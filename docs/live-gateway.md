@@ -153,7 +153,7 @@ marker is emitted only after its journal row is committed, so the client never s
 durable fact. Audio is ephemeral and never persisted.
 
 Client → server: binary PCM16LE mono 16k input (non-empty, even length, bounded, refused before ready),
-and strict tiny text controls `{"type":"endAudioStream"}` or `{"type":"close"}`. Unknown keys/types,
+and strict tiny text controls `{"type":"endAudioStream"}`, `{"type":"close"}`, `{"type":"inputMuted"}` or `{"type":"inputLive"}`. Unknown keys/types,
 malformed or oversize frames fail visibly with a sanitized finite close; there is no ignored command,
 silent frame shedding, or tool call.
 
@@ -172,7 +172,7 @@ The existing WS JSON marker channel now includes `toolCall` and `toolResult`. Bo
 
 `GET /api/v1/live/current?cursor=0` is a read-only same-origin page route requiring the existing page cookie. Bearer credentials are refused. It emits no CORS headers and uses `Cache-Control: no-store`. Its explicit projection is `{state, since, entries, cursor}`; entries contain `seq`, an allowlisted kind, optional transcription text or `{tool: {name, status, markdown?, sources?}}`. It exposes no Live session identifiers, grants, arguments, keys, PCM or thoughts. Cursors advance over committed journal sequence numbers and limit each page to 100 rows.
 
-Server states are `idle`, `listening`, `thinking`, `speaking`, `ended` and `error`. Input is continuous and provider automatic VAD owns turn boundaries. `thinking` means a tool batch is unanswered; `speaking` means model audio is arriving until a completion or interruption boundary. `muted` is exclusively client state. `endAudioStream` remains optional, never mandatory per turn.
+Server states are `idle`, `listening`, `thinking`, `speaking`, `ended` and `error`. Input is continuous and provider automatic VAD owns turn boundaries. `thinking` means a tool batch is unanswered; `speaking` means model audio is arriving until a completion or interruption boundary. The host also carries the owner's mute: the `inputMuted` and `inputLive` control frames set it, the uplink forwards no PCM while it is set, and a muted session stays open for at most 180 s before it settles as a benign `muted_expired` close. `endAudioStream` remains optional, never mandatory per turn.
 
 
 ## Deferred work and quiet callbacks

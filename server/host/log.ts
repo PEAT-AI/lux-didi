@@ -459,6 +459,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
+  if (value.event === 'live_mute') {
+    // The owner's mute, one record per change: which session and generation, whether the provider
+    // session was still open after it, and how long the mute had lasted. A held answer that could
+    // not be offered in its window is the same record with the skip and its reason.
+    if (closedKeys(value, ['event', 'liveSessionId', 'generation', 'muted', 'warm', 'msSinceMute', 'offer', 'reason'])) {
+      if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.msSinceMute)) return;
+      if (typeof value.muted !== 'boolean' || typeof value.warm !== 'boolean') return;
+      if (value.offer !== 'offer_skipped') return;
+      if (!isSafeMember(value.reason, ['owner_spoke', 'send_failed'])) return;
+      return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
+        muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute, offer: value.offer, reason: value.reason };
+    }
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'muted', 'warm', 'msSinceMute'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.msSinceMute)) return;
+    if (typeof value.muted !== 'boolean' || typeof value.warm !== 'boolean') return;
+    return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
+      muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute };
+  }
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
     if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;

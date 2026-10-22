@@ -43,11 +43,12 @@ class DeadlineClock {
 interface Live {
   owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; liveSessionId: string;
   attachment: LiveAttachment; uplinkBytes: () => number; texts: string[]; output: LiveOutputChunk[];
+  failTexts: (count: number) => void;
   emit(event: FakeLiveVoiceEvent): Promise<void>; advance(ms: number): Promise<void>;
 }
 
 /** The fake's own sendAudio/sendText are no-ops, so the test wraps the session it hands out. */
-function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts: string[] }): LiveVoicePort {
+function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts: string[]; failTexts: number }): LiveVoicePort {
   return {
     capabilities: fake.port.capabilities,
     open: (liveRequest: Parameters<LiveVoicePort['open']>[0], liveControl: Parameters<LiveVoicePort['open']>[1]) => {
@@ -55,7 +56,10 @@ function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts
       return {
         ...opened,
         sendAudio: (input: { pcm: Uint8Array; dataClass?: string }) => { record.uplinkBytes += input.pcm.byteLength; },
-        sendText: (input: { text: string }) => { record.texts.push(input.text); },
+        sendText: (input: { text: string }) => {
+          if (record.failTexts > 0) { record.failTexts -= 1; throw new Error('transport gone'); }
+          record.texts.push(input.text);
+        },
       } as unknown as LiveVoiceSession;
     },
   } as LiveVoicePort;
@@ -67,7 +71,7 @@ async function openLive(t: TestContext, limits: Record<string, number> = {}): Pr
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
   const scheduler = new DeadlineClock();
   const fake = fakeLiveVoicePort();
-  const record = { uplinkBytes: 0, texts: [] as string[] };
+  const record = { uplinkBytes: 0, texts: [] as string[], failTexts: 0 };
   const profile = validateLiveProfile({
     provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
     route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
@@ -89,7 +93,7 @@ async function openLive(t: TestContext, limits: Record<string, number> = {}): Pr
   void (async () => { for await (const chunk of attachment.output) output.push(chunk); })();
   return {
     owner, fake, receipts, liveSessionId: session.liveSessionId, attachment, output,
-    uplinkBytes: () => record.uplinkBytes, texts: record.texts,
+    uplinkBytes: () => record.uplinkBytes, texts: record.texts, failTexts: count => { record.failTexts = count; },
     emit: async event => { fake.emit(event); await flush(); },
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await flush(); },
   };
@@ -225,4 +229,55 @@ test('a muted attachment accepts the same mute twice and a late frame after the 
 test('the mute frames are the same closed one-key control shape the socket already parses', () => {
   assert.deepEqual([...LIVE_CONTROLS], ['endAudioStream', 'close', 'inputMuted', 'inputLive'],
     'the upgrader accepts exactly the mute pair the native client sends');
+});
+
+test('typed text while muted never restarts the idle clock', async t => {
+  const live = await openLive(t, { idleMs: 60_000 });
+  live.attachment.setInputMuted(true);
+  await flush();
+  live.owner.text('what is on my plate');
+  await flush();
+  for (let spent = 0; spent < 90_000; spent += 1_000) await live.advance(1_000);
+  assert.equal(live.owner.get(live.liveSessionId).terminal, null,
+    'typed text under a mute is not idle activity, the session stays warm past its idle limit');
+  await live.advance(91_000);
+  assert.deepEqual(live.owner.get(live.liveSessionId).terminal, { state: 'closed', code: 'muted_expired' },
+    'and only the mute cost cap ends it');
+});
+
+test('an offer skipped because the owner spoke is kept, receipted, and offered once he goes quiet', async t => {
+  const live = await openLive(t);
+  live.attachment.setInputMuted(true);
+  await flush();
+  await live.emit(audibleFrame);
+  await live.emit({ type: 'turnComplete' });
+  live.attachment.setInputMuted(false);
+  await flush();
+  await live.advance(500);
+  await live.emit({ type: 'inputTranscription', text: 'one thing first', finished: true });
+  await live.advance(MUTED_OFFER_SILENCE_MS - 500);
+  assert.deepEqual(live.texts, [], 'the owner was speaking, so nothing is said over him');
+  const skipped = mutes(live).filter(event => event.offer === 'offer_skipped');
+  assert.equal(skipped.length, 1, 'the skip is a receipt, never a silent drop');
+  assert.deepEqual([skipped[0]?.['offer'], skipped[0]?.['reason']], ['offer_skipped', 'owner_spoke']);
+  await live.advance(MUTED_OFFER_SILENCE_MS);
+  assert.equal(live.texts.length, 1, 'the answer was kept, not dropped, and arrives once he is quiet');
+});
+
+test('an offer the transport refuses is kept, receipted, and retried in the next window', async t => {
+  const live = await openLive(t);
+  live.attachment.setInputMuted(true);
+  await flush();
+  await live.emit(audibleFrame);
+  await live.emit({ type: 'turnComplete' });
+  live.failTexts(1);
+  live.attachment.setInputMuted(false);
+  await flush();
+  await live.advance(MUTED_OFFER_SILENCE_MS);
+  assert.deepEqual(live.texts, [], 'a refused frame leaves the held answer unspoken');
+  const refused = mutes(live).filter(event => event.offer === 'offer_skipped');
+  assert.equal(refused.length, 1, 'the refusal is receipted');
+  assert.deepEqual([refused[0]?.['offer'], refused[0]?.['reason']], ['offer_skipped', 'send_failed']);
+  await live.advance(MUTED_OFFER_SILENCE_MS);
+  assert.equal(live.texts.length, 1, 'the held answer survived the failed send and goes out on the retry');
 });

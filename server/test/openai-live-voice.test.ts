@@ -776,7 +776,9 @@ describe('openai gpt-live adapter', () => {
     }
     for (const entry of logged()) {
       assert.ok(safeEvent(entry), `${String(entry['event'])} is accepted by the host log whitelist`);
-      assert.deepEqual(Object.values(entry).filter(value => typeof value === 'string' && value.length > 0), [entry['event']],
+      const strings = Object.values(entry).filter(value => typeof value === 'string' && value.length > 0);
+      // #451: a handshake receipt also names its closed-set step, which is a protocol token, never turn text.
+      assert.deepEqual(strings, entry['event'] === 'live_handshake' ? [entry['event'], entry['step']] : [entry['event']],
         'a receipt carries its event name and numbers, never turn text');
     }
   });

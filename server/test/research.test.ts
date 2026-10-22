@@ -1160,6 +1160,8 @@ test('research 469: stopped known continuation fails while retained delivery rem
   const researchId = String(first['researchId']), cursor = String(first['nextCursor']);
   const next = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
   assert.match(JSON.stringify(next['findings']), /Synthetic continuation 12/);
+  // The end step of a read lands on the tick the batch settles, so it is measured after one turn.
+  await new Promise<void>(resolve => setImmediate(resolve));
   const before = steps.length;
   assert.equal(calls, 1); assert.equal(before, 2, 'one start and end for the actual source read');
   const retained = await scheduler.call({ action: 'continue', researchId, cursor }, signal);

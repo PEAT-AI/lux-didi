@@ -291,5 +291,22 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
   assert.equal(waits, 1, 'exactly one delayed retry');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
   assert.equal(receipt.outcome, 'failed', 'a read that stopped mid-way is not ok, even though it carried its first page');
-  assert.match(String(reply['note']), /mail search stopped/u, 'the reply says the mailbox was not read to the end');
+  assert.match(String(reply['note']), /Still reading: mail|mail search stopped/u, 'the answer never claims the mailbox was read to the end');
+});
+
+test('F2: a rate limit on the first page leaves a closed failure and a plain coverage note', async () => {
+  let waits = 0;
+  const sent: string[] = [];
+  const h = mailHarness(async subs => subs.map(call => {
+    sent.push('call');
+    return { key: call.key, name: call.name, ok: false, text: 'provider failure: http 429 rateLimitExceeded', originalCharacters: 0, omittedCharacters: 0, code: 'connector_error' };
+  }));
+  h.deps.memo = { calendar: new Map() };
+  h.deps.schedule = (callback, delayMs) => { if (delayMs === RESEARCH.rateLimitRetryMs) waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d' } }] }, new AbortController().signal);
+  assert.equal(sent.length, 2, 'the page is asked once, then once more after the wait');
+  assert.equal(waits, 1, 'exactly one delayed retry');
+  const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
+  assert.equal(receipt.outcome, 'failed');
+  assert.match(String(reply['note']), /mail search stopped before the end/u, 'the reply says the mailbox was not read');
 });

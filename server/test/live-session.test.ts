@@ -2351,10 +2351,13 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   t.after(() => sink());
   await attached(h, 'reply-receipt');
   // The provider speaks with no output transcript at all, which is exactly the missing-row case.
-  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
-  await tick();
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_first_audio'); i++) {
+    h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+    await tick();
+  }
+  assert.ok(events.some(entry => entry.event === 'live_first_audio'), 'the reply was audible');
   h.f.send({ serverContent: { turnComplete: {} } });
-  await tick();
+  await tick(); await tick();
   assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 1, 'the spoken reply is receipted');
 });
 

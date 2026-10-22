@@ -8,7 +8,7 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
-import { shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
+import { shapeGcalList, shapeGmailList, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import './research-shape.test.js';
 import './research-calendar.test.js';
@@ -934,6 +934,23 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
   assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true });
+});
+
+// MED-1022: the search now asks for the connector's voice shape, so the reply the model reads is one
+// full body plus five bullets. This suite is the one a declared check runs, so the wire shape is pinned
+// here as well as in live-shape's own suite.
+test('MED-1022: a six hit voice reply reaches the model as six hits with the top body whole', () => {
+  const body = `${'Sentence about the prep call. '.repeat(100)}Final sentence marker.`;
+  const raw = [
+    '# Knowledge Search', '',
+    '**#91293** [TECHNICAL_DECISION] Commitment 2026-10-22', `  ${body}`,
+    '  truncated: no (2,921 chars stored)', '  Score: 1.007',
+    ...Array.from({ length: 5 }, (_, index) => `- **#${91100 + index}** [PATTERN] Insight ${index}: ${'Snippet about the prep call. '.repeat(8)}`),
+  ].join('\n');
+  const shaped = shapeLuxKnowledge('search_knowledge', raw);
+  assert.ok(shaped.text.includes('Final sentence marker.'), 'the top hit body is not cut at the ranked excerpt bound');
+  for (let index = 0; index < 5; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`, 'u'), `hit ${index} reaches the model`);
+  assert.equal(shaped.text.includes('[showing'), false, 'every hit was sent, so none is dropped');
 });
 
 // --- R6: the first answer point, and what a late source hands over --------------------------------

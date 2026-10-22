@@ -472,3 +472,31 @@ test('MED-1022: a voice knowledge reply reaches the model as every hit, the top 
   assert.equal(shaped.text.includes('[showing'), false, 'six hits fit the voice budget, so none is trimmed');
   assert.equal(shaped.text.includes('Knowledge Search'), false, 'the search header is still stripped');
 });
+
+// MED-1022: `detail: voice` answers the top hit in full and names each further hit on one bullet, in
+// the same ranked reply the bodies shape sends, so every hit must still reach the model.
+function voiceReply(topBody: string): string {
+  return [
+    "# Knowledge Search: 'ocp prep call'",
+    '',
+    '_confidence: high | top score: 1.01 | relevant candidate: yes',
+    '',
+    '**#91293** [TECHNICAL_DECISION] Commitment 2026-10-22',
+    `  ${topBody}`,
+    '  truncated: no (2,921 chars stored)',
+    '  Score: 1.007 · status: relevant',
+    ...Array.from({ length: 5 }, (_, index) => `- **#${91100 + index}** [PATTERN] Insight ${index}: ${'Snippet about the prep call. '.repeat(8)}`),
+    '',
+    'more: #90938',
+  ].join('\n');
+}
+
+test('MED-1022: a voice knowledge reply reaches the model as every hit, the top body whole', () => {
+  const body = `${'Sentence about the prep call. '.repeat(100)}Final sentence marker.`;
+  const shaped = shapeLuxKnowledge('search_knowledge', voiceReply(body));
+  assert.ok(shaped.text.includes('Final sentence marker.'), 'the top hit body is not cut at the ranked excerpt bound');
+  assert.match(shaped.text, /\*\*#91293\*\*/u);
+  for (let index = 0; index < 5; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`, 'u'), `hit ${index} reaches the model`);
+  assert.equal(shaped.text.includes('[showing'), false, 'six hits fit the voice budget, so none is trimmed');
+  assert.equal(shaped.text.includes('Knowledge Search'), false, 'the search header is still stripped');
+});

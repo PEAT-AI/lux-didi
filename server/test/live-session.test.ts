@@ -4680,7 +4680,7 @@ test('mail integration: actual selector parsing shares the native page collector
     research: { async select(input) { return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: input.completed.some(entry => entry.kind === 'mail_search') ? [] : [{ kind: 'mail_search', query: 'from:selector@example.invalid' }], pUseful: { mail_search: 0.99 } })); } },
     mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
   }); await attached(h, 'mail-selector');
-  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List synthetic mail' }); }
+  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List the synthetic mailbox' }); }
   catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;

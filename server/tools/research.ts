@@ -57,8 +57,8 @@ export const RESEARCH = Object.freeze({
   continueRounds: 3,
   maxOps: 8,
   maxConcurrent: 4,
-  /** Q1-R3(b): the real Gemini selector needs ~3 s; the old 2 s deadline denied every selector call. */
-  selectorDeadlineMs: 6_000,
+  /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
+  selectorDeadlineMs: 1_500,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
@@ -124,7 +124,6 @@ export const RESEARCH = Object.freeze({
    * default body window; a hit the server cut at it says so in the reply line.
    */
   knowledgeDetail: 'bodies' as const,
-  knowledgeMaxChars: 1_200,
   knowledgeDeadlineMs: 8_000,
   /** K3: the selector writes keywords, and a long string costs ranker score, so the query is clipped. */
   knowledgeQueryTerms: 5,
@@ -133,11 +132,11 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 3_000,
-  /** K1: how many ids the hydration hop reads, and the confidence below which a body is not worth it. */
-  knowledgeOpenIds: 2,
-  /** K1: the hydration hop's own key. Its body is shown at the read window; a named id stays whole. */
-  knowledgeHydrateKey: 'kz',
-  knowledgeReadMinConfidence: 'medium',
+  /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
+  knowledgeOpenIds: 0,
+  /** ROUTE-1022 (#526): what a reply tells the model in plain words, so it never re-asks, and a cut run names its readers. */
+  completeNote: 'Nothing more to fetch for this question.',
+  stillReadingNote: 'Still reading: ',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -749,6 +748,50 @@ export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
 }
 
+/** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
+const MAIL_WORDS = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/u;
+const CALENDAR_WORDS = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/u;
+const CHAT_WORDS = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/u;
+const WEB_WORDS = /\b(news|headlines|weather|forecast|price|prices|cost|opening hours|search the web|latest)\b/u;
+const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
+
+/** The source a question is about, in the order the first answer waits for them. */
+const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
+  { source: 'calendar', words: OWNER_SCHEDULE }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
+];
+
+/**
+ * ROUTE-1022 (#526): the sources a question is about. The first answer waits for these instead of a
+ * flat first-answer point, so a calendar question answers with the calendar and not with what was quick.
+ */
+export function requiredSources(question: string): SourceKind[] {
+  const text = question.toLowerCase();
+  if (WEB_WORDS.test(text)) return [];
+  return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
+}
+
+/**
+ * ROUTE-1022 (#526): the deterministic selection for an unambiguous question, so the selector call is
+ * never spent on it. Unambiguous means one or two of calendar, mail and chat matched, or her own
+ * knowledge words with nothing else, and never a web word.
+ */
+export function routedSelection(question: string, configured: readonly SourceKind[], nowMs = Date.now()): SelectorOutput | undefined {
+  const text = question.toLowerCase().trim();
+  if (!text || WEB_WORDS.test(text)) return undefined;
+  const matched = ROUTE_CLASSES.filter(route => route.words.test(text) && configured.includes(route.source));
+  if (matched.length > 2) return undefined;
+  if (matched.length > 0) {
+    const selection = fallbackSelection(question, configured, nowMs);
+    return selection.actions.some(action => sourceKindOf(action.kind) !== 'knowledge') ? selection : undefined;
+  }
+  if (!KNOWLEDGE_WORDS.test(text)) return undefined;
+  return {
+    questionClass: 'cross_source',
+    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs) }],
+    pUseful: { knowledge_search: 0.6 },
+  };
+}
+
 /** The keyword fallback: used when the selector times out or answers invalidly, and with no selector. */
 export function fallbackSelection(question: string, configured: readonly SourceKind[], nowMs = Date.now()): SelectorOutput {
   const text = question.toLowerCase();
@@ -759,10 +802,10 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
     pUseful[kind] = p;
   };
-  const webWords = /\b(news|headlines|weather|forecast|price|prices|cost|opening hours|search the web|latest)\b/.test(text);
-  const mailWords = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/.test(text);
-  const calendarWords = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/.test(text);
-  const chatWords = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/.test(text);
+  const webWords = WEB_WORDS.test(text);
+  const mailWords = MAIL_WORDS.test(text);
+  const calendarWords = CALENDAR_WORDS.test(text);
+  const chatWords = CHAT_WORDS.test(text);
   const matched = mailWords || calendarWords || chatWords;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
@@ -839,7 +882,7 @@ function knowledgeSearchArgs(query: string, projectHint?: string): JsonObject {
   return {
     query, limit: RESEARCH.knowledgeHits,
     detail: RESEARCH.knowledgeDetail,
-    max_chars: RESEARCH.knowledgeMaxChars,
+    max_chars: RESEARCH.knowledgeBodyChars,
     deadline_ms: RESEARCH.knowledgeDeadlineMs,
     ...(projectHint === undefined ? {} : { project_hint: projectHint }),
   };
@@ -849,8 +892,8 @@ function knowledgeSearchArgs(query: string, projectHint?: string): JsonObject {
  * `truncated` reads the mark `insightItems` writes on a hit the server cut at the asked-for window. */
 function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } {
   return {
-    detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeMaxChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
-    truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeMaxChars} chars`)),
+    detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeBodyChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
+    truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeBodyChars} chars`)),
   };
 }
 
@@ -920,29 +963,6 @@ export function extractInsightIds(text: string, max = 3): number[] {
   return ids;
 }
 
-/** Only an explicitly complete, nonempty returned body can replace a full-read hop. */
-function completeKnowledgeIds(results: readonly IntentSubResult[]): ReadonlySet<number> {
-  const complete = new Set<number>();
-  for (const result of results) {
-    if (!result.ok || result.name !== INTERNAL.knowledgeSearch || result.omittedCharacters > 0) continue;
-    let id: number | undefined; let body: string[] = [];
-    const flush = (): void => {
-      const flags = body.filter(line => KNOWLEDGE_TRUNCATED.test(line));
-      if (id !== undefined && flags.length === 1 && KNOWLEDGE_TRUNCATED.exec(flags[0]!)?.[1] === 'no'
-          && body.some(line => line.trim() && !KNOWLEDGE_TRUNCATED.test(line) && !OMITTED_NOTE.test(line))
-          && !body.some(line => OMITTED_NOTE.test(line))) complete.add(id);
-      body = [];
-    };
-    for (const raw of result.text.split('\n')) {
-      const line = raw.trim();
-      if (KNOWLEDGE_MD_HEADING.test(line) || KNOWLEDGE_BULLET.test(line)) {
-        flush(); id = extractInsightIds(line, 1)[0];
-      } else body.push(line);
-    }
-    flush();
-  }
-  return complete;
-}
 
 // ---------------------------------------------------------------------------------------------
 // Ledger
@@ -1597,7 +1617,6 @@ const KNOWLEDGE_MD_HEADING = /^#{2,3}\s+/;
 const KNOWLEDGE_SCORE = /^Score: /u;
 /** K5: the ranker's own confidence line, so a weak match is hedged instead of stated with certainty. */
 const KNOWLEDGE_CONFIDENCE_META = /^_.*(?:confidence:|top score:|relevant candidate:).*$/u;
-const CONFIDENCE_RANK: Readonly<Record<string, number>> = { low: 0, medium: 1, high: 2 };
 interface KnowledgeConfidence { confidence: string; top?: string; candidates?: string }
 
 function knowledgeConfidenceOf(lines: readonly string[]): KnowledgeConfidence | undefined {
@@ -1617,16 +1636,6 @@ function knowledgeConfidenceLine(confidence: KnowledgeConfidence): string {
   return `knowledge: confidence=${confidence.confidence}${confidence.top === undefined ? '' : ` top=${confidence.top}`}${confidence.candidates === undefined ? '' : ` candidates=${confidence.candidates}`}`;
 }
 
-/**
- * K1: the ids a search reply's body read may open. The hydration already skips a hit the server proved
- * complete; a reply that calls its own match weak is not worth a second read at all.
- */
-export function knowledgeHydrateIds(raw: string, complete: ReadonlySet<number>): number[] {
-  const confidence = knowledgeConfidenceOf(raw.split('\n'));
-  const floor = CONFIDENCE_RANK[RESEARCH.knowledgeReadMinConfidence] ?? 0;
-  if (confidence !== undefined && (CONFIDENCE_RANK[confidence.confidence] ?? floor) < floor) return [];
-  return extractInsightIds(raw, RESEARCH.knowledgeHits).filter(id => !complete.has(id)).slice(0, RESEARCH.knowledgeOpenIds);
-}
 /** The server's own bounded-body flag: `truncated: yes (5,432 chars stored)` under a hit. */
 const KNOWLEDGE_TRUNCATED = /^truncated: (yes|no)\b/u;
 
@@ -1653,7 +1662,7 @@ function insightItems(raw: readonly string[], bodyWindow?: number): string[] {
     const joined = kept.join(' ');
     const bounded = bodyWindow === undefined ? joined : clip(joined, bodyWindow);
     const text = `${heading.id ? `#${heading.id} ` : ''}${heading.title}${bounded ? ` | ${bounded}` : ''}`;
-    const window = bodyWindow ?? RESEARCH.knowledgeMaxChars;
+    const window = bodyWindow ?? RESEARCH.knowledgeBodyChars;
     items.push(cut || bounded !== joined ? `${text} | cut at ${window} chars` : text);
     heading = undefined; body = [];
   };
@@ -1821,7 +1830,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
       // K2: a search snippet stays short, the hydration hop's body gets the wider window, and an
       // explicit read by id stays whole, as Q5-R1 promises.
-      const items = insightItems(raw, result.key === RESEARCH.knowledgeHydrateKey ? RESEARCH.knowledgeBodyChars : undefined);
+      const items = insightItems(raw);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
       const items = calendarEvents(raw).map(event => event.line);
@@ -1906,7 +1915,7 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
   if (!page.nextCursor && typeof base['nextCursor'] === 'string') page.nextCursor = base['nextCursor'];
   page.canContinue = Boolean(page.nextCursor) || otherPending;
   const partial = Boolean(page.nextCursor) || otherPending || body.evidence.upstreamComplete !== true || body.evidence.upstreamOmitted !== false;
-  return { ...base, researchId: run.researchId, status: partial ? 'partial' : 'answered', bodyProjection: 'preview',
+  return { ...base, researchId: run.researchId, status: partial ? 'partial' : 'complete', bodyProjection: 'preview',
     bodySlices: [{ source: body.source, tool: body.evidence.tool, text: body.evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: body.evidence.body.length, unit: 'utf16', upstreamComplete: body.evidence.upstreamComplete, upstreamOmitted: body.evidence.upstreamOmitted }],
     cursor, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor) || otherPending,
     [bodyDelivery]: { researchId: run.researchId, runId: run.runId, cursor } };
@@ -2113,7 +2122,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
         return { source: group.source, text: `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`, chars: group.lines.join('\n').length };
       });
-    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 || calendarPending || mailPending, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(note !== undefined ? { note } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
+    // words, so the model never spends another call fetching what is already in hand.
+    const trimmed = dropped > 0 || calendarPending || mailPending;
+    const complete = status === 'answered' && !trimmed && [...run.sourcesDone].some(source => configured.includes(source));
+    const settledNote = complete ? (note ?? RESEARCH.completeNote) : note;
+    return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;
@@ -2724,6 +2738,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const source = batch[0]?.source;
         if (source) {
           first.reading.delete(source);
+          first.wake?.();
           lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId, signal.aborted || run.cancelled || run.stopped);
         }
       }));
@@ -2787,6 +2802,14 @@ interface FirstAnswerState {
   reading: Set<SourceKind>;
   /** The loop's live view, published once it holds a run and a reply budget. */
   snapshot?: () => { run: RunState; configured: readonly SourceKind[]; limit: number };
+  /** ROUTE-1022: the sources this question is about, which the first answer waits for. */
+  required?: ReadonlySet<SourceKind>;
+  /** The run's own budget as an absolute time: the first answer never waits past it. */
+  releaseAt?: () => number;
+  /** Woken when a source settles, so the wait is event-driven and never a poll. */
+  wake?: () => void;
+  /** Set when the run's own budget cut its reads: nothing more is coming for this reply. */
+  cut?: boolean;
 }
 
 const lineKey = (line: string): string => line.trim().toLowerCase().replace(/\s+/gu, ' ');
@@ -2827,11 +2850,28 @@ function lateFindingsOf(deps: ResearchDeps, first: FirstAnswerState, researchId:
  */
 async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: Promise<JsonObject>): Promise<JsonObject | undefined> {
   const schedule = deps.schedule ?? scheduleTimer;
-  let cancel = (): void => {};
-  const due = new Promise<'due'>(resolve => { cancel = schedule(() => resolve('due'), RESEARCH.firstAnswerMs).cancel; });
-  const raced = await Promise.race([loop.then(() => 'settled' as const, () => 'settled' as const), due]);
-  cancel();
+  const timers: { cancel: () => void }[] = [];
+  const stopTimers = (): void => { for (const timer of timers.splice(0)) timer.cancel(); };
+  const wait = (ms: number): Promise<'due'> => new Promise<'due'>(resolve => { timers.push(schedule(() => resolve('due'), Math.max(0, ms))); });
+  const settled = loop.then(() => 'settled' as const, () => 'settled' as const);
+  const raced = await Promise.race([settled, wait(RESEARCH.firstAnswerMs)]);
+  stopTimers();
   if (raced === 'settled') return undefined;
+  // ROUTE-1022 (#526): a question about one source answers with that source, so the first answer does
+  // not go out on whatever read happened to land first. The wait is inside the run's own budget, and a
+  // source that is not being read is never waited for.
+  while (first.required !== undefined && first.releaseAt !== undefined) {
+    const live = first.snapshot?.();
+    if (live === undefined) return undefined;
+    const waiting = [...first.required].some(source => first.reading.has(source) && !live.run.sourcesDone.has(source));
+    const left = first.releaseAt() - deps.now();
+    if (!waiting || left <= 0 || first.cut === true) break;
+    const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
+    const next = await Promise.race([settled, woken, wait(left)]);
+    delete first.wake;
+    stopTimers();
+    if (next === 'settled') return undefined;
+  }
   const view = first.snapshot?.();
   if (view === undefined) return undefined;
   const found = [...view.run.ledger.values()].flatMap(entry => entry.lines ?? []).concat([...view.run.calendar.values()].flatMap(read => [...read.events.values()].map(event => event.line)), [...mailMessages(view.run).values()].map(message => message.line));
@@ -2839,7 +2879,16 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) return loop;
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
   if (!evidenceAllowed(deps, view.run, new AbortController().signal)) return deniedEvidence(deps, view.run);
-  const reply = withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []);
+  // ROUTE-1022 (#526): an early answer is partial by definition until its readers settle, and it names
+  // them; an answer with nothing left reading is complete and says nothing more is to fetch.
+  const partial = pending.length > 0;
+  const early = withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []);
+  const reply: JsonObject = {
+    ...early,
+    status: partial || early['canContinue'] === true ? 'partial' : 'complete',
+    canContinue: partial || early['canContinue'] === true,
+    note: partial ? `${RESEARCH.stillReadingNote}${pending.join(', ')}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
+  };
   first.mailShown = new Set((reply as MailReply)[mailDelivery]?.keys ?? []);
   const shown = Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [];
   for (const finding of shown) for (const line of (finding.text ?? '').split('\n').slice(1)) first.seen.add(lineKey(line));
@@ -2914,7 +2963,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const page = prior?.mailCursors.get(call.cursor);
       if (!prior || !page || !evidenceAllowed(deps, prior, signal)) return { researchId: call.researchId ?? '', error: 'continuation_unavailable', findings: [], canContinue: false, note: CONTINUATION_UNAVAILABLE_NOTE };
       if (page.scope !== mailScope(prior) || page.ids.length === 0 && !page.delivered && page.sourceState !== mailSourceState(prior)) return { researchId: prior.researchId, error: 'continuation_unavailable', findings: [], canContinue: true, note: 'This source coordinate has already advanced. Use nextCursor from the latest reply or continue this researchId without a cursor for retained evidence.' };
-      if (page.delivered) return { researchId: prior.researchId, status: page.partial ? 'partial' : 'answered', findings: [], alreadyDelivered: true, delivery: 'model-context', cursor: call.cursor, deliveredMessageIds: page.ids, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor) };
+      if (page.delivered) return { researchId: prior.researchId, status: page.partial ? 'partial' : 'complete', findings: [], alreadyDelivered: true, delivery: 'model-context', cursor: call.cursor, deliveredMessageIds: page.ids, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor) };
       }
     }
     const resumed = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });
@@ -3050,9 +3099,17 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // RD/P5-R1: a start call answers, or reports its honest partial, inside its own budget. The bound is one
   // cut for the whole run, so the prime-source read that starts before the selector is bounded too.
   const answerCut = new AbortController();
+  // ROUTE-1022 (#526): a cut read ends the first answer's wait for the source it is about.
+  answerCut.signal.addEventListener('abort', () => { first.cut = true; first.wake?.(); }, { once: true });
   const hint = hintedSources(call.sources, configured);
   let answerMs = researchCallBudgetMs(hint.length > 0 ? hint : []);
   let answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), answerMs) : { unref: () => {}, cancel: () => {} };
+  // ROUTE-1022 (#526): the source classes this question is about, and the run's own budget as the
+  // latest moment the first answer may hold for them. Both are read by the first answer point only,
+  // and both are set here so the budget is the one this run declared.
+  const required = new Set(requiredSources(question || run.direction || '').filter(source => configured.includes(source)));
+  if (required.size > 0) first.required = required;
+  first.releaseAt = () => started + answerMs;
   /**
    * P5-R1: the call budget is the slowest source this call reads plus the slack, capped. A batch that
    * carries a 12 s connector read may not be cut by a local read's smaller budget, and a batch of
@@ -3122,9 +3179,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (driver === undefined) driver = hint.length === 1 ? 'single-source-hint' : 'fallback';
       }
       const candidatesForSelector = narrowed ?? offerable;
+      // ROUTE-1022 (#526): an unambiguous question is routed here, so the selector call is never spent
+      // on it. The router reads the same word classes the fallback recipe does.
+      const routed = round === 1 && hint.length === 0 ? routedSelection(question || run.direction || '', configured, now()) : undefined;
       if (narrowed !== undefined) {
         // Outcome 6: one certain source is deterministic; skip the selector call entirely.
         selection = fallbackSelection(question || run.direction || '', configured, now());
+      } else if (routed !== undefined) {
+        selection = routed;
+        if (driver === undefined) driver = 'routed';
       } else if (deps.selector === undefined || run.questionClass === 'quick_fact') {
         // W2: a run the first round already classified quick_fact needs no second opinion (#473).
         fallbackUsed = true;
@@ -3138,7 +3201,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
         } catch { output = null; }
         selectorMs += now() - selStart;
-        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
+        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = routed ?? fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
         else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
       }
 
@@ -3316,15 +3379,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           }
           // R6: a source with real text is its own credit; the rest of the round still finishes.
           if (!answeredRound && !cut.signal.aborted && results.some(result => result.ok && result.text.trim())) answeredRound = true;
-          // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
-          // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
+          // Host-side second hops inside the same run: open the top mails when the question asks what a
+          // mail says, and fetch the thread of the top chat hit. ROUTE-1022: knowledge has no second hop,
+          // because the search reply already carries the body.
           const second: IntentSubCall[] = [];
           const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
-          if (kind === 'knowledge_search') {
-            // K1: the second hop is the body read finding 1 is about, gated by the reply's own confidence.
-            const ids = knowledgeHydrateIds(primaryText, completeKnowledgeIds(results));
-            if (ids.length) second.push({ key: RESEARCH.knowledgeHydrateKey, name: INTERNAL.knowledgeRead, args: { ids } as JsonObject });
-          }
           if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
             const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
             ids.forEach((id, index) => second.push({ key: `mo${index}`, name: INTERNAL.mailRead, args: { id } }));
@@ -3371,6 +3430,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
             first.reading.delete(part.source);
+            first.wake?.();
             lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId, signal.aborted || run.cancelled || run.stopped);
           }
           // A source that answered counts as read, so an empty result is never re-offered as pending.
@@ -3483,6 +3543,29 @@ function coalesceKey(call: ResearchCall): string {
   const question = (call.question ?? '').toLowerCase().replace(/\s+/gu, ' ').replace(/[\s?.!,;:]+$/u, '').trim();
   return JSON.stringify([question, [...sources].sort()]);
 }
+/** ROUTE-1022 (#526): the words a spoken question carries no meaning in, so two tellings match. */
+const QUESTION_STOP_WORDS = new Set(['what', 'whats', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'on', 'in', 'of', 'for', 'to', 'at', 'my', 'me', 'i', 'do', 'does', 'did', 'have', 'has', 'any', 'and', 'with', 'about', 'right', 'now', 'please', 'can', 'you', 'tell', 'show', 'give', 'check', 'there', 'it', 'this', 'that']);
+
+/** The content words of a spoken question, lowercased and stripped of punctuation. */
+function questionTerms(question: string): Set<string> {
+  const words = question.toLowerCase().replace(/[^a-z0-9]+/gu, ' ').trim().split(/\s+/u).filter(Boolean);
+  return new Set(words.filter(word => !QUESTION_STOP_WORDS.has(word)));
+}
+
+/**
+ * ROUTE-1022 (#526): the same owner request told twice. A start for a question whose content words
+ * are the ones the run in flight is already reading joins that run instead of spending a cancel on it.
+ * A genuinely new question still supersedes, and the turn window bounds the join.
+ */
+function sameQuestion(entry: ActiveRun, call: ResearchCall, nowMs: number): boolean {
+  if (entry.question === undefined || entry.at === undefined || nowMs - entry.at > RESEARCH.coalesceWindowMs) return false;
+  const mine = questionTerms(entry.question);
+  const theirs = questionTerms(call.question ?? '');
+  if (mine.size === 0 || theirs.size === 0) return false;
+  const shared = [...theirs].filter(word => mine.has(word)).length;
+  return shared / Math.max(mine.size, theirs.size) >= 0.6;
+}
+
 /**
  * W12/F1: the sources this session can reach right now, as sources and their reachability. A run
  * answered when a source was down is not the same research once that source's grant publishes.
@@ -3495,6 +3578,9 @@ function reachableNow(deps: ResearchDeps): string {
 type ActiveRun = {
   signature?: string;
   key?: string;
+  /** ROUTE-1022 (#526): the question as spoken and when the run started, for a repeated start to join. */
+  question?: string;
+  at?: number;
   /** W12/F1: the reachable set when this run started; a start may only join a run with the same set. */
   reachable?: string;
   superseded: boolean; awaiter: Deferred;
@@ -3531,7 +3617,7 @@ export class ResearchScheduler {
       const reachable = reachableNow(this.#deps);
       const inflight = this.#resolveTarget(undefined);
       if (inflight !== undefined && inflight.entry.reachable === reachable
-        && (inflight.entry.signature === startSignature(call) || inflight.entry.key === coalesceKey(call))) {
+        && (inflight.entry.signature === startSignature(call) || inflight.entry.key === coalesceKey(call) || sameQuestion(inflight.entry, call, this.#deps.now()))) {
         this.#deps.logJoined?.(inflight.id);
         return inflight.entry.awaiter.promise;
       }
@@ -3596,7 +3682,7 @@ export class ResearchScheduler {
 
   #drive(call: ResearchCall, signal: AbortSignal, id: string, reachable?: string): Promise<JsonObject> {
     const awaiter = deferred();
-    const entry: ActiveRun = { superseded: false, awaiter, ...(call.action === 'start' ? { signature: startSignature(call), key: coalesceKey(call), reachable: reachable ?? reachableNow(this.#deps) } : {}) };
+    const entry: ActiveRun = { superseded: false, awaiter, ...(call.action === 'start' ? { signature: startSignature(call), key: coalesceKey(call), reachable: reachable ?? reachableNow(this.#deps), question: call.question ?? '', at: this.#deps.now() } : {}) };
     this.#active.set(id, entry);
     // R6/M2: a call that answered ahead of its readers is still the run those readers belong to, so stop
     // and continue must find it. The entry leaves the active set only when the run itself has ended.

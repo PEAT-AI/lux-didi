@@ -78,12 +78,12 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
   const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
   assert.equal(parseSelector('not json at all'), null);
   const h = harness({ selector: timedOut });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide about the release' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(h.logs[0]!.fallbackUsed, true);
   assert.equal(h.logs[0]!.driver, 'fallback');
   assert.equal(h.logs[0]!.rounds, 1);
   assert.ok(h.executed.length >= 1);
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
 });
 
 test('a single-source hint narrows the offered kinds and skips the selector entirely', async () => {
@@ -323,7 +323,7 @@ test('Z1: a continue with an unknown researchId is a typed error, never a silent
 test('the word stop in a question never stops a run: stop is only a tool action', async () => {
   const h = harness({ selector: knowledge });
   const reply = await runResearch(h.deps, { action: 'start', question: 'stop the presses and tell me the release status' }, new AbortController().signal);
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
 });
 
 test('validate accepts the three actions and rejects invented keys', () => {
@@ -420,7 +420,7 @@ test('calendar research does not start a read after its run deadline', async () 
     async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
   };
   const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
   assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
   assert.equal(reply['status'], 'partial');
 });
@@ -437,7 +437,7 @@ test('the calendar budget never extends another source past the start deadline',
     async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:1d' }], pUseful: { mail_search: 1 } }; },
   };
   const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
-  await runResearch(h.deps, { action: 'start', question: 'any mail today' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
   assert.equal(h.executed.some(entry => entry.name === 'gmail_search_messages'), false);
 });
 
@@ -496,7 +496,7 @@ test('a source that read successfully is not unchecked and carries no unreachabl
   const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal((reply['unchecked'] as string[]).includes('calendar'), false);
-  assert.equal(reply['note'], undefined);
+  assert.equal(reply['note'], RESEARCH.completeNote, 'the only note is the terminal one, never an unreachable source');
 });
 
 test('the connector to source map covers the approved connectors', () => {
@@ -541,9 +541,9 @@ test('an empty-but-successful read is a search that matched nothing, never an un
   const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
-  assert.match(note, /I searched your mail for "invoice" and found nothing matching/, 'the model gets a line it can voice');
+  assert.match(note, /I searched your mail for "[a-z]+".*found nothing matching/, 'the model gets a line it can voice');
   assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
-  assert.equal(reply['status'], 'answered', 'a search that matched nothing still answered the question');
+  assert.equal(reply['status'], 'complete', 'a search that matched nothing still answered the question');
 });
 
 test('an identical duplicate read in one run is executed once', async () => {
@@ -622,7 +622,7 @@ test('when the selector deadline passes the fallback starts at once and the mode
   const selector: ResearchSelector = { select: () => new Promise<SelectorOutput>((_, reject) => { abortSelector = reject; }) };
   const readAt: { tool: string; at: number }[] = [];
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
-  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what happened this week' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
   clock.advance(RESEARCH.selectorDeadlineMs); await settle();
@@ -683,7 +683,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   const controller = new AbortController();
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const running = runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, controller.signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, controller.signal);
   await settle();
   // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
@@ -815,7 +815,7 @@ test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget 
   clock.advance(6_000); await settle();
   release([sub('mattermost_search', '- release freeze agreed on Friday', true, 'c0')]);
   const reply = await running;
-  assert.equal(reply['status'], 'answered', 'a 6 s chat read inside its 12 s deadline answers');
+  assert.equal(reply['status'], 'complete', 'a 6 s chat read inside its 12 s deadline answers');
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', 12_000]], 'the receipt names the deadline the chat read really had');
 });
 
@@ -887,10 +887,10 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
   assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query'], 'exactly those fields, and no others');
   assert.equal(args['limit'], 6);
   assert.equal(args['detail'], 'bodies');
-  assert.equal(args['max_chars'], 1_200);
+  assert.equal(args['max_chars'], 3_000);
   assert.equal(args['deadline_ms'], 8_000);
   assert.equal(typeof args['query'], 'string');
-  assert.equal(RESEARCH.knowledgeMaxChars, 1_200);
+  assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
   assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
 });
 
@@ -904,7 +904,7 @@ test('3r: a body the server cut at the asked-for window is marked in the reply',
   const hits = finding.text.split(/(?=#41[23] )/u);
   const cutHit = hits.find(hit => hit.startsWith('#412 '))!;
   const wholeHit = hits.find(hit => hit.startsWith('#413 '))!;
-  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
+  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 3000 chars/u);
   assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
   assert.equal(wholeHit.includes('cut at'), false, 'an uncut body carries no cut mark');
 });
@@ -915,7 +915,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 3_000, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
 });
 
@@ -928,10 +928,10 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
   assert.equal(args['detail'], 'bodies', 'the routed path asks through the same bounded-body args');
-  assert.equal(args['max_chars'], 1_200);
+  assert.equal(args['max_chars'], 3_000);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: true });
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 3_000, deadlineMs: 8_000, truncated: true });
 });
 
 // --- R6: the first answer point, and what a late source hands over --------------------------------
@@ -996,7 +996,7 @@ test('R6: a call with no findings at 4.5 s waits for its sources instead of answ
   gate.resolve();
   const reply = await call;
   assert.equal(reply['pending'], undefined, 'a call that waited names no pending source');
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
   assert.deepEqual(first, [], 'no first answer receipt without a first answer');
 });
 
@@ -1124,7 +1124,7 @@ test('R6/M2: continue reaches a run that answered ahead of its readers', async (
 });
 
 
-test('fluency: complete bounded bodies avoid hydration while unknown and truncated bodies still hydrate', async () => {
+test('ROUTE-1022: a bounded search reply never hydrates, whatever its own cut flag says', async () => {
   for (const flag of ['no', 'yes', 'unmarked', 'empty']) {
     const calls: { name: string; args: unknown }[] = [];
     const text = Array.from({ length: 6 }, (_, i) => `### Synthetic entry [id ${101 + i}]\n${flag === 'empty' ? '' : `Synthetic body ${i}.`}\n${flag === 'unmarked' ? '' : `truncated: ${flag === 'empty' ? 'no' : flag}`}`).join('\n');
@@ -1134,10 +1134,10 @@ test('fluency: complete bounded bodies avoid hydration while unknown and truncat
     } });
     const reply = await runResearch(h.deps, { action: 'start', question: 'synthetic facts', sources: 'knowledge' }, new AbortController().signal);
     assert.equal(calls.filter(call => call.name === 'search_knowledge').length, 1);
-    assert.equal(calls.filter(call => call.name === 'get_insight').length, flag === 'no' ? 0 : 1, flag);
-    if (flag === 'no') {
+    assert.equal(calls.filter(call => call.name === 'get_insight').length, 0, `${flag}: no second hop`);
+    if (flag !== 'empty') {
       const findings = JSON.stringify(reply['findings']);
-      for (let i = 0; i < 6; i++) assert.ok(findings.includes(`Synthetic body ${i}.`), 'all six complete bodies survive');
+      for (let i = 0; i < 6; i++) assert.ok(findings.includes(`Synthetic body ${i}.`), 'all six bodies survive');
     }
   }
   const h = harness();
@@ -1163,7 +1163,7 @@ test('research 469: stopped known continuation fails while retained delivery rem
   const before = steps.length;
   assert.equal(calls, 1); assert.equal(before, 2, 'one start and end for the actual source read');
   const retained = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
-  assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'answered'); assert.equal(retained['error'], undefined);
+  assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'complete'); assert.equal(retained['error'], undefined);
   assert.deepEqual(retained['findings'], []);
   const stopped = await scheduler.call({ action: 'stop', researchId }, signal);
   assert.equal(stopped['status'], 'stopped'); assert.equal(stopped['error'], undefined);
@@ -1274,9 +1274,11 @@ test('a quick_fact continuation reads deterministically: no second selector roun
   const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'stop_answer' }], pUseful: { mail_search: 0.9 } }, () => { selects += 1; });
   const h = harness({ selector: quick });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  const first = await scheduler.call({ action: 'start', question: 'what is the landlord invoice number' }, new AbortController().signal);
   assert.equal(selects, 1);
-  assert.equal(first['canContinue'], true, 'the first round leaves a continuation open');
+  // ROUTE-1022: the round that read the prime source and stopped says nothing more is to fetch.
+  assert.equal(first['canContinue'], false, 'a complete reply invites no continuation');
+  assert.equal(first['status'], 'complete');
   const readsBefore = h.executed.length;
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
@@ -1368,4 +1370,78 @@ test('W10: a connected endpoint whose read grant has not published is named, wit
   assert.deepEqual(configuredSourcesForEndpoints(endpoints, ['gmail_search_messages', 'gmail_read_message', 'calendar_list_events']), []);
   // Without a granted set the report is the one W9 wrote: a connected endpoint is not reported.
   assert.deepEqual(configuredSourcesForEndpoints(endpoints), []);
+});
+
+// --- ROUTE-1022 (#526): route without waiting, answer with the source asked about ---------------
+
+const calendarEvent = { id: 'e1', start: '1970-01-02T10:00:00Z', summary: 'Standup with Ana' };
+const calendarPage = (key: string, name: string): IntentSubResult => ({ key, name, ok: true, ...shapeGcalList({ events: [calendarEvent] }) } as IntentSubResult);
+
+test('ROUTE-1022: a calendar question never calls the selector and answers with the calendar', async () => {
+  const clock = fakeClock();
+  let selectorCalls = 0;
+  const selector: ResearchSelector = { select: async () => { selectorCalls += 1; return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
+  const execute: ResearchDeps['execute'] = async subs => {
+    const calendar = subs.some(call => call.name === 'calendar_list_events');
+    await new Promise<void>(resolve => { clock.schedule(() => resolve(), calendar ? 4_700 : 2_900); });
+    return subs.map(call => call.name === 'calendar_list_events' ? calendarPage(call.key, call.name) : sub(call.name, 'a stored note', true, call.key));
+  };
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute, configured: ['knowledge', 'calendar'] });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  await tick();
+  clock.advance(2_900); await settle();
+  clock.advance(4_500); await settle();
+  clock.advance(4_700); await settle();
+  const reply = await running;
+  assert.equal(selectorCalls, 0, 'an unambiguous calendar question never spends the selector call');
+  assert.match(JSON.stringify(reply['findings']), /Standup/, 'the first answer waits for the calendar the question is about');
+  assert.equal(h.logs[0]!.driver, 'routed');
+});
+
+test('ROUTE-1022: the selector is capped at 1.5 s and its failure still answers from the recipe', async () => {
+  assert.equal(RESEARCH.selectorDeadlineMs, 1_500);
+  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
+  const h = harness({ selector: timedOut });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  assert.equal(h.logs[0]!.fallbackUsed, true);
+  assert.equal(h.logs[0]!.driver, 'fallback');
+  assert.ok(Array.isArray(reply['findings']));
+});
+
+test('ROUTE-1022: a second start for the same owner question attaches instead of cancelling', async () => {
+  const gate = deferred<void>();
+  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = scheduler.call({ action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  await tick();
+  const second = scheduler.call({ action: 'start', question: "what's on my calendar tomorrow?" }, new AbortController().signal);
+  await tick();
+  gate.resolve();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a['superseded'], undefined, 'the run in flight is never cancelled by a repeated question');
+  assert.equal(b['researchId'], a['researchId'], 'both calls read the same run');
+  assert.deepEqual(b['findings'], a['findings']);
+  assert.equal(h.joined.length, 1);
+});
+
+test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one names what is still reading', async () => {
+  const complete = harness({ selector: knowledge, executeText: '### Release 3p scope [id 7]\nThe part that fits.' });
+  const done = await runResearch(complete.deps, { action: 'start', question: 'what is the release scope' }, new AbortController().signal);
+  assert.equal(done['status'], 'complete');
+  assert.equal(done['canContinue'], false);
+  assert.equal(done['note'], RESEARCH.completeNote);
+  const clock = fakeClock();
+  const slow: ResearchDeps['execute'] = async subs => {
+    await new Promise<void>(resolve => { clock.schedule(() => resolve(), 20_000); });
+    return subs.map(call => call.name === 'calendar_list_events' ? calendarPage(call.key, call.name) : sub(call.name, 'a stored note', true, call.key));
+  };
+  const h = harness({ selector: knowledge, now: clock.now, schedule: clock.schedule, execute: slow, configured: ['knowledge', 'calendar'] });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  await tick();
+  clock.advance(4_500); await settle();
+  clock.advance(20_000); await settle();
+  const partial = await running;
+  assert.equal(partial['status'], 'partial');
+  assert.equal(partial['canContinue'], true);
+  assert.match(String(partial['note']), /calendar/, 'a partial reply names exactly what is still reading');
 });

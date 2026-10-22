@@ -258,11 +258,14 @@ expect(hotkey.presence.state == .connecting && hotkey.opened == 1, "an idle Righ
 expect(hotkey.lastAction() == "start" && hotkey.lastReason() == "connecting", "the idle tap logs single_key_tap start")
 hotkey.presence.ready(hotkey.presence.generation)
 expect(hotkey.presence.state == .live && hotkey.fences.last == false, "readiness opens the mic")
+let closedBeforeFirstMute = hotkey.closed
+let openedBeforeFirstMute = hotkey.opened
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
-expect(hotkey.presence.state == .hotMuted && hotkey.closed == 1,
-    "a live tap mutes her and ends the provider session at once (R4)")
+expect(hotkey.presence.state == .hotMuted && hotkey.closed == closedBeforeFirstMute,
+    "a live tap mutes her and keeps the provider session open for the warm window (R4)")
+expect(hotkey.presence.mutedWarm, "the mute holds the session and its generation warm")
 expect(hotkey.presence.posture.muted, "the mute is on the surface the orb reads, so it can go purple")
 expect(hotkey.fences.last == true, "the mute closes Naya's own capture fence")
 expect(hotkey.presence.mutedHeld && hotkey.presence.posture.muted,
@@ -271,35 +274,37 @@ expect(hotkey.lastAction() == "mute" && hotkey.lastReason() == "hotMuted", "the 
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
-expect(hotkey.presence.state == .connecting && hotkey.opened == 2,
-    "a second tap opens a new session, because the mute already ended the old one")
-expect(hotkey.lastAction() == "unmute" && hotkey.lastReason() == "connecting",
-    "the muted tap logs single_key_tap unmute")
+expect(hotkey.presence.state == .live && hotkey.opened == openedBeforeFirstMute && hotkey.closed == closedBeforeFirstMute,
+    "a second tap inside the window listens again on the same session, with no reconnect")
+expect(hotkey.fences.last == false, "the resume opens the capture fence again")
+expect(hotkey.lastAction() == "unmute" && hotkey.lastReason() == "live",
+    "the muted tap logs single_key_tap unmute straight to live")
 hotkey.presence.ready(hotkey.presence.generation)
 expect(hotkey.presence.state == .live && hotkey.fences.last == false && !hotkey.presence.posture.muted,
-    "readiness opens the mic again, with the fence open")
+    "a late readiness from the kept session changes nothing, the mic is already open")
 
-// Acceptance 2: muted for six minutes. The session goes at the mute, the owner still sees
-// MUTED (purple) the whole time, and the next tap reconnects and opens the mic.
+// Acceptance 2: muted past the host's cost cap. The host ends the kept session, the owner still
+// sees MUTED (purple), and the next tap reconnects and opens the mic.
+let closedBeforeMute = hotkey.closed
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
 expect(hotkey.presence.state == .hotMuted, "the day's mute starts from a live session")
-// AC3, by construction: the mute ends the provider session, so a proactive or callback speech
-// request has no session to play into while she waits, and nothing reopens one on its own.
-expect(hotkey.closed == 2 && hotkey.fences.last == true,
-    "the mute closes the session and the fence, which is where a held speech request would land")
+// Warm mute: the provider session and its generation stay open for the host's 180 s window, so a
+// proactive or callback speech request still has nowhere to play and nothing reopens a session.
+expect(hotkey.closed == closedBeforeMute && hotkey.fences.last == true,
+    "the mute keeps the session, closes the fence and mutes the provider input")
+expect(hotkey.presence.mutedWarm, "a live mute holds the session warm for the window")
 let openedDuringMute = hotkey.opened
 hotkey.presence.wake()
 expect(hotkey.opened == openedDuringMute,
     "a wake while muted asks for no session, so no held speech can be spoken")
-let mutedSession = hotkey.presence.generation &- 1
-hotkey.presence.sessionEnded(mutedSession)
+hotkey.presence.sessionEnded(hotkey.presence.generation)
 hotkey.clock += 6 * 60
 expect(hotkey.opened == openedDuringMute && hotkey.presence.posture.muted,
     "six minutes muted open nothing by themselves, they only keep her purple")
-expect(hotkey.presence.state == .hotMuted && hotkey.presence.posture.muted,
-    "the ended session is the generation the mute left, so MUTED holds instead of going cold")
+expect(hotkey.presence.state == .hotMuted && !hotkey.presence.mutedWarm && hotkey.presence.posture.muted,
+    "the session the host ended on its cost cap leaves a held, cold mute that stays purple")
 var openedBeforeLateTap = hotkey.opened
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)

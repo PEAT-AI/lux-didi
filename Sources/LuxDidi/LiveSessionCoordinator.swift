@@ -253,6 +253,8 @@ public actor LiveSessionCoordinator {
     private let maxPendingBytes = 131072
     private let maxPendingFrames = 4
     private var inputEnded = false
+    /// The provider-side mute the owner last asked for: one frame per change, never per frame of audio.
+    private var inputMuted = false
     private var reading = false
 
     public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink, beforeCaptureSubmission: (@Sendable () async -> Void)? = nil) {
@@ -368,7 +370,11 @@ public actor LiveSessionCoordinator {
                     previousSequence = marker.sequence
                     rebased = false
                     if marker.kind == .ready {
-                        guard state == .attaching else { throw LiveClientError.invalidFrame }
+                        // A ready marker announces a live provider session. A rebuild's own ready completes the
+                        // recovery, so a session in rebuilding returns to active instead of failing the call
+                        // (#527); the terminal frame is what takes the client out of active, and it does so in
+                        // every state.
+                        guard state == .attaching || state == .rebuilding else { throw LiveClientError.invalidFrame }
                         state = .active
                     } else {
                         guard state == .active else { throw LiveClientError.invalidFrame }
@@ -514,6 +520,15 @@ public actor LiveSessionCoordinator {
             if generation == token, state == .active { state = .outcomeUnknown(.transport); socket = nil; receiveTask?.cancel(); await connection.cancel() }
             throw LiveClientError.transport
         }
+    }
+
+    /// The mute the host is told about, on the socket the call already holds. A session that is not
+    /// active has no socket to carry it, so the frame is skipped rather than retried.
+    public func setInputMuted(_ muted: Bool) async {
+        guard state == .active, let connection = socket, !inputEnded, inputMuted != muted else { return }
+        inputMuted = muted
+        do { try await connection.sendControl(muted ? .inputMuted : .inputLive) }
+        catch { /* the session's own close path reports a transport failure */ }
     }
 
     @discardableResult

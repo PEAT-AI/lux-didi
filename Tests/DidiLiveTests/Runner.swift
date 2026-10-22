@@ -1020,6 +1020,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             }
             _ = try LiveSocketTransport.decode(.string("{\"type\":\"waitingForInput\",\"sequence\":1,\"journalSequence\":1,\"value\":true}"))
             try require(LiveControl.endAudioStream.json == "{\"type\":\"endAudioStream\"}" && LiveControl.close.json == "{\"type\":\"close\"}", "strict control grammar")
+            try require(LiveControl.inputMuted.json == "{\"type\":\"inputMuted\"}" && LiveControl.inputLive.json == "{\"type\":\"inputLive\"}",
+                "the mute frames are the same one-key control shape as the stop frames")
             for invalid in ["{}", "{\"type\":\"marker\",\"kind\":\"ready\"}", "{\"type\":\"ready\",\"sequence\":true,\"journalSequence\":1}", String(repeating: "x", count: 65537)] {
                 var refused = false
                 do { _ = try LiveSocketTransport.decode(.string(invalid)) } catch LiveClientError.invalidFrame { refused = true }
@@ -1057,6 +1059,23 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await stopHTTP.finish()
             print("PASS stop control survives a busy send queue and its receipt names the press")
             record("stop-control")
+
+            // The owner's mute travels on the same wire, one frame per change and never on a dead session.
+            let quietHTTP = TestHTTP(fixture), quietGate = Gate()
+            let quietSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], quietGate)
+            let muted = LiveSessionCoordinator(http: quietHTTP, sockets: ProbeSockets(socket: quietSocket), sink: SilentSink())
+            await muted.begin(frozen); try await until { await muted.state == .active }
+            await muted.setInputMuted(true)
+            await muted.setInputMuted(true)
+            try require(await quietSocket.controls.contains(.inputMuted), "the mute reaches the host socket")
+            try require(await quietSocket.controls.filter { $0 == .inputMuted }.count == 1, "a repeated mute sends no second frame")
+            await muted.setInputMuted(false)
+            try require(await quietSocket.controls.contains(.inputLive), "the unmute reaches the host socket")
+            await muted.close(trigger: .button)
+            await muted.setInputMuted(true)
+            try require(await quietSocket.controls.filter { $0 == .inputMuted }.count == 1,
+                "a muted frame after the stop is skipped, the teardown path owns that socket")
+            await quietHTTP.finish()
 
             // #476/V10: one Stop is one teardown. A repeated stop() gets no second receipt, so the
             // native log cannot hold a second live_stop / socket_close_sent pair for one press.

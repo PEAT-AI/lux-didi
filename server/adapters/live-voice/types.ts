@@ -155,11 +155,8 @@ export interface LiveVoiceSession {
   sendText(input: { text: string }): void;
   /** Speakable progress under Responses delegation, paraphrased by the voice model (GPT-Live only). An adapter
    *  that cannot carry progress speech leaves it out and the host keeps its own continuation nudge. Returns
-   *  `false` when the adapter refused the append, for example because no delegation is open to carry it (W4);
-   *  a host that hears `false` must not claim the line was spoken. */
+   *  `false` when the adapter refused the append; a host that hears `false` must not claim the line was spoken. */
   sendCommentary?(input: { text: string }): boolean | void;
-  /** Silent context for the model's own reasoning, never spoken on append. Same optional contract. */
-  sendThinking?(input: { text: string }): void;
   endAudioStream(): void;
   close(): void;
 }

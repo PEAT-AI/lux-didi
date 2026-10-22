@@ -60,6 +60,8 @@ enum State: String, CaseIterable {
     /// Z2: when the one automatic restart after an unrequested capture interruption last ran.
     private var lastAutomaticRestartAt: Date?
     private var muteTask: Task<Void, Never>?
+    /// The provider-input mute frames, in the owner's order.
+    private var providerMuteTask: Task<Void, Never>?
     /// The mute request the owner made last: only it may clear the settled mute task.
     private var muteRequest: UInt64 = 0
     private var captureSummaryTask: Task<Void, Never>?
@@ -339,6 +341,16 @@ enum State: String, CaseIterable {
             if self.muteRequest == request { self.muteTask = nil }
             guard self.generation == token, self.state != .pausedForInput else { return }
             self.state = requestedMute ? .muted : (self.speaking ? .speaking : .listening)
+        }
+    }
+    /// The provider-side half of the mute: one control frame on the call's own socket, so the host knows
+    /// the owner is silent and never has to infer it from the uplink.
+    func setProviderInputMuted(_ value: Bool) {
+        guard [.listening, .speaking, .muted, .pausedForInput, .connecting].contains(state) else { return }
+        let previous = providerMuteTask
+        providerMuteTask = Task { [coordinator] in
+            await previous?.value
+            await coordinator.setInputMuted(value)
         }
     }
     /// Stop capture and presentation synchronously before asynchronous transport cleanup.

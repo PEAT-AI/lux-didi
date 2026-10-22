@@ -96,6 +96,8 @@ public enum LiveFrame: Sendable, Equatable {
 
 public enum LiveControl: String, Sendable {
     case endAudioStream, close
+    /// The owner's mute, sent on the call's own socket: one frame each way, no payload.
+    case inputMuted, inputLive
     public var json: String { "{\"type\":\"" + rawValue + "\"}" }
 }
 

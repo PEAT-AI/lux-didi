@@ -189,44 +189,39 @@ describe('openai gpt-live adapter', () => {
     await until(() => captured.events.some(event => event.type === 'toolCall'));
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     session.sendCommentary!({ text: 'Still reading the mail.' });
-    session.sendThinking!({ text: 'Reading mail.' });
-    await tally(f.frames, 5);
-    // The call answer names its own call id; the continuation, the commentary and the thinking each count up.
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2', 'thk_3']);
+    await tally(f.frames, 4);
+    // The call answer names its own call id; the continuation and the commentary each count up.
+    assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2']);
     assert.ok(f.frames.slice(1).every(frame => typeof frame['event_id'] === 'string'));
     assert.equal(f.frames[3]!['type'], 'session.commentary.append');
-    assert.equal(f.frames[3]!['delegation_id'], 'dlg_s4a', 'the commentary names the delegation that is open');
+    // #516: an append that named a delegation_id was refused every time, so no append names one.
+    assert.equal('delegation_id' in f.frames[3]!, false, 'the commentary names no delegation');
     assert.equal(f.frames[3]!['content'], 'Still reading the mail.');
-    assert.equal(f.frames[4]!['type'], 'session.thinking.append');
-    assert.equal(f.frames[4]!['content'], 'Reading mail.');
   });
 
-  test('W4: a commentary names the one open delegation, and sends nothing without one', async t => {
+  test('W4/#516: a commentary append names no delegation, with none open or several', async t => {
     const logged = hostReceipts(t);
     const { f, session } = await ready(t);
-    // W4: the wire refuses an append whose delegation_id is not the open one, and that refusal can cost the
-    // answer, so an append with no delegation to name is not written at all.
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'no open delegation, nothing sent');
-    session.sendThinking!({ text: 'Reading mail.' });
+    // #516: the provider bound the append to whatever turn was open and refused every frame carrying a
+    // delegation_id, so the accepted wire shape carries none at all.
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'a commentary needs no delegation');
     await tally(f.frames, 2);
-    assert.deepEqual(f.frames.slice(1).map(frame => frame['type']), ['session.thinking.append'],
-      'the silent line still goes out, and no commentary frame was written');
-    assert.equal(f.frames[1]!['delegation_id'], null, 'silent context keeps its null delegation');
-    // One delegation open: the append names it, and the transport says it went out.
+    assert.equal(f.frames[1]!['type'], 'session.commentary.append');
+    assert.equal('delegation_id' in f.frames[1]!, false, 'no delegation_id on the wire');
     f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_open', response_id: 'resp_open', offset_ms: 0 } });
     await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
     const before = f.frames.length;
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'the open delegation carries it');
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'the open turn carries it');
     await tally(f.frames, before + 1);
-    assert.equal(f.frames[before]!['delegation_id'], 'dlg_open', 'the append names the delegation that is open');
-    // Two open delegations: no single id can be vouched for, so the append is refused rather than guessed.
+    assert.equal('delegation_id' in f.frames[before]!, false, 'still no delegation_id with one open');
+    // A second delegation changes nothing: the id was never the thing the wire needed.
     f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_second', response_id: 'resp_second', offset_ms: 0 } });
     await until(() => logged().filter(entry => entry['event'] === 'delegation_open').length === 2);
     const held = f.frames.length;
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'two open delegations, no send');
-    session.sendThinking!({ text: 'Reading mail.' });
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'two open delegations, still sent');
     await tally(f.frames, held + 1);
-    assert.deepEqual(f.frames.slice(held).map(frame => frame['type']), ['session.thinking.append'], 'no commentary frame');
+    assert.equal(f.frames[held]!['type'], 'session.commentary.append');
+    assert.equal('delegation_id' in f.frames[held]!, false, 'and never a delegation_id');
     session.close();
   });
 
@@ -781,7 +776,9 @@ describe('openai gpt-live adapter', () => {
     }
     for (const entry of logged()) {
       assert.ok(safeEvent(entry), `${String(entry['event'])} is accepted by the host log whitelist`);
-      assert.deepEqual(Object.values(entry).filter(value => typeof value === 'string' && value.length > 0), [entry['event']],
+      const strings = Object.values(entry).filter(value => typeof value === 'string' && value.length > 0);
+      // #451: a handshake receipt also names its closed-set step, which is a protocol token, never turn text.
+      assert.deepEqual(strings, entry['event'] === 'live_handshake' ? [entry['event'], entry['step']] : [entry['event']],
         'a receipt carries its event name and numbers, never turn text');
     }
   });
@@ -1568,8 +1565,9 @@ describe('openai gpt-live turn states', () => {
     session.close();
   });
 
-  test('a completed local write resets the blocked episode while the socket remains high', async t => {
+  test('a completed local write never refreshes the deadline while the socket stays high (#475)', async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
     const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
     socket.completeWrites = false;
     session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
@@ -1581,14 +1579,39 @@ describe('openai gpt-live turn states', () => {
       await new Promise<void>(resolve => setImmediate(resolve));
     }
     socket.completePendingWrites();
-    for (let step = 0; step < 4; step += 1) {
+    for (let step = 0; step < 4 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
       session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
       socket.deliver({ type: 'session.keepalive' });
       t.mock.timers.tick(5_000);
       await new Promise<void>(resolve => setImmediate(resolve));
     }
-    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'local write completion reset the thirty-second clock without claiming remote receipt');
+    // A local send callback says the kernel took the bytes, never that the provider did: with the demand
+    // still blocked at the high-water mark the bounded window elapses and the recoverable stall fires.
+    const stall = receipts().filter(record => record.event === 'live_stall');
+    assert.equal(stall.length, 1, 'the blocked demand stalls even though every local write completed');
+    assert.ok(Number(stall[0]!.noProgressMs) >= 30_000, 'and the receipt names the bounded no-progress window');
     session.close();
+  });
+
+  test('#475: a slow drain that never leaves the blocked band still reaches the stall window', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    // The measured shape: the socket accepts every write and drains a kilobyte every two seconds against a
+    // demand of megabytes, so the buffer falls but never leaves the blocked band.
+    let buffered = 400 * 1024;
+    for (let step = 0; step < 20 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
+      buffered -= 1024;
+      socket.bufferedAmount = buffered;
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(2_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const stall = receipts().filter(record => record.event === 'live_stall');
+    assert.equal(stall.length, 1, 'a slow drain is a stall, not progress');
+    assert.ok(Number(stall[0]!.noProgressMs) >= 30_000, 'the window is the bounded no-progress one');
+    assert.equal(captured.events.filter(event => event.type === 'outcome').length, 1, 'and the session ends once');
   });
 
   test('buffer oscillation above the prior low cannot refresh upload progress forever', async t => {

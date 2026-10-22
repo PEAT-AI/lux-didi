@@ -27,12 +27,15 @@ const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconf
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
 export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio', 'silence', 'turn_complete', 'interrupted',
-  'tool', 'settle', 'rebuild', 'poll'] as const;
+  'tool', 'settle', 'rebuild', 'poll', 'ready'] as const;
+/** The provider handshake steps, in the order the adapter walks them. */
+const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
+const SESSION_ID = /^[0-9a-f-]{36}$/i;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
 /** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
-const LATE_DELIVERIES = ['commentary', 'thinking', 'dropped'];
+const LATE_DELIVERIES = ['commentary', 'thinking', 'response', 'ledger', 'dropped'];
 const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',
   'no_commentary_channel', 'already_spoken', 'window_elapsed', 'owner_speaking', 'new_question', 'answer_playing', 'send_failed'];
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
@@ -344,14 +347,62 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
     if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
     if (!isSafeToken(value.code)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, liveSessionId: value.liveSessionId, generation: value.generation };
+  }
+  if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
+    // Closed shape: which session and generation the provider socket was opened for, how big the setup was
+    // and, for the ready half, how long the provider took to acknowledge it.
+    const ready = value.event === 'live_provider_ready';
+    const keys = ready
+      ? ['event', 'liveSessionId', 'generation', 'msSinceOpen', 'closeCode']
+      : ['event', 'liveSessionId', 'generation', 'instructionChars', 'seedChars', 'tools'];
+    if (!closedKeys(value, keys)) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation)) return;
+    if (ready) {
+      if (!isSafeCount(value.msSinceOpen)) return;
+      if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
+      return { event: 'live_provider_ready', liveSessionId: value.liveSessionId, generation: value.generation, msSinceOpen: value.msSinceOpen, closeCode: value.closeCode };
+    }
+    if (!isSafeCount(value.instructionChars) || !isSafeCount(value.seedChars) || !isSafeCount(value.tools)) return;
+    return { event: 'live_provider_open', liveSessionId: value.liveSessionId, generation: value.generation, instructionChars: value.instructionChars, seedChars: value.seedChars, tools: value.tools };
+  }
+  if (value.event === 'live_handshake') {
+    // Closed shape: one step of the provider handshake and the monotonic milliseconds it took to reach it.
+    if (!closedKeys(value, ['event', 'step', 'ms'])) return;
+    if (!isSafeMember(value.step, LIVE_HANDSHAKE_STEPS)) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: 'live_handshake', step: value.step, ms: value.ms };
+  }
+  if (value.event === 'live_first_audio' || value.event === 'live_answer_audio') {
+    // Closed shape: when the provider's first audible frame of a turn arrived, measured from the open and
+    // from the ready event, never any audio itself.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceReady) || !isSafeCount(value.msSinceOpen)) return;
+    return { event: value.event, liveSessionId: value.liveSessionId, generation: value.generation, msSinceReady: value.msSinceReady, msSinceOpen: value.msSinceOpen };
+  }
+  if (value.event === 'research_call_arrived' || value.event === 'tool_output_sent') {
+    // Closed shape: the frame arrival and the answer write, with the milliseconds between them.
+    if (value.event === 'research_call_arrived') {
+      if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'calls'])) return;
+      if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+      if (!isSafeCount(value.generation) || !isSafeCount(value.calls)) return;
+      return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls };
+    }
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.tools) || !isSafeCount(value.msSinceArrived)) return;
+    return { event: 'tool_output_sent', liveSessionId: value.liveSessionId, generation: value.generation, tools: value.tools, msSinceArrived: value.msSinceArrived };
   }
   if (value.event === 'live_go_away') {
     // Closed shape: the draining deadline the provider announced, in milliseconds.
@@ -459,6 +510,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
+  if (value.event === 'live_mute') {
+    // The owner's mute, one record per change: which session and generation, whether the provider
+    // session was still open after it, and how long the mute had lasted. A held answer that could
+    // not be offered in its window is the same record with the skip and its reason.
+    if (closedKeys(value, ['event', 'liveSessionId', 'generation', 'muted', 'warm', 'msSinceMute', 'offer', 'reason'])) {
+      if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.msSinceMute)) return;
+      if (typeof value.muted !== 'boolean' || typeof value.warm !== 'boolean') return;
+      if (value.offer !== 'offer_skipped') return;
+      if (!isSafeMember(value.reason, ['owner_spoke', 'send_failed'])) return;
+      return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
+        muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute, offer: value.offer, reason: value.reason };
+    }
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'muted', 'warm', 'msSinceMute'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.msSinceMute)) return;
+    if (typeof value.muted !== 'boolean' || typeof value.warm !== 'boolean') return;
+    return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
+      muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute };
+  }
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
     if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
@@ -480,11 +549,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // and the cause, so the orb timeline is reconstructable from host.log. Enums and an epoch millisecond
     // only, never any turn content.
     const hasFrom = Object.prototype.hasOwnProperty.call(value, 'from');
-    if (!closedKeys(value, [...(hasFrom ? ['event', 'state', 'from', 'cause', 'at'] : ['event', 'state', 'cause', 'at'])])) return;
+    // A state line names the session and the connection generation it belongs to, so a rebuild reads from
+    // the log alone; a poll with no live handle in this process writes neither.
+    const hasSession = Object.prototype.hasOwnProperty.call(value, 'liveSessionId');
+    const sessionKeys = hasSession ? ['liveSessionId', 'generation'] : [];
+    if (!closedKeys(value, [...(hasFrom ? ['event', 'state', 'from', 'cause', 'at'] : ['event', 'state', 'cause', 'at']), ...sessionKeys])) return;
+    if (hasSession) {
+      if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+      if (!isSafeCount(value.generation)) return;
+    }
     if (!isSafeMember(value.state, LIVE_STATES) || !isSafeMember(value.cause, LIVE_STATE_CAUSES)) return;
     if (hasFrom && !isSafeMember(value.from, LIVE_STATES)) return;
     if (!isSafeCount(value.at)) return;
-    return { event: 'live_state', state: value.state, ...(hasFrom ? { from: value.from } : {}), cause: value.cause, at: value.at };
+    return { event: 'live_state', state: value.state, ...(hasFrom ? { from: value.from } : {}), cause: value.cause, at: value.at, ...(hasSession ? { liveSessionId: value.liveSessionId, generation: value.generation } : {}) };
   }
   // GL2-R1: the adapter receipts are metadata only (names, counts and milliseconds), so they cross the same
   // boundary as live_state instead of sitting on stderr where no log could prove them.
@@ -492,6 +569,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'chars', 'bytes'])) return;
     if (!isSafeCount(value.chars) || !isSafeCount(value.bytes)) return;
     return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
+  }
+  if (value.event === 'gptlive_append_ack') {
+    // #438: the provider acknowledging an append is a known frame, named by kind alone.
+    if (!closedKeys(value, ['event', 'kind'])) return;
+    if (!isSafeMember(value.kind, ['thinking', 'commentary'])) return;
+    return { event: 'gptlive_append_ack', kind: value.kind };
   }
   if (value.event === 'gptlive_unknown_frame') {
     // N1: an unread provider frame name, counted once per session. Bounded to a protocol token, never a body.

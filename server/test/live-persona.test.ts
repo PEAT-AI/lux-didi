@@ -1157,3 +1157,15 @@ test('W5: the voice instruction does not grow', () => {
   const voice = NAYA_CHARACTER.length + NAYA_VOICE_SURFACE.length + NAYA_VOICE_TOOLS.length;
   assert.ok(voice <= W5_VOICE_BEFORE, `the voice instruction gains no chars (${voice} vs ${W5_VOICE_BEFORE})`);
 });
+
+test('the open paragraph says what she can open, names open_source, and carries no url', async () => {
+  const { NAYA_OPEN_SURFACE, NAYA_TOOLS, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
+  assert.ok(NAYA_VOICE_TOOLS.includes(NAYA_OPEN_SURFACE), 'the voice tools carry the open paragraph');
+  assert.ok(NAYA_TOOLS.includes(NAYA_OPEN_SURFACE), 'the full tool conduct carries the open paragraph');
+  for (const surface of ['email threads', 'calendar events', 'documents and decks', 'Mattermost threads and channels', 'videos', 'local files and apps']) {
+    assert.ok(NAYA_OPEN_SURFACE.includes(surface), `the open paragraph names ${surface}`);
+  }
+  assert.match(NAYA_OPEN_SURFACE, /open_source/);
+  assert.match(NAYA_OPEN_SURFACE, /only after the open tool returned opened/);
+  assert.equal(/https?:|\/\/|\.com|\.google/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
+});

@@ -41,10 +41,27 @@ import Foundation
         check(NativeActionReply(id: "a1", result: NativeActionResult(code: .opened)).json == "{\"type\":\"native_action_result\",\"id\":\"a1\",\"ok\":true,\"code\":\"opened\"}", "encode the ack frame")
         check(NativeActionReply(id: "a1", result: NativeActionResult(code: .notAllowed)).json.contains("\"ok\":false"), "a refusal is an unsuccessful ack")
 
-        // 2. https only for URLs; http and other schemes never open.
-        check(await opened.perform(.openURL, target: "https://example.test/private/plan.pdf").code == .opened, "https opens")
-        check(await opened.perform(.openURL, target: "http://example.test").code == .notAllowed, "http is refused")
+        // 2. Viewer destinations only: an exact host and a viewer path, parsed and never prefix matched.
+        check(await opened.perform(.openURL, target: "https://mail.google.com/mail/u/0/#inbox/19c").code == .opened, "a gmail thread opens")
+        check(await opened.perform(.openURL, target: "https://example.test/private/plan.pdf").code == .notAllowed, "a host outside the policy is refused")
+        check(await opened.perform(.openURL, target: "http://docs.google.com/document/d/ABC").code == .notAllowed, "http is refused")
         check(await opened.perform(.openURL, target: "file:///etc/passwd").code == .notAllowed, "a file URL is refused")
+        check(await opened.perform(.openURL, target: "https://docs.google.com.evil.example/document/d/ABC").code == .notAllowed, "a lookalike host is refused")
+        check(await opened.perform(.openURL, target: "https://user:pw@docs.google.com/document/d/ABC").code == .notAllowed, "user info is refused")
+        check(await opened.perform(.openURL, target: "https://docs.google.com:8443/document/d/ABC").code == .notAllowed, "an explicit port is refused")
+        check(await opened.perform(.openURL, target: "https://docs.google.com/url?q=https://evil.example").code == .notAllowed, "a redirect route is refused")
+        check(await opened.perform(.openURL, target: "https://chat.example.invalid/t/harbour/pl/p2").code == .notAllowed, "an unconfigured mattermost host is refused")
+        check(await opened.perform(.openURL, target: "https://docs.google.com/presentation/d/ABC/edit").code == .opened, "a slides deck opens")
+        let scoped = NativeActions(home: home, opener: { _, _ in true }, mattermostHost: "chat.example.invalid")
+        check(await scoped.perform(.openURL, target: "https://chat.example.invalid/t/harbour/pl/p2").code == .opened, "the configured mattermost host opens a post permalink")
+        check(await scoped.perform(.openURL, target: "https://chat.example.invalid/harbour/channels/town-square").code == .opened, "the configured mattermost host opens a channel")
+        check(await scoped.perform(.openURL, target: "https://mail.google.com/mail/u/0/").code == .opened, "the gmail home page opens")
+        check(await scoped.perform(.openURL, target: "https://calendar.google.com/").code == .opened, "the calendar home page opens")
+        check(await scoped.perform(.openURL, target: "https://calendar.google.com/calendar/export?eid=e1").code == .notAllowed, "a calendar export route is refused")
+        check(OpenDestination.of("https://youtu.be/abc", mattermostHost: nil)?.kind == "youtube", "a short video link is a video")
+        check(OpenDestination.of("https://www.youtube.com/watch?v=abc", mattermostHost: nil)?.kind == "youtube", "a watch link is a video")
+        check(OpenDestination.of("https://drive.google.com/file/d/ABC/view", mattermostHost: nil)?.kind == "drive", "a drive file is a drive file")
+        check(OpenDestination.of("https://docs.google.com/document/d/ABC/export", mattermostHost: nil) == nil, "a docs export route is refused")
 
         // 3. Files: inside the home folder only, canonicalized, existing.
         check(await opened.perform(.openFile, target: "~/Documents/plan.md").code == .opened, "a home file opens")

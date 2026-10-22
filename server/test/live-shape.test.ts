@@ -116,7 +116,7 @@ test('gmail list reads the helper list header array and decodes entities in the 
 test('gmail list omits a field the source lacks instead of printing the word unknown', () => {
   const shaped = shapeGmailList({ messages: [{ id: 'm1', snippet: 'a message with no headers' }] });
   assert.equal(shaped.text.includes('unknown'), false);
-  assert.match(shaped.text, /^- \(no subject\) \| a message with no headers \[id m1\]$/);
+  assert.match(shaped.text, /^- \(no subject\) \| a message with no headers \[id m1\]$/m);
 });
 
 test('calendar list keeps time, title, location, attendees and conference presence within the event bound', () => {
@@ -252,6 +252,7 @@ test('mattermost search results (results array) shape with author, channel and p
   assert.match(shaped.text, /harbour \| river \| 2026-10-11T10:00:00\.000Z/);
   assert.match(shaped.text, /Mooring drift log is ready/);
   assert.equal(/https?:\/\//.test(shaped.text), false, 'mattermost search text has no raw permalink');
+  assert.match(shaped.text, /^open: L\d+ = Mattermost: #harbour$/m, 'the post permalink became a handle line');
   assert.deepEqual(shaped.sources, [
     { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p2', sourceType: 'mattermost' },
     { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p1', sourceType: 'mattermost' },

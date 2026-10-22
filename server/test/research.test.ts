@@ -109,9 +109,10 @@ test('every lookup names the driver the loop used', async () => {
   const hinted = harness({ selector: knowledge });
   await runResearch(hinted.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(hinted.logs[0]!.driver, 'single-source-hint');
+  // F3: the selector no longer decides round one, so an ambiguous question records the keyword plan.
   const chosen = harness({ selector: knowledge });
   await runResearch(chosen.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
-  assert.equal(chosen.logs[0]!.driver, 'selector');
+  assert.equal(chosen.logs[0]!.driver, 'fallback');
   const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
   const fell = harness({ selector: timedOut });
   await runResearch(fell.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
@@ -624,6 +625,8 @@ test('when the selector deadline passes the fallback starts at once and the mode
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const running = runResearch(h.deps, { action: 'start', question: 'what happened this week' }, new AbortController().signal);
   await settle();
+  // F3: the keyword plan is dispatched before the clock moves at all.
+  assert.deepEqual(readAt.map(entry => entry.at), [0], 'the fallback read starts at once, never after a selector wait');
   clock.advance(3_000); await settle();
   clock.advance(RESEARCH.selectorDeadlineMs); await settle();
   abortSelector(new Error('aborted'));
@@ -641,9 +644,9 @@ test('when the selector deadline passes the fallback starts at once and the mode
 test('deadAirMs measures the longest silence the model hears, never the whole run', async () => {
   const clock = fakeClock();
   const gate = deferred<void>();
-  const slowSelector: ResearchSelector = { select: async () => { await gate.promise; return { questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
-  const h = harness({ selector: slowSelector, now: clock.now, schedule: clock.schedule });
-  const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  // F3: the selector never blocks the run, so a slow read is what measures the silence.
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const running = runResearch(h.deps, { action: 'start', question: 'what did the bank email us about the release' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
   clock.advance(6_000); await settle();
@@ -661,7 +664,7 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything the bank emailed me' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   const reply = await running;
@@ -683,7 +686,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   const controller = new AbortController();
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, controller.signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what did the bank email us about the release' }, controller.signal);
   await settle();
   // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
@@ -747,7 +750,7 @@ test('a cut source logs a disposition the host log admits and the whole run line
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything the bank emailed me' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   await running;
@@ -1402,8 +1405,9 @@ test('ROUTE-1022: a calendar question never calls the selector and answers with 
   assert.equal(h.logs[0]!.driver, 'routed');
 });
 
-test('ROUTE-1022: the selector is capped at 1.5 s and its failure still answers from the recipe', async () => {
-  assert.equal(RESEARCH.selectorDeadlineMs, 1_500);
+test('ROUTE-1022: the selector is off the first answer path and its failure still answers from the recipe', async () => {
+  // F3: the deadline is the selector's own latency now, because no answer waits on it.
+  assert.ok(RESEARCH.selectorDeadlineMs >= 4_000, `the selector's deadline is its own latency: ${RESEARCH.selectorDeadlineMs}`);
   const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
   const h = harness({ selector: timedOut });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);

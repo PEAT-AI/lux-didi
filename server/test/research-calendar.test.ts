@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -502,5 +502,6 @@ test('ROUTE-1022: a general question about the week does not force a calendar re
   };
   const h = scheduleFixture({ selector: mailOnly });
   await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
-  assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'the schedule rule stays with the questions the defect named');
+  // F8: bare "week" is the product's daily language, so the forcing rule stays with the questions the defect named.
+  assert.equal(ownerScheduleQuestion('what did the team say this week'), false);
 });

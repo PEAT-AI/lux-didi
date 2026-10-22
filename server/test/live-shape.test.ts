@@ -410,3 +410,37 @@ test('R6: organizer renders, and a capped attendee list says and others', () => 
   assert.match(shaped.text, /attendees: Dana, kim@example\.invalid and others/u);
   assert.match(shaped.text, /organizer: Rob/u);
 });
+
+// O-R1: the owner's 18:34 IST call asked lux-knowledge for six bodies and heard "1 of 1 shown" from a
+// 17 KB ranked reply, because the fallback cut the whole Markdown at the 1,500-character Gmail bound.
+function rankedHit(id, title, body) {
+  return [`**#${id}** [TECHNICAL_DECISION] ${title}`, body, '  Score: 1.00' + String(id).slice(-2), ''].join('\n');
+}
+function ranked(parts) {
+  return ["# Knowledge Search: 'ocp prep call'", '', '_confidence: high | top score: 1.01 | relevant candidate: yes', '', ...parts].join('\n');
+}
+
+test('O-R1: a six hit ranked knowledge reply reaches the model as six hits inside its own budget', () => {
+  const body = 'Sentence about the prep call. '.repeat(40);
+  const text = ranked(Array.from({ length: 6 }, (_, index) => rankedHit(91100 + index, `Insight ${index}`, body)));
+  const shaped = shapeLuxKnowledge('search_knowledge', text);
+  for (let index = 0; index < 6; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`), `hit ${index} stays`);
+  assert.equal(shaped.text.includes('[showing'), false, 'six hits fit the total bound, so none is trimmed');
+  assert.ok(shaped.text.length <= 4000, `the shaped text stays under the knowledge total bound (${shaped.text.length})`);
+  assert.match(shaped.text, /Score: 1\./, 'every kept hit keeps its score line');
+});
+
+test('O-R1: more hits than the total bound allows never drop silently', () => {
+  const body = 'Sentence about the prep call. '.repeat(40);
+  const text = ranked(Array.from({ length: 12 }, (_, index) => rankedHit(91200 + index, `Insight ${index}`, body)));
+  const shaped = shapeLuxKnowledge('search_knowledge', text);
+  assert.match(shaped.text, /\[showing \d+ of 12 hits; ask a narrower question or a higher limit for the rest\]/);
+  assert.ok(shaped.text.length <= 4300, `the trimmed text stays near its bound (${shaped.text.length})`);
+  assert.equal(shaped.partial, true, 'a trimmed read is partial');
+});
+
+test('O-R1: one long body still cuts at a sentence and says how much it left out', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', 'A plain long note. '.repeat(1000));
+  assert.match(shaped.text, /\[omitted: \d+ characters; final, this read has no paging argument\]/);
+  assert.ok(shaped.text.length <= 1600, `the single body keeps its old bound (${shaped.text.length})`);
+});

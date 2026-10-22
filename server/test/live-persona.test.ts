@@ -1170,3 +1170,12 @@ test('the open paragraph says what she can open, names open_source, and carries 
   assert.match(NAYA_OPEN_SURFACE, /only after the open tool returned opened/);
   assert.equal(/https?:|\/\/|\.com|\.google/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });
+
+test('O-R2: the open paragraph asks for several sources in one research call with its lookups list', async () => {
+  const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
+  assert.match(NAYA_OPEN_SURFACE, /one research call/);
+  assert.match(NAYA_OPEN_SURFACE, /lookups list/);
+  assert.match(NAYA_OPEN_SURFACE, /up to four/);
+  assert.match(NAYA_OPEN_SURFACE, /instead of one call after another/);
+  assert.equal(/https?:|\/\/|\.com/.test(NAYA_OPEN_SURFACE), false, 'the batching line carries no url');
+});

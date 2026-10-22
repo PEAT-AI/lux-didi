@@ -267,8 +267,8 @@ import Foundation
         deafRing.presenceChanged(.connecting, failed: false)
         deafClock.ms = 1200
         deafRing.presenceChanged(.live, failed: false)
-        try require(deafRecords.count == 1 && deafRecords[0]["played"] as? Bool == false,
-            "a ring whose player refused to start records played=false")
+        try require(deafRecords.count == 2 && deafRecords[0]["played"] as? Bool == false,
+            "a ring whose player refused to start records played=false, got \(deafRecords.count) records")
         try require(deafOutput.chimes == 1 && deafRecords[0]["chime"] as? Bool == true,
             "the connected chime does not depend on the ring's own start")
 

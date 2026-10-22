@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, knowledgeQuery, runResearch, shapeBlock,
   type CandidateKind, type ResearchDeps, type SourceKind,
+
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { safeEvent } from '../host/log.js';

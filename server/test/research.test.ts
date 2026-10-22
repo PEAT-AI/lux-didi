@@ -928,10 +928,9 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  const { queryTerms, ...knowledgeRest } = receipt.knowledge as unknown as Record<string, unknown>;
-  // ROUTE-1022: the plan reads chat inside the brief bundle, and that read carries its date operator.
-  assert.deepEqual(knowledgeRest, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, dateFilter: false, chatDateOperator: 'compiled' }, 'an uncut read says so too');
-  assert.ok(typeof queryTerms === 'number' && queryTerms >= 1, `the receipt carries the query term count: ${String(queryTerms)}`);
+  // ROUTE-1022: the brief bundle reads chat with its own default window, so the receipt says compiled.
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'compiled' }, 'the receipt says where the chat window came from');
+
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.
   assert.deepEqual(safeEvent(receipt)?.['knowledge'], receipt.knowledge, 'the host log keeps the counts and the closed tokens');

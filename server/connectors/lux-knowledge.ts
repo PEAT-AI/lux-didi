@@ -28,6 +28,9 @@ export const KNOWLEDGE_BODY_MIN_CHARS = 200;
 export const KNOWLEDGE_BODY_MAX_CHARS = 6_000;
 export const KNOWLEDGE_DEADLINE_MIN_MS = 500;
 export const KNOWLEDGE_DEADLINE_MAX_MS = 30_000;
+/** MED-1022: the server's own `snippet_chars` range, the bound on each hit after the first. */
+export const KNOWLEDGE_SNIPPET_MIN_CHARS = 100;
+export const KNOWLEDGE_SNIPPET_MAX_CHARS = 6_000;
 
 export interface LuxKnowledgeSearchInput {
   query: string;
@@ -42,6 +45,11 @@ export interface LuxKnowledgeSearchInput {
   project?: string;
   /** K4: boost one project's entries without excluding any other. */
   projectHint?: string;
+  /** MED-1022: the voice shape's bound on each further hit, within the server's 100..6000 range. */
+  snippetChars?: number;
+  /** MED-1022: an ISO day the connector narrows to; inclusive, in the owner's zone. */
+  meetingDateFrom?: string;
+  meetingDateTo?: string;
 }
 export interface LuxKnowledgeGetInput { ids: number[]; include_links?: boolean }
 
@@ -176,7 +184,7 @@ interface Settings extends Budgets {
 }
 
 function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
-  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint']);
+  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint', 'snippetChars', 'meetingDateFrom', 'meetingDateTo']);
   if (record === undefined) return { ok: false, reason: 'invalid-search-input' };
   const query = record['query']!.value;
   const limit = record['limit']!.value;
@@ -187,21 +195,30 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
   const deadlineMs = record['deadlineMs']?.value;
   const project = record['project']?.value;
   const projectHint = record['projectHint']?.value;
+  const snippetChars = record['snippetChars']?.value;
+  const meetingDateFrom = record['meetingDateFrom']?.value;
+  const meetingDateTo = record['meetingDateTo']?.value;
   // K4: a project tag is a name the corpus carries, never a pattern the model composed.
   const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
   if (!projectName(project) || !projectName(projectHint)) return { ok: false, reason: 'invalid-project' };
-  if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies') return { ok: false, reason: 'invalid-detail' };
+  if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies' && detail !== 'voice') return { ok: false, reason: 'invalid-detail' };
   if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return { ok: false, reason: 'max-chars-out-of-range' };
   if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return { ok: false, reason: 'deadline-ms-out-of-range' };
+  if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return { ok: false, reason: 'snippet-chars-out-of-range' };
+  const isoDay = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value));
+  if (!isoDay(meetingDateFrom) || !isoDay(meetingDateTo)) return { ok: false, reason: 'invalid-meeting-date' };
   return {
     ok: true,
     args: {
       query, limit: limit as number,
-      ...(detail === undefined ? {} : { detail: detail as 'snippets' | 'bodies' }),
+      ...(detail === undefined ? {} : { detail: detail as 'snippets' | 'bodies' | 'voice' }),
       ...(maxChars === undefined ? {} : { maxChars: maxChars as number }),
       ...(deadlineMs === undefined ? {} : { deadlineMs: deadlineMs as number }),
       ...(project === undefined ? {} : { project: project as string }),
       ...(projectHint === undefined ? {} : { projectHint: projectHint as string }),
+      ...(snippetChars === undefined ? {} : { snippetChars: snippetChars as number }),
+      ...(meetingDateFrom === undefined ? {} : { meetingDateFrom: meetingDateFrom as string }),
+      ...(meetingDateTo === undefined ? {} : { meetingDateTo: meetingDateTo as string }),
     },
   };
 }
@@ -297,6 +314,9 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (validated.args.deadlineMs !== undefined) args['deadline_ms'] = validated.args.deadlineMs;
       if (validated.args.project !== undefined) args['project'] = validated.args.project;
       if (validated.args.projectHint !== undefined) args['project_hint'] = validated.args.projectHint;
+      if (validated.args.snippetChars !== undefined) args['snippet_chars'] = validated.args.snippetChars;
+      if (validated.args.meetingDateFrom !== undefined) args['meeting_date_from'] = validated.args.meetingDateFrom;
+      if (validated.args.meetingDateTo !== undefined) args['meeting_date_to'] = validated.args.meetingDateTo;
       return dispatch('search_knowledge', args, signal);
     },
     async get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {

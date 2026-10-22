@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -452,7 +452,7 @@ test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a sche
 test('ROUTE-1022: a schedule question reads the calendar even when the selector fails', async () => {
   const selector: ResearchSelector = { select: async () => { throw new Error('selector deadline'); } };
   const h = scheduleFixture({ selector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
-  await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'a selector timeout leaves the calendar in the plan');
   assert.equal(h.logs.at(-1)!.driver, 'routed', 'and the run records the router as the decider');
 });
@@ -468,7 +468,7 @@ test('ROUTE-1022: a schedule question keeps the calendar in a plan that omitted 
 
 test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason and no error', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'not_signed_in' }] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
   assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'a down endpoint is never dispatched to');
   assert.equal(h.logs.at(-1)!.sources.find(row => row.kind === 'calendar')?.reason, 'endpoint_unavailable', 'the reason names an endpoint outage');
   assert.equal('error' in reply, false, 'the run still answers');
@@ -478,7 +478,7 @@ test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason an
 // exactly like a dead endpoint in the run log.
 test('ROUTE-R2: an unpublished calendar grant is logged as not_granted, not as an outage', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'source_not_granted' }] });
-  await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
   const row = h.logs.at(-1)!.sources.find(entry => entry.kind === 'calendar');
   assert.deepEqual({ disposition: row?.disposition, reason: row?.reason }, { disposition: 'skipped', reason: 'not_granted' });
 });
@@ -502,5 +502,19 @@ test('ROUTE-1022: a general question about the week does not force a calendar re
   };
   const h = scheduleFixture({ selector: mailOnly });
   await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
-  assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'the schedule rule stays with the questions the defect named');
+  // F8: bare "week" is the product's daily language, so the forcing rule stays with the questions the defect named.
+  assert.equal(ownerScheduleQuestion('what did the team say this week'), false);
+});
+
+// --- F7: a calendar list with a further page says nothing about the window that was asked for ---
+
+test('F7: a partially read calendar list never takes the completion line from a complete reply', async () => {
+  const h = fixture([event(19)]);
+  h.deps.execute = async subs => subs.map(call => call.name === 'calendar_list_calendars'
+    ? { key: call.key, name: call.name, ok: true, text: '- Work [work@example.com]\n- Home [home@example.com]', originalCharacters: 40, omittedCharacters: 0, calendarScope: { received: 20, partial: true } }
+    : { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19)] }) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, signal());
+  assert.equal(reply['calendarCoverage'] !== undefined, true, 'the calendar was read');
+  assert.equal((reply['calendarCoverage'] as Record<string, unknown>)['calendarListComplete'], false, 'the list really is partial');
+  assert.equal(reply['note'], RESEARCH.completeNote, 'and the completion line is still there, never displaced by the list flag');
 });

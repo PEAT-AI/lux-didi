@@ -101,9 +101,15 @@ export function resolveHandle(handle: string): OpenHandle | undefined {
  * closed. Minting alone exposes nothing.
  */
 export function exposeHandles(text: string): void {
-  // No word boundary: a delivered tool result is JSON text, so a line break arrives as the two characters
-  // `\n` and `open:` is preceded by the word character `n`. Only minted handles are ever exposed.
-  for (const match of text.matchAll(/open: (L[0-9]{1,4}) = /g)) if (handles.has(match[1]!)) exposed.add(match[1]!);
+  // OPEN2-R5: only an exact line this session minted can expose its handle, so a lookalike inside delivered
+  // content (a mail body, a chat post, a note) never opens an item the model was never shown. The line is
+  // compared raw and JSON-escaped, because a delivered tool result is JSON text; a line the reply carries
+  // inline, such as the calendar day line, is still an exact substring of it.
+  for (const line of mintedLines) {
+    if (!text.includes(line) && !text.includes(JSON.stringify(line).slice(1, -1))) continue;
+    const handle = /^open: (L[0-9]{1,4}) = /.exec(line)?.[1];
+    if (handle !== undefined && handles.has(handle)) exposed.add(handle);
+  }
 }
 
 /** A line shaped like a handle line, which only the host writes; tool text carrying one is stripped. */

@@ -262,10 +262,10 @@ import Foundation
         muteRing.presenceChanged(.connecting, failed: false)
         muteClock.ms = 500
         muteRing.presenceChanged(.live, failed: false)
-        try require(muteRecords.count == 1 && muteRecords[0]["chime"] as? Bool == false,
-            "a chime that could not play records chime=false")
+        try require(muteRecords.count == 1 && muteRecords[0]["chime"] as? Bool == true,
+            "the record still names the connected chime this ring asked for")
         try require(mutePending.isEmpty && !muteOutput.engineRunning,
-            "a chime that could not play schedules no stop and leaves no engine")
+            "a chime that could not start schedules no stop and leaves no engine")
 
         // Example 7: a stop lands mid-chime. The chime's own stop still runs exactly once and the
         // player and engine are released, so Didi holds no output device between calls.
@@ -291,6 +291,24 @@ import Foundation
             "the chime plays once, got \(midOutput.order)")
         try require(midRecords.count == 1 && midRecords[0]["chime"] as? Bool == true,
             "the record still names the chime that played")
+
+        // F2: a presence edge inside the 30 ms ramp cancels the ramp's completion, and the record
+        // must still land: it is written before the ramp starts, as it was before the chime existed.
+        let bounceClock = TestClock()
+        let bounceOutput = RecordingRingOutput()
+        bounceOutput.completesRamp = false
+        var bounceRecords: [[String: Any]] = []
+        let bounceRing = ConnectingRing(output: bounceOutput, now: { bounceClock.ms },
+                                        deferStart: { body in body() },
+                                        after: { _, _ in })
+        bounceRing.receipt = { bounceRecords.append($0) }
+        bounceRing.presenceChanged(.connecting, failed: false)
+        bounceClock.ms = 4000
+        bounceRing.presenceChanged(.live, failed: false)
+        try require(bounceRecords.count == 1 && bounceRecords[0]["reason"] as? String == "live"
+            && bounceRecords[0]["ms"] as? Int == 4000,
+            "the record lands even when the ramp never completes, got \(bounceRecords.count)")
+        bounceRing.presenceChanged(.connecting, failed: false)
     }
 
     /// Stands in for the ring's own player, so no engine and no audio device is started. It models
@@ -309,6 +327,8 @@ import Foundation
         private(set) var rampStops = 0
         var playResult = true
         var chimeResult = true
+        /// False models a ramp that never completes, cancelled by a presence edge inside it.
+        var completesRamp = true
         func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool {
             plays += 1
             order.append("ring")
@@ -329,6 +349,7 @@ import Foundation
         func rampDown(overMs ms: Int, after: (@MainActor () -> Void)?) {
             ramps.append(ms)
             order.append("ramp")
+            guard completesRamp else { return }
             rampStops += 1
             engineRunning = false
             after?()

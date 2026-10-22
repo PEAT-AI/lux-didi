@@ -118,7 +118,7 @@ struct ConnectingRingRecord: Equatable {
     let reason: String
     /// The ring's own playLoop result: false when its engine refused to start.
     let played: Bool
-    /// Whether the connected chime followed the ring.
+    /// Whether this ring asked for the connected chime, which happens only on the move to live.
     let chime: Bool
 
     var ms: Int { stoppedAt - startedAt }
@@ -314,29 +314,30 @@ final class ConnectingRing {
             }
         case .rampDown(let reason, let ms):
             let output = ringOutput()
+            playToken &+= 1
+            let token = playToken
             // The chime follows the ring only on the move to live: never on a warm unmute, never
             // on a failure. It plays after the ramp, on the ring's own player.
             let chimeBuffer = reason == PresenceState.live.rawValue ? ConnectingChimeTone.buffer() : nil
-            playToken &+= 1
+            // The record lands here, as it did before the chime existed, so a presence edge inside
+            // the 30 ms ramp can never drop it. `chime` names the connected chime this ring asks for.
+            receipt?(ConnectingRingRecord(startedAt: startedAt, stoppedAt: startedAt + ms, reason: reason,
+                                          played: ringPlayed, chime: chimeBuffer != nil).fields)
             output.rampDown(overMs: ConnectingRingTone.stopRampMs) { [weak self, output] in
                 guard let self else { return }
-                // The ramp ended with the player and the engine stopped, exactly like the no-chime path.
+                // The ramp ended with the player and the engine stopped, like the no-chime path.
                 outputRunning = false
-                let chime = chimeBuffer.map { output.playChime($0) } ?? false
-                if chime {
-                    outputRunning = true
-                    playToken &+= 1
-                    let token = playToken
-                    // The chime's length plus its fade: the moment it is over, the player and the
-                    // engine are stopped, so a stale stop can never cut a later sound.
-                    after(ConnectingChimeTone.lengthMs + ConnectingChimeTone.fadeMs) { [weak self] in
-                        guard let self, token == playToken, outputRunning else { return }
-                        outputRunning = false
-                        output.stopOutput()
-                    }
+                guard let chimeBuffer, token == playToken, output.playChime(chimeBuffer) else { return }
+                outputRunning = true
+                playToken &+= 1
+                let chimeToken = playToken
+                // The chime's length plus its fade: the moment it is over, the player and the engine
+                // are stopped, so a stale stop can never cut a later sound.
+                after(ConnectingChimeTone.lengthMs + ConnectingChimeTone.fadeMs) { [weak self] in
+                    guard let self, chimeToken == playToken, outputRunning else { return }
+                    outputRunning = false
+                    output.stopOutput()
                 }
-                receipt?(ConnectingRingRecord(startedAt: startedAt, stoppedAt: startedAt + ms,
-                                              reason: reason, played: ringPlayed, chime: chime).fields)
             }
         case .play, .discard, .none:
             break

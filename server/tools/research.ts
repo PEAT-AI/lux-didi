@@ -3043,8 +3043,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const required = new Set(requiredSources(question || run.direction || '').filter(source => configured.includes(source)));
   if (required.size > 0) first.required = required;
   first.releaseAt = () => started + answerMs;
-  // ROUTE-1022: a cut read ends the wait, so a source that never answers cannot hold the reply.
-  answerCut.signal.addEventListener('abort', () => { first.cut = true; first.wake?.(); }, { once: true });
 
   if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
   if (call.action === 'continue' && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);
@@ -3106,6 +3104,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // RD/P5-R1: a start call answers, or reports its honest partial, inside its own budget. The bound is one
   // cut for the whole run, so the prime-source read that starts before the selector is bounded too.
   const answerCut = new AbortController();
+  // ROUTE-1022 (#526): a cut read ends the first answer's wait for the source it is about.
+  answerCut.signal.addEventListener('abort', () => { first.cut = true; first.wake?.(); }, { once: true });
   const hint = hintedSources(call.sources, configured);
   let answerMs = researchCallBudgetMs(hint.length > 0 ? hint : []);
   let answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), answerMs) : { unref: () => {}, cancel: () => {} };

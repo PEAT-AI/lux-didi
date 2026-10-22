@@ -887,10 +887,10 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
   assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query'], 'exactly those fields, and no others');
   assert.equal(args['limit'], 6);
   assert.equal(args['detail'], 'bodies');
-  assert.equal(args['max_chars'], 1_200);
+  assert.equal(args['max_chars'], 3_000);
   assert.equal(args['deadline_ms'], 8_000);
   assert.equal(typeof args['query'], 'string');
-  assert.equal(RESEARCH.knowledgeMaxChars, 1_200);
+  assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
   assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
 });
 
@@ -928,7 +928,7 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
   assert.equal(args['detail'], 'bodies', 'the routed path asks through the same bounded-body args');
-  assert.equal(args['max_chars'], 1_200);
+  assert.equal(args['max_chars'], 3_000);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
   assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: true });

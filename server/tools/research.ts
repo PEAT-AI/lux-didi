@@ -2865,7 +2865,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     if (!waiting || left <= 0) break;
     const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
     const next = await Promise.race([settled, woken, wait(left)]);
-    first.wake = undefined;
+    delete first.wake;
     stopTimers();
     if (next === 'settled') return undefined;
   }

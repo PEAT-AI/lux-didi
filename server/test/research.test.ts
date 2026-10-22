@@ -10,6 +10,7 @@ import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
 import { shapeGcalList, shapeGmailList, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
+import { projectDiagnosticInput } from '../tools/diagnostic-input.js';
 import './research-shape.test.js';
 import './research-calendar.test.js';
 
@@ -917,8 +918,10 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' }, 'an uncut selector read says so too');
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
+  // T-R2: the receipt the host log keeps is the same one research built.
+  assert.deepEqual(safeEvent(receipt)?.['knowledge'], receipt.knowledge, 'the host log keeps the counts and the closed tokens');
 });
 
 // --- K1-R3: the routed voice start logs the same knowledge metadata as the selector loop ----------
@@ -933,7 +936,25 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   assert.equal(args['max_chars'], 3_000);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true });
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' });
+});
+
+// MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed
+// field list, so the voice fields and the day bounds must be listed or the trace keeps a hash only.
+test('MED-1022: a voice search with a day filter keeps its arguments through the diagnostic projection', () => {
+  const subs = candidateSubs('knowledge_search', {
+    question: "what did we decide in yesterday's Wriggler call about pricing",
+    configured: ['knowledge'], evidence: new Map(), nowMs: Date.parse('2026-10-22T06:00:00Z'), timeZone: 'Asia/Kolkata',
+  });
+  const args = subs[0]!.args;
+  assert.equal(args['detail'], 'voice');
+  assert.equal(args['snippet_chars'], 300);
+  assert.equal(args['project_hint'], 'Wriggler');
+  assert.equal(args['meeting_date_from'], '2026-10-21');
+  assert.equal(args['meeting_date_to'], '2026-10-21');
+  const projected = projectDiagnosticInput('search_knowledge', args);
+  assert.equal(projected.fidelity, 'complete_v1', 'every argument this search sends is on the closed field list');
+  assert.deepEqual(JSON.parse(String(projected.json)), args, 'and every value survives end to end');
 });
 
 // MED-1022: the search now asks for the connector's voice shape, so the reply the model reads is one

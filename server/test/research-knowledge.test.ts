@@ -58,16 +58,22 @@ const LONG_BODY = [
   `the deadline is the fifteenth${' and the corpus keeps the rest'.repeat(120)}`,
 ].join('\n');
 
-test('K3: the model-authored knowledge query is clipped to five content terms', () => {
+test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {
   const sentence = 'what did we decide about the wriggler three layer schema migration deadline for the owner dashboard';
   const shaped = knowledgeQuery(sentence);
   const terms = shaped.split(' ');
-  assert.equal(RESEARCH.knowledgeQueryTerms, 5);
-  assert.equal(terms.length, 5);
-  assert.deepEqual(terms, ['decide', 'about', 'wriggler', 'three', 'layer']);
+  assert.equal(RESEARCH.knowledgeQueryTerms, 10);
+  assert.equal(terms.length, 8);
+  assert.deepEqual(terms, ['decide', 'wriggler', 'three', 'layer', 'schema', 'migration', 'deadline', 'dashboard']);
+  assert.ok(!terms.includes('about') && !terms.includes('owner'), 'filler is dropped before the budget is counted');
   assert.ok(!sentence.startsWith(shaped), 'the whole spoken sentence never reaches the search');
   const [call] = candidateSubs('knowledge_search', { question: sentence, configured: CONFIGURED, evidence: new Map() });
   assert.equal(String(call!.args['query']), shaped);
+  const longer = 'decide wriggler three layer schema migration deadline dashboard harvester pipeline ledger';
+  assert.deepEqual(knowledgeQuery(longer).split(' ').slice(-1), ['pipeline'], 'the tenth term is the last one that fits');
+  assert.equal(knowledgeQuery(longer).split(' ').length, 10);
+  const named = knowledgeQuery('lux meeting transcript results about', 'what did we cover in the prep call with Maria');
+  assert.ok(named.split(' ').includes('maria'), 'a name the question spoke survives the clip');
 });
 
 test('K4: a known project name in the question supplies a hint, and never a hard filter', () => {

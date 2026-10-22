@@ -977,12 +977,23 @@ export function meetingBounds(question: string, query: string | undefined, nowMs
   } catch { return undefined; }
 }
 
-/** 3r K1 and K1-R3: the knowledge receipt's metadata, the same on the routed and the selector path.
- * `truncated` reads the mark `insightItems` writes on a hit the server cut at the asked-for window. */
-function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars: number; deadlineMs: number; truncated: boolean } {
+/**
+ * 3r K1 and K1-R3: the knowledge receipt's metadata, the same on the routed and the selector path.
+ * `truncated` reads the mark `insightItems` writes on a hit the server cut at the asked-for window.
+ * MED-1022/T-R2: the receipt also names the query's term count, whether the day filter was applied and
+ * what became of the chat date operator. Counts and closed tokens only, never the query text.
+ */
+function knowledgeReceipt(lines: readonly string[], chatDate: ChatDateOperator, search?: IntentSubCall): {
+  detail: string; maxChars: number; deadlineMs: number; truncated: boolean;
+  queryTerms: number; dateFilter: boolean; chatDateOperator: ChatDateOperator;
+} {
+  const query = search === undefined ? undefined : search.args['query'];
   return {
     detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeBodyChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
     truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeBodyChars} chars`)),
+    queryTerms: typeof query === 'string' ? query.split(/\s+/u).filter(Boolean).length : 0,
+    dateFilter: search !== undefined && search.args['meeting_date_from'] !== undefined,
+    chatDateOperator: chatDate,
   };
 }
 
@@ -998,6 +1009,15 @@ export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.Dat
     const day = isoDay(value, nowMs, timeZone);
     return day === undefined ? '' : `${kind[0]!.toUpperCase()}${kind.slice(1)}:${day}`;
   }).split(/\s+/u).filter(Boolean).join(' ');
+}
+
+/** MED-1022/T-R2: the closed token for a chat date operator, so the receipt never carries query text. */
+export type ChatDateOperator = 'compiled' | 'dropped' | 'none';
+
+/** Whether the chat wire carries an ISO date operator, lost one the caller wrote, or had none. */
+export function chatDateOperator(original: string | undefined, compiled: string): ChatDateOperator {
+  if (/\b(?:after|before|on):/iu.test(compiled)) return 'compiled';
+  return original !== undefined && /\b(?:after|before|on):/iu.test(original) ? 'dropped' : 'none';
 }
 
 /** The ISO day a date word names, or nothing when it names none. */
@@ -1149,6 +1169,8 @@ export interface RunState {
   answeredAt?: number;
   /** #1020: the owner's zone, so a calendar coverage line names the days the owner lives in. */
   timeZone?: string;
+  /** MED-1022: the chat date operator this run compiled, dropped or never wrote, for the receipt. */
+  chatDate?: ChatDateOperator;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
   progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
@@ -2346,7 +2368,17 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
     }
     return plan;
   }
-  return { source: 'chat', kind: 'chat_search', subs: candidateSubs('chat_search', subsConfig) };
+  const chat = candidateSubs('chat_search', subsConfig);
+  recordChatDate(context.run, lookup.query, chat);
+  return { source: 'chat', kind: 'chat_search', subs: chat };
+}
+
+/** MED-1022: the run remembers what became of its chat date operator, strongest token first. */
+function recordChatDate(run: RunState, original: string | undefined, subs: readonly IntentSubCall[]): void {
+  const sub = subs.find(call => call.name === INTERNAL.chatSearch);
+  if (sub === undefined) return;
+  const status = chatDateOperator(original, String(sub.args['query'] ?? ''));
+  if (status === 'compiled' || run.chatDate === undefined) run.chatDate = status;
 }
 
 interface RoutedOutcome {
@@ -2355,6 +2387,8 @@ interface RoutedOutcome {
   outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
   /** E5: the mail queries this read ran, so the receipt carries their shape and the reply their words. */
   mail?: MailQueryInfo;
+  /** MED-1022: the one sub-call this read issued, so the knowledge receipt counts its own query terms. */
+  sub?: IntentSubCall;
 }
 
 interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
@@ -2740,7 +2774,7 @@ async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly 
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
-    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total });
+    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }) });
   const done: RoutedOutcome[] = [];
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
     const args = plan.lookup.history ?? { query: plan.lookup.query };
@@ -2895,7 +2929,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
-        ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines) } : {}),
+        ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub) } : {}),
         ...mailReceiptField(outcome.mail),
       });
       logSubcall({
@@ -3470,6 +3504,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           let subs: IntentSubCall[];
           try { subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
           catch { run.unavailableReasons.set('calendar', 'unresolved_window'); run.sourcesFailed.add('calendar'); return; }
+          recordChatDate(run, action?.query, subs);
           // F2: the live step speaks the owner's words, never the compiled Gmail query.
           if (kind === 'mail_search' && action?.query !== undefined) for (const sub of subs) run.ownerQueries.set(String(sub.args['q']), action.query);
           if (subs.length === 0) return;
@@ -3623,7 +3658,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it.
               ms: consumeKnowledge && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
               deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
-              ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines) } : {}),
+              ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch)) } : {}),
               ...mailReceiptField(mailInfo),
             });
             // R6: this source settled after the call had already answered, so what it found is handed over

@@ -1,6 +1,6 @@
 import { sha256 } from './canonical.js';
 const fields: Readonly<Record<string, readonly string[]>> = {
-  search_knowledge: ['query','limit','include_sensitive','detail','max_chars','deadline_ms'], get_insight: ['ids','id','include_links','detail','max_chars','deadline_ms'],
+  search_knowledge: ['query','limit','include_sensitive','detail','max_chars','snippet_chars','project_hint','meeting_date_from','meeting_date_to','deadline_ms'], get_insight: ['ids','id','include_links','detail','max_chars','deadline_ms'],
   gmail_get_profile: [], gmail_search_messages: ['q','maxResults','pageToken'], gmail_read_message: ['id','format'],
   calendar_list_calendars: ['maxResults','pageToken'], calendar_list_events: ['calendarId','calendarIds','maxResults','pageToken','timeMin','timeMax','timeZone'],
   ask_mongoose: ['question','limit'], search_mongoose: ['query','scope','domain','limit','offset','include','include_strong'],

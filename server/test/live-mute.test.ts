@@ -60,7 +60,7 @@ function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts
   } as LiveVoicePort;
 }
 
-async function openLive(t: TestContext): Promise<Live> {
+async function openLive(t: TestContext, limits: Record<string, number> = {}): Promise<Live> {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-mute-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
@@ -71,7 +71,7 @@ async function openLive(t: TestContext): Promise<Live> {
     provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
     route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
-    limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
+    limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50, ...limits },
   });
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
@@ -147,6 +147,22 @@ test('a mute past the cost cap settles as muted_expired, benign, never paused fo
   assert.deepEqual([expiry?.['muted'], expiry?.['warm'], expiry?.['msSinceMute']], [true, false, MUTE_WARM_MS],
     'the expiry receipt says the session is no longer warm');
   await assert.doesNotReject(live.attachment.done, 'the consumer sees the session end');
+});
+
+test('a muted session never idles out, even with an idle limit shorter than the mute window', async t => {
+  const live = await openLive(t, { idleMs: 60_000 });
+  live.attachment.setInputMuted(true);
+  await flush();
+  // Provider activity is what restarts the idle clock in the ordinary path; under a mute it must not.
+  await live.emit({ type: 'modelTurnStarted' });
+  await live.emit({ type: 'audio', pcm: new Uint8Array(4_800).fill(1), rate: 24_000, audible: true, rmsDbfs: -20 });
+  await live.emit({ type: 'turnComplete' });
+  for (let spent = 0; spent < 90_000; spent += 1_000) await live.advance(1_000);
+  assert.equal(live.owner.get(live.liveSessionId).terminal, null,
+    'ninety muted seconds are not an idle session, the idle clock is suspended');
+  await live.advance(90_000 + 1_000);
+  assert.deepEqual(live.owner.get(live.liveSessionId).terminal, { state: 'closed', code: 'muted_expired' },
+    'only the mute cost cap ends it');
 });
 
 test('a provider drop while muted is muted cold with no recovery attempt', async t => {

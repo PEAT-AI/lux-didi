@@ -5236,7 +5236,9 @@ test('MUTE: a muted turn still delivers its tool result, and the answer it earns
 
   // The tool result restarted the idle clock in the ordinary path. A muted session must not idle out,
   // so the only thing that can end it is the host's own cost cap.
-  scheduler.now += 600_000; scheduler.runDue(); await settlePort();
+  for (let elapsed = 0; elapsed < 600_000 && h.owner.get(session.liveSessionId).terminal === null; elapsed += 1_000) {
+    scheduler.now += 1_000; scheduler.runDue(); await settlePort();
+  }
   const terminal = h.owner.get(session.liveSessionId).terminal;
   assert.deepEqual(terminal, { state: 'closed', code: 'muted_expired' },
     'a muted session ends on the mute cost cap, never as idle_timeout');

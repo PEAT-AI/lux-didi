@@ -60,18 +60,72 @@ enum ConnectingRingTone {
     }
 }
 
+/// The connected chime after the ring, copied from Vicuna's `earcon.service.ts` playConnected:
+/// 440 Hz then 550 Hz, 100 ms each with a 50 ms gap, peak 0.15 and a 15 ms linear fade. Parity with
+/// the ring the owner asked for, on the ring's own player, so no third engine appears.
+enum ConnectingChimeTone {
+    static let sampleRate = 24000.0
+    static let firstTone = 440.0
+    static let secondTone = 550.0
+    static let noteMs = 100
+    static let gapMs = 50
+    static let peak: Float = 0.15
+    static let fadeMs = 15
+
+    static var noteFrames: Int { Int(sampleRate * Double(noteMs) / 1000) }
+    static var gapFrames: Int { Int(sampleRate * Double(gapMs) / 1000) }
+    static var fadeFrames: Int { Int(sampleRate * Double(fadeMs) / 1000) }
+    static var secondOnset: Int { noteFrames + gapFrames }
+    static var totalFrames: Int { secondOnset + noteFrames }
+    /// The chime's own length: two tones and the gap between them.
+    static var lengthMs: Int { Int(Double(totalFrames) / sampleRate * 1000) }
+
+    static func samples() -> [Float] {
+        var out = [Float](repeating: 0, count: totalFrames)
+        for (onset, frequency) in [(0, firstTone), (secondOnset, secondTone)] {
+            for index in 0..<noteFrames {
+                let phase = 2 * Double.pi * frequency * Double(index) / sampleRate
+                out[onset + index] = Float(sin(phase)) * peak * fade(index)
+            }
+        }
+        return out
+    }
+
+    /// A linear 15 ms fade in and out, as Vicuna's gain ramps are linear.
+    private static func fade(_ index: Int) -> Float {
+        if index < fadeFrames { return Float(index) / Float(fadeFrames) }
+        if index >= noteFrames - fadeFrames {
+            return Float(noteFrames - 1 - index) / Float(fadeFrames)
+        }
+        return 1
+    }
+
+    static func buffer() -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)),
+              let channel = buffer.floatChannelData?[0] else { return nil }
+        buffer.frameLength = AVAudioFrameCount(totalFrames)
+        for (index, value) in samples().enumerated() { channel[index] = value }
+        return buffer
+    }
+}
+
 /// The one `connecting_ring` native log record: when the ring started, when it stopped, how long
 /// it played and the presence state that ended it.
 struct ConnectingRingRecord: Equatable {
     let startedAt: Int
     let stoppedAt: Int
     let reason: String
+    /// The ring's own playLoop result: false when its engine refused to start.
+    let played: Bool
+    /// Whether this ring asked for the connected chime, which happens only on the move to live.
+    let chime: Bool
 
     var ms: Int { stoppedAt - startedAt }
 
     var fields: [String: Any] {
         ["event": "connecting_ring", "started_at": startedAt, "stopped_at": stoppedAt,
-         "ms": ms, "reason": reason]
+         "ms": ms, "reason": reason, "played": played, "chime": chime]
     }
 }
 
@@ -133,7 +187,13 @@ struct ConnectingRingDirector {
 @MainActor
 protocol ConnectingRingOutput: AnyObject {
     func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool
-    func rampDown(overMs: Int)
+    /// The connected chime: one shot on the same player, after the ring's ramp.
+    func playChime(_ buffer: AVAudioPCMBuffer) -> Bool
+    /// Stops the player and the engine: the same pair the ramp-down ends with, so Didi never holds
+    /// the output device between calls.
+    func stopOutput()
+    /// A ramp then a stop; `after` runs once the player is silent, so a chime never plays over the ring.
+    func rampDown(overMs: Int, after: (@MainActor () -> Void)?)
 }
 
 /// The ring's own output path: a playback-only engine, separate from the live voice engine, so
@@ -145,7 +205,11 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
     private var connectedFormat: AVAudioFormat?
     private var rampTask: Task<Void, Never>?
 
-    func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool {
+    func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool { play(buffer, loops: true) }
+
+    func playChime(_ buffer: AVAudioPCMBuffer) -> Bool { play(buffer, loops: false) }
+
+    private func play(_ buffer: AVAudioPCMBuffer, loops: Bool) -> Bool {
         rampTask?.cancel()
         rampTask = nil
         if connectedFormat != buffer.format {
@@ -157,16 +221,23 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
         engine.prepare()
         do { try engine.start() } catch { return false }
         player.volume = 1
-        player.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+        player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
         player.play()
         return true
     }
 
-    /// A 30 ms fade then a stop; a second stop cancels the first.
-    func rampDown(overMs ms: Int) {
+    func stopOutput() {
+        player.stop()
+        engine.stop()
+    }
+
+    /// A 30 ms fade then a stop; a second stop cancels the first, and `after` runs only once the
+    /// player is silent, so the connected chime follows the ring instead of playing over it.
+    func rampDown(overMs ms: Int, after: (@MainActor () -> Void)?) {
         rampTask?.cancel()
         guard player.isPlaying else {
             engine.stop()
+            after?()
             return
         }
         let steps = 6
@@ -180,6 +251,7 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
             guard let self, !Task.isCancelled else { return }
             self.player.stop()
             self.engine.stop()
+            after?()
         }
     }
 }
@@ -191,11 +263,18 @@ final class ConnectingRing {
     private var director = ConnectingRingDirector()
     private var output: ConnectingRingOutput?
     private var startedAt = 0
+    private var ringPlayed = false
+    /// Bumped on every play, so a chime's stop can never land on a later sound.
+    private var playToken: UInt64 = 0
+    /// Whether the ring's player and engine are running right now.
+    private var outputRunning = false
 
     private let now: @MainActor () -> Int
     /// One main-actor turn between the ask and the play, so a stop that lands in the same turn
     /// reaches the director before the player ever starts.
     private let deferStart: @MainActor (@escaping @MainActor () -> Void) -> Void
+    /// A bounded wait, so the chime's stop lands after the chime even without a player callback.
+    private let after: @MainActor (Int, @escaping @MainActor () -> Void) -> Void
 
     /// The `connecting_ring` record goes through the existing presence receipt path.
     var receipt: (([String: Any]) -> Void)?
@@ -204,10 +283,17 @@ final class ConnectingRing {
          now: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
          deferStart: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void = { body in
              Task { @MainActor in body() }
+         },
+         after: @escaping @MainActor (Int, @escaping @MainActor () -> Void) -> Void = { ms, body in
+             Task { @MainActor in
+                 try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+                 body()
+             }
          }) {
         self.output = output
         self.now = now
         self.deferStart = deferStart
+        self.after = after
     }
 
     func presenceChanged(_ next: PresenceState, failed: Bool) {
@@ -215,16 +301,44 @@ final class ConnectingRing {
         switch director.transition(to: next, failed: failed, atMs: at) {
         case .beginStart(let token):
             startedAt = at
+            ringPlayed = false
+            playToken &+= 1
             let output = ringOutput()
             deferStart { [weak self] in
                 guard let self else { return }
                 guard self.director.commitStart(token) == .play,
                       let buffer = ConnectingRingTone.buffer() else { return }
-                _ = output.playLoop(buffer)
+                let played = output.playLoop(buffer)
+                self.ringPlayed = played
+                self.outputRunning = played
             }
         case .rampDown(let reason, let ms):
-            output?.rampDown(overMs: ConnectingRingTone.stopRampMs)
-            receipt?(ConnectingRingRecord(startedAt: startedAt, stoppedAt: startedAt + ms, reason: reason).fields)
+            let output = ringOutput()
+            playToken &+= 1
+            let token = playToken
+            // The chime follows the ring only on the move to live: never on a warm unmute, never
+            // on a failure. It plays after the ramp, on the ring's own player.
+            let chimeBuffer = reason == PresenceState.live.rawValue ? ConnectingChimeTone.buffer() : nil
+            // The record lands here, as it did before the chime existed, so a presence edge inside
+            // the 30 ms ramp can never drop it. `chime` names the connected chime this ring asks for.
+            receipt?(ConnectingRingRecord(startedAt: startedAt, stoppedAt: startedAt + ms, reason: reason,
+                                          played: ringPlayed, chime: chimeBuffer != nil).fields)
+            output.rampDown(overMs: ConnectingRingTone.stopRampMs) { [weak self, output] in
+                guard let self else { return }
+                // The ramp ended with the player and the engine stopped, like the no-chime path.
+                outputRunning = false
+                guard let chimeBuffer, token == playToken, output.playChime(chimeBuffer) else { return }
+                outputRunning = true
+                playToken &+= 1
+                let chimeToken = playToken
+                // The chime's length plus its fade: the moment it is over, the player and the engine
+                // are stopped, so a stale stop can never cut a later sound.
+                after(ConnectingChimeTone.lengthMs + ConnectingChimeTone.fadeMs) { [weak self] in
+                    guard let self, chimeToken == playToken, outputRunning else { return }
+                    outputRunning = false
+                    output.stopOutput()
+                }
+            }
         case .play, .discard, .none:
             break
         }

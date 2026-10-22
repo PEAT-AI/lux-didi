@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, noteOpened, noteSpoken, openClaimCorrection, openParameters, openTarget, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, exposeToolResults, noteOpened, noteSpoken, openClaimCorrection, openParameters, openTarget, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
@@ -303,3 +303,30 @@ test('OPEN2-R1: a Mattermost frame names the one origin the host learned, and no
   forget();
   endHandleSession('live-open2-origin');
 });
+
+test('OPEN2-R4 F1: a handle from a direct gmail list reply opens once that reply is delivered', () => {
+  beginHandleSession('live-open2-direct');
+  const shaped = shapeGmailList({ messages: [{ id: 'm1', headers: { Subject: 'Standup notes' } }] });
+  const handle = /^open: (L\d+) = Gmail: Standup notes$/m.exec(shaped.text)?.[1];
+  assert.ok(handle, 'the direct reply mints a handle');
+  assert.deepEqual(openTarget('open_source', { handle }), { code: 'not_found' }, 'nothing opens before the reply is delivered');
+  exposeToolResults([{ id: 'call-1', name: 'gmail_search_messages', response: shaped }]);
+  const opened = openTarget('open_source', { handle });
+  assert.ok('target' in opened, 'the handle the model was just shown opens');
+  assert.equal(opened.target.kind, 'gmail');
+  endHandleSession('live-open2-direct');
+});
+
+test('OPEN2-R4 F2: a handle on a line the reply budget trimmed stays closed', () => {
+  beginHandleSession('live-open2-trim');
+  const shaped = shapeGmailList({ messages: [{ id: 'm1', headers: { Subject: 'Kept' } }, { id: 'm2', headers: { Subject: 'Trimmed' } }] });
+  const kept = /^open: (L\d+) = Gmail: Kept$/m.exec(shaped.text)?.[1];
+  const trimmed = /^open: (L\d+) = Gmail: Trimmed$/m.exec(shaped.text)?.[1];
+  assert.ok(kept && trimmed, 'the reply minted both handles');
+  const delivered = shaped.text.split('\n').filter(line => !line.includes('Trimmed')).join('\n');
+  exposeToolResults([{ response: { findings: [{ source: 'mail', text: delivered, chars: delivered.length }] } }]);
+  assert.ok('target' in openTarget('open_source', { handle: kept }), 'the delivered line opens');
+  assert.deepEqual(openTarget('open_source', { handle: trimmed }), { code: 'not_found' }, 'the trimmed line never opened');
+  endHandleSession('live-open2-trim');
+});
+

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, beginHandleSession, endHandleSession, homeDestination, mattermostOrigin, openDestination, resolveHandle, type HomeApp, type OpenKind } from './open-handles.js';
+import { HOME_APPS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, type HomeApp, type OpenKind } from './open-handles.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
 export const OPEN_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'native-actions' } as const;
@@ -216,6 +216,15 @@ export class NativeActionBus {
     pending.resolve(code);
     return true;
   }
+}
+
+/**
+ * OPEN2-R4: exposure happens here and only here, on tool results as they are handed to the live session:
+ * research replies and direct tool replies alike, after every trim. A handle opens only when this text
+ * carries its `open:` line.
+ */
+export function exposeToolResults(results: readonly { id?: string; name?: string; response?: unknown }[]): void {
+  for (const result of results) exposeHandles(JSON.stringify(result.response ?? {}));
 }
 
 /** The Mattermost origin a frame carries, and only for a destination that is a Mattermost viewer link. */

@@ -387,7 +387,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
     // Closed shape: which session and generation the provider socket was opened for, how big the setup was

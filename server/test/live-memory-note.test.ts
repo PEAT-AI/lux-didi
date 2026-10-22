@@ -148,20 +148,20 @@ test('a note stitched from two non-adjacent turns is refused', async t => {
     { text: 'the bins go out on thursday evening', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  assert.deepEqual(await remember(store, 'the plumber brings a ladder and a wrench on tuesday'),
+  assert.deepEqual(refusal(await remember(store, 'the plumber brings a ladder and a wrench on tuesday')),
     { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
 });
 
 test('a note that turns the owner\'s love into hate is refused', async t => {
   // The polarity verb is the word the note must be supported by, so it cannot be framing.
   const store = liveSession(t, [{ text: 'i love brussels sprouts with butter', finished: true }]);
-  assert.deepEqual(await remember(store, 'Rob hates brussels sprouts'), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'Rob hates brussels sprouts')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a contracted negation in the owner\'s ask is read as negation', async t => {
   // "don't" tokenizes to don and t; a negation the reader cannot see is a flip it cannot refuse.
   const store = liveSession(t, [{ text: "i don't want the tuesday plumber to come with a ladder", finished: true }]);
-  assert.deepEqual(await remember(store, 'Rob wants the tuesday plumber to come with a ladder'),
+  assert.deepEqual(refusal(await remember(store, 'Rob wants the tuesday plumber to come with a ladder')),
     { remembered: false, code: 'owner_text_mismatch' });
 });
 
@@ -188,12 +188,12 @@ test('the same short note stores when the owner stated it without a preference v
 test('that same short note is still refused when it flips the preference', async t => {
   // The paired guard: with the verb out of the ratio the support is 1 of 1, so only polarity refuses.
   const store = liveSession(t, [{ text: 'i prefer tea first thing', finished: true }]);
-  assert.deepEqual(await remember(store, 'Rob hates tea'), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'Rob hates tea')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a session with no owner transcription reports the transcript was never final', async t => {
   const store = liveSession(t, [{ kind: 'outputTranscription', text: 'Naya said something about tea', finished: true }]);
-  assert.deepEqual(await remember(store, 'Rob prefers tea and the crossword'), { remembered: false, code: 'owner_transcript_not_final' });
+  assert.deepEqual(refusal(await remember(store, 'Rob prefers tea and the crossword')), { remembered: false, code: 'owner_transcript_not_final' });
 });
 
 test('the memory_note receipt is a closed shape of counts and no text', async () => {

@@ -782,7 +782,6 @@ test('a Quit ends the live session as app_quit, never as the Stop button', async
   h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
   await drain(h, session.liveSessionId, 2);
   await h.owner.shutdown();
-  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'app_quit' });
   const end = receipts.filter(record => record.event === 'session_end');
   assert.equal(end.length, 1, 'one receipt for the Quit');
   assert.deepEqual(end[0], { event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
@@ -1458,7 +1457,7 @@ test('the owner disposes before Store.close and refuses work afterwards', async 
   const h = await harness(t);
   const { attachment } = await attached(h);
   await h.owner.shutdown();
-  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'closed' });
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'app_quit' }, 'a host shutdown names the end app_quit');
   assert.throws(() => h.owner.get('missing'), (error: unknown) => error instanceof LiveError);
   await h.owner.shutdown();
 });

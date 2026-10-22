@@ -3,7 +3,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import type { HistoryArguments } from '../domain/history-reader.js';
 import { calendarRange } from './calendar-window.js';
 import { randomUUID } from 'node:crypto';
-import type { ToolResultBinding, JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
+import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
@@ -63,8 +63,6 @@ export const RESEARCH = Object.freeze({
    */
   mailPageCap: 4,
   rateLimitRetryMs: 1_000,
-  /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
-  selectorDeadlineMs: 1_500,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
@@ -326,16 +324,6 @@ export function worthContinuing(input: WorthInput): boolean {
 // ---------------------------------------------------------------------------------------------
 // Selector
 
-export interface SelectorInput {
-  question: string;
-  questionClass?: QuestionClass | undefined;
-  direction?: string | undefined;
-  configured: readonly SourceKind[];
-  /** Completed operations, so the selector never re-picks what is already known. */
-  completed: readonly { kind: CandidateKind; summary: string }[];
-  /** Choices the selector is allowed to make, already closed over configuration and prerequisites. */
-  candidates: readonly CandidateKind[];
-}
 
 export interface SelectorAction {
   kind: CandidateKind;
@@ -350,110 +338,6 @@ export interface SelectorOutput {
   questionClass: QuestionClass;
   actions: SelectorAction[];
   pUseful: Partial<Record<CandidateKind, number>>;
-}
-
-export interface ResearchSelector {
-  select(input: SelectorInput, signal: AbortSignal): Promise<SelectorOutput | null>;
-  /** The public web read this selector was built with, so production wires the same binding the selector uses. */
-  web?: WebSearchPort | undefined;
-}
-
-export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answer one owner question, and you write the query each read runs. '
-  + 'Reply with JSON only: {"questionClass":"quick_fact|cross_source|explicit_continue","actions":[{"kind":"...","requirement":"...","query":"...","window":"..."}],'
-  + '"pUseful":{"kind":0.0}}. Choose only from the offered candidate kinds; never invent a kind, an id or a source. '
-  + 'pUseful is your probability (0..1) that the action yields something that changes the answer. Omit an action when it is redundant. '
-  + 'Write a real query for every search kind, never the whole spoken sentence. '
-  + 'mail_search query: Gmail syntax, e.g. in:inbox newer_than:2d is:unread is:important from:alice@example.com subject:invoice "exact phrase". '
-  + 'chat_search query: Mattermost keywords (a few words, not a sentence), optional from:, in:, after:YYYY-MM-DD. '
-  + 'knowledge_search query: 3 to 5 content keywords, no filler. '
-  + 'web_search query: 3 to 10 plain words for the public question itself; use it only for public-world facts that need looking up (news, current events, prices, opening hours, public documents) or when the owner asks you to search the web, never for personal commitments, correspondence, mail, calendar or private matters, and never put a name, address, message text or other private detail in the query. '
-  + 'calendar_window: use today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD date. Unresolved or contradictory windows are refused; never widen them. ';
-
-export function buildSelectorPrompt(input: SelectorInput): { system: string; user: string } {
-  const lines = [
-    `Question: ${input.question}`,
-    input.direction !== undefined ? `Owner direction: ${input.direction}` : '',
-    `Configured sources: ${input.configured.join(', ') || 'none'}`,
-    `Candidates: ${input.candidates.join(', ')}`,
-    input.completed.length ? `Already read: ${input.completed.map(entry => `${entry.kind}: ${entry.summary}`).join(' | ')}` : 'Already read: nothing',
-  ];
-  return { system: SELECTOR_SYSTEM, user: lines.filter(Boolean).join('\n') };
-}
-
-const QUESTION_CLASSES: readonly QuestionClass[] = ['quick_fact', 'cross_source', 'explicit_continue'];
-
-/** A selector query: one line, trimmed, length-capped, or undefined when empty. */
-export function normalizeQuery(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const collapsed = value.replace(/\s+/g, ' ').trim();
-  return collapsed ? collapsed.slice(0, RESEARCH.queryLimitChars) : undefined;
-}
-
-/** Preserve bounded selector text for the canonical calendar resolver; unknown text is unresolved. */
-export function normalizeWindow(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const token = value.trim().toLowerCase().replace(/\s+/g, ' ');
-  return token && token.length <= RESEARCH.queryLimitChars ? token : undefined;
-}
-
-/** Parse selector JSON defensively: any invalid output is `null`, which falls back to the recipe. */
-export function parseSelector(text: string): SelectorOutput | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  let raw: unknown;
-  try { raw = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
-  if (raw === null || typeof raw !== 'object') return null;
-  const record = raw as Record<string, unknown>;
-  const questionClass = record['questionClass'];
-  if (typeof questionClass !== 'string' || !QUESTION_CLASSES.includes(questionClass as QuestionClass)) return null;
-  const actionsRaw = record['actions'];
-  const actions: SelectorAction[] = [];
-  if (Array.isArray(actionsRaw)) {
-    for (const entry of actionsRaw) {
-      if (entry === null || typeof entry !== 'object') continue;
-      const cell = entry as Record<string, unknown>;
-      const kind = cell['kind'];
-      if (typeof kind !== 'string' || !CANDIDATES.some(candidate => candidate.kind === kind)) continue;
-      const action: SelectorAction = { kind: kind as CandidateKind };
-      const requirement = cell['requirement'];
-      if (typeof requirement === 'string' && requirement.trim()) action.requirement = requirement;
-      const query = normalizeQuery(cell['query']);
-      if (query !== undefined) action.query = query;
-      const window = normalizeWindow(cell['window']);
-      if (kind === 'calendar_window') action.window = window ?? 'unresolved';
-      else if (window !== undefined) action.window = window;
-      actions.push(action);
-    }
-  }
-  const pUseful: Partial<Record<CandidateKind, number>> = {};
-  const pRaw = record['pUseful'];
-  if (pRaw !== null && typeof pRaw === 'object') {
-    for (const [kind, value] of Object.entries(pRaw as Record<string, unknown>)) {
-      if (!CANDIDATES.some(candidate => candidate.kind === kind)) continue;
-      if (typeof value === 'number' && Number.isFinite(value)) pUseful[kind as CandidateKind] = Math.min(1, Math.max(0, value));
-    }
-  }
-  return { questionClass: questionClass as QuestionClass, actions, pUseful };
-}
-
-/** The real selector: the same-provider Gemini text adapter, one structured request, its deadline is selectorDeadlineMs. */
-export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1', web?: WebSearchPort): ResearchSelector {
-  return {
-    ...(web === undefined ? {} : { web }),
-    async select(input, signal) {
-      const { system, user } = buildSelectorPrompt(input);
-      const request: ModelRequest = {
-        system, promptVersion,
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 0 },
-      };
-      const control = { signal, deadlineMs: Date.now() + RESEARCH.selectorDeadlineMs };
-      const result = await model.generate(request, control);
-      if (result.status !== 'complete' || typeof result.text !== 'string') return null;
-      return parseSelector(result.text);
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1206,6 +1090,16 @@ export interface RunState {
   progressAbort: AbortController;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
   evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
+  /** K8b: sources whose read is in flight right now, so a later call can wait for them and never calls the run complete. */
+  pending: Set<SourceKind>;
+  /** K8a: this run was opened by a contentless start that stood in for a continue. */
+  metaStartAsContinue: boolean;
+  /** K14: whole-body replies this run sent, so one body costs one round trip each page. */
+  bodyReplies: number;
+  /** L10: dispatches this run aborted because a new start replaced it. */
+  supersededAborts: number;
+  /** K8b: calls waiting on this run's in-flight reads, woken when the last one settles. */
+  pendingWaiters: Set<() => void>;
   /** WEB: the transcript cards and retrieval time of the web read this run made, so the chat keeps the links. */
   web: { title: string; url: string; retrievedAt: string }[];
   /** WEB: Gemini's search entry point links, shown in the transcript as the grounding attribution. */
@@ -1244,7 +1138,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), web: [], webAttribution: [],
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1256,6 +1150,15 @@ export class ResearchLedger {
   resume(researchId: string, input: { direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number }): RunState | undefined {
     const existing = this.#runs.get(researchId);
     if (!existing || existing.cancelled || existing.stopped) return undefined;
+    // K8b: a continue while a read is still in flight keeps that very run, so the read lands in the state
+    // this call reads instead of a discarded copy.
+    if (!existing.ended) {
+      existing.startedAt = input.now; existing.deadlineMs = input.deadlineMs; existing.maxRounds = Math.max(existing.rounds, input.maxRounds);
+      existing.direction = input.direction ?? existing.direction; existing.ended = false; existing.stopped = false;
+      delete existing.bodyCursorRequested; delete existing.mailCursorRequested;
+      this.#activeId = researchId; this.#last = existing;
+      return existing;
+    }
     const run: RunState = {
       ...existing, bodies: new Map([...existing.bodies].map(([key, body]) => [key, { ...body }])), bodyCursors: new Map([...existing.bodyCursors].map(([key, page]) => [key, { ...page }])), runId: ++this.#counter, direction: input.direction ?? existing.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
@@ -1263,7 +1166,7 @@ export class ResearchLedger {
       mail: new Map([...existing.mail].map(([key, read]) => [key, { ...read, messages: new Map(read.messages), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), mailDelivered: new Set(existing.mailDelivered), mailCursors: new Map([...existing.mailCursors].map(([key, cursor]) => [key, { ...cursor, ids: [...cursor.ids] }])),
       historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens),
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
-      ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
+      ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
       unavailableReasons: new Map(existing.unavailableReasons), web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
@@ -1370,6 +1273,7 @@ export interface ResearchRunLog {
   unchecked?: SourceKind[]; canContinue?: boolean; findingChars?: number[];
   /** ROUTE-1022 K5: the plan a brief actually ran, closed token only. */
   plan?: 'knowledge_only' | 'named_sources';
+  bodyReplies?: number; metaStartAsContinue?: boolean; supersededAborts?: number;
 }
 
 /** Q1: one metadata-only record per internal sub-call: counts and bytes, never the query or text. */
@@ -1378,7 +1282,7 @@ export interface ResearchSubcallLog {
   /** Calendar reads only: the resolved window as two dates, never the query that produced it. */
   windowFrom?: string; windowTo?: string;
   errorCode?: string; items: number; rawBytes: number; keptBytes: number; queryChars: number;
-  queryAuthor: 'selector' | 'fallback' | 'routed';
+  queryAuthor: 'routed' | 'fallback' | 'hint';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
   window?: WindowKind;
   /** Calendar sub-calls only: how many selected calendars the read did not reach before the deadline. */
@@ -1392,6 +1296,16 @@ const scheduleTimer: ResearchTimer = (callback, delayMs) => {
   const timer = setTimeout(callback, delayMs);
   return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
 };
+
+/**
+ * RUN-R7: a read's own deadline is cut on the run's clock, never on wall time, so a run settles inside its
+ * budget whatever the reads do. The caller releases the timer when the read it bounds settles.
+ */
+function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController();
+  const timer = schedule(() => controller.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.max(1, ms));
+  return { signal: controller.signal, done: () => { timer.cancel(); } };
+}
 
 export interface ResearchDeps {
   timeZone?: string;
@@ -1410,7 +1324,6 @@ export interface ResearchDeps {
    * entry may carry its reason (a credential failure, a stop), so the reply names the cause.
    */
   unavailableNow?: (() => readonly (SourceKind | UnavailableSource)[]) | undefined;
-  selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
   log(event: ResearchRunLog): void;
@@ -2109,14 +2022,33 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
   if (!entry || !entry[1]) return undefined;
   const [key, body] = entry;
   if (body.evidence.expiresAt <= Date.now()) return { researchId: run.researchId, error: 'continuation_unavailable', findings: [], canContinue: false, note: CONTINUATION_UNAVAILABLE_NOTE };
-  const width = Math.max(128, Math.min(2500, limit - 1200));
+  // F7: the body is sized by the real serialized reply, escaping included, so a reply never outgrows its budget
+  // and a long body costs as few round trips as the budget allows.
+  const base = buildReply(run, 'answered', configured, false, limit, undefined, true);
+  const envelope = JSON.stringify(base).length;
+  // F7: a slice's room is the limit minus the reply it rides in and minus what the slice, its cursor and
+  // its delivery receipt add; the text is measured escaped, so a body full of newlines still fits.
+  const id = '00000000-0000-0000-0000-000000000000';
+  const fields = JSON.stringify({
+    source: body.source, tool: body.evidence.tool, text: '', offset: body.offset, end: body.offset,
+    total: body.evidence.body.length, unit: 'utf16', upstreamComplete: body.evidence.upstreamComplete,
+    upstreamOmitted: body.evidence.upstreamOmitted,
+  }).length + JSON.stringify({ bodyProjection: 'preview', cursor: id, nextCursor: id, canContinue: false, [bodyDelivery]: { researchId: run.researchId, runId: run.runId, cursor: id } }).length;
+  const room = Math.max(0, limit - envelope - fields - 8);
+  let width = 0;
+  let spent = 0;
+  for (const char of body.evidence.body.slice(body.offset)) {
+    spent += JSON.stringify(char).length - 2;
+    if (spent > room) break;
+    width += char.length;
+  }
+  if (width === 0) width = [...body.evidence.body.slice(body.offset)][0]?.length ?? 0;
   const cursor = run.bodyCursorRequested ?? bodyCursor(run, key, body.offset, width), page = run.bodyCursors.get(cursor)!;
   if (page.end < body.evidence.body.length) page.nextCursor ??= bodyCursor(run, key, page.end, width);
   else {
     const next = [...run.bodies].find(([other, value]) => other !== key && value.offset < value.evidence.body.length);
     if (next) page.nextCursor ??= bodyCursor(run, next[0], next[1].offset, width);
   }
-  const base = buildReply(run, 'answered', configured, false, Math.max(1000, limit - width - 1100), undefined, true);
   const otherPending = base['canContinue'] === true;
   if (!page.nextCursor && typeof base['nextCursor'] === 'string') page.nextCursor = base['nextCursor'];
   page.canContinue = Boolean(page.nextCursor) || otherPending;
@@ -2248,7 +2180,7 @@ const calendarDayLines = (days: readonly { day: string; entries: string[] }[]): 
 
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, limit);
-  if (bodyReply) return bodyReply;
+  if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
   const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[] }[] = [];
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
@@ -2354,8 +2286,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
     // words, so the model never spends another call fetching what is already in hand.
     const trimmed = dropped > 0 || calendarPending || mailPending;
-    const complete = status === 'answered' && !trimmed && [...run.sourcesDone].some(source => configured.includes(source));
-    const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`) : note;
+    // K8b: a source still reading is named in the note and keeps the reply partial, so the model never
+    // hears "nothing more" while a read it asked for is still in flight.
+    const stillReading = configured.filter(source => run.pending.has(source));
+    const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
+    const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`)
+      : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}` : note;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
@@ -2634,7 +2570,10 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
   const left = run.mailDeadlineAt - now();
   if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
-  const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(left, remainingMs)))]);
+  // RUN-R7: the mail deadline is cut on the run's clock, released when the collector ends.
+  const cut = cutAfter(Math.min(left, remainingMs), deps.schedule);
+  const signal = AbortSignal.any([parent, cut.signal]);
+  try {
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
@@ -2695,6 +2634,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     });
     if (run.cancelled) { invalidateEvidence(run); break; }
   }
+  } finally { cut.done(); }
   if (signal.aborted) run.cutShort.add('mail');
 }
 
@@ -2749,7 +2689,10 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     run.calendarScopeAttempted = true;
   }
   const sourceDeadlineAt = now() + Math.min(RESEARCH.sourceDeadline.calendar, remainingMs);
-  const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(RESEARCH.sourceDeadline.calendar, remainingMs)))]);
+  // RUN-R7: the calendar deadline is cut on the run's clock, released when the collector ends.
+  const cut = cutAfter(Math.min(RESEARCH.sourceDeadline.calendar, remainingMs), deps.schedule);
+  const signal = AbortSignal.any([parent, cut.signal]);
+  try {
   while (now() < sourceDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     // E8: a window this session already read inside the turn window costs no transport call.
     for (const [key, read] of run.calendar) {
@@ -2831,6 +2774,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     if (run.cancelled) { invalidateEvidence(run); break; }
     if (now() - run.startedAt >= run.deadlineMs) break;
   }
+  } finally { cut.done(); }
   if (signal.aborted) run.cutShort.add('calendar');
 }
 
@@ -2888,7 +2832,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       run.unavailableReasons.set('memory', 'history_reference_unavailable'); done.push(settle(plan, 'unavailable')); continue;
     }
     if (!evidenceAllowed(deps, run, context.signal)) { done.push(settle(plan, 'unavailable')); continue; }
-    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(RESEARCH.sourceDeadline.memory)]);
+    // RUN-R7: the memory read is cut on the run's clock, released when the read settles.
+    const cut = cutAfter(RESEARCH.sourceDeadline.memory, deps.schedule);
+    const signal = AbortSignal.any([context.signal, cut.signal]);
     try {
       run.ops++;
       const [result] = await deps.execute(plan.read.subs, signal);
@@ -2907,7 +2853,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
       done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: page });
-    } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); }
+    } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); } finally { cut.done(); }
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory' && !entry.read.unresolved);
   // N3: an unresolvable window reads nothing and says why, instead of spending the batch deadline.
@@ -2956,7 +2902,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   });
   const pending = cached.map((hit, index) => hit === undefined ? index : -1).filter(index => index >= 0);
   run.ops += Math.max(1, pending.length);
-  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(lookupBound(source, reads.length, remainingMs))]);
+  // RUN-R7: the lookup is cut on the run's clock, released when the read settles.
+  const cut = cutAfter(lookupBound(source, reads.length, remainingMs), deps.schedule);
+  const signal = AbortSignal.any([context.signal, cut.signal]);
   let results: IntentSubResult[];
   try {
     if (pending.length === 0) results = cached.map(hit => hit!);
@@ -2985,6 +2933,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
     done.push({ ...settle(plan, outcome, block.lines, block.total), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
   });
+  cut.done();
   return done;
 }
 
@@ -3115,7 +3064,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     throw error;
   } finally {
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 
@@ -3256,6 +3205,19 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   return early;
 }
 
+/** K8b: waits for a run's in-flight readers, bounded by the first-answer cut and by the call's own signal. */
+function waitForPending(run: RunState, deps: ResearchDeps, signal: AbortSignal): Promise<void> {
+  if (run.pending.size === 0) return Promise.resolve();
+  const schedule = deps.schedule ?? scheduleTimer;
+  return new Promise<void>(resolve => {
+    let timer: { cancel: () => void } | undefined;
+    const done = (): void => { run.pendingWaiters.delete(done); timer?.cancel(); signal.removeEventListener('abort', done); resolve(); };
+    run.pendingWaiters.add(done);
+    timer = schedule(done, RESEARCH.firstAnswerMs);
+    if (signal.aborted) done(); else signal.addEventListener('abort', done, { once: true });
+  });
+}
+
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
@@ -3286,6 +3248,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   }
 
   const question = call.question?.trim() ?? '';
+  // K8a: a start whose question carries no content ("wait findings.", "any results?") is the model asking
+  // about the run already reading; cancelling it there threw away the findings it was asking for.
+  if (call.action === 'start' && metaOnlyQuestion(question)) {
+    const active = deps.ledger.last();
+    if (active && !active.cancelled && !active.stopped && (!active.ended || active.pending.size > 0)) {
+      call = { ...call, action: 'continue', researchId: active.researchId };
+      active.metaStartAsContinue = true;
+    }
+  }
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
@@ -3313,6 +3284,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   run.direction = call.direction ?? run.direction;
   if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
+  first.snapshot = () => ({ run, configured, limit });
+  // K8b: a continue on a run whose readers are still working waits for them, bounded by the first-answer cut.
+  if (call.action !== 'start' && run.pending.size > 0) await waitForPending(run, deps, signal);
   const executeSource = deps.execute, emitProgress = deps.emit;
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);
   const current = (): boolean => !run.cancelled && !run.stopped && deps.ledger.find(run.researchId) === run;
@@ -3326,7 +3300,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
-    const dispatchSignal = mailOnly ? AbortSignal.any([sourceSignal, AbortSignal.timeout(Math.max(1, (run.mailDeadlineAt ?? now()) - now()))]) : sourceSignal;
+    // RUN-R7: the mail read's own deadline is cut upstream on the run's clock, so no wall-clock timer rides here.
+    const dispatchSignal = sourceSignal;
     if (!current() || dispatchSignal.aborted) return subs.map(sub => ({ key: sub.key, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'round_cancelled' }));
     const at = now(), batch = ++invocation;
     const sources = [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
@@ -3337,7 +3312,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const action = /search|list|find|history/.test(sub.name) ? 'search' : 'read';
       return { callId: stepCallId, stepId: `${run.researchId}:${run.runId}:${stepCallId}:${batch}:${source}`, source, action, ...(subject ? { subject } : {}) };
     });
-    try { for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); publishStep({ ...step, phase: 'start' }); } }
+    try { for (const step of steps) { running.set(step.source, (running.get(step.source) ?? 0) + 1); run.pending.add(step.source); publishStep({ ...step, phase: 'start' }); } }
     catch (error) { stepSinkFailed = true; throw error; }
     update();
     let ended = false;
@@ -3349,7 +3324,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const ok = errorCode === undefined && own.length > 0 && own.every(result => result?.ok);
         const code = errorCode ?? (own.some(result => result?.code === 'timeout' || result?.code === 'deadline') ? 'timeout' : ok ? undefined : 'failed');
         const count = (running.get(step.source) ?? 1) - 1;
-        if (count > 0) running.set(step.source, count); else running.delete(step.source);
+        if (count > 0) running.set(step.source, count); else { running.delete(step.source); run.pending.delete(step.source); if (run.pending.size === 0) for (const wake of [...run.pendingWaiters]) wake(); }
         if (ok) completed.add(step.source);
         const resultCount = own.reduce((count, result) => count + (result?.ok ? result.mailPage?.messages.length ?? result.calendarPage?.events.length ?? (Array.isArray(result.historyPage?.['hits']) ? result.historyPage['hits'].length : shapeBlock(shapeKindOf(step.source, 'knowledge_search'), [result]).total) : 0), 0);
         publishStep({ ...step, phase: 'end', ok, ...(ok ? { resultCount } : {}), ...(code ? { errorCode: code } : {}), ms: Math.max(0, now() - at) });
@@ -3357,17 +3332,26 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       update();
     };
     const progressSignal = AbortSignal.any([dispatchSignal, run.progressAbort.signal]);
-    const aborted = (): void => finish([], dispatchSignal.aborted && dispatchSignal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled');
+    const aborted = (): void => {
+      if (!dispatchSignal.aborted && run.cancelled) run.supersededAborts += new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter(source => source !== null)).size;
+      finish([], dispatchSignal.aborted && dispatchSignal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled');
+    };
     progressSignal.addEventListener('abort', aborted, { once: true });
     if (progressSignal.aborted) aborted();
     let results: IntentSubResult[];
-    try { results = await executeSource(subs, dispatchSignal); finish(results, current() ? undefined : 'cancelled'); }
+    try { results = await executeSource(subs, progressSignal); finish(results, current() ? undefined : 'cancelled'); }
     catch (error) { finish([], 'failed'); throw error; }
     finally { progressSignal.removeEventListener('abort', aborted); }
     const fresh = results.flatMap(result => result.binding ? [result.binding] : []);
-    if (run.stopped || run.cancelled || dispatchSignal.aborted || deps.ledger.find(run.researchId) !== run) {
+    if (run.stopped || run.cancelled || deps.ledger.find(run.researchId) !== run) {
       deps.ledger.discardEvidence(fresh);
       return results.map(result => { const { hostEvidence: _evidence, ...rest } = result; return { ...rest, ok: false, text: '', code: 'round_cancelled' }; });
+    }
+    // L10: a cut or a deadline drops only what did not arrive; a source that answered keeps its findings
+    // and the run is partial, never cancelled.
+    if (dispatchSignal.aborted) {
+      deps.ledger.discardEvidence(results.flatMap(result => result.ok ? [] : result.binding ? [result.binding] : []));
+      return results.map(result => result.ok ? result : { ...result, ok: false, text: '', code: 'round_cancelled' });
     }
     for (const result of results) {
       if (!result.ok || !result.binding || result.hostEvidence?.kind !== 'remote-body') continue;
@@ -3377,17 +3361,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     }
     return results;
   } };
-  first.snapshot = () => ({ run, configured, limit });
 
   if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
-  if (call.action === 'continue' && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);
-  if (call.action === 'continue' && run.mail.size > 0 && call.lookups === undefined) {
+  // RUN-R8 F2: L23 stops body-slice paging after a complete reply. A continue that brings a new direction or
+  // lookups is a new question, so it dispatches its reads instead of paging the last answer.
+  const freshQuestion = call.direction !== undefined || call.lookups !== undefined;
+  if (call.action === 'continue' && !freshQuestion && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);
+  if (call.action === 'continue' && !freshQuestion && run.mail.size > 0 && call.lookups === undefined) {
     const pendingLocal = [...mailMessages(run).keys()].some(key => !run.mailDelivered.has(key));
     if (!pendingLocal) await collectMail(deps, run, signal, Math.min(RESEARCH.sourceDeadline.mail, run.deadlineMs), now);
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
     return buildReply(run, 'answered', configured, false, limit);
   }
-  if (call.action === 'continue' && run.calendar.size > 0 && call.lookups === undefined) {
+  if (call.action === 'continue' && !freshQuestion && run.calendar.size > 0 && call.lookups === undefined) {
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
     const pendingLocal = [...run.calendar.values()].some(read => [...read.events].some(([key]) => !run.calendarDelivered.has(key)));
     if (!pendingLocal) await collectCalendar(deps, run, signal, Math.min(RESEARCH.sourceDeadline.calendar, run.deadlineMs), now);
@@ -3493,15 +3479,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
           // K8: the read's own span is stamped when it settles, so the source log states the read and
-          // never the wait it spent in the selector's shadow.
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).then((results: IntentSubResult[]) => {
+          // never the wait it spent before selection.
+          // F4: the prime read is bounded by its own source deadline on the run's clock, never by the
+          // answer point, so the first answer cannot cut a read that is still working.
+          const prefetchCut = new AbortController();
+          const prefetchTimer = schedule(() => prefetchCut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.min(RESEARCH.sourceDeadline.knowledge, remainingMs));
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then((results: IntentSubResult[]) => {
             knowledgeEndedAt = now();
             return results;
           }).catch((error: unknown) => {
             if (stepSinkFailed) throw error;
             knowledgeEndedAt = now();
             return [] as IntentSubResult[];
-          });
+          }).finally(() => prefetchTimer.cancel());
         }
       }
 
@@ -3528,22 +3518,16 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       } else if (routed !== undefined) {
         selection = routed;
         if (driver === undefined) driver = 'routed';
-      } else if (deps.selector === undefined || run.questionClass === 'quick_fact') {
-        // W2: a run the first round already classified quick_fact needs no second opinion (#473).
+      } else {
+        // F-B: the voice path never waits for a selector round; the deterministic recipe answers at once.
         fallbackUsed = true;
         usedFallbackThisRound = true;
         selection = fallbackSelection(question || run.direction || '', configured, now());
         if (driver === undefined) driver = 'fallback';
-      } else {
-        const selStart = now();
-        let output: SelectorOutput | null = null;
-        try {
-          output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
-        } catch { output = null; }
-        selectorMs += now() - selStart;
-        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = routed ?? fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
-        else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
       }
+
+      // F5: which author wrote the query, a closed set: the owner's hint, the router, or the fallback recipe.
+      const selectionAuthor: 'routed' | 'fallback' | 'hint' = hint.length > 0 ? 'hint' : routed !== undefined ? 'routed' : 'fallback';
 
       // A single-source hint must always run that source, even when the question carried no terms
       // the fallback could match (an empty or terse spoken question): seed the hinted searches.
@@ -3572,7 +3556,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const chosen = [...new Set(selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind)))];
       // Outcome 5: the pre-started knowledge read is included even when the selector did not pick it,
       // so the prime source is always read once and its findings can rank first.
-      if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
+      if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && !chosen.includes('brief') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
       perRound.push({ candidates: offerable.map(kind => ({ kind, pUseful: selection.pUseful[kind] ?? 0 })), chosen: [...chosen] });
 
       if (chosen.length === 0) { stopReason = selection.actions.some(a => a.kind === 'stop_insufficient') ? 'insufficient' : 'answered'; run.rounds = round; break; }
@@ -3598,7 +3582,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (remainingMs <= 0) { stopReason = 'deadline'; break; }
         // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on
         // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
-        const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal]);
+        // RUN-R7: the round is bounded by the batch deadline check and each read's own cut on the run's clock,
+        // never by a wall-clock timer that a fake clock cannot reach.
+        const roundSignal = signal;
         const latencies = new Map<CandidateKind, number>();
         const readStarted = new Set<CandidateKind>();
         const cutKinds = new Set<CandidateKind>();
@@ -3649,7 +3635,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
           const issued = served.filter(call => !run.calls.has(callSignature(call)));
-          if (issued.length === 0) return;
+          if (issued.length === 0) { cutTimer.cancel(); return; }
           for (const call of issued) run.calls.add(callSignature(call));
           const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
           const at = consumeKnowledge ? knowledgeStartedAt : now();
@@ -3669,6 +3655,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const calendarCalls = issued.filter(call => call.name === INTERNAL.calendarList);
           const mailCalls = issued.filter(call => call.name === INTERNAL.mailList);
           const ordinaryCalls = issued.filter(call => call.name !== INTERNAL.calendarList && call.name !== INTERNAL.mailList && call.name !== WEB_SEARCH_ACTION);
+          // RUN-R2: the pre-started knowledge read is the round's knowledge read, whatever kind the plan
+          // filed it under, so a knowledge question stays exactly one search call.
+          const prefetchedKnowledge = knowledgePromise !== undefined && !knowledgeConsumed && !consumeKnowledge && ordinaryCalls.some(call => call.name === INTERNAL.knowledgeSearch);
+          const dispatched = prefetchedKnowledge ? ordinaryCalls.filter(call => call.name !== INTERNAL.knowledgeSearch) : ordinaryCalls;
           const webCalls = issued.filter(call => call.name === WEB_SEARCH_ACTION);
           const webResults = async (): Promise<IntentSubResult[]> => {
             if (webCalls.length === 0 || deps.web === undefined) return [];
@@ -3712,10 +3702,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           let results: IntentSubResult[];
           if (consumeKnowledge) results = [...(knowledgeConsumed = true, await knowledgePromise!), ...await webResults()];
           else {
-            const [ordinary, calendar, mail, web] = await Promise.all([ordinaryCalls.length ? executeWithRetry(ordinaryCalls) : Promise.resolve([]), calendarResults(), mailResults(), webResults()]);
+            const [ordinary, calendar, mail, web] = await Promise.all([dispatched.length ? executeWithRetry(dispatched) : Promise.resolve([]), calendarResults(), mailResults(), webResults()]);
             const byKey = new Map([...ordinary, ...calendar, ...mail, ...web].map(result => [result.key, result]));
             // Production execute keys include the host call id, so preserve source positions for ordinary results.
-            ordinaryCalls.forEach((call, n) => { if (ordinary[n]) byKey.set(call.key, ordinary[n]!); });
+            dispatched.forEach((call, n) => { if (ordinary[n]) byKey.set(call.key, ordinary[n]!); });
+            if (prefetchedKnowledge) {
+              const prefetched = await knowledgePromise!;
+              knowledgeConsumed = true;
+              for (const call of ordinaryCalls) if (call.name === INTERNAL.knowledgeSearch) byKey.set(call.key, prefetched.find(result => result.key === call.key) ?? prefetched[0]!);
+            }
             results = issued.map(call => byKey.get(call.key)).filter((result): result is IntentSubResult => result !== undefined);
           }
           // R6: a source with real text is its own credit; the rest of the round still finishes.
@@ -3725,7 +3720,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // because the search reply already carries the body.
           const second: IntentSubCall[] = [];
           const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
-          if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
+          if (served.some(call => call.name === INTERNAL.mailList) && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
             const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
             ids.forEach((id, index) => second.push({ key: `mo${index}`, name: INTERNAL.mailRead, args: { id } }));
           }
@@ -3778,7 +3773,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           if (results.some(result => result.ok)) run.readKinds.add(kind);
           const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
           if (id) run.evidence.set(kind, id);
-          const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
           // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
           // `results` is `[...issued, ...freshSecond]`, so position is the stable key.
           for (const [index, sub] of [...issued, ...freshSecond].entries()) {
@@ -3791,7 +3785,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
               items: result ? itemLines(result.text).length : 0,
               rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
-              queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
+              queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor: selectionAuthor,
               ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today'), ...windowDates(action?.window ?? 'today', now(), deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) } : {}),
               ...(partial ? { unread: Number(partial[1]) } : {}),
             });
@@ -3835,7 +3829,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     run.ended = true;
     elapsedMs = now() - started;
     status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs || sawCut ? 'partial' : 'answered') : 'partial');
-    const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+    // K8b: a read still in flight keeps the answer partial, and the model may ask for it again.
+    if (status === 'answered' && run.pending.size > 0) status = 'partial';
+    const canContinue = run.pending.size > 0 || (!run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source)));
     notify({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
     reply = buildReply(run, status, configured, canContinue, limit);
     driver ??= 'single-source-hint';
@@ -3851,7 +3847,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
     // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
     // because the host log refuses a line whose driver is not one of the four.
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 
@@ -3891,6 +3887,13 @@ const QUESTION_STOP_WORDS = new Set(['what', 'whats', 'is', 'are', 'was', 'were'
 function questionTerms(question: string): Set<string> {
   const words = question.toLowerCase().replace(/[^a-z0-9]+/gu, ' ').trim().split(/\s+/u).filter(Boolean);
   return new Set(words.filter(word => !QUESTION_STOP_WORDS.has(word)));
+}
+
+/** K8a: the words a model says to ask after a run it already started, never a new question. */
+const META_ONLY_WORDS = new Set(['wait', 'waiting', 'find', 'finding', 'findings', 'found', 'result', 'results', 'answer', 'answers', 'complete', 'completed', 'more', 'ready', 'pending', 'hold', 'holding', 'still', 'reading', 'look', 'looking', 'give', 'tell', 'show', 'let', 'know', 'see', 'ok', 'okay', 'yes', 'then', 'so', 'just', 'now', 'again', 'has', 'have', 'got', 'next']);
+function metaOnlyQuestion(question: string): boolean {
+  const terms = [...questionTerms(question)];
+  return terms.every(term => META_ONLY_WORDS.has(term));
 }
 
 /**

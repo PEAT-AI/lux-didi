@@ -300,7 +300,14 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
     return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) };
   }));
   h.deps.memo = { calendar: new Map() };
-  h.deps.schedule = (callback, delayMs) => { if (delayMs === RESEARCH.rateLimitRetryMs) waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
+  // RUN-R8: only the rate-limit wait is driven here. A read's own deadline is a timer on this same seam, so
+  // it stays inert and cancellable instead of firing at once and closing the read before its retry.
+  h.deps.schedule = (callback, delayMs) => {
+    if (delayMs !== RESEARCH.rateLimitRetryMs) return { unref: () => {}, cancel: () => {} };
+    waits += 1;
+    const timer = setTimeout(callback, 0);
+    return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
+  };
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
   const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
@@ -320,7 +327,14 @@ test('F2: a rate limit on the first page leaves a closed failure and a plain cov
     return { key: call.key, name: call.name, ok: false, text: 'provider failure: http 429 rateLimitExceeded', originalCharacters: 0, omittedCharacters: 0, code: 'connector_error' };
   }));
   h.deps.memo = { calendar: new Map() };
-  h.deps.schedule = (callback, delayMs) => { if (delayMs === RESEARCH.rateLimitRetryMs) waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
+  // RUN-R8: only the rate-limit wait is driven here. A read's own deadline is a timer on this same seam, so
+  // it stays inert and cancellable instead of firing at once and closing the read before its retry.
+  h.deps.schedule = (callback, delayMs) => {
+    if (delayMs !== RESEARCH.rateLimitRetryMs) return { unref: () => {}, cancel: () => {} };
+    waits += 1;
+    const timer = setTimeout(callback, 0);
+    return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
+  };
   const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d' } }] }, new AbortController().signal);
   assert.equal(sent.length, 2, 'the page is asked once, then once more after the wait');
   assert.equal(waits, 1, 'exactly one delayed retry');

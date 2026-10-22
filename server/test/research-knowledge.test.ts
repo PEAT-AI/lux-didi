@@ -2,27 +2,22 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, candidateSubs, knowledgeQuery, runResearch, shapeBlock,
-  type ResearchDeps, type ResearchSourceLog, type ResearchSelector, type SelectorOutput, type SourceKind,
+  type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
-// Two sources: with one configured source the run takes the deterministic single-source path and the
-// selector is never called, which is not the path this suite is about.
+// Two sources, so the run plans across them instead of taking the single-source path.
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
 
 function sub(name: string, text = 'evidence', ok = true, key = name): IntentSubResult {
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
 }
 
-interface Harness { deps: ResearchDeps; sources: ResearchSourceLog[]; executed: IntentSubCall[]; offered: string[][] }
+interface Harness { deps: ResearchDeps; sources: ResearchSourceLog[]; executed: IntentSubCall[] }
 
-function harness(opts: { selector: ResearchSelector; execute: ResearchDeps['execute']; now?: () => number }): Harness {
+function harness(opts: { execute: ResearchDeps['execute']; now?: () => number }): Harness {
   const sources: ResearchSourceLog[] = [];
   const executed: IntentSubCall[] = [];
-  const offered: string[][] = [];
-  const selector: ResearchSelector = {
-    select: async (input, signal) => { offered.push([...input.candidates]); return opts.selector.select(input, signal); },
-  };
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
     configured: CONFIGURED,
@@ -33,14 +28,9 @@ function harness(opts: { selector: ResearchSelector; execute: ResearchDeps['exec
     logJoined: () => {},
     logSource: entry => sources.push(entry),
     ledger: new ResearchLedger(),
-    selector,
   };
-  return { deps, sources, executed, offered };
+  return { deps, sources, executed };
 }
-
-const selectorOf = (...outputs: SelectorOutput[]): ResearchSelector => ({
-  select: async () => outputs.shift() ?? { questionClass: 'cross_source', actions: [], pUseful: {} },
-});
 
 /** A real search reply shape: the H1 header, the italic retrieval metadata, one cut hit. */
 const CUT_SEARCH = [
@@ -121,23 +111,15 @@ test('ROUTE-1022: a body read is never clipped by the host, and the search windo
 test('K8: knowledge latency is stated at its measured p50, and the log carries the read span not the wait', async () => {
   assert.equal(RESEARCH.p50Seconds.knowledge, 2.9);
   let clock = 0;
-  // The selector is slow and the read fast: the read settles first, its own end is stamped, and the
-  // log line is written long after. Two microtask hops between them model that overlap honestly.
-  const selector: ResearchSelector = {
-    select: async () => {
-      await Promise.resolve(); await Promise.resolve();
-      clock += 3_000;
-      return { questionClass: 'cross_source' as const, actions: [{ kind: 'knowledge_search' as const }], pUseful: { knowledge_search: 0.9 } };
-    },
-  };
+  // The read runs its own span on the run's clock, and the source line is stamped from that span, never
+  // from the whole run.
   const h = harness({
-    selector,
     now: () => clock,
     execute: async subs => { clock += 1_200; return subs.map(call => sub(call.name, CUT_SEARCH, true, call.key)); },
   });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   const knowledge = h.sources.find(entry => entry.source === 'knowledge');
-  assert.equal(knowledge?.ms, 1_200, 'the batch wait the prime read spent before selection is not its latency');
+  assert.equal(knowledge?.ms, 1_200, 'the source line carries the read span, not the whole run');
 });
 
 // --- ROUTE-1022 (#526): one knowledge call, full bodies -----------------------------------------
@@ -155,7 +137,7 @@ test('ROUTE-1022 K7: an instruction sentence is no knowledge query', () => {
 
 test('ROUTE-1022: a knowledge question is one search call, with the full body window and no second hop', async () => {
   const executed: IntentSubCall[] = [];
-  const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }),
+  const h = harness({
     execute: async subs => subs.map(call => {
       executed.push(call);
       return sub(call.name, CUT_SEARCH, true, call.key);
@@ -170,8 +152,7 @@ test('ROUTE-1022: a knowledge question is one search call, with the full body wi
 
 test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimmed to the hits that fit', async () => {
   const longBody = Array.from({ length: 6 }, (_, index) => `**#${index + 1}** [PATTERN] Hit ${index} | ${'x'.repeat(2_900)}`).join('\n');
-  const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }),
-    execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   const bytes = JSON.stringify(reply).length;
   assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} budget`);

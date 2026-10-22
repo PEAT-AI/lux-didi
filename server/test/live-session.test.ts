@@ -25,7 +25,6 @@ import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { LiveToolJobs, type ToolJob, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
-import { parseSelector, type ResearchSelector } from '../tools/research.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS } from '../prompt/index.js';
@@ -137,7 +136,6 @@ async function harness(t: TestContext, overrides: {
   /** W10 (behaviour 2): the calendar endpoint reports connected while no read grant exists at all. */
   ungrantedCalendar?: boolean;
   mail?: boolean;
-  research?: ResearchSelector;
   mailData?: (name: string, args: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   mongoose?: boolean;
   mongooseData?: unknown;
@@ -398,7 +396,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(overrides.research ? { research: overrides.research } : {}), ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -4846,10 +4844,9 @@ test('mail integration: a failed dispatched native page is terminal and truthful
 });
 
 
-test('mail integration: actual selector parsing shares the native page collector', async t => {
+test('mail integration: the deterministic plan shares the native page collector', async t => {
   const messages = Array.from({ length: 13 }, (_, n) => ({ id: `selector-mail-${n}`, headers: [{ name: 'Subject', value: `Selector mail ${n}` }] }));
   const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6,
-    research: { async select(input) { return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: input.completed.some(entry => entry.kind === 'mail_search') ? [] : [{ kind: 'mail_search', query: 'from:selector@example.invalid' }], pUseful: { mail_search: 0.99 } })); } },
     mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
   }); await attached(h, 'mail-selector');
   try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List the synthetic mailbox' }); }
@@ -4857,7 +4854,8 @@ test('mail integration: actual selector parsing shares the native page collector
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;
   const calls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(calls.length, 2);
-  assert.equal((calls[0]!.args as Record<string, unknown>)['q'], 'from:selector@example.invalid');
+  // ROUTE-1022: the fallback plan sends its own window query, and the native page collector follows it.
+  assert.equal(String((calls[0]!.args as Record<string, unknown>)['q']), 'newer_than:2d', 'the plan sent its own mail query, not a selector one');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
 });
@@ -5018,9 +5016,9 @@ test('mail body integration: a source completion after research Stop cannot resu
   h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-stop', name: 'research', args: { action: 'stop', researchId } }] } });
   const replies = () => h.f.frames.flatMap(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame ? (frame as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses : []);
   for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-stop'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-stop'));
-  release.resolve(); for (let n = 0; n < 2000 && (!captured || !replies().some(reply => reply.id === 'pending-body-start')); n++) await tick(); assert(captured); assert(replies().some(reply => reply.id === 'pending-body-start'));
-  const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
-  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  release.resolve(); for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-start'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-start'));
+  // L10: a stopped run drops a late body before the evidence gate, so it can never be resurrected.
+  assert.equal(captured, undefined, 'a stopped run never offers its late body to the evidence gate');
   assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
@@ -5083,20 +5081,45 @@ test('Lux body integration: exact received opaque content reaches its retained t
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
 
-for (const route of ['typed', 'selector'] as const) test(`VOICE-R4: ${route} research sends no status line at six seconds`, async t => {
+test('RUN-R11: a 16,800-character mail body arrives in at most four replies, every character once', async t => {
+  const subject = 'Long body';
+  const body = 'Mail body evidence line. '.repeat(672);
+  assert.equal(body.length, 16_800, 'the fixture body is the 16,800 characters the ruling names');
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Long body' }, body, bodyCoverage: { complete: true } }) });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await attached(h, 'long-mail-body');
+  await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
+  const researchId = String(last()['researchId']); let collected = '', replies = 1, started = -1;
+  for (;;) {
+    const slices = last()['bodySlices'] as { text: string; offset: number }[] | undefined;
+    if (Array.isArray(slices)) for (const slice of slices) {
+      if (started < 0) started = slice.offset;
+      assert.equal(slice.offset, started + collected.length, 'every slice continues where the last one stopped');
+      collected += slice.text;
+    }
+    assert.ok(JSON.stringify(last()).length <= 6000, 'every reply stays under the reply limit');
+    if (!last()['canContinue']) break;
+    assert.ok(replies < 4, 'a 16,800 character body costs at most four replies');
+    replies += 1;
+    await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
+  }
+  assert.equal(collected, `subject: ${subject}\n\n${body}`, 'the joined pages are the raw body, byte for byte');
+});
+test('VOICE-R4: a research call sends no status line at six seconds', async t => {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => receipts.push(raw as Record<string, unknown>) }); t.after(detach);
-  let selectCalls = 0;
   const scheduler = new DeadlineClock(), fake = progressPort();
   let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); t.after(release);
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits, ...(route === 'selector' ? { research: { async select() { selectCalls++; return parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'Synthetic progress lookup' }], pUseful: { chat_search: 0.99 } })); } } } : {}) });
-  const { session } = await openPort(h, `progress-${route}`);
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
+  const { session } = await openPort(h, 'progress-typed');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'typed-read', name: 'research', args: { action: 'start', question: 'Synthetic progress lookup', ...(route === 'typed' ? { lookups: [{ source: 'chat', query: 'Synthetic progress lookup' }] } : {}) } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'typed-read', name: 'research', args: { action: 'start', question: 'Synthetic progress lookup', lookups: [{ source: 'chat', query: 'Synthetic progress lookup' }] } }] });
   for (let n = 0; n < 50 && !h.calls.length; n++) await settlePort();
   assert.equal(h.calls.filter(call => call.name.startsWith('mattermost_')).length, 1, 'one actual SDK chat read');
-  assert.equal(h.calls.length, route === 'typed' ? 1 : 2, 'selector also reads its canonical prime knowledge source');
-  if (route === 'selector') assert.ok(selectCalls > 0, 'actual selector path ran');
+  assert.equal(h.calls.length, 1, 'one lookups read and no selector round');
   h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, []);
   h.advance(1); scheduler.runDue(); await settlePort();
   assert.deepEqual(fake.commentary, [], 'the six second beat stays silent');

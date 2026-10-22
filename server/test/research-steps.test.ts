@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { attachHostLogSink, stepSubject, STEP_SUBJECT_CAP, type LiveToolStep } from '../tools/host-events.js';
-import { ResearchLedger, runResearch, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { ResearchLedger, runResearch, type ResearchDeps, type SourceKind } from '../tools/research.js';
 import { shapeGmailList } from '../tools/live-shape.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
@@ -24,18 +24,8 @@ function stepCollector(): { steps: LiveToolStep[]; detach: () => void } {
   return { steps, detach };
 }
 
-function selectorOf(kinds: readonly ('knowledge_search' | 'mail_search' | 'chat_search')[], query: string, window?: string): ResearchSelector {
-  return {
-    select: async () => ({
-      questionClass: 'cross_source',
-      actions: kinds.map(kind => ({ kind, query, ...(window !== undefined && kind === 'chat_search' ? { window } : {}) })),
-      pUseful: { knowledge_search: 0.9, mail_search: 0.8, chat_search: 0.7 },
-    }),
-  };
-}
-
-function deps(selector: ResearchSelector, execute: ResearchDeps['execute']): ResearchDeps {
-  return { now: () => 0, configured: CONFIGURED, execute, emit: () => {}, log: () => {}, logSubcall: () => {}, ledger: new ResearchLedger(), selector };
+function deps(execute: ResearchDeps['execute']): ResearchDeps {
+  return { now: () => 0, configured: CONFIGURED, execute, emit: () => {}, log: () => {}, logSubcall: () => {}, ledger: new ResearchLedger() };
 }
 
 test('research publishes one live step per actual source read, including mail body follow-up', async () => {
@@ -45,24 +35,27 @@ test('research publishes one live step per actual source read, including mail bo
       subs.map(call => call.name === 'gmail_search_messages'
         ? { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: [{ id: 'synthetic-mail', headers: { Subject: 'release freeze decided on Friday' } }] }) }
         : sub(call.name, 'release freeze decided on Friday', true, call.key));
-    const reply = await runResearch(deps(selectorOf(['knowledge_search', 'mail_search', 'chat_search'], 'release freeze', 'week'), execute),
+    const reply = await runResearch(deps(execute),
       { action: 'start', question: 'what happened to the release freeze', callId: CALL_ID }, new AbortController().signal);
 
     assert.equal(reply['status'], 'complete');
     assert.equal(collector.steps.length, 8, 'three searches and the actual mail body follow-up each start and end');
     const starts = collector.steps.filter(step => step.phase === 'start');
     const ends = collector.steps.filter(step => step.phase === 'end');
-    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
+    // RUN-R3: with the selector gone the fallback plan dispatches chat before mail, and knowledge stays first.
+    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'chat', 'mail', 'mail']);
     assert.deepEqual(starts.map(step => step.action), ['search', 'search', 'search', 'read']);
-    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
+    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'chat', 'mail', 'mail']);
     assert.deepEqual(ends.map(step => step.action), ['search', 'search', 'search', 'read']);
     for (const step of collector.steps) {
       assert.equal(step.callId, CALL_ID, 'every step names the research call it belongs to');
       assert.ok(step.stepId, 'a step carries its own id');
     }
     // A step describes actual dispatched arguments, not an unused selector window.
-    assert.equal(starts[1]!.subject, 'release freeze');
-    assert.equal(starts[2]!.subject, 'release freeze');
+    assert.equal(starts[0]!.subject, 'happened release freeze');
+    // ROUTE-1022 owes the brief plan a mail query authored from the question; until then the mail search
+    // step carries the plan's own window query, and a step still describes what was really dispatched.
+    assert.equal(starts[2]!.subject, 'newer_than:2d');
     // The end step replaces its own start line, so both share one id.
     for (const [index, start] of starts.entries()) assert.equal(ends[index]!.stepId, start.stepId);
     for (const step of ends) {
@@ -80,7 +73,7 @@ test('a source that fails ends its own line with ok false, never with a body', a
       subs.map(call => call.name.includes('mail')
         ? { ...sub(call.name, '', false, call.key), code: 'connector_timeout' }
         : sub(call.name, 'the private message body', true, call.key));
-    await runResearch(deps(selectorOf(['knowledge_search', 'mail_search'], 'release freeze'), execute),
+    await runResearch(deps(execute),
       { action: 'start', question: 'what happened to the release freeze', callId: CALL_ID }, new AbortController().signal);
 
     const failed = collector.steps.filter(step => step.phase === 'end' && step.source === 'mail');

@@ -15,8 +15,7 @@ import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type Li
 import type { Store } from '../runtime/store.js';
 import type { LiveSelectionResult, LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 import { hostLogEvent } from './log.js';
-import { createGeminiSelector, type ResearchSelector } from '../tools/research.js';
-import { createWebSearch } from '../tools/web-search.js';
+import { createWebSearch, type WebSearchPort } from '../tools/web-search.js';
 import type { CalendarDigestSnapshot } from '../live/warm-context.js';
 import type { WarmPrewarmReceipt } from '../live/index.js';
 
@@ -26,7 +25,7 @@ const maxIncomingBytes = 64 * 1024;
  * Trusted in-process seam only: never accepted by CLI/HTTP/env. `profile` lets auth/wire tests drive a
  * validated LiveProfile while LIVE-GATEWAY-R1 blocks the config file from producing one itself.
  */
-export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchSelector?: ResearchSelector }
+export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchWeb?: WebSearchPort }
 
 function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
@@ -147,7 +146,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };
   let binding: PinnedProviderBinding | undefined;
-  let researchSelector = testing?.researchSelector;
+  let researchWeb = testing?.researchWeb;
   // TRAIN3J-R3: the key slot is a create-time gate, never a status one. Status stays local validation
   // (configured without reading the secret); a session for a slot with no key fails loud, never as Gemini.
   const keyPresent = testing?.credentials !== undefined || slotKeyPresent(configDir, profile.keyReference);
@@ -160,15 +159,14 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
         profile = validateLiveProfile({ ...profile, credentialBinding: binding.identity });
       } catch (error) { if (keyPresent) throw error; binding = undefined; }
     }
-    if (!researchSelector) {
+    if (!researchWeb) {
       try {
         const provider = loadProviderConfig({ configDir, ownerId: store.assistantId });
         if (provider.status === 'ready') {
           const bound = boundTextModel(configDir, provider, testing);
-          researchSelector = createGeminiSelector(bound.model, 'research-selector-v1',
-            createWebSearch({ credentials: testing?.credentials ?? bound.binding!.credentials() }));
+          researchWeb = createWebSearch({ credentials: testing?.credentials ?? bound.binding!.credentials() });
         }
-      } catch { researchSelector = undefined; }
+      } catch { researchWeb = undefined; }
     }
   } catch (error) {
     return { service: new UnconfiguredLive({ ...status, status: 'error', code: error instanceof ConfigError ? error.code : 'binding_unavailable' }), status: { ...status, status: 'error', code: error instanceof ConfigError ? error.code : 'binding_unavailable' } };
@@ -195,7 +193,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     const failed: LiveStatusPayload = { ...status, status: 'error', code };
     return { service: new UnconfiguredLive(failed), status: failed };
   }
-  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchSelector ? { research: researchSelector } : {}), ...(now ? { now } : {}) });
+  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };

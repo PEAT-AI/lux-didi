@@ -9,7 +9,8 @@ import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteSpoken, openCl
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type ResearchSelector, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
+import type { WebSearchPort } from '../tools/web-search.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -822,7 +823,7 @@ export class LiveSessionOwner {
   readonly #now: () => number;
   readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
-  readonly #research: ResearchSelector | undefined;
+  readonly #researchWeb: WebSearchPort | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
   #warm: WarmContextCache;
   /** The digest the host built at the last prewarm; absent leaves the calendar slot out (issue 339). */
@@ -859,7 +860,7 @@ export class LiveSessionOwner {
     this.#warm = new WarmContextCache({ budget: LIVE_INSTRUCTION_TARGET_CHARS, now: () => this.#now() });
     this.#store = config.store;
     this.#voice = config.voice;
-    this.#research = config.research;
+    this.#researchWeb = config.researchWeb;
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = config.now ?? Date.now;
@@ -2698,9 +2699,9 @@ export class LiveSessionOwner {
       configured, configuredNow: () => this.#researchSources(handle),
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
-      unavailableNow: () => this.#unreachableSources(handle), selector: this.#research, execute,
+      unavailableNow: () => this.#unreachableSources(handle), execute,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
-      ...(this.#research?.web === undefined ? {} : { web: this.#research.web }),
+      ...(this.#researchWeb === undefined ? {} : { web: this.#researchWeb }),
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.

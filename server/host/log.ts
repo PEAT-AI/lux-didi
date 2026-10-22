@@ -740,10 +740,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // a routed start writes its own line and names `routed`.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
     if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
+    // K14/K8a/L10: three optional closed counts, so a run line says how many whole bodies it sent, whether
+    // a contentless start stood in for a continue, and how many dispatches a supersession aborted.
+    const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
+    if (has('bodyReplies') && !isSafeCount(value.bodyReplies)) return;
+    if (has('metaStartAsContinue') && typeof value.metaStartAsContinue !== 'boolean') return;
+    if (has('supersededAborts') && !isSafeCount(value.supersededAborts)) return;
     // ROUTE-1022 K5: the plan a brief actually ran, as one closed token, never the question.
-    const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
-    if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasDriver ? ['driver'] : []), ...(hasPlan ? ['plan'] : [])].sort().join(',')) return;
+    if (has('plan') && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
+    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan'].filter(has);
+    if (Object.keys(value).sort().join(',') !== [...keys, ...optionals].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
     if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
     if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
@@ -783,7 +789,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
     if (typeof value.canContinue !== 'boolean') return;
     if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}), ...(hasPlan ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}), ...(has('bodyReplies') ? { bodyReplies: value.bodyReplies } : {}), ...(has('metaStartAsContinue') ? { metaStartAsContinue: value.metaStartAsContinue } : {}), ...(has('supersededAborts') ? { supersededAborts: value.supersededAborts } : {}), ...(has('plan') ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
   }
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
@@ -887,7 +893,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
-    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
+    if (!isSafeMember(value.queryAuthor, ['routed', 'fallback', 'hint'])) return;
     // A resolved window is two calendar dates in the id form, never a query and never an event title.
     if (hasFrom !== hasTo) return;
     if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;

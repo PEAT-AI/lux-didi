@@ -15,7 +15,6 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { parseSelector, type ResearchSelector } from '../tools/research.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
@@ -100,12 +99,6 @@ function drivenPort() {
   return { port, sessions, openedAt, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }) };
 }
 
-/** A selector that plans one knowledge read and then stops, so the dispatch under test is the one the host makes. */
-const SELECTOR: ResearchSelector = { async select(input) {
-  return parseSelector(JSON.stringify({ questionClass: 'quick_fact', pUseful: { knowledge_search: 0.99 },
-    actions: input.completed.some(entry => entry.kind === 'knowledge_search') ? [] : [{ kind: 'knowledge_search', query: 'synthetic plan' }] }));
-} };
-
 /** Every `tools/call` the fake knowledge connector answered, in order. */
 type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | undefined }[]; hold(): void; release(): void;
   /** The run's acceptance the delivery gate reads: `false` refuses the gate for the batches inside the window. */
@@ -182,7 +175,7 @@ async function harness(t: TestContext): Promise<Harness> {
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
   const { tools, hook } = await toolsFixture(t, store, profile);
-  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools, research: SELECTOR,
+  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools,
     now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
   ownerRef = owner;
   t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });

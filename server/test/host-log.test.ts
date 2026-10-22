@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
+import { createHostResourceSampler } from '../host/runtime.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
@@ -287,4 +288,50 @@ test('ROUTE-1022: the brief plan token reaches the log only from its closed set'
   };
   assert.deepEqual(safeEvent({ ...run, plan: 'knowledge_only' }), { ...run, plan: 'knowledge_only' }, 'the run receipt names the plan');
   assert.equal(safeEvent({ ...run, plan: 'brief' }), undefined, 'and refuses a token outside it');
+test('L2: a digest refresh receipt says which edge read it and how long, never a day', () => {
+  const base = { event: 'calendar_digest_refreshed', reason: 'first_connect', ms: 2402 };
+  assert.deepEqual(safeEvent(base), base, 'the first-connect read keeps its reason and its timing');
+  for (const reason of ['start', 'timer', 'recovered', 'first_connect']) {
+    assert.equal(safeEvent({ ...base, reason })?.reason, reason, `${reason} is a closed reason`);
+  }
+  assert.equal(safeEvent({ ...base, reason: 'manual' }), undefined, 'a reason outside the closed set is refused');
+  assert.equal(safeEvent({ ...base, extra: 'text' }), undefined, 'an extra field fails closed');
+  assert.equal(safeEvent({ ...base, ms: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ ...base, ms: 'fast' }), undefined, 'a non numeric duration is refused');
+  assert.equal(safeEvent({ event: 'calendar_digest_refreshed', reason: 'first_connect' }), undefined, 'a receipt with no duration is refused');
+});
+
+test('L12d: host_resources is numbers only, megabytes and a CPU percentage', () => {
+  const base = { event: 'host_resources', rssMb: 412.5, heapUsedMb: 83.2, cpuPct: 12.4 };
+  assert.deepEqual(safeEvent(base), base, 'one resource window survives unchanged');
+  assert.equal(safeEvent({ ...base, cpuPct: 120.5 })?.cpuPct, 120.5, 'a call spanning cores may pass one hundred percent');
+  assert.equal(safeEvent({ ...base, extra: 'device' }), undefined, 'an extra field fails closed');
+  assert.equal(safeEvent({ ...base, rssMb: -1 }), undefined, 'a negative footprint is refused');
+  assert.equal(safeEvent({ ...base, heapUsedMb: Number.NaN }), undefined, 'a NaN footprint is refused');
+  assert.equal(safeEvent({ ...base, cpuPct: 100_000 }), undefined, 'an impossible CPU percentage is refused');
+  assert.equal(safeEvent({ event: 'host_resources', rssMb: 412.5, heapUsedMb: 83.2 }), undefined, 'a receipt with no CPU is refused');
+});
+
+test('L12d: one host_resources receipt per sixty second window, on the host clock', () => {
+  let at = 1_000_000;
+  let cpu = { user: 0, system: 0 };
+  const logged: Array<Record<string, unknown>> = [];
+  const sampler = createHostResourceSampler({
+    log: event => { logged.push(event); },
+    now: () => at,
+    memoryUsage: () => ({ rss: 432 * 1_048_576, heapUsed: 100.5 * 1_048_576 }),
+    cpuUsage: () => cpu,
+  });
+  assert.equal(sampler.sample(), false, 'the first read is the baseline, not a window');
+  at += 59_000;
+  assert.equal(sampler.sample(), false, 'under a window nothing is logged');
+  cpu = { user: 3_000_000, system: 0 };
+  at += 1_000;
+  assert.equal(sampler.sample(), true, 'a full window logs once');
+  assert.deepEqual(logged, [{ event: 'host_resources', rssMb: 432, heapUsedMb: 100.5, cpuPct: 5 }],
+    'the window covers the sixty seconds it just closed: three CPU seconds of sixty, megabytes to one decimal');
+  assert.deepEqual(safeEvent(logged[0]), logged[0], 'the receipt passes the closed allowlist');
+  at += 1_000;
+  assert.equal(sampler.sample(), false, 'a second read inside the same window stays silent');
+  assert.equal(logged.length, 1);
 });

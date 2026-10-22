@@ -25,6 +25,8 @@ const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavai
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];
+/** L2: why the digest was read again, the same closed set the host binds its refresh hooks with. */
+const CALENDAR_DIGEST_REFRESH_REASONS = ['start', 'timer', 'recovered', 'first_connect'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
@@ -976,6 +978,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!CALENDAR_DIGEST_STATES.includes(value.state as typeof CALENDAR_DIGEST_STATES[number])) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.ageMs)) return;
     return { event: 'calendar_digest', state: value.state, items: value.items, ageMs: value.ageMs };
+  }
+  if (value.event === 'calendar_digest_refreshed') {
+    // L2: which edge read the digest again and how long the read took, never a day or an event.
+    if (!closedKeys(value, ['event', 'reason', 'ms'])) return;
+    if (!isSafeMember(value.reason, CALENDAR_DIGEST_REFRESH_REASONS)) return;
+    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 900_000) return;
+    return { event: 'calendar_digest_refreshed', reason: value.reason, ms: Math.round(value.ms) };
+  }
+  if (value.event === 'host_resources') {
+    // L12d: this process's own footprint while a call is live. Megabytes to one decimal, CPU as a
+    // percentage of one core over the last window: numbers only, never a device or a person.
+    if (!closedKeys(value, ['event', 'rssMb', 'heapUsedMb', 'cpuPct'])) return;
+    const mb = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_048_576;
+    const pct = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 6400;
+    if (!mb(value.rssMb) || !mb(value.heapUsedMb) || !pct(value.cpuPct)) return;
+    return { event: 'host_resources', rssMb: value.rssMb, heapUsedMb: value.heapUsedMb, cpuPct: value.cpuPct };
   }
   if (value.event === 'opener_plan') {
     // M1's plan receipt, which rode the debug journal until O1b-A removed it: the kinds offered and the

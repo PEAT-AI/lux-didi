@@ -173,27 +173,33 @@ export type CalendarDigestSnapshot = Omit<CalendarDigestReadResult, 'state'> & {
 export const calendarDigestFreshMs = 30 * 60 * 1000;
 /** How often the background owner refreshes the digest. */
 export const calendarDigestRefreshMs = 15 * 60 * 1000;
+/** L2: the closed reasons a background digest read is reported under, and the receipt one read leaves in host.log. */
+export type CalendarDigestRefreshReason = 'start' | 'timer';
+export type CalendarDigestRefreshReceipt = { readonly event: 'calendar_digest_refreshed'; readonly reason: CalendarDigestRefreshReason; readonly ms: number };
+
 export class CalendarDigestCache {
   readonly #read: () => Promise<CalendarDigestReadResult>;
   readonly #now: () => number;
   readonly #timeZone: string;
   readonly #intervalMs: number;
+  readonly #log: ((receipt: CalendarDigestRefreshReceipt) => void) | undefined;
   #snapshot: CalendarDigestReadResult | undefined;
   #inflight: Promise<CalendarDigestReadResult> | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(read: () => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string; readonly intervalMs?: number }) {
+  constructor(read: () => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string; readonly intervalMs?: number; readonly log?: (receipt: CalendarDigestRefreshReceipt) => void }) {
     this.#read = read;
     this.#now = options.now;
     this.#timeZone = options.timeZone;
     this.#intervalMs = options.intervalMs ?? calendarDigestRefreshMs;
+    this.#log = options.log;
   }
 
   /** The host's background owner: one read now, then every 15 minutes until `stop`. Off the request path. */
   begin(): void {
     if (this.#timer !== undefined) return;
-    void this.refresh();
-    this.#timer = setInterval(() => { void this.refresh(); }, this.#intervalMs);
+    void this.refresh('start');
+    this.#timer = setInterval(() => { void this.refresh('timer'); }, this.#intervalMs);
     this.#timer.unref();
   }
 
@@ -204,12 +210,19 @@ export class CalendarDigestCache {
   }
 
   /** One read, deduplicated: every caller inside the same window shares the read already in flight. */
-  refresh(): Promise<CalendarDigestReadResult> {
+  refresh(reason?: CalendarDigestRefreshReason): Promise<CalendarDigestReadResult> {
     const inflight = this.#inflight;
     if (inflight !== undefined) return inflight;
+    const startedAt = this.#now();
     const pending = this.#read()
       .catch((): CalendarDigestReadResult => ({ state: 'failed', text: undefined, items: 0, fetchedAt: this.#now() }))
-      .then(result => { this.#snapshot = result; this.#inflight = undefined; return result; });
+      .then(result => {
+        this.#snapshot = result; this.#inflight = undefined;
+        // L2: only the caller that started this read reports it, so a joined read never doubles a line
+        // and every line names the edge that owed the read.
+        if (reason !== undefined) this.#log?.({ event: 'calendar_digest_refreshed', reason, ms: Math.max(0, this.#now() - startedAt) });
+        return result;
+      });
     this.#inflight = pending;
     return pending;
   }

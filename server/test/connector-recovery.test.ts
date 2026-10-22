@@ -12,6 +12,9 @@ import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/index.js';
 import { composeMcpRuntime, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
 import { connectionReasonCode } from '../http/server.js';
+import { bindCalendarFirstConnect, bindCalendarRecovery } from '../host/runtime.js';
+import { CalendarDigestCache } from '../live/warm-context.js';
+import { safeEvent } from '../host/log.js';
 import { proveIdentity, type IdentitySource } from '../connectors/identity.js';
 import { mongooseCredentialAtStart } from '../connectors/mongoose.js';
 import type { ConnectorResult } from '../connectors/index.js';
@@ -427,4 +430,102 @@ test('1022: an unreachable refresh reads as unreachable in the browser, never as
     'a network blip is not a reason to show the sign-in step');
   assert.equal(connectionReasonCode({ state: 'error', error: 'credential-refresh-failed', signIn: true }), 'needs_sign_in',
     'a real refusal still asks for the sign-in');
+});
+
+test('L2: the first calendar connect of a run re-reads a digest the start raced, and only once', async () => {
+  const reads: string[] = [];
+  let snapshot = { state: 'unconfigured', fetchedAt: 1_000 };
+  const digest = {
+    forStart: async () => snapshot,
+    refresh: async () => { reads.push('refresh'); return undefined; },
+  };
+  const endpoints = () => [{ id: 'gmail', connector: 'google' }, { id: 'calendar', connector: 'google' }];
+  const grants = new Map<string, { endpointId: string; toolNames: readonly string[] }>([
+    ['gmail', { endpointId: 'gmail', toolNames: ['gmail_search'] }],
+    ['calendar', { endpointId: 'calendar', toolNames: ['calendar_list_events'] }],
+  ]);
+  const logged: Array<{ event: string; reason?: string; ms?: number }> = [];
+  let clock = 2_000;
+  const onConnected = bindCalendarFirstConnect({
+    digest, endpoints, grantOf: id => grants.get(id), startedAt: 1_000, now: () => (clock += 100),
+    log: event => { logged.push(event); },
+  });
+
+  onConnected('gmail');
+  onConnected('calendar');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(reads, ['refresh'], 'the first calendar connect reads the digest the start raced, once');
+  assert.deepEqual(logged.map(event => event.reason), ['first_connect'], 'and says which edge owed the read');
+
+  snapshot = { state: 'failed', fetchedAt: 1_000 };
+  onConnected('calendar');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(reads, ['refresh'], 'a second connected event owes no second read');
+});
+
+test('L2: a first connect that finds the digest already read after the start reads nothing', async () => {
+  const reads: number[] = [];
+  const digest = {
+    forStart: async () => ({ state: 'present', fetchedAt: 5_000 }),
+    refresh: async () => { reads.push(1); return undefined; },
+  };
+  const onConnected = bindCalendarFirstConnect({
+    digest,
+    endpoints: () => [{ id: 'calendar', connector: 'google' }],
+    grantOf: id => ({ endpointId: id, toolNames: ['calendar_list_events'] }),
+    startedAt: 1_000, now: () => 6_000,
+    log: () => { reads.push(2); },
+  });
+  onConnected('calendar');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(reads, [], 'a digest whose read finished after the start is the answer, never a second read');
+});
+
+test('L2: a recovered calendar connector reports the refresh it owed, with its own reason', async () => {
+  const logged: Array<{ event: string; reason?: string; ms?: number }> = [];
+  let clock = 10_000;
+  const run = bindCalendarRecovery({
+    digest: { refresh: async () => { clock += 240; return undefined; } },
+    endpoints: () => [{ id: 'gmail', connector: 'google' }, { id: 'calendar', connector: 'google' }],
+    grantOf: id => ({ endpointId: id, toolNames: id === 'calendar' ? ['calendar_list_events'] : ['gmail_search'] }),
+    now: () => clock,
+    log: event => { logged.push(event); },
+  });
+  run('gmail');
+  assert.deepEqual(logged, [], 'a mail endpoint of the same account owes no calendar read');
+  run('calendar');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(logged, [{ event: 'calendar_digest_refreshed', reason: 'recovered', ms: 240 }],
+    'the recovered read names its edge and how long it took');
+});
+
+test('L2: the background owner reports its start read and its timer read, and a joined read only once', async () => {
+  const receipts: Array<{ event: string; reason?: string; ms?: number }> = [];
+  let clock = 50_000;
+  let reads = 0;
+  const cache = new CalendarDigestCache(
+    async () => { reads += 1; clock += 300; return { state: 'present', text: 'one line', items: 1, fetchedAt: clock }; },
+    { now: () => clock, timeZone: 'UTC', intervalMs: 60_000, log: event => { receipts.push(event); } });
+  cache.begin();
+  // The interval is armed but never fires inside this test: the timer edge is driven directly below,
+  // once the start read has settled, so the two edges are two reads rather than one joined read.
+  await new Promise(resolve => setImmediate(resolve));
+  await cache.refresh('timer');
+  cache.stop();
+  assert.equal(reads, 2, 'one read at begin and one asked for by the timer');
+  assert.deepEqual(receipts, [
+    { event: 'calendar_digest_refreshed', reason: 'start', ms: 300 },
+    { event: 'calendar_digest_refreshed', reason: 'timer', ms: 300 },
+  ], 'each edge names itself, with the read it paid for');
+  assert.equal(safeEvent(receipts[0])?.reason, 'start', 'the receipt passes the closed allowlist');
+  assert.equal(safeEvent(receipts[1])?.reason, 'timer');
+
+  const joined: Array<{ event: string; reason?: string; ms?: number }> = [];
+  const solo = new CalendarDigestCache(
+    async () => { await new Promise(resolve => setImmediate(resolve)); return { state: 'present', text: 'one line', items: 1, fetchedAt: 1 }; },
+    { now: () => 1, timeZone: 'UTC', log: event => { joined.push(event); } });
+  const firstRead = solo.refresh('start');
+  const secondRead = solo.refresh('timer');
+  await Promise.all([firstRead, secondRead]);
+  assert.deepEqual(joined.map(event => event.reason), ['start'], 'a read a caller joined is reported by the edge that started it');
 });

@@ -2125,7 +2125,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
     // words, so the model never spends another call fetching what is already in hand.
     const trimmed = dropped > 0 || calendarPending || mailPending;
-    const complete = status === 'answered' && !trimmed && run.readKinds.size > 0;
+    const complete = status === 'answered' && !trimmed && (run.readKinds.size > 0 || run.sourcesDone.size > 0);
     const settledNote = complete ? (note ?? RESEARCH.completeNote) : note;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };

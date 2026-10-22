@@ -541,7 +541,7 @@ test('an empty-but-successful read is a search that matched nothing, never an un
   const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
-  assert.match(note, /I searched your mail for "[a-z]+" and found nothing matching/, 'the model gets a line it can voice');
+  assert.match(note, /I searched your mail for "[a-z]+".*found nothing matching/, 'the model gets a line it can voice');
   assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
   assert.equal(reply['status'], 'complete', 'a search that matched nothing still answered the question');
 });

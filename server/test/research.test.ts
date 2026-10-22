@@ -974,7 +974,7 @@ test('MED-1022: a run that compiles a chat date operator states it on the knowle
   const h = harness({ executeText: '### Release 3p scope (decision) [id 412]\nThe part that fits.' });
   const receipts: ResearchSourceLog[] = [];
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
-  await runResearch(deps, { action: 'start', question: 'what did the team say in chat yesterday' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'what did the team say in chat about partner ranking yesterday' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal((receipt.knowledge as Record<string, unknown> | undefined)?.['chatDateOperator'], 'compiled', 'the receipt carries the operator the run compiled');
 });

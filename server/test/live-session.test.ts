@@ -5205,3 +5205,68 @@ test('W6/H22: a research receipt names the call it answers', async t => {
   attachment.close();
   await attachment.done;
 });
+
+test('MUTE: a muted turn still delivers its tool result, and the answer it earns is held instead of played', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const texts: string[] = [];
+  const port = {
+    capabilities: fake.port.capabilities,
+    open: (liveRequest: Parameters<LiveVoicePort['open']>[0], liveControl: Parameters<LiveVoicePort['open']>[1]) => {
+      const opened = fake.port.open(liveRequest, liveControl);
+      return { ...opened, sendText: (input: { text: string }) => { texts.push(input.text); } } as unknown as LiveVoiceSession;
+    },
+  } as LiveVoicePort;
+  const h = await harness(t, { port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'mute-held-answer', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const chunks: { kind: string }[] = [];
+  void (async () => { for await (const chunk of attachment.output) chunks.push(chunk); })();
+
+  attachment.setInputMuted(true);
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'm1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the completed result still reaches the provider, so the muted turn closes');
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'and the session is still open');
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(chunks.filter(chunk => chunk.kind === 'audio').length, 0, 'a muted owner is played none of the answer');
+
+  attachment.setInputMuted(false);
+  await settlePort();
+  scheduler.now += 2_000; scheduler.runDue(); await settlePort();
+  assert.equal(texts.length, 1, 'the silent owner gets one short item that the answer arrived while muted');
+  attachment.close();
+  await attachment.done;
+});
+
+test('MUTE: the owner who speaks right after the unmute gets no held answer offered over him', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const texts: string[] = [];
+  const port = {
+    capabilities: fake.port.capabilities,
+    open: (liveRequest: Parameters<LiveVoicePort['open']>[0], liveControl: Parameters<LiveVoicePort['open']>[1]) => {
+      const opened = fake.port.open(liveRequest, liveControl);
+      return { ...opened, sendText: (input: { text: string }) => { texts.push(input.text); } } as unknown as LiveVoiceSession;
+    },
+  } as LiveVoicePort;
+  const h = await harness(t, { port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'mute-held-answer-spoken', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+
+  attachment.setInputMuted(true);
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  attachment.setInputMuted(false);
+  await settlePort();
+  scheduler.now += 500; scheduler.runDue(); await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'one more thing first', finished: true }));
+  await settlePort();
+  scheduler.now += 3_000; scheduler.runDue(); await settlePort();
+  assert.deepEqual(texts, [], 'the owner spoke first, so no held answer is offered over him');
+  attachment.close();
+  await attachment.done;
+});

@@ -1639,13 +1639,13 @@ class Session implements LiveVoiceSession {
       floorMs += entry.bytes / MIC_PCM_BYTES_PER_MS;
     }
     let remaining = afterSilence.reduce((sum, entry) => sum + Buffer.byteLength(entry.frame), 0);
-    let droppable = afterSilence.filter(entry => entry.speech).length - protectedSpeech;
+    // One contiguous run down to the floor, never the frame or two that would leave 20 ms islands: what stays on
+    // the wire after a shed is a run of consecutive speech, which is what the model can hear as words.
+    let toShed = remaining > UPLINK_SHED_BYTES ? Math.max(0, afterSilence.filter(entry => entry.speech).length - protectedSpeech) : 0;
     const kept: typeof afterSilence = [];
     for (const entry of afterSilence) {
-      if (!entry.speech || droppable < 1 || remaining <= UPLINK_SHED_BYTES) { kept.push(entry); continue; }
-      this.shedMicFrame(entry, true);
-      remaining -= Buffer.byteLength(entry.frame);
-      droppable -= 1;
+      if (toShed > 0 && entry.speech) { this.shedMicFrame(entry, true); remaining -= Buffer.byteLength(entry.frame); toShed -= 1; continue; }
+      kept.push(entry);
     }
     this.micPending = kept;
     this.micPendingBytes = remaining;

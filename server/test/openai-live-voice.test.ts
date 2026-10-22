@@ -1424,6 +1424,7 @@ describe('openai gpt-live turn states', () => {
   });
 
   test('a backed-up uplink keeps the one speech frame behind a silent backlog for the next drain', async t => {
+    const receipts = hostReceipts(t);
     const { socket, session } = await fakeReady(t);
     const pushed: Uint8Array[] = [];
     const push = (pcm: Uint8Array) => { pushed.push(pcm); session.sendAudio({ pcm, dataClass: 'ordinary' }); };
@@ -1431,11 +1432,14 @@ describe('openai gpt-live turn states', () => {
     for (let index = 0; index < 36; index += 1) push(pcm16(320, 0));
     const loud = pcm16(320, 8_000);
     push(loud);
+    assert.deepEqual(socket.micFrames(), [], 'a backlogged uplink is handed no mic audio');
     socket.bufferedAmount = 0;
-    const trigger = pcm16(320, 0);
-    push(trigger);
+    push(pcm16(320, 0));
     const expected = upsampled(pushed);
-    assert.deepEqual(micAudio(socket).slice(-2), [expected[36]!, expected[37]!], 'the loud frame survives with no frame dropped after it');
+    const audio = micAudio(socket);
+    assert.ok(audio.includes(expected[36]!), 'the one loud frame is delivered on the next drain');
+    assert.equal(audio.filter(frame => frame === expected[36]).length, 1, 'and exactly once');
+    assert.equal(Number(receipts().filter(record => record.event === 'uplink_shed')[0]!.speechShedMs), 0, 'no speech went in the shed');
   });
 
   // Release 3: with nothing silent to drop, the oldest speech goes as one run and the newest 500 ms (25 frames)
@@ -1456,7 +1460,7 @@ describe('openai gpt-live turn states', () => {
     assert.ok(Number(record.speechShedBytes) > 0, 'and its bytes are counted as speech');
     assert.equal(Number(record.silenceShedMs), 0, 'nothing silent was queued');
     socket.bufferedAmount = 0;
-    pushed.push(pcm16(320, 0));
+    pushed.push(pcm16(320, 7_000));
     session.sendAudio({ pcm: pushed[40]!, dataClass: 'ordinary' });
     const expected = upsampled(pushed);
     const audio = micAudio(socket);

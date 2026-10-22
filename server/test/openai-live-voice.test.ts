@@ -354,6 +354,22 @@ describe('openai gpt-live adapter', () => {
     assert.throws(() => new OpenAiLiveVoiceAdapter(options()).open(request({ history: seeded }), control()), code('invalid_request'));
   });
 
+  test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {
+    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const },
+      { role: 'user' as const, text: 'And Thursday', dataClass: 'ordinary' as const }];
+    const { f } = await ready(t, {}, { history, openingText: 'Pick up where we left off.', opening: 'model_first' });
+    await f.frame(2);
+    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }],
+      'the seeded answer request is the only frame after the start, so the provider answers without being spoken to');
+  });
+
+  test('D1: a normal connect seeds history and asks for nothing, so no greeting is spoken', async t => {
+    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
+    const { f } = await ready(t, {}, { history, opening: 'model_first' });
+    await until(() => f.frames.length >= 1);
+    assert.deepEqual(withoutIds(f.frames), [{ type: 'session.start' }], 'a connect with history sends the start and nothing else');
+  });
+
   test('input audio is upsampled from 16 kHz to 24 kHz inside the adapter', async t => {
     const { f, session } = await ready(t);
     for (let frame = 0; frame < 3; frame += 1) session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });

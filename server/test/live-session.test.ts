@@ -4931,7 +4931,9 @@ test('Lux body integration: exact received opaque content reaches its retained t
 });
 
 test('RUN-R11: a 16,800-character mail body arrives in at most four replies, every character once', async t => {
-  const body = 'Mail body evidence line. '.repeat(600).slice(0, 16_800);
+  const subject = 'Long body';
+  const body = 'Mail body evidence line. '.repeat(672);
+  assert.equal(body.length, 16_800, 'the fixture body is the 16,800 characters the ruling names');
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Long body' }, body, bodyCoverage: { complete: true } }) });
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
@@ -4953,7 +4955,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most four replies, eve
     replies += 1;
     await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
   }
-  assert.ok(collected.length >= body.length, 'the pages cover the whole body, with no page left behind');
+  assert.equal(collected, `subject: ${subject}\n\n${body}`, 'the joined pages are the raw body, byte for byte');
 });
 test('VOICE-R4: a research call sends no status line at six seconds', async t => {
   const receipts: Record<string, unknown>[] = [];

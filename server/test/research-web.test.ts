@@ -272,3 +272,9 @@ test('the deterministic fallback offers the web read for a public question once 
   assert.deepEqual(fallbackSelection('what is the latest news on the bridge', []).actions.filter(action => action.kind === 'web_search'), [], 'nothing offered without the web source');
   assert.deepEqual(fallbackSelection('where does the release stand', ['web']).actions.filter(action => action.kind === 'web_search'), []);
 });
+
+test('MED-1022: an internal question that says latest never offers the web read', () => {
+  assert.deepEqual(fallbackSelection('what is the latest on the OCP deck', ['web', 'knowledge']).actions.filter(action => action.kind === 'web_search'), [], 'latest is not public intent');
+  assert.ok(fallbackSelection('what is the weather in Pune', ['web']).actions.some(action => action.kind === 'web_search'), 'a public question still offers it');
+  assert.deepEqual(fallbackSelection('what is the cost of the licences', ['web']).actions.filter(action => action.kind === 'web_search'), [], 'cost is internal, not public intent');
+});

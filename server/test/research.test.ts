@@ -884,13 +884,15 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
   const h = harness({ selector: knowledge });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the connector' }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
-  assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query'], 'exactly those fields, and no others');
+  assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query', 'snippet_chars'], 'exactly those fields, and no others');
   assert.equal(args['limit'], 6);
-  assert.equal(args['detail'], 'bodies');
+  assert.equal(args['detail'], 'voice', 'MED-1022: the top hit is answered in full, the rest named');
   assert.equal(args['max_chars'], 3_000);
+  assert.equal(args['snippet_chars'], 300);
   assert.equal(args['deadline_ms'], 8_000);
   assert.equal(typeof args['query'], 'string');
   assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
+  assert.equal(RESEARCH.knowledgeSnippetChars, 300);
   assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
 });
 
@@ -915,7 +917,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 3_000, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
 });
 
@@ -927,11 +929,11 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
-  assert.equal(args['detail'], 'bodies', 'the routed path asks through the same bounded-body args');
+  assert.equal(args['detail'], 'voice', 'the routed path asks through the same bounded-body args');
   assert.equal(args['max_chars'], 3_000);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 3_000, deadlineMs: 8_000, truncated: true });
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true });
 });
 
 // --- R6: the first answer point, and what a late source hands over --------------------------------

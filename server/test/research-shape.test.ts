@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, parseSelector, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, knowledgeQuery, parseSelector, runResearch, shapeBlock,
   type CandidateKind, type ResearchDeps, type ResearchSelector, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -84,9 +84,9 @@ test('the fallback mail query carries operators and keywords, chat carries after
   assert.match(mailQuery, /release/);
   assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, 'after:yesterday');
   const knowledge = fallbackSelection('Search my notes for Lux Didi decisions', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
-  const knowledgeQuery = knowledge.actions.find(action => action.kind === 'knowledge_search')?.query ?? '';
-  assert.equal(/[?:"]|in:|after:|newer_than/.test(knowledgeQuery), false);
-  assert.equal(knowledgeQuery, 'lux didi decisions', 'source words like notes are not content keywords');
+  const knowledgeFallback = knowledge.actions.find(action => action.kind === 'knowledge_search')?.query ?? '';
+  assert.equal(/[?:"]|in:|after:|newer_than/.test(knowledgeFallback), false);
+  assert.equal(knowledgeFallback, 'lux didi decisions', 'source words like notes are not content keywords');
   assert.equal(fallbackSelection('Anything important in my email today?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:1d is:important', 'today and important are operators');
   assert.equal(fallbackSelection('Anything unread in my inbox?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:2d is:unread');
   assert.equal(fallbackSelection('What is important in my email this week?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:7d is:important');
@@ -339,4 +339,42 @@ test('E8/U2: a trimmed calendar block says how many events it left out', () => {
   const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');
   assert.match(block.text, /I left out \d+ calendar events to keep this answer short\./u);
   assert.ok(block.total > block.lines.length || /left out/u.test(block.text));
+});
+
+// --- MED-1022: a knowledge query keeps the name the owner said and drops the filler ---------------
+
+test('MED-1022: the knowledge query drops filler, keeps the spoken name, and takes ten terms', () => {
+  assert.equal(RESEARCH.knowledgeQueryTerms, 10);
+  const query = knowledgeQuery('lux meeting transcript results about', 'what did we cover in the prep call with Maria');
+  const terms = query.split(' ');
+  for (const wanted of ['prep', 'call', 'maria']) assert.ok(terms.includes(wanted), `"${wanted}" survives in "${query}"`);
+  for (const filler of ['results', 'about']) assert.equal(terms.includes(filler), false, `"${filler}" never rides in "${query}"`);
+  assert.ok(terms.length <= 10, `the budget holds (${terms.length})`);
+  const long = knowledgeQuery('what did we decide about the wriggler three layer schema migration deadline for the owner dashboard and the vicuna release train');
+  assert.equal(long.split(' ').length, 10, 'a long question fills the wider budget and stops there');
+  assert.equal(long.includes('owner'), false, 'a role word is filler for a search too');
+});
+
+test('MED-1022: a named meeting and a date word become the connector meeting bounds', () => {
+  const now = Date.parse('2026-10-22T06:00:00Z');
+  const config = { configured: ['knowledge'] as const, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
+  const dated = candidateSubs('knowledge_search', { ...config, question: "what did we decide in yesterday's call about pricing" });
+  assert.equal(dated[0]?.args['meeting_date_from'], '2026-10-21', 'yesterday is resolved in the owner zone');
+  assert.equal(dated[0]?.args['meeting_date_to'], '2026-10-21');
+  assert.equal('participant' in (dated[0]?.args ?? {}), false, 'a name never becomes a hard participant filter');
+  const noDate = candidateSubs('knowledge_search', { ...config, question: 'what did we decide in the call about pricing' });
+  assert.equal('meeting_date_from' in (noDate[0]?.args ?? {}), false, 'a meeting with no date word is not narrowed');
+  const noMeeting = candidateSubs('knowledge_search', { ...config, question: 'what did we ship yesterday' });
+  assert.equal('meeting_date_from' in (noMeeting[0]?.args ?? {}), false, 'a date with no meeting named is not narrowed');
+});
+
+test('MED-1022: a chat date word compiles to the ISO operator the connector parses', () => {
+  const now = Date.parse('2026-10-22T06:00:00Z');
+  const config = { question: 'what did the team say', configured: CONFIGURED, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
+  const chat = (query?: string): unknown => candidateSubs('chat_search', { ...config, ...(query === undefined ? {} : { query }) })[0]?.args['query'];
+  assert.equal(chat(), 'After:2026-10-21', 'the default names a real day, never a word the parser ignores');
+  assert.equal(chat('budget after:yesterday'), 'budget After:2026-10-21');
+  assert.equal(chat('budget after:someday'), 'budget', 'an operator no calendar can resolve is dropped');
+  const brief = candidateSubs('brief', config);
+  assert.equal(brief.find(call => call.name === 'mattermost_search')?.args['query'], 'After:2026-10-21');
 });

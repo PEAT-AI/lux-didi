@@ -105,7 +105,11 @@ export function insertSummary(tx: Transaction, input: InsertSummaryInput): Summa
     if (!source || source.dataClass !== input.dataClass || source.revision !== input.sourceRevision) throw new Error('history_source_changed');
   }
   const existing = getBySession(tx, input.liveSessionId);
-  if (existing) return existing;
+  if (existing) {
+    // The in-flight marker is not an outcome: the row this call is about to write replaces it.
+    if (!(existing.status === 'failed' && existing.errorCode === PENDING_SUMMARY_ERROR_CODE)) return existing;
+    tx.run('DELETE FROM conversation_summaries WHERE id=?', [existing.id]);
+  }
   const id = newId();
   tx.run(
     `INSERT INTO conversation_summaries
@@ -141,7 +145,9 @@ export function updateSummary(
 }
 
 export function listSummaries(tx: Transaction): SummaryRecord[] {
-  return tx.all('SELECT * FROM conversation_summaries ORDER BY created_at DESC, rowid DESC').map(toRecord);
+  // An in-flight row is not an outcome: no reader may present it as a failed summary (LIVE2-R1).
+  return tx.all('SELECT * FROM conversation_summaries ORDER BY created_at DESC, rowid DESC').map(toRecord)
+    .filter(record => !(record.status === 'failed' && record.errorCode === PENDING_SUMMARY_ERROR_CODE));
 }
 
 /** Ended sessions the reconciler may still distil, oldest first: no row, or a row skipped only for a missing text model. */
@@ -159,8 +165,12 @@ export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
     deadHost: deadHostOutcome(row['outcome']) }));
 }
 
-/** The failure classes a later host start may retry; a refusal, a denied route or unparsable output is sealed. */
-export const RETRYABLE_FAILURE_CODES = ['deadline', 'cancelled', 'network', 'credential_unavailable', 'provider', 'model_error'] as const;
+/** The code an in-flight summary carries: written before the model call, replaced by the outcome, retried at the next start. */
+export const PENDING_SUMMARY_ERROR_CODE = 'pending';
+
+/** The failure classes a later host start may retry; a refusal, a denied route or unparsable output is sealed.
+ *  `error` is the class the host wrote before this list named it, so those rows are retried once like any transient one. */
+export const RETRYABLE_FAILURE_CODES = ['deadline', 'cancelled', 'network', 'credential_unavailable', 'provider', 'model_error', 'error', PENDING_SUMMARY_ERROR_CODE] as const;
 
 export interface FailedSummaryCandidate { liveSessionId: string; endedAt: number | null; retryCount: number }
 
@@ -199,6 +209,12 @@ export function closeFailedRetry(tx: Transaction, liveSessionId: string): boolea
   if (!row) return false;
   tx.run("UPDATE conversation_summaries SET error_code='retry_exhausted' WHERE live_session_id=? AND status='failed'", [liveSessionId]);
   return true;
+}
+
+/** Mark a session's summary as in flight: the row a host that dies mid-call leaves for the next start to retry. */
+export function markSummaryPending(tx: Transaction, liveSessionId: string, now: number, provenance: { dataClass: DataClass; sourceRevision: number }): void {
+  if (getBySession(tx, liveSessionId)) return;
+  insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', errorCode: PENDING_SUMMARY_ERROR_CODE, retryCount: 0, now });
 }
 
 /** Remove a failed row so distillation may run once more for its session; refuses any non-failed row. */

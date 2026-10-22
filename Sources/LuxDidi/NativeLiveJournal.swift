@@ -9,6 +9,7 @@ enum NativeLiveEndReason: String, CaseIterable {
     case logout
     case shutdown
     case userStop = "user_stop"
+    case appQuit = "app_quit"
     case idleLimit = "idle_limit"
     case sessionLimit = "session_limit"
     case providerClosed = "provider_closed"

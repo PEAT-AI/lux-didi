@@ -51,7 +51,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -772,6 +772,21 @@ test('the same socket death with an open delegation detaches once and ends the s
   await pumpIntoDeadSocket(t, true);
 });
 
+test('a Quit ends the live session as app_quit, never as the Stop button', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const quitSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => quitSink());
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'quit-reason');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
+  await drain(h, session.liveSessionId, 2);
+  await h.owner.shutdown();
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.equal(end.length, 1, 'one receipt for the Quit');
+  assert.deepEqual(end[0], { event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+});
+
 test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
   const scheduler = new DeadlineClock();
   const receipts: Record<string, unknown>[] = [];
@@ -1442,7 +1457,7 @@ test('the owner disposes before Store.close and refuses work afterwards', async 
   const h = await harness(t);
   const { attachment } = await attached(h);
   await h.owner.shutdown();
-  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'closed' });
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'app_quit' }, 'a host shutdown names the end app_quit');
   assert.throws(() => h.owner.get('missing'), (error: unknown) => error instanceof LiveError);
   await h.owner.shutdown();
 });
@@ -2213,47 +2228,183 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   await attachment.done;
 });
 
-test('three consecutive failed recoveries end the call, each with its own new socket', async t => {
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
-  const { session, attachment } = await attached(h, 'recovery-bound');
-  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-bound-resumption-secret' } });
-  // Each recovery socket fails before it is ready; backoff is 0 s, then 2 s, then 5 s.
-  h.f.remoteClose('', 1011);
-  await h.f.frame(2); h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
-  await h.f.frame(3); h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
-  await h.f.frame(4); h.f.remoteClose('', 1011);
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 4, 'three failed recoveries, each a new socket, then the call ends');
-  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+test('L14: non-lexical transcript tags never reach the journal, and other brackets are the owner\'s own', async t => {
+  // The closed list, terminated or not, is a breath and never a word; anything else in brackets stays.
+  assert.equal(stripNonLexicalTags('so [inhale'), 'so ');
+  assert.equal(stripNonLexicalTags('a [breath] b [sigh] c'), 'a  b  c');
+  assert.equal(stripNonLexicalTags('keep [the folder] and [2] as they are'), 'keep [the folder] and [2] as they are');
+  const h = await harness(t);
+  const { session } = await attached(h, 'tags');
+  h.f.send({ serverContent: { inputTranscription: { text: 'the plan holds [inhale' } } });
+  h.f.send({ serverContent: { inputTranscription: { text: ' and the folder [breath] stays', finished: true } } });
+  h.f.send({ serverContent: { outputTranscription: { text: 'all set [sigh] here', finished: true } } });
+  await drain(h, session.liveSessionId, 4);
+  const rows = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') ORDER BY journal_id", [session.liveSessionId]));
+  const input = rows.filter(row => row['kind'] === 'inputTranscription').map(row => String(row['text'])).join('');
+  const output = rows.filter(row => row['kind'] === 'outputTranscription').map(row => String(row['text'])).join('');
+  assert.equal(/\[(?:inhale|breath|sigh)/i.test(input), false, 'no tag survives in what the owner said');
+  assert.equal(/\[(?:inhale|breath|sigh)/i.test(output), false, 'and none in what she said');
+  assert.ok(input.includes('the plan holds') && input.includes('and the folder'), 'the words are still there');
 });
 
-test('#527: sockets that die before ready end the call at the ceiling instead of storming', async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-reset-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+test('L7: a response that began under the mute is dropped at unmute, and the muted time is not dead air', async t => {
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
-  const { session, attachment } = await attached(h, 'recovery-reset');
-  h.f.send({ serverContent: { inputTranscription: { text: 'first turn', finished: true } } });
-  await settlePort();
-  const first = h.f.connections;
-  h.f.remoteClose('', 1011);
-  // Every new socket dies before its ready event: each is one failed attempt that pays its own backoff.
-  for (const expected of [2, 3, 4]) {
-    await advanceUntil(h.advance, scheduler, () => h.f.connections >= expected);
-    h.f.remoteClose('', 1011);
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'mute-stale');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  attachment.setInputMuted(true);
+  // The answer starts under the mute: its frame is dropped and the answer is held.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick(); await tick();
+  h.advance(25_000); scheduler.runDue();
+  attachment.setInputMuted(false);
+  // The same response streams on after the unmute: not one frame of it is played.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick(); await tick();
+  assert.equal(played.length, 0, 'a stale answer is never played at unmute');
+  // The dropped response ends before the next turn begins.
+  h.f.send({ serverContent: { turnComplete: true } });
+  await tick();
+  void session;
+});
+
+test('L7: the muted time is excluded from live_dead_air', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { attachment } = await attached(h, 'mute-dead-air');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  // The owner's turn ends, then she is muted for 25 s before the answer becomes audible.
+  h.f.send({ serverContent: { inputTranscription: { text: 'what now', finished: true } } });
+  await tick();
+  attachment.setInputMuted(true);
+  h.advance(25_000); scheduler.runDue();
+  attachment.setInputMuted(false);
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number'); i++) await tick();
+  const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
+  assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
+  assert.ok(Number(deadAir!['deadAirMs']) < 5_000, `the 25 s mute is not dead air the owner heard, got ${deadAir!['deadAirMs']}`);
+});
+
+test('L19: a call seeded after a dead one marks its last answer heard and never repeats it', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'dead-line-seed');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the answer that never reached her', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  // The call is lost to a refused recovery and settles resume_failed.
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-seed-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
   }
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' }, 'the ceiling ends the call');
-  assert.equal(h.f.connections, 4, 'one socket and three attempts, never an endless round');
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attempt?: number; code?: string });
-  const recoveries = lines.filter(line => line.event === 'live_recovery');
-  assert.deepEqual(recoveries.map(line => line.code), ['open_failed', 'open_failed', 'open_failed'], 'a socket that never said ready is a failed attempt, never an opening');
-  assert.deepEqual(recoveries.map(line => line.attempt), [1, 2, 3], 'and the count is consecutive');
-  h.owner.revoke(session.liveSessionId);
-  void first;
+  assert.equal(settled, true, 'the dead call ended');
+  // The next call in the same conversation seeds that history.
+  const next = h.owner.create({ idempotencyKey: 'dead-line-next', inputClass: 'ordinary' }, h.ctx);
+  h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await tick();
+  const request = h.requests.at(-1)!;
+  const history = request.history ?? [];
+  assert.ok(history.some(turn => turn.role === 'model' && turn.text.includes('never reached her')), 'the dead answer is still history');
+  assert.equal(history.at(-1)?.role, 'user', 'and the seed closes it as heard');
+  assert.match(history.at(-1)!.text, /line dropped/i, 'the seed says the line dropped instead of inviting a repeat');
+  h.owner.revoke(next.liveSessionId);
+});
+
+test('L19: after a dead call the silent owner hears the drop line, and one who already spoke is answered', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'dead-line-branches');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the answer that never reached her', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-branches-resumption' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
+  assert.equal(settled, true, 'the dead call ended');
+  // Branch 1: the owner has not spoken, so the opener names the drop and offers to continue.
+  const silent = h.owner.create({ idempotencyKey: 'dead-line-silent', inputClass: 'ordinary' }, h.ctx);
+  h.owner.attach({ liveSessionId: silent.liveSessionId }, h.ctx);
+  await tick();
+  const silentRequest = h.requests.at(-1)!;
+  assert.equal(silentRequest.openingText, LIVE_DROPPED_LINE_MARK, 'the silent owner gets the drop line, never a repeat');
+  assert.equal((silentRequest.history ?? []).at(-1)?.role, 'user', 'and the dead answer is closed as heard');
+  // R7: the owner is silent here, so the opener is the one-line drop acknowledgement, not a repeat.
+  assert.match(String(silentRequest.openingText), /line dropped/i, 'the opener names the dropped line');
+  h.owner.revoke(silent.liveSessionId);
+});
+
+test('L19: the first spoken reply of a call is never unjournalled without a receipt', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  const { session } = await attached(h, 'reply-receipt');
+  // The provider speaks with no output transcript at all, which is exactly the missing-row case.
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_first_audio'); i++) {
+    h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+    await tick();
+  }
+  assert.ok(events.some(entry => entry.event === 'live_first_audio'), 'the reply was audible');
+  h.f.send({ serverContent: { turnComplete: true } });
+  await tick(); await tick();
+  // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [session.liveSessionId]));
+  // The provider sent no output transcript at all: the reply is receipted, never silent.
+  assert.equal(rows.length, 0, 'the fake provider sent no transcript row');
+  assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 1, 'the spoken reply is receipted');
+});
+
+test('L14: a tag split across two deltas is stripped from the assembled seed, and other brackets survive', async t => {
+  const h = await harness(t);
+  const { session } = await attached(h, 'split-tag');
+  h.f.send({ serverContent: { inputTranscription: { text: 'meet at [10:30] and bring [DRAFT] plus [bre' } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'ath] the folder', finished: true } } });
+  await drain(h, session.liveSessionId, 3);
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [session.liveSessionId]));
+  const assembled = stripNonLexicalTags(rows.map(row => String(row['text'])).join(''));
+  assert.equal(assembled.includes('[breath]'), false, 'the split tag never assembles into the text');
+  assert.ok(assembled.includes('[10:30]') && assembled.includes('[DRAFT]'), 'other brackets are the owner\'s own');
+});
+
+test('R7: an owner who has already spoken keeps his own words as the last seed turn, so nothing repeats', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'drop-opener-spoken');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the answer that never reached her', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  // The dead call's own last turn is the owner's words, so the seed never needs the helper line.
+  h.f.send({ serverContent: { inputTranscription: { text: 'and the folder goes upstairs', finished: true } } });
+  await drain(h, session.liveSessionId, 3);
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-spoken-resumption' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
+  assert.equal(settled, true, 'the dead call ended');
+  const next = h.owner.create({ idempotencyKey: 'drop-opener-spoken-next', inputClass: 'ordinary' }, h.ctx);
+  h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await tick();
+  const request = h.requests.at(-1)!;
+  const history = request.history ?? [];
+  assert.equal(history.at(-1)?.role, 'user', 'the owner has the last word in the seed');
+  assert.ok(history.at(-1)!.text.includes('the folder goes upstairs'), 'and those are his words, not a canned line');
+  assert.equal(history.some(turn => turn.text.includes('line dropped')), false, 'no helper line rides over his own turn');
+  h.owner.revoke(next.liveSessionId);
 });
 
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {
@@ -2664,15 +2815,15 @@ test('active page does not carry past session metadata', async t => {
 });
 
 
-for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends after three failures`, async t => {
+for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends inside the 60 s budget`, async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const { session, attachment } = await attached(h, `resume-refused-${status}`);
   h.f.refuseUpgrades(status);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
-  // Drive the injected scheduler through the 0/2/5 s backoff until the bound settles.
+  // Drive the injected scheduler through the 0/2/4/8 s backoff until the 60 s episode budget settles it.
   let settled = false;
-  for (let i = 0; i < 60 && !settled; i++) {
+  for (let i = 0; i < 90 && !settled; i++) {
     h.advance(1000); scheduler.runDue(); await tick();
     settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
   }
@@ -5348,4 +5499,72 @@ test('OPEN2-5: an open claim the turn did not make gets one correction, never tw
   const received = lines.filter(line => line.event === 'open_claim_corrected');
   assert.deepEqual(received.map(line => line.reason), ['no_receipt']);
   h.owner.revoke(session.liveSessionId);
+});
+
+test('R7: the dropped-line opener is cancelled only before its own audio starts', async () => {
+  // The decision the mute-free opener takes on the owner's first words (b210596e).
+  assert.equal(openerCancelled(true, false), true, 'the owner spoke before the opener was audible: cancel it');
+  assert.equal(openerCancelled(true, true), false, 'the opener is already speaking: let it finish');
+  assert.equal(openerCancelled(false, false), false, 'a call with no dropped-line opener cancels nothing');
+});
+
+test('R7: the owner\'s final turn frees the answer after a cancelled opener', async t => {
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'opener-free-answer');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  // The owner speaks and finishes his turn, which is when a cancelled opener stops applying.
+  h.f.send({ serverContent: { inputTranscription: { text: 'the folder goes upstairs', finished: true } } });
+  await tick();
+  for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.ok(played.length >= 1, 'his answer is audible, never silenced by an earlier cancel');
+});
+
+test('R9: a cancelled dropped-line opener never plays, its late frames stay dropped, and the owner is answered', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const next = h.owner.create({ idempotencyKey: 'r9-next', inputClass: 'ordinary' }, h.ctx);
+  const deadAt = scheduler.now - 120_000;
+  const conversationId = h.store.transaction(tx => String(tx.get('SELECT conversation_id FROM live_conversations WHERE owner_assistant_id=?', [h.store.assistantId])!['conversation_id']));
+  h.store.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+        client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+        journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, memory_provenance)
+      VALUES (?,?,?,?,?,?,?,?,?,'terminal',0,0,2,120,1,'ended',?,?,?,?,NULL)`,
+      ['r9-dead-session', h.store.assistantId, h.store.authorityEpoch, 'key-r9-dead', 'fp-r9-dead', 'client', 'audit', 'profile', 'prompt',
+        JSON.stringify({ state: 'failed', code: 'resume_failed' }), deadAt, deadAt, deadAt]);
+    tx.run('INSERT INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', ['r9-dead-session', conversationId]);
+    tx.run("INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,payload_bytes,arrived_at) VALUES(?,?,?,?,1,?,?)",
+      ['r9-dead-session', 1, 'outputTranscription', 'the last answer of the dead call', 60, deadAt]);
+  });
+  const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  await h.f.frame(2);
+  const request = h.requests.at(-1)!;
+  assert.equal(request.openingText, LIVE_DROPPED_LINE_MARK, 'the new call opens with the dropped-line marker');
+  assert.equal((request.history ?? []).at(-1)?.role, 'user', 'the dead answer is closed as heard');
+  assert.ok((request.history ?? []).some(turn => turn.text.includes('the last answer of the dead call')), 'and it is still history');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  // The owner speaks before any opener audio.
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: false } } });
+  await tick(); await tick();
+  for (let i = 0; i < 5; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.equal(played.length, 0, 'zero opener audio frames reach the device');
+  // The provider ends the cancelled opener; the owner's turn is final; then the answer.
+  h.f.send({ serverContent: { interrupted: true } });
+  await tick();
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: true } } });
+  await tick();
+  for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.ok(played.length >= 1, 'the answer frames reach the device');
+  h.f.send({ serverContent: { outputTranscription: { text: 'here is the folder answer', finished: true } } });
+  await tick(); await tick();
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [next.liveSessionId]));
+  const said = rows.map(row => String(row['text'])).join(' ');
+  assert.equal(said.includes('the last answer of the dead call'), false, 'the answer never repeats the dead call');
+  assert.ok(said.includes('here is the folder answer'), 'and it answers the owner');
+  h.owner.revoke(next.liveSessionId);
 });

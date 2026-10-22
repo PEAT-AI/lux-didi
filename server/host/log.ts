@@ -387,16 +387,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
     if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
+    if (!isSafeCount(value.msSinceDrop)) return;
     if (!isSafeToken(value.code)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
     // Closed shape: which session and generation the provider socket was opened for, how big the setup was
@@ -496,7 +497,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'session_end') {
     // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
     if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
-    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed') return;
+    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed' && value.reason !== 'app_quit') return;
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }
@@ -508,6 +509,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.promptTokens === undefined || isSafeCount(value.promptTokens))) return;
     if (!(value.responseTokens === undefined || isSafeCount(value.responseTokens))) return;
     return { event: 'live_context_usage', totalTokens: value.totalTokens, ...(value.promptTokens !== undefined ? { promptTokens: value.promptTokens } : {}), ...(value.responseTokens !== undefined ? { responseTokens: value.responseTokens } : {}) };
+  }
+  if (value.event === 'live_reply_unjournalled') {
+    // Closed shape: a spoken reply that left no output transcript row. Never text, only the two ids.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation)) return;
+    return { event: 'live_reply_unjournalled', liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_dead_air_nudge') {
     // Closed shape: the elapsed dead air before a single neutral continuation input was sent.

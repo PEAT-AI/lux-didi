@@ -4849,7 +4849,7 @@ test('mail integration: the deterministic plan shares the native page collector'
   const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6,
     mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
   }); await attached(h, 'mail-selector');
-  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List the synthetic mailbox' }); }
+  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List anything in my email' }); }
   catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;

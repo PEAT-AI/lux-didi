@@ -2336,6 +2336,9 @@ test('L19: after a dead call the silent owner hears the drop line, and one who a
   // Branch 1: the owner has not spoken, so the opener names the drop and offers to continue.
   const silent = h.owner.create({ idempotencyKey: 'dead-line-silent', inputClass: 'ordinary' }, h.ctx);
   const attachmentSilent = h.owner.attach({ liveSessionId: silent.liveSessionId }, h.ctx);
+  await h.f.frame(h.f.connections + 1);
+  h.f.send({ setupComplete: {} });
+  await attachmentSilent.ready;
   await tick();
   const silentRequest = h.requests.at(-1)!;
   assert.equal(silentRequest.openingText, LIVE_DROPPED_LINE_MARK, 'the silent owner gets the drop line, never a repeat');
@@ -2403,6 +2406,9 @@ test('R7: the owner who speaks before the dropped-line opener is heard is answer
   assert.equal(settled, true, 'the dead call ended');
   const next = h.owner.create({ idempotencyKey: 'drop-opener-cancel-next', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await h.f.frame(h.f.connections + 1);
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
   await tick();
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();

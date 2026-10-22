@@ -87,10 +87,10 @@ test('a gmail list mints one handle per thread and keeps it on that thread line'
   assert.equal(/https?:\/\//.test(shaped.text), false, 'the model text carries no url');
   const lines = shaped.text.match(/^open: L\d+ = .*$/gm) ?? [];
   assert.equal(lines.length, 10, 'every listed thread carries its own handle');
-  for (const line of lines) assert.match(line, /^open: L\d+ = Open in Gmail$/);
+  for (const line of lines) assert.match(line, /^open: L\d+ = Open in Gmail$/, 'a thread with no subject opens as Open in Gmail');
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   exposeHandles(shaped.text);
-  assert.deepEqual(openTarget('open_source', { handle }), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/#inbox/m0', detail: 'gmail', kind: 'gmail', title: 'Gmail: note 0' } });
+  assert.deepEqual(openTarget('open_source', { handle }), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/#inbox/m0', detail: 'gmail', kind: 'gmail', title: 'Open in Gmail' } });
 });
 
 test('a knowledge body link mints a knowledge_body handle and every hostile shape mints none', () => {

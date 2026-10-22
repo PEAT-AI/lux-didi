@@ -18,6 +18,8 @@ const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// ROUTE-1022 K5: what a brief plan actually read, as a closed set.
+const RESEARCH_PLANS = ['knowledge_only', 'named_sources'];
 // ROUTE-R2: why a source was skipped, so a grant gap is never indistinguishable from an outage.
 const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
@@ -716,7 +718,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // a routed start writes its own line and names `routed`.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
     if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
-    if (Object.keys(value).sort().join(',') !== (hasDriver ? [...keys, 'driver'] : keys).sort().join(',')) return;
+    // ROUTE-1022 K5: the plan a brief actually ran, as one closed token, never the question.
+    const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
+    if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasDriver ? ['driver'] : []), ...(hasPlan ? ['plan'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
     if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
     if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
@@ -756,7 +761,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
     if (typeof value.canContinue !== 'boolean') return;
     if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}), ...(hasPlan ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
   }
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
@@ -780,7 +785,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
     const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
     const hasMail = Object.prototype.hasOwnProperty.call(value, 'mail');
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : [])].sort().join(',')) return;
+    // ROUTE-1022 K5: the same plan token as the run receipt, admitted only from its closed set.
+    const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
+    if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasPlan ? ['plan'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -815,7 +823,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         mail = { ...shape, retried };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}) };
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

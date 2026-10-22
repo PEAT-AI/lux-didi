@@ -15,21 +15,21 @@ const NOW = Date.parse('2026-10-21T05:30:00Z'); // 11:00 in the owner's zone
 const ZONE = 'Asia/Kolkata';
 
 const FIXTURES: readonly { question: string; authored?: string; q: string }[] = [
-  { question: 'What did Dana send me about the invoice?', q: 'from:dana OR to:dana invoice newer_than:14d' },
+  { question: 'What did Dana send me about the invoice?', q: 'from:dana OR to:dana invoice' },
   { question: 'Any emails from Priya about the contract this week?', q: 'from:priya OR to:priya contract newer_than:7d' },
   { question: 'Show me the latest messages in my inbox', q: 'in:inbox newer_than:14d' },
   { question: 'did Sam email me the budget yesterday?', q: 'from:sam OR to:sam budget newer_than:2d' },
   { question: 'what did the landlord say about the lease last month', q: 'landlord lease newer_than:60d' },
-  { question: 'Any unread mail from the bank?', q: 'is:unread bank newer_than:14d' },
-  { question: 'What did we decide about the Q4 roadmap?', q: 'decide q4 roadmap newer_than:14d' },
+  { question: 'Any unread mail from the bank?', q: 'is:unread bank' },
+  { question: 'What did we decide about the Q4 roadmap?', q: 'decide q4 roadmap' },
   {
     question: 'what did Acme say about the renewal',
     authored: 'Can you look for the email where Acme confirmed the renewal terms?',
-    q: 'acme confirmed renewal terms newer_than:14d',
+    q: 'acme confirmed renewal terms',
   },
   { question: 'anything from the bank', authored: 'from:alerts@bank.example subject:statement newer_than:30d', q: 'from:alerts@bank.example subject:statement newer_than:30d' },
   { question: 'board deck', authored: 'subject:"board deck" newer_than:30d', q: 'subject:"board deck" newer_than:30d' },
-  { question: 'did I reply to Priya about the launch?', q: 'from:priya OR to:priya launch newer_than:14d' },
+  { question: 'did I reply to Priya about the launch?', q: 'from:priya OR to:priya launch' },
   { question: 'What did Sam send on 2026-10-15?', q: 'from:sam OR to:sam after:2026/10/14 before:2026/10/16' },
   { question: 'Any mail from Neha on Friday?', q: 'from:neha OR to:neha after:2026/10/22 before:2026/10/24' },
   { question: 'Check my email for anything from the city council about parking this morning', q: 'city council parking newer_than:1d' },
@@ -39,18 +39,18 @@ const FIXTURES: readonly { question: string; authored?: string; q: string }[] = 
   { question: 'did anyone email me about the electricity bill in September', q: 'electricity bill after:2026/08/31 before:2026/10/01' },
   { question: 'the invoice from the design agency from before October', q: 'invoice design agency before:2026/10/01' },
   { question: 'show me mail about the flat inspection next Monday', q: 'flat inspection after:2026/10/25 before:2026/10/27' },
-  { question: 'emails mentioning the offsite venue', q: 'offsite venue newer_than:14d' },
-  { question: 'find the thread where Ravi shared the deployment checklist', q: 'ravi deployment checklist newer_than:14d' },
-  { question: "what's the latest from my accountant", q: 'accountant newer_than:14d' },
+  { question: 'emails mentioning the offsite venue', q: 'offsite venue' },
+  { question: 'find the thread where Ravi shared the deployment checklist', q: 'ravi deployment checklist' },
+  { question: "what's the latest from my accountant", q: 'accountant' },
   { question: 'after:', q: 'in:inbox newer_than:14d' },
   // The three shapes the 04:06Z call really sent (described, never quoted from the log): a bare first
   // name with no window, a long natural-language sentence, and one with a person and a time word.
-  { question: 'Davian', q: 'davian newer_than:14d' },
+  { question: 'Davian', q: 'davian' },
   { question: 'could you check whether anything important came in from Priya about the security review this week?', q: 'is:important from:priya OR to:priya security review newer_than:7d' },
   { question: 'I think there was something in my inbox earlier this week about the new pricing sheet from the finance team, can you find it?', q: 'pricing sheet finance newer_than:7d' },
 ];
 
-test('E4: a prose question becomes at most four Gmail terms and a window', () => {
+test('E4: a prose question becomes at most four Gmail terms and the window it names', () => {
   for (const { question, authored, q } of FIXTURES) {
     assert.equal(compileMailQuery(question, authored, NOW, ZONE), q, question);
   }
@@ -130,7 +130,7 @@ test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence
     action: 'start', question: 'What did Dana send me about the invoice?',
     lookups: [{ source: 'mail', query: 'could you look for the email where Dana sent the invoice?' }],
   }, new AbortController().signal);
-  assert.deepEqual(sent, ['from:dana OR to:dana invoice newer_than:14d'], 'one compiled query on the wire, never the sentence');
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice'], 'one compiled query on the wire, never the sentence');
 });
 
 test('E5: a search that matched nothing runs exactly one broader retry and logs both shapes', async () => {
@@ -144,16 +144,16 @@ test('E5: a search that matched nothing runs exactly one broader retry and logs 
     action: 'start', question: 'What did Dana send me about the invoice?',
     lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
   }, new AbortController().signal);
-  assert.deepEqual(sent, ['from:dana OR to:dana invoice newer_than:14d', 'from:dana OR to:dana invoice newer_than:30d'], 'the query, then exactly one broader retry');
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice', 'from:dana OR to:dana'], 'the query, then exactly one broader retry that drops the one term');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
   assert.deepEqual(receipt.mail, {
-    terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:14d',
-    retried: { terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:30d' },
+    terms: 1, operators: ['from', 'to'],
+    retried: { terms: 0, operators: ['from', 'to'] },
   }, 'both queries by shape: term count, operators and window, never the words');
   assert.equal(JSON.stringify(receipt).includes('invoice'), false, 'no query word reaches the receipt');
   const safe = safeEvent(receipt);
   assert.ok(safe !== undefined, 'the host log keeps the receipt with both shapes');
-  assert.deepEqual((safe['mail'] as Record<string, unknown>)['retried'], { terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:30d' });
+  assert.deepEqual((safe['mail'] as Record<string, unknown>)['retried'], { terms: 0, operators: ['from', 'to'] });
   assert.ok((reply['findings'] as unknown[]).length > 0, 'what the broader search found reaches the reply');
 });
 
@@ -169,7 +169,7 @@ test('E5: an empty retry says how it searched, naming the window it used', async
   }, new AbortController().signal);
   assert.equal(sent.length, 2, 'exactly one retry, never a loop');
   const note = String(reply['note'] ?? '');
-  assert.match(note, /I searched your mail for "invoice" in the last month and found nothing matching/, 'the reply says what it matched and the window it used');
+  assert.match(note, /I searched your mail with a keyword filter and found nothing matching/, 'the reply says how it searched, and names no window it did not use');
 });
 
 test('E5: the host log accepts the mail shape only as counts and closed tokens, never words', () => {

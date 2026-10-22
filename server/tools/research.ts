@@ -193,6 +193,8 @@ export interface ResearchRoutedLog {
  */
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
+  /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
+  plan?: 'knowledge_only' | 'named_sources';
   deadlineMs: number;
   /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
   coalesced: number;
@@ -458,7 +460,9 @@ export function createGeminiSelector(model: ModelPort, promptVersion = 'research
 // Candidate planning
 
 const STOP_WORDS = new Set(['a', 'an', 'and', 'any', 'anything', 'are', 'around', 'as', 'at', 'be', 'been', 'but', 'by', 'can', 'check', 'could', 'did', 'do', 'does', 'find', 'for', 'from', 'get', 'give', 'had', 'has', 'have', 'how', 'i', 'in', 'into', 'is', 'it', 'its', 'just', 'know', 'latest', 'like', 'look', 'me', 'more', 'most', 'my', 'need', 'new', 'newest', 'of', 'on', 'or', 'our', 'out', 'over', 'please', 'said', 'say', 'search', 'see', 'show', 'so', 'some', 'tell', 'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'to', 'up', 'us', 'want', 'was', 'we', 'were', 'what', 'whats', 'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
-  'anything', 'calendar', 'chat', 'email', 'emails', 'gmail', 'important', 'inbox', 'knowledge', 'mail', 'mattermost', 'messages', 'notes', 'recent', 'slack', 'something', 'team', 'things', 'today', 'tomorrow', 'unread', 'urgent', 'yesterday', 'week', 'month', 'day']);
+  'anything', 'calendar', 'chat', 'email', 'emails', 'gmail', 'important', 'inbox', 'knowledge', 'mail', 'mattermost', 'messages', 'notes', 'recent', 'slack', 'something', 'team', 'things', 'today', 'tomorrow', 'unread', 'urgent', 'yesterday', 'week', 'month', 'day',
+  // ROUTE-1022 K7: instruction words the model writes into a query; never content in this product.
+  'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific', 'detailed', 'lookup', 'lookups', 'searching', 'requested']);
 const WORD_SHAPE = /[^a-z0-9@._:-]+/g;
 
 /** The content keywords of a spoken question: stop words and filler removed, 3 to 8 of them. */
@@ -481,6 +485,11 @@ export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<st
 const KNOWLEDGE_FILLER = new Set([
   'about', 'regarding', 're', 'results', 'result', 'info', 'information', 'details', 'detail', 'owner', 'rob',
   'stuff', 'things', 'related', 'update', 'updates', 'status',
+  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only.
+  'records', 'official', 'content',
+  // and the instruction words above, so the model's own keyword fallback drops them too.
+  'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific',
+  'detailed', 'lookup', 'lookups', 'searching', 'requested',
 ]);
 
 /** The names a spoken question carries: a capitalised word past the first, never a stop word. */
@@ -533,6 +542,11 @@ const NOT_A_NAME = new Set([
   'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
 ]);
 const MAIL_ARTICLES = new Set(['the', 'a', 'an', 'my', 'our', 'your', 'his', 'her', 'their']);
+/**
+ * ROUTE-1022 K6: the owner's own names. The host knows no owner identity in this layer, so the set is the
+ * spoken forms of his own name; a possessive of one is never a person to filter mail by.
+ */
+const OWNER_MAIL_NAMES = new Set(['rob', "rob's", 'robs', 'my', 'me', 'myself']);
 
 /** The person a question asks about, when it asks about mail from or to them. */
 function mailPersonName(question: string): string | undefined {
@@ -540,7 +554,7 @@ function mailPersonName(question: string): string | undefined {
   for (let n = 1; n < words.length; n += 1) {
     const bare = words[n]!.replace(/^[^A-Za-z]+|[^A-Za-z'’-]+$/gu, '');
     if (!/^[A-Z][A-Za-z'’-]+$/u.test(bare)) continue;
-    if (NOT_A_NAME.has(bare.toLowerCase())) continue;
+    if (NOT_A_NAME.has(bare.toLowerCase()) || OWNER_MAIL_NAMES.has(bare.toLowerCase())) continue;
     if (MAIL_ARTICLES.has(words[n - 1]!.toLowerCase().replace(/[^a-z]/gu, ''))) continue;
     return bare.toLowerCase();
   }
@@ -620,11 +634,12 @@ function monthNamed(text: string, name: string): boolean {
 
 /**
  * The window a question asked for, resolved in the owner's own zone when it names a calendar day or a
- * month, and a rolling two weeks when it named none. Every time word the question carries is answered
- * here rather than deleted, so "in September" and "before October" reach the mails they name. Gmail's
- * `after:` and `before:` are exclusive day bounds.
+ * month, and nothing when it named none. Every time word the question carries is answered here rather
+ * than deleted, so "in September" and "before October" reach the mails they name. Gmail's `after:` and
+ * `before:` are exclusive day bounds. ROUTE-1022 K6: the implicit two weeks is the caller's own
+ * fallback, so a question with content terms is never narrowed to the last fortnight.
  */
-export function mailWindow(question: string, nowMs = Date.now(), timeZone?: string): string {
+export function mailWindow(question: string, nowMs = Date.now(), timeZone?: string): string | undefined {
   const text = question.toLowerCase();
   const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
@@ -649,15 +664,16 @@ export function mailWindow(question: string, nowMs = Date.now(), timeZone?: stri
     }
   } catch { /* an unresolved day or month keeps the rolling window below */ }
   for (const [pattern, window] of MAIL_RELATIVE_WINDOWS) if (pattern.test(text)) return window;
-  return 'newer_than:14d';
+  return undefined;
 }
 
 const MAIL_DATE_SHAPE = /\b\d{4}-\d{2}-\d{2}\b/gu;
 
 /**
  * E4: a spoken mail question becomes Gmail syntax. Plain words reduce to at most four salient terms,
- * a person the question is about becomes `from:<name> OR to:<name>`, and a window is always added.
- * Explicit Gmail syntax is the author's own and is never rewritten.
+ * a person the question is about becomes `from:<name> OR to:<name>`, and the window the question names
+ * is added. ROUTE-1022 K6: an implicit two weeks is added only to a bare inbox scan, because it hid a
+ * July thread from a question that carried its own terms. Explicit Gmail syntax is never rewritten.
  */
 export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string): string {
   const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
@@ -668,8 +684,9 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const flags = [/\bunread\b/u.test(lower) ? 'is:unread' : '', /\bimportant\b/u.test(lower) ? 'is:important' : ''].filter(Boolean);
   const terms = mailTerms(text, 4, person === undefined ? undefined : new Set([person]));
   const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
-  if (leading.length === 0 && terms.length === 0) return `in:inbox ${mailWindow(question, nowMs, timeZone)}`;
-  return [...leading, ...terms, mailWindow(question, nowMs, timeZone)].join(' ').slice(0, RESEARCH.queryLimitChars);
+  const asked = mailWindow(question, nowMs, timeZone);
+  if (leading.length === 0 && terms.length === 0) return `in:inbox ${asked ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
+  return [...leading, ...terms, ...(asked === undefined ? [] : [asked])].join(' ').slice(0, RESEARCH.queryLimitChars);
 }
 
 /** The shape of one mail query for a receipt: term count, operators and window, never the words. */
@@ -710,14 +727,16 @@ function termSalience(term: string): number {
 export function broaderMailQuery(q: string): string | undefined {
   const tokens = q.split(/\s+/).filter(Boolean);
   const termIndexes = tokens.map((token, index) => isOperatorToken(token) ? -1 : index).filter(index => index >= 0);
-  if (termIndexes.length > 1) {
+  const windowIndex = tokens.findIndex(token => /^newer_than:[a-z0-9]+$/u.test(token));
+  const step = windowIndex >= 0 ? WINDOW_STEPS[/^newer_than:(.+)$/u.exec(tokens[windowIndex]!)?.[1] ?? ''] : undefined;
+  // ROUTE-1022 K6: a query with no window to widen broadens by dropping its one term instead of
+  // returning nothing, so a person-and-topic search still gets exactly one wider try.
+  if (termIndexes.length > 1 || (termIndexes.length > 0 && step === undefined && windowIndex < 0)) {
     let dropped = termIndexes[0]!;
     for (const index of termIndexes) if (termSalience(tokens[index]!) <= termSalience(tokens[dropped]!)) dropped = index;
     return tokens.filter((_, index) => index !== dropped).join(' ').slice(0, RESEARCH.queryLimitChars);
   }
-  const windowIndex = tokens.findIndex(token => /^newer_than:[a-z0-9]+$/u.test(token));
   if (windowIndex >= 0) {
-    const step = WINDOW_STEPS[/^newer_than:(.+)$/u.exec(tokens[windowIndex]!)?.[1] ?? ''];
     if (step !== undefined) {
       const widened = [...tokens];
       widened[windowIndex] = `newer_than:${step}`;
@@ -1062,15 +1081,20 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     ? [search(WEB_SEARCH_ACTION, { query: config.query ?? contentKeywords(config.question).join(' ') }, 'w0')] : [];
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
+    // ROUTE-1022 K5: a brief reads his own knowledge, and the layers the question itself names. The
+    // router's own source words decide, so a question about the business model reads no inbox at all.
+    const named = new Set(ROUTE_CLASSES.filter(route => route.words.test(config.question.toLowerCase())).map(route => route.source));
     // A brief reads primary events; calendar names alone are not findings.
-    if (config.configured.includes('calendar')) {
+    if (config.configured.includes('calendar') && named.has('calendar')) {
       const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone);
       subs.push(search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'b0'));
     }
-    if (config.configured.includes('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
-    if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));
+    if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
+    if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));
     // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
-    if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(knowledgeQuery(config.question) || 'open loop follow up', projectHintOf(config.question)), 'b3'));
+    // K5: the question's own terms, and no search at all when the question has no term to search.
+    const query = knowledgeQuery(config.question);
+    if (config.configured.includes('knowledge') && query) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'b3'));
     return subs;
   }
   return [];
@@ -1339,6 +1363,8 @@ export interface ResearchRunLog {
   elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
   driver?: ResearchDriver;
   unchecked?: SourceKind[]; canContinue?: boolean; findingChars?: number[];
+  /** ROUTE-1022 K5: the plan a brief actually ran, closed token only. */
+  plan?: 'knowledge_only' | 'named_sources';
 }
 
 /** Q1: one metadata-only record per internal sub-call: counts and bytes, never the query or text. */
@@ -2087,6 +2113,8 @@ interface ReplyFinding { source: string; text: string; chars: number }
 /** #1020 behaviour 1: the plain words a source's failure gets, never a bare code and never silence. */
 const REASON_WORDS: Record<string, string> = {
   not_configured: 'not configured',
+  // ROUTE-1022 K1: the web source the model asked for is not offered in this session.
+  web_not_available: 'not available',
   not_signed_in: 'not signed in',
   // #502: a refresh the identity server refused means one thing to the owner: sign in again.
   'credential-refresh-failed': 'sign in again',
@@ -2097,6 +2125,16 @@ const REASON_WORDS: Record<string, string> = {
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',
 };
+/**
+ * ROUTE-1022 K5: the plan a brief actually ran, as one closed token. A brief that read nothing but
+ * knowledge (and memory) is `knowledge_only`; one whose question named a layer is `named_sources`.
+ */
+function briefPlanField(run: RunState): { plan?: 'knowledge_only' | 'named_sources' } {
+  if (!run.readKinds.has('brief')) return {};
+  const touched = [...run.sourcesDone, ...run.sourcesFailed, ...run.cutShort, ...run.emptySearches.keys()];
+  return { plan: touched.every(source => source === 'knowledge' || source === 'memory') ? 'knowledge_only' : 'named_sources' };
+}
+
 /** The plain words a closed failure code gets in a reply, never a bare code. */
 export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
@@ -2113,7 +2151,9 @@ function sourceTroubleLine(run: RunState): string | undefined {
     const cut = run.cutShort.has(source);
     if (!cut && !run.sourcesFailed.has(source)) continue;
     const code = run.unavailableReasons.get(source);
-    if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
+    // K1: a web lookup this session cannot serve says so in the owner's words, never as a chat answer.
+    if (code === 'web_not_available') parts.push('web: not available');
+    else if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
     else parts.push(`${label}: unavailable (${(code !== undefined ? plainReason(code) : undefined) ?? 'no answer'})`);
   }
   return parts.length === 0 ? undefined : parts.join('; ');
@@ -2330,7 +2370,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function routedRead(lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
+function routedRead(lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
@@ -2358,7 +2398,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...lookup.mail, q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
@@ -2370,9 +2410,16 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
     }
     return plan;
   }
-  const chat = candidateSubs('chat_search', subsConfig);
-  recordChatDate(context.run, lookup.query, chat);
-  return { source: 'chat', kind: 'chat_search', subs: chat };
+  // K1: the web is a layer of its own, and a question that asked for it is never answered by chat.
+  if (lookup.source === 'web') return { source: 'web', kind: 'web_search', subs: candidateSubs('web_search', subsConfig) };
+  if (lookup.source === 'chat') {
+    const chat = candidateSubs('chat_search', subsConfig);
+    recordChatDate(context.run, lookup.query, chat);
+    return { source: 'chat', kind: 'chat_search', subs: chat };
+  }
+  // Every other name is a layer this routing cannot serve. It settles unavailable under its own name,
+  // with its own reason, and never as a chat search.
+  return { source: lookup.source as SourceKind, kind: 'chat_search', subs: [], unresolved: true, reason: 'endpoint_unavailable' };
 }
 
 /** MED-1022: the run remembers what became of its chat date operator, strongest token first. */
@@ -2393,7 +2440,7 @@ interface RoutedOutcome {
   sub?: IntentSubCall;
 }
 
-interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
+interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
 
 /**
  * N3: the wall-clock one coalesced batch may take. It grows with the number of lookups the batch
@@ -2477,6 +2524,15 @@ function mailReadKey(args: JsonObject): string {
   const normalized: JsonObject = { ...args };
   delete normalized['maxResults'];
   return JSON.stringify(normalized);
+}
+/**
+ * ROUTE-1022 K11: one model-written lookup reads one page, never the whole mailbox in a single request.
+ * The remainder arrives through the existing continue path, which reads the same query's next token.
+ */
+function mailPageArgs(args: JsonObject): JsonObject {
+  const asked = Number(args['maxResults']);
+  const cap = RESEARCH.pageResults.mail;
+  return { ...args, maxResults: Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), cap) : cap };
 }
 function mailRead(run: RunState, args: JsonObject, memo?: ResearchMemo): MailRead {
   const key = mailReadKey(args);
@@ -2621,7 +2677,10 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
 async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], signal: AbortSignal, remainingMs: number, now: () => number): Promise<RoutedOutcome[]> {
   const started = now();
   const reads = plans.map(plan => mailRead(run, plan.read.subs[0]!.args, deps.memo));
-  await collectMailWithRetry(deps, run, reads, signal, remainingMs, now);
+  // K11: the first page of a voice turn ends at the first-answer cut, so one slow page never holds the
+  // whole answer; the rest of the window arrives on the continue path with the source's own deadline.
+  const firstPage = reads.every(read => read.pages === 0);
+  await collectMailWithRetry(deps, run, reads, signal, firstPage ? Math.min(remainingMs, RESEARCH.firstAnswerMs) : remainingMs, now);
   return plans.map((plan, n) => {
     const read = reads[n]!, lines = [...read.messages.values()].map(message => message.line);
     // F2: a read that failed or was cut short is not ok, even when it had already carried lines.
@@ -2773,6 +2832,26 @@ async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly 
   });
 }
 
+/**
+ * ROUTE-1022 K1: the web layer's own routed read. The port answers in process, so a routed web lookup
+ * keeps its links, its evidence and its attribution exactly as the selector's web action does.
+ */
+async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], signal: AbortSignal, now: () => number): Promise<RoutedOutcome[]> {
+  const started = now();
+  run.ops += plans.length;
+  const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
+    const call = plan.read.subs[0];
+    const query = String(call?.args['query'] ?? plan.lookup.query);
+    const outcome = await deps.web!.search({ query, signal });
+    if (!outcome.ok) { run.unavailableReasons.set('web', outcome.code); return { plan }; }
+    run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
+    run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
+    run.evidence.set('web_search', outcome.evidence.answer);
+    return { plan, line: webEvidenceText(outcome.evidence) };
+  }));
+  return results.map(({ plan, line }) => ({ lookup: plan.lookup, kind: plan.read.kind, tool: WEB_SEARCH_ACTION, source: 'web', outcome: line === undefined ? 'failed' : 'ok', ms: now() - started, lines: line === undefined ? [] : [line], total: line === undefined ? 0 : 1 }));
+}
+
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
@@ -2808,8 +2887,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory' && !entry.read.unresolved);
   // N3: an unresolvable window reads nothing and says why, instead of spending the batch deadline.
+  // K1: a lookup this routing cannot serve settles under its own name and reason, never as another layer.
   for (const plan of plans.filter(entry => entry.read.unresolved)) {
-    run.unavailableReasons.set('calendar', 'unresolved_window');
+    run.unavailableReasons.set(plan.read.source as SourceKind, plan.read.reason ?? 'unresolved_window');
     done.push(settle(plan, 'unavailable'));
   }
   if (reads.length === 0) return done;
@@ -2820,12 +2900,13 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     run.unavailableReasons.set(source, reason);
     return [...done, ...all(outcome)];
   };
-  if (!context.configured.includes(source)) return unserved('unavailable', 'not_configured');
+  if (!context.configured.includes(source)) return unserved('unavailable', source === 'web' ? 'web_not_available' : 'not_configured');
   // #351: a connector that cannot serve a read right now settles at once, never spending the batch deadline.
   if (context.unavailable.includes(source)) return unserved('unavailable', context.unavailableReason?.(source) ?? 'connector_unavailable');
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
   if (remainingMs <= 0) return unserved('unavailable', 'deadline_exhausted');
   if (source === 'calendar') return calendarGroup(deps, run, reads, context.signal, remainingMs, context.now);
+  if (source === 'web') return webGroup(deps, run, reads, context.signal, context.now);
   if (source === 'mail' && reads.every(plan => plan.read.subs.length === 1 && plan.read.subs[0]?.name === INTERNAL.mailList)) return mailGroup(deps, run, reads, context.signal, remainingMs, context.now);
   const subs: IntentSubCall[] = [];
   const owned: number[][] = reads.map(() => []);
@@ -2928,7 +3009,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
     for (const outcome of batch) {
       logLookup({
-        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms,
+        event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub) } : {}),
@@ -3010,7 +3091,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     throw error;
   } finally {
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
   }
 }
 
@@ -3746,7 +3827,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
     // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
     // because the host log refuses a line whose driver is not one of the four.
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length) });
   }
 }
 

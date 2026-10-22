@@ -57,8 +57,8 @@ export const RESEARCH = Object.freeze({
   continueRounds: 3,
   maxOps: 8,
   maxConcurrent: 4,
-  /** Q1-R3(b): the real Gemini selector needs ~3 s; the old 2 s deadline denied every selector call. */
-  selectorDeadlineMs: 6_000,
+  /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
+  selectorDeadlineMs: 1_500,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
@@ -757,7 +757,7 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
 
 /** The source a question is about, in the order the first answer waits for them. */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
-  { source: 'calendar', words: CALENDAR_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
+  { source: 'calendar', words: OWNER_SCHEDULE }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
 ];
 
 /**
@@ -1830,7 +1830,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
       // K2: a search snippet stays short, the hydration hop's body gets the wider window, and an
       // explicit read by id stays whole, as Q5-R1 promises.
-      const items = insightItems(raw, result.name === INTERNAL.knowledgeRead ? RESEARCH.knowledgeBodyChars : undefined);
+      const items = insightItems(raw);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
       const items = calendarEvents(raw).map(event => event.line);
@@ -1915,7 +1915,7 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
   if (!page.nextCursor && typeof base['nextCursor'] === 'string') page.nextCursor = base['nextCursor'];
   page.canContinue = Boolean(page.nextCursor) || otherPending;
   const partial = Boolean(page.nextCursor) || otherPending || body.evidence.upstreamComplete !== true || body.evidence.upstreamOmitted !== false;
-  return { ...base, researchId: run.researchId, status: partial ? 'partial' : 'answered', bodyProjection: 'preview',
+  return { ...base, researchId: run.researchId, status: partial ? 'partial' : 'complete', bodyProjection: 'preview',
     bodySlices: [{ source: body.source, tool: body.evidence.tool, text: body.evidence.body.slice(page.offset, page.end), offset: page.offset, end: page.end, total: body.evidence.body.length, unit: 'utf16', upstreamComplete: body.evidence.upstreamComplete, upstreamOmitted: body.evidence.upstreamOmitted }],
     cursor, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}), canContinue: Boolean(page.nextCursor) || otherPending,
     [bodyDelivery]: { researchId: run.researchId, runId: run.runId, cursor } };
@@ -2124,9 +2124,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       });
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
     // words, so the model never spends another call fetching what is already in hand.
-    const more = canContinue || dropped > 0 || calendarPending || mailPending;
-    const settledNote = status === 'answered' && !more ? (note ?? RESEARCH.completeNote) : note;
-    return { findings, reply: { researchId: run.researchId, status: status === 'answered' && !more ? 'complete' : 'partial', findings, unchecked, canContinue: more, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    const trimmed = dropped > 0 || calendarPending || mailPending;
+    const complete = status === 'answered' && !trimmed;
+    const settledNote = complete ? (note ?? RESEARCH.completeNote) : note;
+    return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;

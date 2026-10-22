@@ -78,7 +78,7 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
   const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
   assert.equal(parseSelector('not json at all'), null);
   const h = harness({ selector: timedOut });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide about the release' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(h.logs[0]!.fallbackUsed, true);
   assert.equal(h.logs[0]!.driver, 'fallback');
   assert.equal(h.logs[0]!.rounds, 1);

@@ -439,7 +439,7 @@ const scheduleSelector: ResearchSelector = {
 
 test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a schedule question', async () => {
   const h = scheduleFixture({ selector: scheduleSelector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', question: 'check my mail and my calls tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the calendar endpoint connected, so its read runs');
   assert.equal(h.calls.some(call => call.name === 'gmail_search_messages'), false, 'the mail endpoint is never dispatched to');
   const rows = h.logs.at(-1)!.sources;
@@ -449,12 +449,12 @@ test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a sche
   assert.equal('error' in reply, false);
 });
 
-test('ROUTE-1022: the selector fallback path still reads the calendar on a schedule question', async () => {
+test('ROUTE-1022: a schedule question reads the calendar even when the selector fails', async () => {
   const selector: ResearchSelector = { select: async () => { throw new Error('selector deadline'); } };
   const h = scheduleFixture({ selector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
   await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
-  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'a selector timeout leaves the calendar in the fallback plan');
-  assert.equal(h.logs.at(-1)!.fallbackUsed, true, 'and the run records that it fell back');
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'a selector timeout leaves the calendar in the plan');
+  assert.equal(h.logs.at(-1)!.driver, 'routed', 'and the run records the router as the decider');
 });
 
 test('ROUTE-1022: a schedule question keeps the calendar in a plan that omitted it', async () => {

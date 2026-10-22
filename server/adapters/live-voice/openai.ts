@@ -85,6 +85,14 @@ const UPLOAD_NO_PROGRESS_MS = 30_000;
 /** Mic shedding (3o): above this much buffered upload the oldest queued mic frames go, so the model hears the
  *  newest speech instead of a backlog of seconds. Measured on the lossy-uplink session (peak 275,222 B). */
 const UPLINK_SHED_BYTES = 48 * 1024;
+/** Release 3: silence goes first, and one frame of every 200 ms of dropped silence stays queued as a heartbeat so
+ *  the provider's silence timing still advances over the gap. */
+const UPLINK_SILENCE_HEARTBEAT_MS = 200;
+/** Release 3: the newest 500 ms of speech is never shed, so a pinned uplink costs the start of a sentence, never
+ *  the end of it. */
+const UPLINK_SPEECH_FLOOR_MS = 500;
+/** 24 kHz mono PCM16, the rate the mic is upsampled to before the wire (OUTPUT_PCM_BYTES_PER_MS is the same). */
+const MIC_PCM_BYTES_PER_MS = 48;
 /** The shed receipt is bounded to one host.log record per window (3o). */
 const UPLINK_SHED_RECEIPT_MS = 10_000;
 /** W3: connection quality is the adapter's own read of the link, over the last three measured seconds. */
@@ -397,12 +405,19 @@ class Session implements LiveVoiceSession {
   private upstreamDrop: LiveVoiceUpstreamDrop | undefined;
   private lastInboundAt = Date.now();
   /** Mic frames queued behind a backed-up socket, oldest first: shed from the front (3o). */
-  private micPending: { frame: string; bytes: number }[] = [];
+  private micPending: { frame: string; bytes: number; speech: boolean }[] = [];
   private micPendingBytes = 0;
   private shedBytes = 0;
   private shedPeak = 0;
   private shedRuns = 0;
   private notOpenBytes = 0;
+  /** Release 3: the shed split, in audio milliseconds and frame bytes. `lostMs` is the shed path only; frames lost
+   *  with the socket not open stay in `notOpenBytes`. */
+  private lostMs = 0;
+  private speechShedMs = 0;
+  private silenceShedMs = 0;
+  private speechShedBytes = 0;
+  private silenceShedBytes = 0;
   private shedReportedAt: number | undefined;
   /** One uplink sample per mic flush (W3): what the interval captured, what it discarded, and the bytes the
    *  socket took out of its buffer. Quality and the drain rate are read from these, never from delivery. */
@@ -1542,16 +1557,16 @@ class Session implements LiveVoiceSession {
     const overhead = Buffer.byteLength(JSON.stringify({ type: 'session.input_audio.append', audio: '' }));
     if (Math.ceil(pcm.byteLength / 3) * 4 + overhead > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); fail('outgoing_limit'); }
     const frame = JSON.stringify({ type: 'session.input_audio.append', audio: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64') });
-    this.micPending.push({ frame, bytes: pcm.byteLength });
+    this.micPending.push({ frame, bytes: pcm.byteLength, speech: pcm16RmsDbfs(pcm) >= AUDIBLE_RMS_DBFS });
     this.micPendingBytes += Buffer.byteLength(frame);
     this.sampleCaptured += Buffer.byteLength(frame);
     if (!this.flushMic()) fail(this.terminal?.code ?? 'not_ready');
   }
 
   /**
-   * Send what the uplink can take and shed the rest from the front (3o). The capture path never waits: the queue
-   * is bounded by UPLINK_SHED_BYTES plus one frame, and the oldest frames go first so the newest speech wins.
-   * W3: a shed is one contiguous run down to the low-water mark, so the wire carries runs, never thin islands.
+   * Send what the uplink can take and shed the rest (3o). The capture path never waits: the queue is bounded by
+   * UPLINK_SHED_BYTES plus one frame. Release 3: silence goes first, one frame per 200 ms of it stays as a
+   * heartbeat, then the oldest speech goes as one contiguous run.
    */
   private flushMic(sample = true): boolean {
     const socket = this.socket;
@@ -1564,18 +1579,9 @@ class Session implements LiveVoiceSession {
       this.micPending = []; this.micPendingBytes = 0;
     } else {
       if (this.micPending.length > 1 && this.micPendingBytes > UPLINK_SHED_BYTES) {
-        // W3: the whole queued stretch goes, oldest first, and only the newest frame is kept. One frame per
-        // arrival is what made 20 ms islands; a stretch at a time is what leaves the frames after it consecutive.
-        // A socket pinned at the cap can only take a third of the capture, so the stretch dropped has to be at
-        // least half the cap for the delivered run to be long enough to hear as speech.
-        while (this.micPending.length > 1) {
-          const shed = this.micPending.shift()!;
-          const bytes = Buffer.byteLength(shed.frame);
-          this.micPendingBytes -= bytes;
-          this.shedBytes += bytes;
-          this.sampleDiscarded += bytes;
-        }
-        this.shedRuns += 1;
+        // Release 3: silence goes first, then the oldest speech as one run. Both steps drop whole frames, so the
+        // stretch that stays is consecutive and the model hears runs, never 20 ms islands.
+        this.shedMicPending();
       }
       while (this.micPending.length && socket.bufferedAmount < UPLINK_SHED_BYTES) {
         const next = this.micPending.shift()!;
@@ -1594,10 +1600,67 @@ class Session implements LiveVoiceSession {
     if ((this.shedBytes || this.notOpenBytes) && (this.shedReportedAt === undefined || now - this.shedReportedAt >= UPLINK_SHED_RECEIPT_MS)) {
       this.shedReportedAt = now;
       hostLogEvent({ event: 'uplink_shed', bytes: this.shedBytes, bufferedPeak: this.shedPeak, shedRuns: this.shedRuns,
-        drainBytesPerSec: this.drainBytesPerSec, notOpenBytes: this.notOpenBytes });
+        drainBytesPerSec: this.drainBytesPerSec, notOpenBytes: this.notOpenBytes,
+        lostMs: Math.round(this.lostMs), speechShedMs: Math.round(this.speechShedMs),
+        silenceShedMs: Math.round(this.silenceShedMs), speechShedBytes: this.speechShedBytes,
+        silenceShedBytes: this.silenceShedBytes });
       this.shedBytes = 0; this.shedPeak = 0; this.shedRuns = 0; this.notOpenBytes = 0;
+      this.lostMs = 0; this.speechShedMs = 0; this.silenceShedMs = 0; this.speechShedBytes = 0; this.silenceShedBytes = 0;
     }
     return !this.terminal;
+  }
+
+  /**
+   * Release 3 shed, in two passes over the queue and no allocation beyond the kept list. Silence goes first, with
+   * one frame per 200 ms of dropped silence kept so the provider's timing advances. If the queue is still over
+   * the bound, the oldest speech goes as one contiguous run; the newest 500 ms of speech is never touched.
+   */
+  private shedMicPending(): void {
+    const before = this.micPending.length;
+    const afterSilence: { frame: string; bytes: number; speech: boolean }[] = [];
+    let droppedSinceHeartbeatMs = 0;
+    for (const entry of this.micPending) {
+      if (entry.speech) { afterSilence.push(entry); continue; }
+      const ms = entry.bytes / MIC_PCM_BYTES_PER_MS;
+      if (droppedSinceHeartbeatMs + ms < UPLINK_SILENCE_HEARTBEAT_MS) {
+        this.shedMicFrame(entry, false);
+        droppedSinceHeartbeatMs += ms;
+        continue;
+      }
+      droppedSinceHeartbeatMs = 0;
+      afterSilence.push(entry);
+    }
+    let floorMs = 0;
+    let protectedSpeech = 0;
+    for (let index = afterSilence.length - 1; index >= 0 && floorMs < UPLINK_SPEECH_FLOOR_MS; index -= 1) {
+      const entry = afterSilence[index]!;
+      if (!entry.speech) continue;
+      protectedSpeech += 1;
+      floorMs += entry.bytes / MIC_PCM_BYTES_PER_MS;
+    }
+    let remaining = afterSilence.reduce((sum, entry) => sum + Buffer.byteLength(entry.frame), 0);
+    // One contiguous run down to the floor, never the frame or two that would leave 20 ms islands: what stays on
+    // the wire after a shed is a run of consecutive speech, which is what the model can hear as words.
+    let toShed = remaining > UPLINK_SHED_BYTES ? Math.max(0, afterSilence.filter(entry => entry.speech).length - protectedSpeech) : 0;
+    const kept: typeof afterSilence = [];
+    for (const entry of afterSilence) {
+      if (toShed > 0 && entry.speech) { this.shedMicFrame(entry, true); remaining -= Buffer.byteLength(entry.frame); toShed -= 1; continue; }
+      kept.push(entry);
+    }
+    this.micPending = kept;
+    this.micPendingBytes = remaining;
+    if (kept.length < before) this.shedRuns += 1;
+  }
+
+  /** Count one shed frame in its own half of the split: audio milliseconds and wire bytes, counts only. */
+  private shedMicFrame(entry: { frame: string; bytes: number }, speech: boolean): void {
+    const bytes = Buffer.byteLength(entry.frame);
+    const ms = entry.bytes / MIC_PCM_BYTES_PER_MS;
+    this.shedBytes += bytes;
+    this.sampleDiscarded += bytes;
+    this.lostMs += ms;
+    if (speech) { this.speechShedMs += ms; this.speechShedBytes += bytes; return; }
+    this.silenceShedMs += ms; this.silenceShedBytes += bytes;
   }
 
   /** Record what this flush interval captured, discarded and the socket accepted, then start the next interval. */

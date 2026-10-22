@@ -555,3 +555,16 @@ test('the host-start reconciler re-distils a no_text_model skip once a text mode
     assert.equal(sealed.summary, null);
   } finally { h.cleanup(); }
 });
+
+test('an in-flight summary row is never listed as a failed summary', async () => {
+  const f = open();
+  try {
+    f.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 'in-flight', status: 'failed',
+      errorCode: summaries.PENDING_SUMMARY_ERROR_CODE, retryCount: 0, now: 1_700_000_000_000 }));
+    f.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 'real-failure', status: 'failed',
+      errorCode: 'network', retryCount: 1, now: 1_700_000_000_000 }));
+    const listed = f.store.transaction(tx => summaries.listSummaries(tx)).map(record => record.liveSessionId);
+    assert.equal(listed.includes('in-flight'), false, 'a summary still running is not an outcome any reader sees');
+    assert.equal(listed.includes('real-failure'), true, 'a summary that really failed is still listed');
+  } finally { f.cleanup(); }
+});

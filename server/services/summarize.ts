@@ -268,6 +268,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'no_text_model' });
       return;
     }
+    // The in-flight row: a host that exits during the model call leaves it for the next start to retry.
+    options.store.transaction(tx => summaries.markSummaryPending(tx, liveSessionId, options.now(), provenance));
     const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, dateMs: endedAt, timeZone: options.timeZone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
     options.log({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });

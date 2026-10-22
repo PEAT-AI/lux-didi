@@ -163,6 +163,13 @@ async function remember(h: Harness, text: string | undefined, args: Record<strin
   return response.toolResponse.functionResponses[0]!.response;
 }
 
+/** A refusal carries the guidance she must say; the code and shape are asserted exactly, so it is stripped here. */
+function refusal(result: unknown): Record<string, unknown> {
+  const { guidance, ...rest } = result as Record<string, unknown>;
+  assert.equal(typeof guidance, 'string', 'every refusal carries guidance she must say');
+  return rest;
+}
+
 test('Live remember writes owner words once, freezes the current prompt and recalls at next CREATE', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
@@ -224,7 +231,9 @@ test('Live remember provenance refusals do not write memory', async t => {
         scheduler.advance(1500);
       }
       const result = await resultPromise;
-      assert.deepEqual(result, { remembered: false, code });
+      const { guidance, ...refused } = result as Record<string, unknown>;
+      assert.equal(typeof guidance, 'string', 'a refusal carries guidance she must say');
+      assert.deepEqual(refused, { remembered: false, code });
       assert.equal(rows(h).length, 0);
     });
   }
@@ -352,7 +361,7 @@ test('Live memory port writes ordinary owner payload with the real domain transa
   const h = await harness(t, { tools: true });
   const { session } = await attached(h);
   // A refused pointer still finalizes and journals the owner turn before this direct port check.
-  assert.deepEqual(await remember(h, 'remember that mint is Friday', { text: 'Monday', kind: 'task' }, 2), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(h, 'remember that mint is Friday', { text: 'Monday', kind: 'task' }, 2)), { remembered: false, code: 'owner_text_mismatch' });
   const result = h.store.transaction(tx => rememberOwnerNote(tx, session.liveSessionId, { text: 'mint is Friday', kind: 'task' }, NOW));
   assert.equal(result.remembered, true);
   assert.equal(rows(h)[0]?.text, 'mint is Friday');
@@ -382,7 +391,7 @@ test('a later remember_note cannot recreate a deleted note from the retained voi
   const domain = createDomainPort({ outbox: Outbox });
   h.store.transaction(tx => domain.execute(tx, 'deleteEntry', { id: String(result.entryId) }, { assistantId: h.store.assistantId, clientId: h.ctx.clientId, authorityEpoch: h.store.authorityEpoch, now: new Date(NOW).toISOString() }));
   const repeated = await remember(h, undefined, { text: payload, kind: 'task' }, 3);
-  assert.deepEqual(repeated, { remembered: false, code: 'already_remembered', entryId: result.entryId });
+  assert.deepEqual(refusal(repeated), { remembered: false, code: 'already_remembered', entryId: result.entryId });
   const tombstone = h.store.transaction(tx => tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [String(result.entryId)]));
   assert.equal(tombstone?.source_kind, 'live-voice');
   assert.match(String(tombstone?.source_key), /^[0-9a-f-]{36}:\d+$/);
@@ -432,6 +441,6 @@ test('a note with no owner speech at all is still refused', async t => {
   const resultPromise = remember(h, undefined, { text: 'model invention', kind: 'fact' }, 2, false);
   await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
   scheduler.advance(1500);
-  assert.deepEqual(await resultPromise, { remembered: false, code: 'owner_transcript_not_final' });
+  assert.deepEqual(refusal(await resultPromise), { remembered: false, code: 'owner_transcript_not_final' });
   assert.equal(rows(h).length, 0);
 });

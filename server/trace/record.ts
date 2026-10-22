@@ -425,7 +425,7 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
              AND (EXISTS (SELECT 1 FROM conversation_summaries c WHERE c.live_session_id = s.live_session_id
                             AND (c.status = 'complete'
                               OR (c.status = 'skipped' AND COALESCE(c.skip_reason, '') <> 'no_text_model')
-                              OR (c.status = 'failed' AND COALESCE(c.error_code, '') <> 'deadline')))
+                              OR (c.status = 'failed' AND COALESCE(c.error_code, '') NOT IN ('deadline','pending'))))
                OR EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind = 'live' AND h.source_id = s.live_session_id)))`
     : null;
   // Only owner speech and tool payloads are content. A marker row's `text` is the marker itself: a

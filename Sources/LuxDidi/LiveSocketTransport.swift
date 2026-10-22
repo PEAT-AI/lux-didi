@@ -307,7 +307,11 @@ private actor FoundationLiveSocket: LiveSocket {
                 let message = try await task.receive()
                 // A native action is a control frame, never a frame of the conversation.
                 if case .string(let text) = message, let action = NativeActionFrame.control(text) {
-                    let result = await nativeActions.perform(action.action, target: action.target)
+                    // OPEN2-R1: the first Mattermost origin this socket is told is pinned; a frame naming
+                    // any other one is refused here, before the destination is even considered.
+                    var admitted = true
+                    if let origin = action.origin { admitted = await nativeActions.adopt(mattermostOrigin: origin) }
+                    let result = admitted ? await nativeActions.perform(action.action, target: action.target) : NativeActionResult(code: .notAllowed)
                     guard !closed else { throw LiveClientError.staleOperation }
                     try await send(.string(NativeActionReply(id: action.id, result: result).json))
                     continue

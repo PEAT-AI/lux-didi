@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
-import { recordHistorySession } from '../domain/history-lifecycle.js';
+import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import {
   SUMMARY_BOOT_REQUEUE_DELAY_MS, SUMMARY_HOST_START_LIMIT, SUMMARY_MAX_RETRIES, SUMMARY_RETRY_BACKOFF_MS,
@@ -193,6 +193,41 @@ test('a summary that fails for a transient reason is retried with backoff, then 
   } finally { h.cleanup(); }
 });
 
+test('a summary writes a pending row before the model call and replaces it with the outcome', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-pending');
+    const seen: (summaries.SummaryRecord | null)[] = [];
+    const model: ModelPort = {
+      async generate(): Promise<ModelResult> {
+        seen.push(h.store.transaction(tx => summaries.getBySession(tx, 's-pending')));
+        return modelResult('complete', '{"skip": false, "summary": "The owner discussed the mint window."}');
+      },
+    };
+    await worker(h.store, model, []).distill('s-pending');
+    assert.equal(seen[0]?.status, 'failed', 'a row exists before the model call');
+    assert.equal(seen[0]?.errorCode, summaries.PENDING_SUMMARY_ERROR_CODE, 'and it says the summary is in flight');
+    const done = storedRow(h.store, 's-pending')!;
+    assert.equal(done.status, 'complete', 'the outcome replaces the in-flight row');
+    assert.equal(done.errorCode, null, 'and the in-flight code is gone');
+  } finally { h.cleanup(); }
+});
+
+test('a pending row left by a host that exited is requeued at the next start', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-pending-crash');
+    // The production writer: the row a host that exits mid-summary leaves behind.
+    const source = h.store.transaction(tx => historySessionEvidence(tx, 's-pending-crash'))!;
+    h.store.transaction(tx => summaries.markSummaryPending(tx, 's-pending-crash', SUMMARY_NOW, { dataClass: source.dataClass, sourceRevision: source.revision }));
+    const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "late"}')]);
+    const waits: number[] = [];
+    await worker(h.store, model, waits).requeueFailed();
+    assert.deepEqual(waits, [SUMMARY_BOOT_REQUEUE_DELAY_MS], 'the boot requeue waits out the start-up window');
+    assert.equal(storedRow(h.store, 's-pending-crash')!.status, 'complete', 'the orphaned summary is distilled');
+  } finally { h.cleanup(); }
+});
+
 test('a summary that failed in one host start is retried at the next start, after the boot delay', async () => {
   const h = summarizerFixture();
   try {
@@ -264,5 +299,21 @@ test('a failed summary older than the age cap is closed instead of retried', asy
     await worker(h.store, model, []).requeueFailed();
     assert.equal(model.calls, 0, 'an aged failure is not retried');
     assert.equal(storedRow(h.store, id)!.errorCode, 'retry_exhausted');
+  } finally { h.cleanup(); }
+});
+
+test('a legacy failed row with the old error class is requeued once at the next start', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-legacy-error');
+    // The two rows the owner's store already holds: error_code 'error', retry_count 0.
+    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-legacy-error', status: 'failed',
+      errorCode: 'error', retryCount: 0, now: SUMMARY_NOW }));
+    const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "recovered"}')]);
+    const waits: number[] = [];
+    await worker(h.store, model, waits).requeueFailed();
+    assert.deepEqual(waits, [SUMMARY_BOOT_REQUEUE_DELAY_MS], 'the boot requeue waits out the start-up window');
+    assert.equal(model.calls, 1, 'the legacy row is distilled once');
+    assert.equal(storedRow(h.store, 's-legacy-error')!.status, 'complete', 'and it reaches memory');
   } finally { h.cleanup(); }
 });

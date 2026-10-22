@@ -1,6 +1,7 @@
 import type { createToolsOwner } from '../tools/index.js';
-import type { ResearchSelector } from '../tools/research.js';
+
 import type { LiveToolStepBody } from '../tools/host-events.js';
+import type { WebSearchPort } from '../tools/web-search.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort, LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
@@ -106,8 +107,8 @@ export interface ResearchProgressView {
 }
 export interface LiveOwnerConfig {
   readonly tools?: LiveToolsComposition;
-  /** Optional same-provider text selector for the research loop; absent falls back to the fixed recipe. */
-  readonly research?: ResearchSelector;
+  /** Optional public web read for the research loop; absent means the web source is not offered. */
+  readonly researchWeb?: WebSearchPort;
   readonly memorySource?: LiveMemorySource;
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;

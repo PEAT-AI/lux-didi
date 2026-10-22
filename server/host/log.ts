@@ -18,11 +18,15 @@ const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 // #280: `routed` is the routed start's own driver; it never goes through the selector loop.
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint', 'routed'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// ROUTE-1022 K5: what a brief plan actually read, as a closed set.
+const RESEARCH_PLANS = ['knowledge_only', 'named_sources'];
 // ROUTE-R2: why a source was skipped, so a grant gap is never indistinguishable from an outage.
 const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];
+/** L2: why the digest was read again, the same closed set the host binds its refresh hooks with. */
+const CALENDAR_DIGEST_REFRESH_REASONS = ['start', 'timer', 'recovered', 'first_connect'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
@@ -133,6 +137,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed'].includes(value.code)) return;
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
+  }
+  if (value.event === 'open_claim_corrected') {
+    // Open2: the correction is counted, never quoted: one closed reason, no words of hers.
+    if (Object.keys(value).sort().join(',') !== ['event', 'reason'].join(',')) return;
+    if (!['no_receipt', 'kind_mismatch'].includes(String(value.reason))) return;
+    return { event: 'open_claim_corrected', reason: value.reason };
   }
   if (value.event === 'tool_redaction') {
     // The receipt names the tool and the count of secrets, never the value.
@@ -377,16 +387,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
     if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
+    if (!isSafeCount(value.msSinceDrop)) return;
     if (!isSafeToken(value.code)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
     // Closed shape: which session and generation the provider socket was opened for, how big the setup was
@@ -447,14 +458,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_upstream_queue', bufferedBytes: value.bufferedBytes };
   }
   if (value.event === 'uplink_shed') {
-    // Closed shape (3o, W3): mic frame bytes shed from the front of the uplink queue, the peak backlog of the
-    // window, how many contiguous runs went, the bytes the socket drained per second and the frames lost while
-    // the socket was not open. One record per UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
-    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak', 'shedRuns', 'drainBytesPerSec', 'notOpenBytes'])) return;
+    // Closed shape (3o, W3, release 3): mic frame bytes shed from the front of the uplink queue, the peak backlog
+    // of the window, how many contiguous runs went, the bytes the socket drained per second, the frames lost
+    // while the socket was not open, and the speech and silence split of the shed. One record per
+    // UPLINK_SHED_RECEIPT_MS at most, never one per shed frame.
+    if (!closedKeys(value, ['event', 'bytes', 'bufferedPeak', 'shedRuns', 'drainBytesPerSec', 'notOpenBytes',
+      'lostMs', 'speechShedMs', 'silenceShedMs', 'speechShedBytes', 'silenceShedBytes'])) return;
     if (!isSafeCount(value.bytes) || !isSafeCount(value.bufferedPeak) || !isSafeCount(value.shedRuns)) return;
     if (!isSafeCount(value.drainBytesPerSec) || !isSafeCount(value.notOpenBytes)) return;
+    if (!isSafeCount(value.lostMs) || !isSafeCount(value.speechShedMs) || !isSafeCount(value.silenceShedMs)) return;
+    if (!isSafeCount(value.speechShedBytes) || !isSafeCount(value.silenceShedBytes)) return;
     return { event: 'uplink_shed', bytes: value.bytes, bufferedPeak: value.bufferedPeak, shedRuns: value.shedRuns,
-      drainBytesPerSec: value.drainBytesPerSec, notOpenBytes: value.notOpenBytes };
+      drainBytesPerSec: value.drainBytesPerSec, notOpenBytes: value.notOpenBytes, lostMs: value.lostMs,
+      speechShedMs: value.speechShedMs, silenceShedMs: value.silenceShedMs, speechShedBytes: value.speechShedBytes,
+      silenceShedBytes: value.silenceShedBytes };
   }
   if (value.event === 'connection_quality') {
     // Closed shape (W3): one record when the adapter's own uplink measurement flips between ok and weak, with
@@ -486,7 +503,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'session_end') {
     // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
     if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
-    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed') return;
+    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed' && value.reason !== 'app_quit') return;
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }
@@ -498,6 +515,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.promptTokens === undefined || isSafeCount(value.promptTokens))) return;
     if (!(value.responseTokens === undefined || isSafeCount(value.responseTokens))) return;
     return { event: 'live_context_usage', totalTokens: value.totalTokens, ...(value.promptTokens !== undefined ? { promptTokens: value.promptTokens } : {}), ...(value.responseTokens !== undefined ? { responseTokens: value.responseTokens } : {}) };
+  }
+  if (value.event === 'live_reply_unjournalled') {
+    // Closed shape: a spoken reply that left no output transcript row. Never text, only the two ids.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation)) return;
+    return { event: 'live_reply_unjournalled', liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_dead_air_nudge') {
     // Closed shape: the elapsed dead air before a single neutral continuation input was sent.
@@ -716,7 +740,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // a routed start writes its own line and names `routed`.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
     if (hasDriver && !isSafeMember(value.driver, RESEARCH_DRIVERS)) return;
-    if (Object.keys(value).sort().join(',') !== (hasDriver ? [...keys, 'driver'] : keys).sort().join(',')) return;
+    // K14/K8a/L10: three optional closed counts, so a run line says how many whole bodies it sent, whether
+    // a contentless start stood in for a continue, and how many dispatches a supersession aborted.
+    const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
+    if (has('bodyReplies') && !isSafeCount(value.bodyReplies)) return;
+    if (has('metaStartAsContinue') && typeof value.metaStartAsContinue !== 'boolean') return;
+    if (has('supersededAborts') && !isSafeCount(value.supersededAborts)) return;
+    // ROUTE-1022 K5: the plan a brief actually ran, as one closed token, never the question.
+    if (has('plan') && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
+    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan'].filter(has);
+    if (Object.keys(value).sort().join(',') !== [...keys, ...optionals].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
     if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
     if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable', 'failed'])) return;
@@ -756,7 +789,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
     if (typeof value.canContinue !== 'boolean') return;
     if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}), ...(has('bodyReplies') ? { bodyReplies: value.bodyReplies } : {}), ...(has('metaStartAsContinue') ? { metaStartAsContinue: value.metaStartAsContinue } : {}), ...(has('supersededAborts') ? { supersededAborts: value.supersededAborts } : {}), ...(has('plan') ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
   }
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
@@ -780,7 +813,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
     const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
     const hasMail = Object.prototype.hasOwnProperty.call(value, 'mail');
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : [])].sort().join(',')) return;
+    // ROUTE-1022 K5: the same plan token as the run receipt, admitted only from its closed set.
+    const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
+    if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasPlan ? ['plan'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -815,7 +851,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         mail = { ...shape, retried };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}) };
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
@@ -857,7 +893,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
-    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
+    if (!isSafeMember(value.queryAuthor, ['routed', 'fallback', 'hint'])) return;
     // A resolved window is two calendar dates in the id form, never a query and never an event title.
     if (hasFrom !== hasTo) return;
     if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;
@@ -968,6 +1004,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!CALENDAR_DIGEST_STATES.includes(value.state as typeof CALENDAR_DIGEST_STATES[number])) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.ageMs)) return;
     return { event: 'calendar_digest', state: value.state, items: value.items, ageMs: value.ageMs };
+  }
+  if (value.event === 'calendar_digest_refreshed') {
+    // L2: which edge read the digest again and how long the read took, never a day or an event.
+    if (!closedKeys(value, ['event', 'reason', 'ms'])) return;
+    if (!isSafeMember(value.reason, CALENDAR_DIGEST_REFRESH_REASONS)) return;
+    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 900_000) return;
+    return { event: 'calendar_digest_refreshed', reason: value.reason, ms: Math.round(value.ms) };
+  }
+  if (value.event === 'host_resources') {
+    // L12d: this process's own footprint while a call is live. Megabytes to one decimal, CPU as a
+    // percentage of one core over the last window: numbers only, never a device or a person.
+    if (!closedKeys(value, ['event', 'rssMb', 'heapUsedMb', 'cpuPct'])) return;
+    const mb = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_048_576;
+    const pct = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 6400;
+    if (!mb(value.rssMb) || !mb(value.heapUsedMb) || !pct(value.cpuPct)) return;
+    return { event: 'host_resources', rssMb: value.rssMb, heapUsedMb: value.heapUsedMb, cpuPct: value.cpuPct };
   }
   if (value.event === 'opener_plan') {
     // M1's plan receipt, which rode the debug journal until O1b-A removed it: the kinds offered and the

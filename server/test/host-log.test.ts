@@ -1,12 +1,26 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
+import { createHostResourceSampler } from '../host/runtime.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
 const LIVE_SESSION_ID = '11111111-2222-4333-8444-555555555555';
 
 const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
+
+// Release 3: the shed receipt carries the speech and silence split of what the uplink dropped, counts only.
+const SHED = { event: 'uplink_shed', bytes: 42_528, bufferedPeak: 123_904, shedRuns: 1, drainBytesPerSec: 19_200, notOpenBytes: 0,
+  lostMs: 660, speechShedMs: 0, silenceShedMs: 660, speechShedBytes: 0, silenceShedBytes: 42_528 };
+
+test('uplink_shed keeps its closed receipt including the speech and silence split', () => {
+  assert.deepEqual(safeEvent(SHED), SHED);
+  assert.equal(safeEvent({ ...SHED, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...SHED, lostMs: 1.5 }), undefined, 'a fractional count is refused');
+  assert.equal(safeEvent({ ...SHED, speechShedMs: -1 }), undefined, 'a negative count is refused');
+  assert.equal(safeEvent({ ...SHED, speechShedBytes: 'many' }), undefined, 'a non-numeric count is refused');
+  assert.equal(safeEvent({ ...SHED, silenceShedMs: undefined }), undefined, 'a missing split field is refused');
+});
 
 test('live_instruction_sizes keeps a closed section schema of counts only', () => {
   assert.deepEqual(safeEvent(SIZE), SIZE);
@@ -71,7 +85,7 @@ test('live_tool_turn admits a closed per-endpoint peak in-flight field', () => {
   assert.equal(safeEvent({ ...base, peakInFlight: 'two' }), undefined, 'a non-array field is refused');
 });
 test('research_subcall carries the calendar window kind as a closed enum', () => {
-  const base = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'selector' };
+  const base = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'routed' };
   assert.deepEqual(safeEvent({ ...base, window: 'tomorrow' }), { ...base, window: 'tomorrow' });
   assert.equal(safeEvent({ ...base, window: 'date' })?.window, 'date');
   assert.equal(safeEvent({ ...base, window: '2026-10-16' }), undefined, 'a real date is refused');
@@ -121,12 +135,12 @@ test('research_joined carries the run id only', () => {
 });
 
 test('research_subcall keeps a real error code but drops a free-text one', () => {
-  const base = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: false, items: 0, rawBytes: 0, keptBytes: 0, queryChars: 0, queryAuthor: 'selector' };
+  const base = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: false, items: 0, rawBytes: 0, keptBytes: 0, queryChars: 0, queryAuthor: 'routed' };
   assert.equal(safeEvent({ ...base, errorCode: 'unknown_tool' })?.errorCode, 'unknown_tool');
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
-const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, liveSessionId: LIVE_SESSION_ID, generation: 4 };
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, liveSessionId: LIVE_SESSION_ID, generation: 4 };
 test('live_recovery keeps a closed metadata-only shape', () => {
   assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
   assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
@@ -271,4 +285,68 @@ test('MED-1022: the knowledge receipt keeps its counts and closed tokens and ref
   assert.equal(safeEvent(row({ chatDateOperator: 'after:2026-10-21' })), undefined, 'the date itself never rides the receipt');
   for (const token of ['compiled', 'dropped', 'none']) assert.ok(safeEvent(row({ chatDateOperator: token })) !== undefined, `${token} is a closed token`);
   assert.equal(safeEvent(row({ note: 'extra' })), undefined, 'an unknown field is refused');
+});
+
+// ROUTE-1022 K5: a receipt names the plan a brief actually ran, as one closed token and nothing else.
+test('ROUTE-1022: the brief plan token reaches the log only from its closed set', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1 };
+  for (const plan of ['knowledge_only', 'named_sources']) {
+    assert.deepEqual(safeEvent({ ...source, plan }), { ...source, plan }, `${plan} reaches host.log`);
+  }
+  assert.equal(safeEvent({ ...source, plan: 'read everything' }), undefined, 'an unknown plan token is refused');
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [10],
+  };
+  assert.deepEqual(safeEvent({ ...run, plan: 'knowledge_only' }), { ...run, plan: 'knowledge_only' }, 'the run receipt names the plan');
+  assert.equal(safeEvent({ ...run, plan: 'brief' }), undefined, 'and refuses a token outside it');
+});
+
+test('L2: a digest refresh receipt says which edge read it and how long, never a day', () => {
+  const base = { event: 'calendar_digest_refreshed', reason: 'first_connect', ms: 2402 };
+  assert.deepEqual(safeEvent(base), base, 'the first-connect read keeps its reason and its timing');
+  for (const reason of ['start', 'timer', 'recovered', 'first_connect']) {
+    assert.equal(safeEvent({ ...base, reason })?.reason, reason, `${reason} is a closed reason`);
+  }
+  assert.equal(safeEvent({ ...base, reason: 'manual' }), undefined, 'a reason outside the closed set is refused');
+  assert.equal(safeEvent({ ...base, extra: 'text' }), undefined, 'an extra field fails closed');
+  assert.equal(safeEvent({ ...base, ms: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ ...base, ms: 'fast' }), undefined, 'a non numeric duration is refused');
+  assert.equal(safeEvent({ event: 'calendar_digest_refreshed', reason: 'first_connect' }), undefined, 'a receipt with no duration is refused');
+});
+
+test('L12d: host_resources is numbers only, megabytes and a CPU percentage', () => {
+  const base = { event: 'host_resources', rssMb: 412.5, heapUsedMb: 83.2, cpuPct: 12.4 };
+  assert.deepEqual(safeEvent(base), base, 'one resource window survives unchanged');
+  assert.equal(safeEvent({ ...base, cpuPct: 120.5 })?.cpuPct, 120.5, 'a call spanning cores may pass one hundred percent');
+  assert.equal(safeEvent({ ...base, extra: 'device' }), undefined, 'an extra field fails closed');
+  assert.equal(safeEvent({ ...base, rssMb: -1 }), undefined, 'a negative footprint is refused');
+  assert.equal(safeEvent({ ...base, heapUsedMb: Number.NaN }), undefined, 'a NaN footprint is refused');
+  assert.equal(safeEvent({ ...base, cpuPct: 100_000 }), undefined, 'an impossible CPU percentage is refused');
+  assert.equal(safeEvent({ event: 'host_resources', rssMb: 412.5, heapUsedMb: 83.2 }), undefined, 'a receipt with no CPU is refused');
+});
+
+test('L12d: one host_resources receipt per sixty second window, on the host clock', () => {
+  let at = 1_000_000;
+  let cpu = { user: 0, system: 0 };
+  const logged: Array<Record<string, unknown>> = [];
+  const sampler = createHostResourceSampler({
+    log: event => { logged.push(event); },
+    now: () => at,
+    memoryUsage: () => ({ rss: 432 * 1_048_576, heapUsed: 100.5 * 1_048_576 }),
+    cpuUsage: () => cpu,
+  });
+  assert.equal(sampler.sample(), false, 'the first read is the baseline, not a window');
+  at += 59_000;
+  assert.equal(sampler.sample(), false, 'under a window nothing is logged');
+  cpu = { user: 3_000_000, system: 0 };
+  at += 1_000;
+  assert.equal(sampler.sample(), true, 'a full window logs once');
+  assert.deepEqual(logged, [{ event: 'host_resources', rssMb: 432, heapUsedMb: 100.5, cpuPct: 5 }],
+    'the window covers the sixty seconds it just closed: three CPU seconds of sixty, megabytes to one decimal');
+  assert.deepEqual(safeEvent(logged[0]), logged[0], 'the receipt passes the closed allowlist');
+  at += 1_000;
+  assert.equal(sampler.sample(), false, 'a second read inside the same window stays silent');
+  assert.equal(logged.length, 1);
 });

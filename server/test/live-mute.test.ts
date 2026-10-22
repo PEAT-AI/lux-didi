@@ -302,3 +302,22 @@ test('an offer the transport refuses is kept, receipted, and retried in the next
   await live.advance(MUTED_OFFER_SILENCE_MS);
   assert.equal(live.texts.length, 1, 'the held answer survived the failed send and goes out on the retry');
 });
+
+test('a response whose first audio arrived while muted plays no later frame after the unmute', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
+  live.attachment.setInputMuted(true);
+  await flush();
+  // The response starts under the mute: its first audible frame is dropped and the answer is held.
+  await live.emit(audibleFrame);
+  await flush();
+  live.attachment.setInputMuted(false);
+  await flush();
+  // The provider keeps streaming the same response: not one frame of it may play.
+  const played: string[] = [];
+  void (async () => { for await (const chunk of live.attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  await live.emit(audibleFrame);
+  await live.emit({ type: 'turnComplete' });
+  await flush(); await flush();
+  assert.equal(played.length, 0, 'the muted response is cancelled, never played late');
+});

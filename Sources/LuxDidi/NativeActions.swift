@@ -16,7 +16,8 @@ public struct NativeActionResult: Sendable, Equatable {
     public init(code: NativeActionCode) { self.code = code }
 }
 
-/// One typed control frame from the host. The shape is exact: four keys, nothing else.
+/// One typed control frame from the host. The shape is exact: four keys, plus `origin` on an open_url
+/// frame that names the one Mattermost origin the host learned (OPEN2-R1).
 public struct NativeActionFrame: Sendable, Equatable {
     public enum Action: String, Sendable, CaseIterable {
         case openURL = "open_url"
@@ -26,21 +27,30 @@ public struct NativeActionFrame: Sendable, Equatable {
     public let id: String
     public let action: Action
     public let target: String
+    public let origin: String?
 
-    public init(id: String, action: Action, target: String) {
-        self.id = id; self.action = action; self.target = target
+    public init(id: String, action: Action, target: String, origin: String? = nil) {
+        self.id = id; self.action = action; self.target = target; self.origin = origin
     }
 
     /// Parse a text frame; any other frame, including audio-free host chatter, is not an action.
     public static func control(_ text: String) -> NativeActionFrame? {
         guard text.utf8.count <= 4096, let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object.count == 4, object["type"] as? String == "native_action",
+              object["type"] as? String == "native_action",
               let id = object["id"] as? String, !id.isEmpty, id.utf8.count <= 64,
               let rawAction = object["action"] as? String, let action = Action(rawValue: rawAction),
               let target = object["target"] as? String, !target.isEmpty, target.utf8.count <= 1024
         else { return nil }
-        return NativeActionFrame(id: id, action: action, target: target)
+        // `origin` is an optional fifth key, and only an open_url frame may carry it.
+        let hasOrigin = object.index(forKey: "origin") != nil
+        guard object.count == (hasOrigin ? 5 : 4) else { return nil }
+        var origin: String?
+        if hasOrigin {
+            guard action == .openURL, let named = object["origin"] as? String, !named.isEmpty, named.utf8.count <= 300 else { return nil }
+            origin = named
+        }
+        return NativeActionFrame(id: id, action: action, target: target, origin: origin)
     }
 }
 
@@ -58,6 +68,8 @@ public struct NativeActionReply: Sendable, Equatable {
 
 public protocol NativeActionExecuting: Sendable {
     func perform(_ action: NativeActionFrame.Action, target: String) async -> NativeActionResult
+    /// OPEN2-R1: pin the one Mattermost origin the host named; a different one is refused by `perform`.
+    func adopt(mattermostOrigin: String) async -> Bool
 }
 
 /// The viewer destinations the native side accepts on its own: an exact host and a viewer path, never a
@@ -114,7 +126,7 @@ public actor NativeActions: NativeActionExecuting {
     private let opener: Opener
     private let clock: @Sendable () -> Date
     private let log: Logger
-    private let mattermostHost: String?
+    private var mattermostHost: String?
     private var opened: [Date] = []
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -137,6 +149,25 @@ public actor NativeActions: NativeActionExecuting {
                 continuation.resume(returning: error == nil)
             }
         }
+    }
+
+    /// OPEN2-R1: https, the host alone, no userinfo, no port and no path beyond the root. The first
+    /// origin the host names is pinned for the life of this process; any other one is refused.
+    public func adopt(mattermostOrigin raw: String) async -> Bool {
+        guard let host = NativeActions.originHost(raw) else { return false }
+        if let pinned = mattermostHost { return pinned == host }
+        mattermostHost = host
+        return true
+    }
+
+    static func originHost(_ raw: String) -> String? {
+        guard let parts = URLComponents(string: raw), parts.scheme == "https",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              parts.query == nil, parts.fragment == nil,
+              parts.path.isEmpty || parts.path == "/",
+              let host = parts.host?.lowercased(), !host.isEmpty, host.utf8.count <= 253
+        else { return nil }
+        return host
     }
 
     public func perform(_ action: NativeActionFrame.Action, target: String) async -> NativeActionResult {

@@ -15,7 +15,6 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { parseSelector, type ResearchSelector } from '../tools/research.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
@@ -100,12 +99,6 @@ function drivenPort() {
   return { port, sessions, openedAt, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }) };
 }
 
-/** A selector that plans one knowledge read and then stops, so the dispatch under test is the one the host makes. */
-const SELECTOR: ResearchSelector = { async select(input) {
-  return parseSelector(JSON.stringify({ questionClass: 'quick_fact', pUseful: { knowledge_search: 0.99 },
-    actions: input.completed.some(entry => entry.kind === 'knowledge_search') ? [] : [{ kind: 'knowledge_search', query: 'synthetic plan' }] }));
-} };
-
 /** Every `tools/call` the fake knowledge connector answered, in order. */
 type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | undefined }[]; hold(): void; release(): void;
   /** The run's acceptance the delivery gate reads: `false` refuses the gate for the batches inside the window. */
@@ -182,7 +175,7 @@ async function harness(t: TestContext): Promise<Harness> {
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
   const { tools, hook } = await toolsFixture(t, store, profile);
-  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools, research: SELECTOR,
+  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools,
     now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
   ownerRef = owner;
   t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });
@@ -214,7 +207,7 @@ async function ended(t: TestContext, attachment: { done: Promise<{ terminal: unk
   return { terminal: snapshot.terminal, terminalFrame };
 }
 
-test('#525: a provider session that dies right after open costs three attempts after their backoff, then settles', async t => {
+test('#525/L18: a socket that dies right after open keeps reopening inside the 60 s budget, then settles', async t => {
   const h = await harness(t);
   const created = h.owner.create({ idempotencyKey: 'death-loop', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
@@ -224,34 +217,72 @@ test('#525: a provider session that dies right after open costs three attempts a
   await attachment.ready;
   await flush();
   // The session goes live, then dies, and every recovery socket dies before its ready event.
-  const died: number[] = [h.clock.now];
+  const dropAt = h.clock.now;
+  const died: number[] = [dropAt];
   first.die();
   await flush();
-  for (let index = 1; index <= 4; index += 1) {
+  let index = 1;
+  while (h.clock.now - dropAt < 60_000 && index <= 20) {
+    // Each attempt pays its backoff (0, 2, 4, 8, then 8 s) before the next socket opens.
+    h.clock.now += 8_000; h.clock.runDue();
+    await flush();
+    if (h.clock.now - dropAt >= 60_000) break;
     const next = await sessionAt(h, index);
     if (!next) break;
     died.push(h.clock.now);
     next.die();
     await flush();
+    index += 1;
   }
+  // The budget ends the episode on the next attempt after 60 s; let its timer fire.
+  for (let round = 0; round < 10; round += 1) { await h.advance(10_000); await flush(); }
   const end = await ended(t, attachment as never);
-  // At most RECOVERY_MAX_CONSECUTIVE recoveries: the opening session plus three attempts, never a fourth.
-  assert.equal(h.port.sessions.length, 4, 'one session and three recovery attempts, then the call ends');
-  assert.equal(died.length, 4, 'every attempt was driven and none was left hanging');
-  // A dead socket never re-enters the loop without its own backoff: 0, 2 s, 5 s between attempts.
-  for (let i = 2; i < died.length; i += 1) {
-    assert.ok(died[i]! - died[i - 1]! >= 2_000, `attempt ${i} waited its backoff, got ${died[i]! - died[i - 1]!} ms`);
-  }
+  assert.ok(died.length > 4, `the old three-attempt cap is gone, got ${died.length} attempts`);
   const recovery = h.receipts.filter(entry => entry['event'] === 'live_recovery');
-  assert.deepEqual(recovery.map(entry => entry['code']), ['open_failed', 'open_failed', 'open_failed'], 'each dead socket is a failed attempt, never an opening');
-  assert.deepEqual(recovery.map(entry => entry['attempt']), [1, 2, 3], 'and the count is consecutive');
-  assert.ok(recovery.every(entry => typeof entry['liveSessionId'] === 'string' && entry['generation'] !== undefined), 'every line names the session and generation (#451)');
-  assert.equal(h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened').length, 0, 'a socket that never said ready is never logged as opened');
+  assert.ok(recovery.length > 3, 'every attempt is logged');
+  assert.deepEqual(recovery.map(entry => entry['code']), recovery.map(() => 'open_failed'), 'each dead socket is a failed attempt, never an opening');
+  assert.deepEqual(recovery.map(entry => entry['attempt']), recovery.map((_, position) => position + 1), 'and the count is consecutive');
+  assert.ok(recovery.every(entry => typeof entry['msSinceDrop'] === 'number' && Number(entry['msSinceDrop']) >= 0),
+    'every line names how long the episode had been running when it opened');
+  assert.ok(Number(recovery.at(-1)!['msSinceDrop']) >= 40_000, 'the budget, not a count, is what ended it');
+  assert.equal(h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened').length, 0, 'a socket that never said ready is never an opening');
   assert.deepEqual(end.terminal, { state: 'failed', code: 'resume_failed' }, 'the call settles with a visible reason');
   assert.equal(end.terminalFrame, true, 'and the terminal frame reaches the client, so the orb leaves live');
 });
 
-test('#527: the three-strike ceiling still fires after a long healthy stretch', async t => {
+test('acceptance 1: an outage that ends at 21 s reopens the call on the next attempt', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'blip-21', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  const dropAt = h.clock.now;
+  first.die();
+  await flush();
+  let index = 1;
+  while (h.clock.now - dropAt < 21_000) {
+    h.clock.now += 8_000; h.clock.runDue(); await flush();
+    if (h.clock.now - dropAt >= 21_000) break;
+    const refused = await sessionAt(h, index);
+    if (!refused) break;
+    refused.die();
+    await flush();
+    index += 1;
+  }
+  const back = await sessionAt(h, index);
+  assert.ok(back, 'the call reopened after the network returned');
+  back!.live();
+  await flush();
+  assert.ok(!h.owner.get(created.liveSessionId).terminal, 'the call is up, never settled failed');
+  const opened = h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened');
+  assert.ok(opened.length >= 1, 'the reopen is a receipt');
+  assert.ok(Number(opened.at(-1)!['msSinceDrop']) < 60_000, 'and it happened inside the budget');
+  h.owner.revoke(created.liveSessionId);
+});
+
+test('#527/L18: a long healthy stretch starts a fresh recovery episode after the drop', async t => {
   const h = await harness(t);
   const created = h.owner.create({ idempotencyKey: 'healthy-then-dead', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
@@ -261,18 +292,21 @@ test('#527: the three-strike ceiling still fires after a long healthy stretch', 
   await attachment.ready;
   await flush();
   // 90 s of health, moved without firing the session window: the drop itself is what the host reacts to.
-  h.clock.now += 90_000;
+  h.clock.now += 90_000; h.clock.runDue();
   first.die();
   await flush();
-  for (let index = 1; index <= 4; index += 1) {
-    const next = await sessionAt(h, index);
-    if (!next) break;
-    next.die();
-    await flush();
-  }
-  const end = await ended(t, attachment as never);
-  assert.equal(h.port.sessions.length, 4, 'the ceiling counts the dead sessions, it does not reset per attempt');
-  assert.deepEqual(end.terminal, { state: 'failed', code: 'resume_failed' }, 'a healthy episode does not buy an endless retry loop');
+  const before = h.receipts.filter(entry => entry['event'] === 'live_recovery').length;
+  const next = (await sessionAt(h, 1))!;
+  next.die();
+  await flush();
+  h.clock.now += 8_000; h.clock.runDue();
+  await flush();
+  const recovery = h.receipts.filter(entry => entry['event'] === 'live_recovery').slice(before);
+  assert.equal(recovery[0]?.['msSinceDrop'], 0, 'the healthy stretch cleared the episode, so the drop starts at zero');
+  const terminal = h.owner.get(created.liveSessionId).terminal;
+  assert.ok(!terminal, 'two dead recoveries after a healthy stretch do not end the call');
+  h.owner.revoke(created.liveSessionId);
+  void attachment;
 });
 
 /** Wait until the host has answered the model this many times. */
@@ -281,7 +315,6 @@ async function answered(h: Harness, count: number): Promise<void> {
   assert.equal(h.port.toolResponses.length, count, 'the host answered the model');
 }
 
-/** The owner's first turn, which is what allows a lookup at all. */
 async function ownerSpoke(h: Harness, text = 'what do we know about the plan'): Promise<void> {
   h.port.emit({ type: 'inputTranscription', text, finished: true, sequence: 0 } as LiveVoiceEvent);
   await flush();

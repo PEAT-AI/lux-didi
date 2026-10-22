@@ -514,8 +514,22 @@ import WebKit
         await client?.revokePageSession(); shell?.clear()
     }
     func shutdown() async {
-        await logout()
+        stopVoiceForQuit()
+        await client?.revokePageSession(); shell?.clear()
+        liveAuthorityOwner.clear()
         await supervisor?.stop(reason: .shutdown)
+    }
+
+    /// Quit ends the call with its own reason: capture stops at once, the journal names app_quit, and the
+    /// session is left for the host to name app_quit when the supervisor stops it. A Quit is never a Stop.
+    func stopVoiceForQuit() {
+        if let conversation = live {
+            conversation.stopCapture()
+            liveJournal.append(.appQuit)
+            live = nil
+        }
+        stopDictation("Quit")
+        orbLevels?.stop(); orbLevels = nil
     }
 }
 
@@ -1277,7 +1291,7 @@ struct RootView: View {
         if cleanQuit { return .terminateNow }
         if !quitting {
             quitting = true
-            model.stopRecording("Didi quit")
+            model.stopVoiceForQuit()
             // terminateLater enters a nested AppKit loop. A caller inside an
             // async MainActor job can hold that executor and starve cleanup.
             // Return first, then reissue clean termination after bounded logout.

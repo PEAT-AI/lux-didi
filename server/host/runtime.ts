@@ -93,8 +93,108 @@ export function createMongooseSignIn(options: { configDir: string; recover: () =
 export function connectorLifecycleSink(input: {
   log: (event: ConnectorLifecycleEvent) => void;
   onRecovered: (endpointId: string) => void;
+  onConnected?: (endpointId: string) => void;
 }): (event: ConnectorLifecycleEvent) => void {
-  return event => { input.log(event); if (event.event === 'connector_recovered') input.onRecovered(event.endpointId); };
+  return event => {
+    input.log(event);
+    if (event.event === 'connector_recovered') input.onRecovered(event.endpointId);
+    if (event.event === 'connector_connected') input.onConnected?.(event.endpointId);
+  };
+}
+
+/** L2: why the digest was read again, as a closed set, so host.log can say which edge moved it. */
+export type CalendarDigestRefreshReason = 'start' | 'timer' | 'recovered' | 'first_connect';
+export type CalendarDigestRefreshLog = (event: { event: 'calendar_digest_refreshed'; reason: CalendarDigestRefreshReason; ms: number }) => void;
+
+/** One measured digest read off every request path: the reason it ran and how long it took, never content. */
+async function refreshDigestOnce(input: {
+  digest: { refresh(): Promise<unknown> };
+  reason: CalendarDigestRefreshReason;
+  now: () => number;
+  log?: CalendarDigestRefreshLog | undefined;
+}): Promise<void> {
+  const started = input.now();
+  try { await input.digest.refresh(); } catch { return; }
+  input.log?.({ event: 'calendar_digest_refreshed', reason: input.reason, ms: Math.max(0, input.now() - started) });
+}
+
+/**
+ * L2: the digest read that host start raced used to stay absent until the 15 minute timer, so the first
+ * call of a run had no calendar. The first `connector_connected` of a calendar endpoint re-reads it once
+ * when what the cache holds is not a completed read from after the start. Same reader, same budget, and
+ * never on a request path.
+ */
+export function bindCalendarFirstConnect(input: {
+  digest: { forStart(): Promise<{ state: string; fetchedAt: number }>; refresh(): Promise<unknown> } | undefined;
+  endpoints: () => readonly { readonly id: string; readonly connector: string }[];
+  grantOf: (endpointId: string) => { readonly toolNames: readonly string[]; readonly endpointId: string } | undefined;
+  startedAt: number;
+  now: () => number;
+  log: CalendarDigestRefreshLog;
+}): (endpointId: string) => void {
+  let owed = true;
+  return endpointId => {
+    const digest = input.digest;
+    if (digest === undefined || !owed) return;
+    const grant = selectCalendarEndpoint(input.endpoints(), input.grantOf);
+    if (grant === undefined || grant.endpointId !== endpointId) return;
+    owed = false;
+    void digest.forStart().then(snapshot => {
+      if (snapshot.state === 'present' && snapshot.fetchedAt >= input.startedAt) return undefined;
+      return refreshDigestOnce({ digest, reason: 'first_connect', now: input.now, log: input.log });
+    }, () => undefined);
+  };
+}
+
+/** L12d: how often a live call reports its own process resources, and the closed window a read covers. */
+export const hostResourceIntervalMs = 60_000;
+
+/**
+ * L12d: one process resource receipt per window while a call is live. Memory and CPU are read here, on a
+ * timer, so nothing is measured on an audio or model path; `cpuPct` is the CPU time this process used over
+ * the window that just ended, as a percentage of one core.
+ */
+export function createHostResourceSampler(input: {
+  log: (event: { event: 'host_resources'; rssMb: number; heapUsedMb: number; cpuPct: number }) => void;
+  now: () => number;
+  memoryUsage?: () => { rss: number; heapUsed: number };
+  cpuUsage?: () => { user: number; system: number };
+  intervalMs?: number;
+}): { sample: () => boolean; begin: () => () => void } {
+  const intervalMs = input.intervalMs ?? hostResourceIntervalMs;
+  const memory = input.memoryUsage ?? (() => process.memoryUsage());
+  const cpu = input.cpuUsage ?? (() => process.cpuUsage());
+  let windowStart: number | undefined;
+  let cpuStart = cpu();
+  const round = (value: number): number => Math.round(value * 10) / 10;
+  const sample = (): boolean => {
+    const at = input.now();
+    const started = windowStart;
+    if (started === undefined) { windowStart = at; cpuStart = cpu(); return false; }
+    const elapsed = at - started;
+    if (elapsed < intervalMs) return false;
+    const used = cpu();
+    const cpuMs = ((used.user - cpuStart.user) + (used.system - cpuStart.system)) / 1000;
+    const mem = memory();
+    windowStart = at;
+    cpuStart = used;
+    input.log({ event: 'host_resources',
+      rssMb: round(mem.rss / 1_048_576), heapUsedMb: round(mem.heapUsed / 1_048_576),
+      cpuPct: round((cpuMs / elapsed) * 100) });
+    return true;
+  };
+  let timer: ReturnType<typeof setInterval> | undefined;
+  return {
+    sample,
+    begin: () => {
+      windowStart = input.now();
+      cpuStart = cpu();
+      const interval = setInterval(sample, intervalMs);
+      interval.unref();
+      timer = interval;
+      return () => { if (timer !== undefined) clearInterval(timer); timer = undefined; };
+    },
+  };
 }
 
 /**
@@ -105,12 +205,16 @@ export function bindCalendarRecovery<G extends { readonly toolNames: readonly st
   digest: { refresh(): Promise<unknown> } | undefined;
   endpoints: () => readonly { readonly id: string; readonly connector: string }[];
   grantOf: (endpointId: string) => G | undefined;
+  now?: () => number;
+  log?: CalendarDigestRefreshLog | undefined;
 }): (endpointId: string) => void {
   return endpointId => {
     const digest = input.digest;
     if (digest === undefined) return;
     const grant = selectCalendarEndpoint(input.endpoints(), input.grantOf);
-    if (grant !== undefined && grant.endpointId === endpointId) void digest.refresh();
+    if (grant !== undefined && grant.endpointId === endpointId) {
+      void refreshDigestOnce({ digest, reason: 'recovered', now: input.now ?? Date.now, log: input.log });
+    }
   };
 }
 
@@ -357,15 +461,22 @@ export async function startHost(config: HostConfig) {
     // A calendar connector that recovered reads the digest the start missed. The hook is bound after the
     // composition because the reader it needs is the composition itself.
     let refreshCalendarDigest = (_endpointId: string): void => { /* bound once the composition exists */ };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId) }) });
+    // L2: the same for the first connect of a run, whose start read raced the connector.
+    let refreshCalendarFirstConnect = (_endpointId: string): void => { /* bound once the composition exists */ };
+    const hostStartedAt = (config.now ?? Date.now)();
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const digestNow = config.now ?? Date.now;
     const calendarDigest = new CalendarDigestCache(
       async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: digestTimeZone }),
-      { now: digestNow, timeZone: digestTimeZone });
-    refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id) });
+      { now: digestNow, timeZone: digestTimeZone, log: event => log.event(event) });
+    const digestRefreshLog: CalendarDigestRefreshLog = event => log.event(event);
+    refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), now: digestNow, log: digestRefreshLog });
+    // The supervised host defers connector start (deferConnectors), so every connector_connected lands after
+    // this bind; a host that connected inside composeMcpRuntime would fire it against the placeholder above.
+    refreshCalendarFirstConnect = bindCalendarFirstConnect({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), startedAt: hostStartedAt, now: digestNow, log: digestRefreshLog });
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });
@@ -405,11 +516,15 @@ export async function startHost(config: HostConfig) {
     void summarizer.reconcile().catch(error => log.error(error));
     void summarizer.requeueFailed().catch(error => log.error(error));
     // Observe the actual durable provider settlement, which does not emit console text.
+    // L12d: the same window carries the resource series, one receipt per minute while the call is live.
+    const resources = createHostResourceSampler({ log: event => log.event(event), now: config.now ?? Date.now });
     const attach = live.attach.bind(live);
     live.attach = (...args) => {
       const attachment = attach(...args);
+      const stopResources = resources.begin();
       void attachment.done.then(snapshot => log.terminal(snapshot.terminal), error => log.error(error))
-        .catch(() => console.error('diagnostics_unavailable'));
+        .catch(() => console.error('diagnostics_unavailable'))
+        .finally(stopResources);
       return attachment;
     };
     startupStage = 'listen';

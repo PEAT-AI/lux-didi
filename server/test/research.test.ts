@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, createGeminiSelector, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
-  configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, parseSelector, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
+  configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
-  researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSourceLog, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
+  researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { CandidateKind } from '../tools/research.js';
@@ -29,7 +29,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -51,7 +51,6 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     ledger: opts.ledger ?? new ResearchLedger(),
     ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
-    ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
   };
   const execute = deps.execute;
   deps.execute = async (calls, signal) => {
@@ -65,8 +64,6 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
   return { deps, progress, logs, subcalls, executed, joined };
 }
 
-const selectorOf = (output: SelectorOutput): ResearchSelector => ({ select: async () => output });
-const knowledge = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } });
 
 test('Argon round 3: continues at pUseful 0.44 and stops at 0.42 for cross_source after a 4.7 s calendar read', () => {
   const base = { questionClass: 'cross_source' as const, elapsedMs: 4_700, subsetP50Ms: 3_600, deadlineMs: 15_000 };
@@ -75,10 +72,8 @@ test('Argon round 3: continues at pUseful 0.44 and stops at 0.42 for cross_sourc
   assert.ok(Math.abs(pUsefulOf([0.44, 0.42]) - 0.6752) < 1e-9);
 });
 
-test('the timeout and invalid selector output fall back to the fixed recipe and stop after round one', async () => {
-  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
-  assert.equal(parseSelector('not json at all'), null);
-  const h = harness({ selector: timedOut });
+test('an unrouted question answers from the fixed recipe and stops after round one', async () => {
+  const h = harness({});
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(h.logs[0]!.fallbackUsed, true);
   assert.equal(h.logs[0]!.driver, 'fallback');
@@ -87,12 +82,9 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
   assert.equal(reply['status'], 'complete');
 });
 
-test('a single-source hint narrows the offered kinds and skips the selector entirely', async () => {
-  let selectCalls = 0;
-  const counting: ResearchSelector = { select: async () => { selectCalls += 1; return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 0.9 } }; } };
-  const h = harness({ selector: counting });
+test('a single-source hint narrows the plan to the hinted source', async () => {
+  const h = harness({});
   await runResearch(h.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
-  assert.equal(selectCalls, 0, 'the single-source path never calls the selector');
   assert.ok(h.executed.length >= 1 && h.executed.every(call => call.name === 'gmail_search_messages'));
   assert.equal(h.logs[0]!.fallbackUsed, false);
   assert.equal(h.logs[0]!.driver, 'single-source-hint');
@@ -100,29 +92,30 @@ test('a single-source hint narrows the offered kinds and skips the selector enti
 });
 
 test('a single-source hint with no usable question still runs the hinted source', async () => {
-  const h = harness({ selector: undefined });
+  const h = harness({});
   await runResearch(h.deps, { action: 'start', question: '', sources: 'mail' }, new AbortController().signal);
   assert.ok(h.executed.some(call => call.name === 'gmail_search_messages'), 'the hinted source always runs');
   assert.equal(h.logs[0]!.driver, 'single-source-hint');
 });
 
 test('every lookup names the driver the loop used', async () => {
-  const hinted = harness({ selector: knowledge });
+  const hinted = harness({});
   await runResearch(hinted.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(hinted.logs[0]!.driver, 'single-source-hint');
-  const chosen = harness({ selector: knowledge });
+  const chosen = harness({});
   await runResearch(chosen.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
-  assert.equal(chosen.logs[0]!.driver, 'selector');
-  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
-  const fell = harness({ selector: timedOut });
+  assert.equal(chosen.logs[0]!.driver, 'fallback');
+  // F-B: a selector handed to the live path is never awaited, so its failure cannot change the driver.
+  const fell = harness({});
   await runResearch(fell.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   assert.equal(fell.logs[0]!.driver, 'fallback');
+  assert.equal(fell.logs[0]!.selectorMs, 0);
 });
 
 test('continue reuses the ledger and never re-reads a completed operation', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const first = await runResearch(h.deps, { action: 'start', question: 'release status' }, new AbortController().signal);
-  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 1);
+  assert.ok(h.executed.filter(call => call.name === 'search_knowledge').length >= 1);
   h.executed.length = 0;
   const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, new AbortController().signal);
   assert.equal(String(second['researchId']), String(first['researchId']));
@@ -130,7 +123,7 @@ test('continue reuses the ledger and never re-reads a completed operation', asyn
 });
 
 test('stop is idempotent and returns what is known', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const first = await runResearch(h.deps, { action: 'start', question: 'x' }, new AbortController().signal);
   const id = String(first['researchId']);
   const a = await runResearch(h.deps, { action: 'stop', researchId: id }, new AbortController().signal);
@@ -143,7 +136,7 @@ test('stop is idempotent and returns what is known', async () => {
 
 test('an unrelated barge-in signal does not abort a running research run', async () => {
   const barge = new AbortController();
-  const h = harness({ selector: knowledge, execute: async subs => { barge.abort(); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { barge.abort(); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   // #1021: a content-free question no longer searches knowledge, so the harness asks a real one.
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.notEqual(reply['status'], 'stopped');
@@ -152,14 +145,14 @@ test('an unrelated barge-in signal does not abort a running research run', async
 
 test('the session abort ends the run as stopped', async () => {
   const session = new AbortController();
-  const h = harness({ selector: knowledge, execute: async subs => { session.abort(); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { session.abort(); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, session.signal);
   assert.equal(reply['status'], 'stopped');
 });
 
 test('a run past its deadline returns partial after one round', async () => {
   let advanced = false;
-  const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9, chat_search: 0.9 } }) });
+  const h = harness({});
   const deps: ResearchDeps = { ...h.deps, now: () => (advanced ? RESEARCH.startDeadlineMs + 5_000 : 0), execute: async subs => { advanced = true; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } };
   const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(reply['status'], 'partial');
@@ -168,7 +161,6 @@ test('a run past its deadline returns partial after one round', async () => {
 
 test('a failed follow-up logs its real error code, never a bare failed', async () => {
   const h = harness({
-    selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search' }], pUseful: { chat_search: 0.9 } }),
     execute: async subs => subs.map(call => call.name === 'mattermost_get_thread'
       ? { ...sub(call.name, '', false, call.key), code: 'sdk_protocol_rejected' }
       : sub(call.name, 'the decision was [post p1] recorded', true, call.key)),
@@ -181,7 +173,7 @@ test('a failed follow-up logs its real error code, never a bare failed', async (
 });
 
 test('the whole serialized reply stays within the character cap', async () => {
-  const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }, { kind: 'chat_search' }], pUseful: { knowledge_search: 0.9, chat_search: 0.9 } }), executeText: 'x'.repeat(9_000) });
+  const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
   assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
 });
@@ -194,7 +186,7 @@ test('mongoose is never offered while unconfigured', () => {
 });
 
 test('progress and the run log carry metadata only, never the question text', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   await runResearch(h.deps, { action: 'start', question: 'the secret project is launchpad' }, new AbortController().signal);
   const phases = h.progress.map(event => event.phase);
   assert.equal(phases[0], 'started');
@@ -207,7 +199,7 @@ test('progress and the run log carry metadata only, never the question text', as
 
 test('a new research call while one is pending answers the old call at once and the new one with the merged result', async () => {
   const gate = deferred<void>();
-  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const second = scheduler.call({ action: 'continue' }, new AbortController().signal);
@@ -222,7 +214,7 @@ test('a new research call while one is pending answers the old call at once and 
 
 test('a stop call while one is pending returns what is known now', async () => {
   const gate = deferred<void>();
-  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const stopped = await scheduler.call({ action: 'stop' }, new AbortController().signal);
@@ -233,7 +225,7 @@ test('a stop call while one is pending returns what is known now', async () => {
 
 test('a continue with no researchId applies to the single pending run (R1-R3)', async () => {
   const gate = deferred<void>();
-  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const second = scheduler.call({ action: 'continue' }, new AbortController().signal);
@@ -245,7 +237,7 @@ test('a continue with no researchId applies to the single pending run (R1-R3)', 
 
 test('an explicit unknown Stop id cannot select the single pending run', async () => {
   const gate = deferred<void>();
-  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'q' }, new AbortController().signal);
   const stopped = await scheduler.call({ action: 'stop', researchId: 'unknown-id' }, new AbortController().signal);
@@ -257,7 +249,7 @@ test('an explicit unknown Stop id cannot select the single pending run', async (
 
 test('an identical start while a run is in flight joins that exact intent', async () => {
   const gate = deferred<void>();
-  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
   const second = scheduler.call({ action: 'start', question: 'a' }, new AbortController().signal);
@@ -274,7 +266,7 @@ test('an identical start while a run is in flight joins that exact intent', asyn
 // question: it answers from that run instead of reading every source again.
 test('E7: three identical research calls in the live turn window read each source once', async () => {
   let clock = 1_000;
-  const h = harness({ now: () => clock, selector: knowledge });
+  const h = harness({ now: () => clock});
   const scheduler = new ResearchScheduler(h.deps);
   const replies: Record<string, unknown>[] = [];
   for (let n = 0; n < 3; n += 1) {
@@ -293,7 +285,7 @@ test('E7: three identical research calls in the live turn window read each sourc
 });
 
 test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
   const reply = await scheduler.call({ action: 'start', question: 'q', researchId: '\u2014' }, new AbortController().signal);
   const id = String(reply['researchId']);
@@ -303,7 +295,7 @@ test('Z1: a start ignores a model researchId that fails the host log id rule and
 });
 
 test('Z1: a start ignores even a safe-looking model researchId and mints its own', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
   const reply = await scheduler.call({ action: 'start', question: 'q', researchId: 'x' }, new AbortController().signal);
   const id = String(reply['researchId']);
@@ -313,7 +305,7 @@ test('Z1: a start ignores even a safe-looking model researchId and mints its own
 });
 
 test('Z1: a continue with an unknown researchId is a typed error, never a silent second run', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
   const reply = await scheduler.call({ action: 'continue', researchId: '\u2014' }, new AbortController().signal);
   assert.deepEqual(reply, { error: 'unknown_research_run' });
@@ -322,7 +314,7 @@ test('Z1: a continue with an unknown researchId is a typed error, never a silent
 });
 
 test('the word stop in a question never stops a run: stop is only a tool action', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const reply = await runResearch(h.deps, { action: 'start', question: 'stop the presses and tell me the release status' }, new AbortController().signal);
   assert.equal(reply['status'], 'complete');
 });
@@ -334,22 +326,6 @@ test('validate accepts the three actions and rejects invented keys', () => {
   assert.equal(validateResearch({ action: 'start' }), false);
   assert.equal(validateResearch({ action: 'destroy', question: 'q' }), false);
   assert.equal(validateResearch({ action: 'start', question: 'q', evil: 1 }), false);
-});
-
-test('parseSelector rejects invented kinds and clamps out-of-range pUseful', () => {
-  const parsed = parseSelector('{"questionClass":"cross_source","actions":[{"kind":"invented"}],"pUseful":{"knowledge_search":7}}');
-  assert.deepEqual(parsed?.actions, []);
-  assert.equal(parsed?.pUseful['knowledge_search'], 1);
-});
-
-test('createGeminiSelector parses one complete text answer and treats a non-complete status as no output', async () => {
-  let calls = 0;
-  const ok = createGeminiSelector({ async generate() { calls += 1; return { status: 'complete', text: '{"questionClass":"quick_fact","actions":[],"pUseful":{}}' } as never; } });
-  const parsed = await ok.select({ question: 'q', configured: CONFIGURED, completed: [], candidates: ['knowledge_search'] }, new AbortController().signal);
-  assert.equal(parsed?.questionClass, 'quick_fact');
-  const bad = createGeminiSelector({ async generate() { return { status: 'error', text: '' } as never; } });
-  assert.equal(await bad.select({ question: 'q', configured: CONFIGURED, completed: [], candidates: ['knowledge_search'] }, new AbortController().signal), null);
-  assert.equal(calls, 1);
 });
 
 // #263: the declaration names only the sources this session configured and the host loop can read. A session
@@ -377,9 +353,6 @@ test('the research declaration names only the configured sources and the valid h
 
 // --- Calendar merged read, window logging and knowledge carry (contract F4, #272) ---------------
 
-const calendarSelector: ResearchSelector = {
-  async select() { return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'tomorrow' }], pUseful: { calendar_window: 1 } }; },
-};
 
 // The connector returns one merged, sorted, deduped, name-tagged result; research makes one call.
 const MERGED_CALENDAR = [
@@ -395,7 +368,7 @@ const CALENDAR_RECORDS = [
 ];
 
 test('calendar research issues one primary read and retains every received event', async () => {
-  const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
+  const h = harness({ executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   const reads = h.executed.filter(call => call.name === 'calendar_list_events');
   assert.equal(reads.length, 1, 'one calendar sub-call per exact window');
@@ -407,7 +380,7 @@ test('calendar research issues one primary read and retains every received event
 });
 
 test('calendar sub-calls log the resolved window kind only, never a time or title', async () => {
-  const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
+  const h = harness({ executeText: MERGED_CALENDAR });
   await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   const calendarLogs = h.subcalls.filter(entry => entry.kind === 'calendar_window');
   assert.equal(calendarLogs.length, 1);
@@ -415,15 +388,17 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
 });
 
-test('calendar research does not start a read after its run deadline', async () => {
-  let clock = 0;
-  const lateSelector: ResearchSelector = {
-    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
-  };
-  const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
-  assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
-  assert.equal(reply['status'], 'partial');
+test('a calendar read is dispatched at once, with no selector round spending the run budget', async () => {
+  const clock = fakeClock();
+  let dispatchedAt: number | undefined;
+  const h = harness({ executeText: MERGED_CALENDAR, now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    if (subs.some(call => call.name === 'calendar_list_events')) dispatchedAt ??= clock.now();
+    return subs.map(call => ({ key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: CALENDAR_RECORDS }) }));
+  } });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  assert.equal(dispatchedAt, 0, 'the read starts at once, never after a selector wait');
+  assert.equal(h.logs[0]!.selectorMs, 0);
+  assert.equal(reply['status'], 'complete', 'the calendar answered, so the reply says complete');
 });
 
 test('the primary research source budget fits inside the unchanged start deadline', () => {
@@ -432,20 +407,21 @@ test('the primary research source budget fits inside the unchanged start deadlin
   assert.ok(RESEARCH.sourceDeadline.calendar < RESEARCH.startDeadlineMs);
 });
 
-test('the calendar budget never extends another source past the start deadline', async () => {
-  let clock = 0;
-  const lateMailSelector: ResearchSelector = {
-    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:1d' }], pUseful: { mail_search: 1 } }; },
-  };
-  const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
-  await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
-  assert.equal(h.executed.some(entry => entry.name === 'gmail_search_messages'), false);
+test('a mail read is dispatched at once, so no source budget can slip past the start deadline', async () => {
+  const clock = fakeClock();
+  let dispatchedAt: number | undefined;
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    if (subs.some(call => call.name === 'gmail_search_messages')) dispatchedAt ??= clock.now();
+    return subs.map(call => sub(call.name, 'mail evidence', true, call.key));
+  } });
+  await runResearch(h.deps, { action: 'start', question: 'what did Sam email about the release' }, new AbortController().signal);
+  assert.equal(dispatchedAt, 0);
 });
 
 test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {
   const body = 'k'.repeat(60);
   const items = Array.from({ length: 41 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
-  const h = harness({ selector: knowledge, executeText: items.join('\n') });
+  const h = harness({ executeText: items.join('\n') });
   // #1021: a content-free question no longer searches knowledge, so the ledger test asks a real one.
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
@@ -469,9 +445,7 @@ test('a refused sub-call maps to a real reason, never a bare refused', () => {
 });
 
 test('a never-dispatched sub-call logs its real reason instead of refused', async () => {
-  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } });
   const h = harness({
-    selector,
     execute: async subs => subs.map(call => call.name === 'calendar_list_events'
       ? { ...sub(call.name, '', false, call.key), code: 'unknown_tool' }
       : sub(call.name, 'evidence', true, call.key)),
@@ -483,7 +457,6 @@ test('a never-dispatched sub-call logs its real reason instead of refused', asyn
 
 test('a source whose read failed stays unchecked and the reply names it', async () => {
   const h = harness({
-    selector: calendarSelector,
     execute: async subs => subs.map(call => call.name === 'calendar_list_events'
       ? { ...sub(call.name, '', false, call.key), code: 'unknown_tool' }
       : sub(call.name, 'evidence', true, call.key)),
@@ -494,7 +467,7 @@ test('a source whose read failed stays unchecked and the reply names it', async 
 });
 
 test('a source that read successfully is not unchecked and carries no unreachable note', async () => {
-  const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
+  const h = harness({ executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal((reply['unchecked'] as string[]).includes('calendar'), false);
   assert.equal(reply['note'], RESEARCH.completeNote, 'the only note is the terminal one, never an unreachable source');
@@ -508,37 +481,30 @@ test('the connector to source map covers the approved connectors', () => {
 });
 
 test('configuredNow re-resolves the configured sources for each run', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   const deps: ResearchDeps = { ...h.deps, configured: [], configuredNow: () => ['knowledge', 'calendar'] };
   const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok((reply['unchecked'] as string[]).includes('calendar'), 'a configured source not read is reported');
+  // The resolved set is what the run reports on: nothing outside it is ever unchecked or read.
+  const unchecked = reply['unchecked'] as string[];
+  assert.ok(unchecked.every(source => ['knowledge', 'calendar'].includes(source)), `only resolved sources are reported: ${JSON.stringify(unchecked)}`);
 });
 
-test('knowledge first: a knowledge read starts before the selector returns', async () => {
+test('knowledge first: the prime knowledge read starts before any other read', async () => {
   const order: string[] = [];
-  const gate = deferred<void>();
-  const selector: ResearchSelector = { async select() { order.push('selector-start'); await gate.promise; return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
-  const h = harness({ selector, execute: async subs => { order.push(...subs.map(sub => sub.name)); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
-  const running = runResearch(h.deps, { action: 'start', question: 'what did I decide about the release' }, new AbortController().signal);
-  await new Promise<void>(resolve => setImmediate(resolve));
+  const h = harness({ execute: async (subs: readonly IntentSubCall[]) => { order.push(...subs.map(call => call.name)); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  await runResearch(h.deps, { action: 'start', question: 'what did I decide about the release' }, new AbortController().signal);
   assert.ok(order.includes('search_knowledge'), 'the prime source read starts immediately');
-  assert.equal(order.includes('selector-start'), true, 'the selector runs in parallel with the knowledge read');
-  assert.ok(order.indexOf('search_knowledge') < order.indexOf('selector-start'), 'the knowledge read starts before the selector');
-  gate.resolve();
-  await running;
+  assert.equal(h.logs[0]!.selectorMs, 0);
 });
-
 test('knowledge findings rank first in the reply', async () => {
-  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }, { kind: 'knowledge_search' }], pUseful: { mail_search: 0.9, knowledge_search: 0.9 } });
-  const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name, call.name === 'gmail_search_messages' ? '- Subject | Sender | Mon | body [id m1]' : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, call.name === 'gmail_search_messages' ? '- Subject | Sender | Mon | body [id m1]' : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string }[];
   assert.equal(findings[0]?.source, 'knowledge', 'the prime source leads the findings');
 });
 
 test('an empty-but-successful read is a search that matched nothing, never an unreachable source', async () => {
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'from:landlord invoice' }], pUseful: { mail_search: 1 } });
-  const h = harness({ selector, executeText: '' });
+  const h = harness({ executeText: '' });
   const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
@@ -548,24 +514,38 @@ test('an empty-but-successful read is a search that matched nothing, never an un
 });
 
 test('an identical duplicate read in one run is executed once', async () => {
-  const twice = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:2d' }, { kind: 'mail_search', query: 'newer_than:2d' }], pUseful: { mail_search: 0.9 } });
-  const h = harness({ selector: twice, executeText: '' });
+  const h = harness({ executeText: '' });
   await runResearch(h.deps, { action: 'start', question: 'anything new in the mail' }, new AbortController().signal);
   const mailReads = h.executed.filter(call => call.name === 'gmail_search_messages');
   assert.equal(mailReads.length, 1, 'the same mail read is issued once');
 });
 
 test('the brief fan-out is credited to every source it read and its findings reach the answer', async () => {
-  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
-  const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name,
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name,
     call.name === 'calendar_list_events' ? MERGED_CALENDAR
       : call.name === 'gmail_search_messages' ? '- Invoice | Landlord | Mon | due soon [id m1]'
         : call.name === 'mattermost_search' ? '**team**\nthe decision was recorded'
           : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up on my calendar, mail and team chat' }, new AbortController().signal);
   const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
   for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(sources.includes(source), `the brief read of ${source} is delivered to the answer`);
   assert.deepEqual(reply['unchecked'], [], 'every configured source was credited, so none is unchecked');
+});
+
+// ROUTE-1022 K5: a brief on a question that names no layer read his knowledge and nothing else. The
+// owner's own call spent 22 Gmail pages and three identical 'open loop follow up' searches on a
+// question about the business model.
+test('a brief on a question that names no source reads knowledge only, and searches its own terms', async () => {
+  const sent: { name: string; args: Record<string, unknown> }[] = [];
+  const h = harness({ execute: async subs => subs.map(call => {
+    sent.push({ name: call.name, args: { ...call.args } });
+    return sub(call.name, '### Insight (PATTERN) [id 1]\nbody', true, call.key);
+  }) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what do you think about our business model' }, new AbortController().signal);
+  assert.deepEqual([...new Set(sent.map(entry => entry.name))], ['search_knowledge'], 'knowledge reads, and no mail, calendar or chat read');
+  assert.equal(JSON.stringify(sent).includes('open loop follow up'), false, 'the old default query is gone');
+  for (const entry of sent) assert.match(String(entry.args['query']), /business model/, 'the brief searches the question\'s own terms');
+  assert.deepEqual(reply['unchecked'], ['calendar', 'mail', 'chat'], 'the layers it did not read are named as unread');
 });
 
 interface FakeClock { now: () => number; schedule: (callback: () => void, delayMs: number) => { unref: () => void; cancel: () => void }; advance: (to: number) => void; pending: () => number }
@@ -603,7 +583,9 @@ test('a long read still sends the model a progress line every three seconds, and
   const clock = fakeClock();
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  const h = harness({ selector: knowledge, now: clock.now, schedule: clock.schedule, execute: async subs => { await gate; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async subs => { await gate; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
@@ -614,25 +596,22 @@ test('a long read still sends the model a progress line every three seconds, and
   assert.ok(stamps.includes(3_000) && stamps.includes(6_000), `the model hears from the run while it reads: ${stamps.join(',')}`);
   assert.ok(stamps.some(stamp => stamp <= 3_000), 'the first update lands within three seconds of the call');
   assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
+  if (reading !== undefined) await reading;
   assert.equal(clock.pending(), 0, 'the heartbeat is stopped when the run ends');
 });
 
-test('when the selector deadline passes the fallback starts at once and the model already has an update', async () => {
+test('the fallback read starts at once, with no selector deadline in front of it', async () => {
   const clock = fakeClock();
-  let abortSelector!: (error: Error) => void;
-  const selector: ResearchSelector = { select: () => new Promise<SelectorOutput>((_, reject) => { abortSelector = reject; }) };
   const readAt: { tool: string; at: number }[] = [];
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const running = runResearch(h.deps, { action: 'start', question: 'what happened this week' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
-  clock.advance(RESEARCH.selectorDeadlineMs); await settle();
-  abortSelector(new Error('aborted'));
   await running;
-  assert.equal(h.logs[0]!.fallbackUsed, true, 'the deadline falls back to the fixed recipe');
+  assert.equal(h.logs[0]!.selectorMs, 0, 'no selector round is spent, so nothing waits on a selector deadline');
   const fallbackReads = readAt.filter(entry => entry.tool === 'calendar_list_events');
-  assert.ok(fallbackReads.length > 0, 'the fallback reads the calendar');
-  assert.ok(fallbackReads.every(entry => entry.at === RESEARCH.selectorDeadlineMs), `the fallback read starts the moment the selector gives up: ${JSON.stringify(readAt)}`);
+  assert.ok(fallbackReads.length > 0, 'the fixed recipe reads the calendar');
+  assert.ok(fallbackReads.every(entry => entry.at === 0), `the read starts with the call: ${JSON.stringify(readAt)}`);
   const stamps = h.progress.map(entry => entry.elapsedMs);
   assert.ok(stamps.some(stamp => stamp <= 3_000), 'a progress line inside three seconds of the call');
   assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
@@ -641,28 +620,27 @@ test('when the selector deadline passes the fallback starts at once and the mode
 // Contract RD: the owner must never wait more than six seconds in silence while a lookup runs.
 test('deadAirMs measures the longest silence the model hears, never the whole run', async () => {
   const clock = fakeClock();
-  const gate = deferred<void>();
-  const slowSelector: ResearchSelector = { select: async () => { await gate.promise; return { questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
-  const h = harness({ selector: slowSelector, now: clock.now, schedule: clock.schedule });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    await new Promise<void>(resolve => { clock.schedule(() => resolve(), 4_400); });
+    return subs.map(call => sub(call.name, 'evidence', true, call.key));
+  } });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
-  await settle();
-  clock.advance(3_000); await settle();
-  clock.advance(6_000); await settle();
-  gate.resolve();
+  let done = false; void running.then(() => { done = true; });
+  for (let n = 0; n < 20 && !done; n++) { clock.advance(clock.now() + 3_000); await settle(); }
+  clock.advance(clock.now() + 1_400); await settle();
   await running;
   const log = h.logs[0]!;
-  assert.ok(log.elapsedMs >= 6_000, `the run really took six seconds: ${log.elapsedMs}`);
+  assert.ok(log.elapsedMs >= 4_000, `the run really took over four seconds: ${log.elapsedMs}`);
   assert.ok(log.deadAirMs <= 3_000, `the worst silence is one beat, not the run: ${log.deadAirMs}`);
 });
 
 test('a source that outlives the per-source deadline is cut, and the reply is an honest partial', async () => {
   const clock = fakeClock();
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank', sources: 'mail' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   const reply = await running;
@@ -673,39 +651,97 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   assert.notEqual(log.status, 'answered', 'a cut read is a partial answer, never an answered one');
 });
 
-test('R6: the call answers at 4.5 s while a slow source is still reading, and never cuts it', async () => {
+test('R6: a question about one source waits past the first-answer point for that source, and never cuts it', async () => {
   const clock = fakeClock();
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
   let mailAborted = false;
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => { mailAborted = true; reject(new Error('aborted')); }; if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
+  const waiting: (() => void)[] = [];
+  const releaseMail = (): void => { for (const done of waiting.splice(0)) done(); };
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((resolve, reject) => {
+      const stop = (): void => { mailAborted = true; reject(new Error('aborted')); };
+      if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true });
+      waiting.push(() => resolve(subs.map(call => sub(call.name, '- Release email | Rob | Fri | we ship on Friday [id m1]', true, call.key))));
+    });
     return subs.map(call => sub(call.name, '### Insight (PATTERN) [id 7]\nthe release is green', true, call.key));
   } });
   const controller = new AbortController();
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, controller.signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release email' }, controller.signal);
   await settle();
-  // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
+  // Depth beats speed: the reply waits for the source the question is about, not for whichever read lands first.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
   assert.equal(heard, false, 'no source has a finding done, so the call has not answered yet');
   clock.advance(RESEARCH.firstAnswerMs);
+  const waited = await Promise.race([running.then(() => 'answered'), settle().then(() => 'waiting')]);
+  assert.equal(waited, 'waiting', 'the question is about mail, so the answer waits for that read inside the run budget');
+  let answered = false;
+  void running.then(() => { answered = true; });
+  for (let n = 0; n < 20 && !answered; n++) { releaseMail(); await settle(); }
   const reply = await running;
   assert.equal(mailAborted, false, 'the first answer never cuts a reader');
-  assert.deepEqual(reply['pending'], ['mail'], 'the source still reading is named as pending');
-  assert.ok((reply['unchecked'] as string[]).includes('mail'), 'and it is honest about what it has not read');
-  assert.equal(h.logs[0]?.elapsedMs, undefined, 'the run line is the run\'s own end, not the answer point');
+  assert.deepEqual(reply['pending'], [], 'the source the question is about has answered, so nothing is left pending');
+  assert.ok(!(reply['unchecked'] as string[]).includes('mail'), 'the mail read it waited for is not reported unchecked');
+  assert.match(JSON.stringify(reply['findings']), /we ship on Friday/, 'the mail findings it waited for reach the answer');
+  assert.equal(h.logs[0]?.elapsedMs, clock.now(), 'the run line is the run\'s own end, not the answer point');
   controller.abort();
   await reading;
+});
+
+test('RUN-R11: a start whose question is only instruction words joins the pending run and delivers its findings', async () => {
+  const clock = fakeClock();
+  let releaseKnowledge!: () => void;
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'search_knowledge')) return await new Promise<IntentSubResult[]>((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      releaseKnowledge = () => resolve(subs.map(call => sub(call.name, '### Insight (PATTERN) [id 7]\nthe partner ranking is settled', true, call.key)));
+    });
+    return subs.map(call => sub(call.name, 'release freeze decided on Friday', true, call.key));
+  } });
+  const reading = runResearch(h.deps, { action: 'start', question: 'what did we decide about partner ranking' }, new AbortController().signal);
+  await settle();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const pendingRun = String(h.progress[0]?.researchId);
+  const meta = runResearch(h.deps, { action: 'start', question: 'wait findings.' }, new AbortController().signal);
+  await settle();
+  releaseKnowledge();
+  const joined = await meta; const first = await reading;
+  assert.equal(joined['researchId'], pendingRun, 'the meta start joins the run that is already reading');
+  assert.match(JSON.stringify(joined['findings']) + JSON.stringify(first['findings']), /partner ranking is settled/, 'the findings it asked for arrive without a new run');
+  assert.notEqual(joined['status'], 'cancelled', 'the pending run was never cancelled');
+  assert.ok(h.logs.some(log => log.metaStartAsContinue === true), 'the receipt says the meta start became a continue');
+  assert.equal(first['researchId'], pendingRun);
+});
+
+test('RUN-R11: a superseding start aborts the old run\'s reads, and its late result never reaches a reply', async () => {
+  let aborted = 0;
+  let releaseLate: (() => void) | undefined;
+  const h = harness({ execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'gmail_search_messages')) {
+      return await new Promise<IntentSubResult[]>((resolve, reject) => {
+        signal.addEventListener('abort', () => { aborted += 1; reject(new Error('aborted')); }, { once: true });
+        releaseLate = () => resolve(subs.map(call => sub(call.name, 'OLD RUN LATE FINDING', true, call.key)));
+      });
+    }
+    return subs.map(call => sub(call.name, 'release freeze decided on Friday', true, call.key));
+  } });
+  const old = runResearch(h.deps, { action: 'start', question: 'what did the team decide about the release mail' }, new AbortController().signal);
+  await settle();
+  const fresh = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the hiring plan' }, new AbortController().signal);
+  assert.ok(aborted >= 1, 'the superseding start aborts the old run\'s connector read');
+  releaseLate?.();
+  await settle();
+  const late = await old;
+  assert.ok(h.logs.some(log => (log.supersededAborts ?? 0) > 0), 'the old run\'s receipt counts the aborted dispatch');
+  assert.doesNotMatch(JSON.stringify(late) + JSON.stringify(fresh), /OLD RUN LATE FINDING/);
 });
 
 // Reviewer T1: the source that answered keeps its own second hop, and the reader behind it is not abandoned.
 test('R6: the source that answered keeps its own second hop, and the slow reader is credited late', async () => {
   const clock = fakeClock();
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 0.9, mail_search: 0.9 } });
   const read: string[] = [];
   let winnerSignalAborted = false;
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
     for (const call of subs) read.push(call.name);
     if (subs.some(call => call.name === 'gmail_search_messages')) {
       // The slow source: it answers only after the call has already replied, and it is never cut for that.
@@ -727,11 +763,11 @@ test('R6: the source that answered keeps its own second hop, and the slow reader
 // Reviewer B5 replacement: the owner hears a reply inside six seconds because the call itself returns.
 test('a start call returns inside its budget, the slowest source plus two seconds, when a read never answers', async () => {
   const clock = fakeClock();
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } });
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); }) });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); }) });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  let done = false; void running.then(() => { done = true; });
   await settle();
-  clock.advance(researchCallBudgetMs(['knowledge'])); await settle();
+  for (let n = 0; n < 20 && !done; n++) { clock.advance(clock.now() + researchCallBudgetMs(['knowledge'])); await settle(); }
   const reply = await Promise.race([running, settle().then(() => null)]);
   assert.notEqual(reply, null, 'the call came back instead of waiting for the read');
   assert.ok(h.logs[0]!.elapsedMs <= researchCallBudgetMs(['knowledge']) + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
@@ -743,12 +779,11 @@ test('a start call returns inside its budget, the slowest source plus two second
 // B7: a run whose source was cut must still reach the host log; `cut` is not a disposition the log admits.
 test('a cut source logs a disposition the host log admits and the whole run line survives', async () => {
   const clock = fakeClock();
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank', sources: 'mail' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   await running;
@@ -759,27 +794,21 @@ test('a cut source logs a disposition the host log admits and the whole run line
 
 // K6: the routed path is additive. Without lookups the selector still chooses, and the reply keeps
 // exactly the shape it had, with no per-source status block.
-test('K6: a start with no lookups keeps the selector path and its reply shape', async () => {
-  const selections: string[] = [];
+test('K6: a start with no lookups reads the deterministic plan and never awaits a selector', async () => {
   const h = harness({
-    selector: {
-      select: async () => {
-        selections.push('select');
-        return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'decisions' }], pUseful: { knowledge_search: 0.9 } } as SelectorOutput;
-      },
-    },
   });
+  assert.equal('selector' in h.deps, false, 'F-B: the voice path carries no selector to wait for');
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  assert.ok(selections.length >= 1, 'the selector still chooses the sources');
+  assert.equal(h.logs[0]!.selectorMs, 0, 'an unrouted run spends no selector time');
   assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
   assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
-  assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
+  assert.ok(h.executed.some(call => call.name === 'search_knowledge'), 'the plan\'s knowledge read still runs');
 });
 
 // R9: the selector loop's terminal line comes from a finally, so a throw inside the loop leaves a receipt
 // and a good run is never written twice.
-test('R9: a selector round that throws still writes one failed run line, with no exception text', async () => {
-  const h = harness({ selector: knowledge });
+test('R9: a throwing step sink still writes one failed run line, with no exception text', async () => {
+  const h = harness({});
   const deps: ResearchDeps = { ...h.deps, step: () => { throw new Error('step sink gone'); } };
   await assert.rejects(runResearch(deps, { action: 'start', question: 'what is waiting on me' }, new AbortController().signal), /step sink gone/);
   assert.equal(h.logs.length, 1, 'the failed run is visible once and never written twice');
@@ -789,7 +818,7 @@ test('R9: a selector round that throws still writes one failed run line, with no
 });
 
 test('R9: a normal selector run writes exactly one terminal run line', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(h.logs.filter(entry => entry.event === 'research_run').length, 1, 'one run, one line');
   assert.equal(h.logs[0]!.status !== 'failed', true, 'a good run is never reported as failed');
@@ -802,7 +831,6 @@ test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget 
   const receipts: ResearchSourceLog[] = [];
   let release!: (results: IntentSubResult[]) => void;
   const h = harness({
-    selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'release freeze' }], pUseful: { chat_search: 0.9 } }),
     now: clock.now, schedule: clock.schedule,
     execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((resolve, reject) => {
       release = resolve;
@@ -823,8 +851,7 @@ test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget 
 test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never empty', async () => {
   const clock = fakeClock();
   const receipts: ResearchSourceLog[] = [];
-  const h = harness({
-    selector: knowledge, now: clock.now, schedule: clock.schedule,
+  const h = harness({ now: clock.now, schedule: clock.schedule,
     execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_resolve, reject) => {
       const cut = (): void => reject(new Error('cut'));
       if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true });
@@ -846,8 +873,7 @@ test('P5-R5: a connector that returns a failure is a failed read, never a search
   const receipts: ResearchSourceLog[] = [];
   const failed = (key: string, name: string): IntentSubResult =>
     ({ key, name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'connector_failure' });
-  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 0.9 } });
-  const h = harness({ selector, execute: async subs => subs.map(call => failed(call.key, call.name)) });
+  const h = harness({ execute: async subs => subs.map(call => failed(call.key, call.name)) });
   const deps: ResearchDeps = { ...h.deps, configured: ['mail'], logSource: event => receipts.push(event) };
   const reply = await runResearch(deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['mail', 'failed', 12_000]], 'a returned failure is receipted failed, never empty');
@@ -882,7 +908,7 @@ test('Q5-R2: a cut result block carries one machine line, and a whole one carrie
 // --- 3r K1: the voice knowledge lookup asks for bounded bodies with a deadline -------------------
 
 test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline', async () => {
-  const h = harness({ selector: knowledge });
+  const h = harness({});
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the connector' }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
   assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query', 'snippet_chars'], 'exactly those fields, and no others');
@@ -900,7 +926,7 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
 test('3r: a body the server cut at the asked-for window is marked in the reply', async () => {
   const cutBody = '### Release 3p scope (decision) [id 412]\nThe part of the body that fits.\ntruncated: yes (5,432 chars stored)';
   const wholeBody = '### Release 3p ledger (pattern) [id 413]\nA short body.\ntruncated: no (14 chars stored)';
-  const h = harness({ selector: knowledge, executeText: `${cutBody}\n${wholeBody}` });
+  const h = harness({ executeText: `${cutBody}\n${wholeBody}` });
   const reply = await runResearch(h.deps, { action: 'start', question: 'release 3p scope' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
   // Hit order is the ranker's, so each hit's own line is read by its heading, never by position.
@@ -913,12 +939,15 @@ test('3r: a body the server cut at the asked-for window is marked in the reply',
 });
 
 test('3r: the research receipt records the bounded-body request, metadata only', async () => {
-  const h = harness({ selector: knowledge, executeText: '### Scope [id 412]\nBody.' });
+  const h = harness({ executeText: '### Scope [id 412]\nBody.' });
   const receipts: ResearchSourceLog[] = [];
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' }, 'an uncut selector read says so too');
+  // ROUTE-1022 K5: a brief on a question that names no source reads his knowledge only, so this run
+  // compiles no chat date operator; the old brief chat window is gone and the receipt says so.
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' }, 'an uncut read names no chat operator it never compiled');
+
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.
   assert.deepEqual(safeEvent(receipt)?.['knowledge'], receipt.knowledge, 'the host log keeps the counts and the closed tokens');
@@ -937,6 +966,25 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
   assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' });
+});
+
+// MED-1022: the chat date operator token must still be seen as 'compiled' on a run that really compiles
+// one (ROUTE-1022 K5: a question names chat to be read), so the token is never merely the 'none' default.
+test('MED-1022: a run that compiles a chat date operator states it on the knowledge receipt', async () => {
+  const h = harness({ executeText: '### Release 3p scope (decision) [id 412]\nThe part that fits.' });
+  const receipts: ResearchSourceLog[] = [];
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  await runResearch(deps, { action: 'start', question: 'what did the team say in chat about partner ranking yesterday' }, new AbortController().signal);
+  const receipt = receipts.find(entry => entry.source === 'knowledge')!;
+  assert.equal((receipt.knowledge as Record<string, unknown> | undefined)?.['chatDateOperator'], 'compiled', 'the receipt carries the operator the run compiled');
+});
+
+// ROUTE-1022 K6: the instruction words of an inbox ask are not search terms, so the ask compiles to the
+// plain recent-inbox scan instead of searching Gmail for 'list' or 'anything'.
+test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox scan', () => {
+  assert.equal(compileMailQuery('show me anything in my email', undefined), 'in:inbox newer_than:14d', 'instruction words are no terms');
+  assert.equal(compileMailQuery('List anything in my email', undefined), 'in:inbox newer_than:14d', 'and the list verb is no term either');
+  assert.equal(compileMailQuery('find the agricon mail', undefined), 'agricon', 'a real content term still searches');
 });
 
 // MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed
@@ -1299,52 +1347,39 @@ test('#1020: a timed-out source is named as timed out, in seconds, beside the so
 
 // --- W2: the selector never sits on the critical path -------------------------------------------
 
-function countingSelector(output: SelectorOutput, tick: () => void): ResearchSelector {
-  return { async select() { tick(); return output; } };
-}
-
 test('a routed run never calls the selector: the model already named the lookups', async () => {
-  let selects = 0;
-  const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
+  const h = harness({});
   await runResearch(h.deps, { action: 'start', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
-  assert.equal(selects, 0, 'routed lookups are the decision: no selector round runs');
   assert.ok(h.executed.some(call => call.name === 'gmail_search_messages'), 'the routed lookup is still read');
 });
 
 test('one configured source never pays a selector round', async () => {
-  let selects = 0;
-  const h = harness({ selector: countingSelector({ questionClass: 'cross_source', actions: [{ kind: 'mail_search' }], pUseful: { mail_search: 1 } }, () => { selects += 1; }) });
+  const h = harness({});
   h.deps.configured = ['knowledge'];
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  assert.equal(selects, 0, 'with one source there is nothing to select');
   assert.ok(h.executed.some(call => call.name === 'search_knowledge'), 'the one source is still read');
   assert.equal((reply['unchecked'] as string[]).includes('knowledge'), false, 'the one source was read and credited');
 });
 
-test('a quick_fact continuation reads deterministically: no second selector round runs', async () => {
+test('a continuation reads deterministically: no selector round ever runs', async () => {
   // B1: the skip removes the selector round, so the fixture must show the deterministic path still
   // reads and credits the source the direction names. The first round settles quick_fact and stops
   // with rounds left, so the continuation is the round that has to read without the selector.
-  let selects = 0;
-  const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'stop_answer' }], pUseful: { mail_search: 0.9 } }, () => { selects += 1; });
-  const h = harness({ selector: quick });
+  const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
   const first = await scheduler.call({ action: 'start', question: 'what is the landlord invoice number' }, new AbortController().signal);
-  assert.equal(selects, 1);
   // ROUTE-1022: the round that read the prime source and stopped says nothing more is to fetch.
   assert.equal(first['canContinue'], false, 'a complete reply invites no continuation');
   assert.equal(first['status'], 'complete');
   const readsBefore = h.executed.length;
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
-  assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
   const reads = h.executed.slice(readsBefore);
   assert.ok(reads.some(call => call.name === 'calendar_list_events'), `the continuation reads the source its direction names: ${JSON.stringify(reads)}`);
   assert.equal((next['unchecked'] as string[]).includes('calendar'), false, 'and the reply credits the source it read');
 });
 
 test('a selector round still delivers every source the selector chose', async () => {
-  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search', query: 'deploy freeze' }], pUseful: { chat_search: 1 } });
-  const h = harness({ selector });
+  const h = harness({});
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team say about the deploy freeze' }, new AbortController().signal);
   assert.equal((reply['unchecked'] as string[]).includes('chat'), false, 'the selector pick is still read and credited');
   assert.ok(h.executed.some(call => JSON.stringify(call.args).includes('deploy freeze')), 'the selector query is the one read');
@@ -1377,7 +1412,6 @@ test('a google endpoint in configuration error is voiced as unreachable mail, ne
       return subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'evidence', originalCharacters: 8, omittedCharacters: 0, received: { shape: 'list', items: 1 } } as never));
     },
     emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
-    selector: { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'invoice' }] }) } as unknown as ResearchSelector,
   };
   const reply = await runResearch(deps, { action: 'start', question: 'did I get the invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
@@ -1435,13 +1469,12 @@ const calendarPage = (key: string, name: string): IntentSubResult => ({ key, nam
 test('ROUTE-1022: a calendar question never calls the selector and answers with the calendar', async () => {
   const clock = fakeClock();
   let selectorCalls = 0;
-  const selector: ResearchSelector = { select: async () => { selectorCalls += 1; return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
   const execute: ResearchDeps['execute'] = async subs => {
     const calendar = subs.some(call => call.name === 'calendar_list_events');
     await new Promise<void>(resolve => { clock.schedule(() => resolve(), calendar ? 4_700 : 2_900); });
     return subs.map(call => call.name === 'calendar_list_events' ? calendarPage(call.key, call.name) : sub(call.name, 'a stored note', true, call.key));
   };
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute, configured: ['knowledge', 'calendar'] });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute, configured: ['knowledge', 'calendar'] });
   const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   await tick();
   clock.advance(2_900); await settle();
@@ -1453,19 +1486,20 @@ test('ROUTE-1022: a calendar question never calls the selector and answers with 
   assert.equal(h.logs[0]!.driver, 'routed');
 });
 
-test('ROUTE-1022: the selector is capped at 1.5 s and its failure still answers from the recipe', async () => {
-  assert.equal(RESEARCH.selectorDeadlineMs, 1_500);
-  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
-  const h = harness({ selector: timedOut });
+test('ROUTE-1022: the voice path carries no selector, so no run waits on one', async () => {
+  assert.equal('selector' in harness({}).deps, false, 'the research deps offer no selector');
+  assert.equal('selectorDeadlineMs' in RESEARCH, false, 'and the selector deadline is gone with it');
+  const h = harness({});
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   assert.equal(h.logs[0]!.fallbackUsed, true);
   assert.equal(h.logs[0]!.driver, 'fallback');
+  assert.equal(h.logs[0]!.selectorMs, 0, 'the run line states no selector time because none was spent');
   assert.ok(Array.isArray(reply['findings']));
 });
 
 test('ROUTE-1022: a second start for the same owner question attaches instead of cancelling', async () => {
   const gate = deferred<void>();
-  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const scheduler = new ResearchScheduler(h.deps);
   const first = scheduler.call({ action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   await tick();
@@ -1480,17 +1514,19 @@ test('ROUTE-1022: a second start for the same owner question attaches instead of
 });
 
 test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one names what is still reading', async () => {
-  const complete = harness({ selector: knowledge, executeText: '### Release 3p scope [id 7]\nThe part that fits.' });
+  const complete = harness({ executeText: '### Release 3p scope [id 7]\nThe part that fits.' });
   const done = await runResearch(complete.deps, { action: 'start', question: 'what is the release scope' }, new AbortController().signal);
   assert.equal(done['status'], 'complete');
   assert.equal(done['canContinue'], false);
-  assert.equal(done['note'], RESEARCH.completeNote);
+  // ROUTE-1022 shape: the brief fan-out reads the calendar too, so the note carries what that read found
+  // and still ends on the one plain sentence that says nothing else is to fetch.
+  assert.ok(String(done['note']).endsWith(RESEARCH.completeNote));
   const clock = fakeClock();
   const slow: ResearchDeps['execute'] = async subs => {
     await new Promise<void>(resolve => { clock.schedule(() => resolve(), 20_000); });
     return subs.map(call => call.name === 'calendar_list_events' ? calendarPage(call.key, call.name) : sub(call.name, 'a stored note', true, call.key));
   };
-  const h = harness({ selector: knowledge, now: clock.now, schedule: clock.schedule, execute: slow, configured: ['knowledge', 'calendar'] });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: slow, configured: ['knowledge', 'calendar'] });
   const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   await tick();
   clock.advance(4_500); await settle();

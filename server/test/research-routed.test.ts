@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -40,7 +40,6 @@ interface Harness {
   subcalls: ResearchSubcallLog[];
   executed: string[];
   progress: ResearchProgress[];
-  selectorCalls: () => number;
 }
 
 function harness(opts: {
@@ -49,7 +48,6 @@ function harness(opts: {
   execute?: ResearchDeps['execute'];
   memory?: (query: string) => { lines: string[]; text: string; total: number };
   schedule?: ResearchDeps['schedule'];
-  selected?: () => void;
 } = {}): Harness {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
@@ -57,7 +55,6 @@ function harness(opts: {
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
   const progress: ResearchProgress[] = [];
-  let selectorCalls = 0;
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
@@ -71,8 +68,6 @@ function harness(opts: {
     logRouted: event => routed.push(event),
     logSource: event => sources.push(event),
     logSubcall: event => { subcalls.push(event); },
-    // A selector that answers, so "it was not called" is a real observation rather than a refusal.
-    selector: { select: async () => { selectorCalls += 1; opts.selected?.(); return { questionClass: 'cross_source' as const, actions: [], pUseful: {} }; } },
     ledger: new ResearchLedger(),
   };
   const execute = deps.execute;
@@ -84,7 +79,7 @@ function harness(opts: {
         ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
     });
   };
-  return { deps, routed, sources, logs, subcalls, executed, progress, selectorCalls: () => selectorCalls };
+  return { deps, routed, sources, logs, subcalls, executed, progress };
 }
 
 test('a routed start skips the selector and reads every named layer at once', async () => {
@@ -108,7 +103,7 @@ test('a routed start skips the selector and reads every named layer at once', as
     }, new AbortController().signal),
     new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('lookups did not overlap')), 1_000).unref(); }),
   ]);
-  assert.equal(h.selectorCalls(), 0, 'the selector is never called on a routed start');
+  assert.equal('selector' in h.deps, false, 'no selector rides the path a routed start takes');
   assert.deepEqual(entered, ['search_knowledge', 'gmail_search_messages'], 'both lookups were dispatched before either was awaited');
   assert.equal(reply['status'], 'complete');
   assert.deepEqual(reply['sources'], { knowledge: 'ok', mail: 'ok' }, 'one combined reply with per-source status');
@@ -150,6 +145,36 @@ test('a routed lookup that fails is isolated and the other layers still answer',
   assert.deepEqual(findings.map(finding => finding.source), ['knowledge'], 'the failed source contributes no finding');
   assert.match(String(reply['note']), /could not reach mail/);
   assert.equal(reply['status'], 'complete', 'one good layer answers the call');
+});
+
+test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whole mailbox', async () => {
+  const dispatched: Record<string, unknown>[] = [];
+  const h = harness({ execute: async (subs: readonly IntentSubCall[]) => {
+    for (const call of subs) dispatched.push({ ...call.args });
+    return subs.map(call => sub(call.name, '- Invoice | Landlord | Mon | due soon [id m1]', true, call.key));
+  } });
+  await runResearch(h.deps, {
+    action: 'start', question: 'agricon mail', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
+  }, new AbortController().signal);
+  const pages = dispatched.filter(args => typeof args['q'] === 'string');
+  assert.ok(pages.length > 0, 'the mail lookup dispatched a page');
+  for (const args of pages) assert.ok(Number(args['maxResults']) <= RESEARCH.pageResults.mail, `every page is clamped (${String(args['maxResults'])})`);
+  assert.equal(pages[0]!['maxResults'], RESEARCH.pageResults.mail, 'the requested page size is clamped to the mail page');
+  assert.match(String(pages[0]!['q']), /agricon/, 'and the model query is what is asked');
+});
+
+test('ROUTE-1022 K5: a brief on a question that names no layer reads knowledge only', async () => {
+  const subs = candidateSubs('brief', { question: 'what do you think about our business model', configured: CONFIGURED, evidence: new Map() });
+  assert.deepEqual(subs.map(call => call.name), ['search_knowledge'], 'no mail, calendar or chat read');
+  assert.equal(JSON.stringify(subs).includes('open loop follow up'), false, 'the default query is gone');
+  assert.match(String(subs[0]!.args['query']), /business model/);
+});
+
+test('ROUTE-1022 K5: a brief on a question that names a layer reads that layer too', async () => {
+  const subs = candidateSubs('brief', { question: "what's on my calendar tomorrow", configured: CONFIGURED, evidence: new Map() });
+  const names = subs.map(call => call.name);
+  assert.ok(names.includes('calendar_list_events'), 'the layer the question names is read');
+  assert.equal(names.includes('mattermost_search'), false, 'a layer it did not name is not');
 });
 
 test('a source the session did not configure is reported unavailable, never dispatched', async () => {
@@ -258,12 +283,12 @@ test('both provider declarations carry lookups, and the Gemini dialect flattens 
   assert.match(String(gemini['lookups']!.description), /Original schema: .*"source"/, 'the original schema travels in the description');
 });
 
-test('an unrouted start keeps the selector path and never touches memory', async () => {
+test('an unrouted start reads the deterministic plan and never touches memory', async () => {
   const h = harness({ memory: () => { throw Error('memory must not be read'); } });
   await runResearch(h.deps, { action: 'start', question: 'where does the project stand', lookups: [] }, new AbortController().signal);
-  assert.equal(h.selectorCalls(), 1, 'no lookups means today\'s selector');
+  assert.equal('selector' in h.deps, false, 'F-B: no lookups never means a selector round');
   assert.ok(h.executed.includes('search_knowledge'), 'the knowledge prime read is dispatched, exactly as before');
-  assert.ok(!h.executed.includes('mattermost_search'), 'and nothing the selector did not choose');
+  assert.equal('selector' in h.deps, false, 'F-B: the plan never comes from a selector');
   assert.deepEqual(h.routed, [], 'no routed receipt without lookups');
 });
 

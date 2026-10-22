@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Combine
 import CoreAudio
@@ -614,6 +615,14 @@ struct NativeLiveInterruptionSample: Sendable {
     /// appended where `inputLevel` is published; never read on the audio path and never fed back to the engine.
     private var levelRing: [(at: Date, level: Float)] = []
     private static let levelRingCapacity = 256
+    /// L12b: the audio Naya played in the current window, in decibels to one decimal once a window
+    /// closes. The sums are taken where the host's frames arrive, before the player, on the main actor.
+    private var playedPeak: Double = 0
+    private var playedSumSquares: Double = 0
+    private var playedFrames = 0
+    private var playbackLevelTask: Task<Void, Never>?
+    static let playbackLevelWindowMs = 5_000
+    private static let silenceFloorDb = -120.0
     private var lastModelAudioAt: Date?
     private let captureInput: AVAudioFormat?
     private let inputDevice: () -> (id: String, name: String)
@@ -624,6 +633,7 @@ struct NativeLiveInterruptionSample: Sendable {
     private let deviceState: (Bool) -> Bool
     private let now: () -> Date
     private let isBuiltInOutput: () -> Bool
+    private let outputLevelReading: () -> (volume: String, mute: String)
     /// Test seams: an engine/player/format factory and a start hook stand in for real hardware.
     var engineFactoryForTesting: (() -> (AVAudioEngine, AVAudioPlayerNode, AVAudioFormat))?
     var startForTesting: ((AVAudioEngine) throws -> Void)?
@@ -656,7 +666,8 @@ struct NativeLiveInterruptionSample: Sendable {
     init(captureInput: AVAudioFormat? = nil, defaultInput: (() -> (id: String, name: String))? = nil,
          owner: AudioOwner = .shared, journal: NativeAudioJournal? = nil,
          deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil,
-         isBuiltInOutput: (() -> Bool)? = nil) {
+         isBuiltInOutput: (() -> Bool)? = nil,
+         outputLevelReading: (() -> (volume: String, mute: String))? = nil) {
         self.captureInput = captureInput
         self.inputDevice = defaultInput ?? { Self.defaultDevice(input: true) }
         self.owner = owner
@@ -664,6 +675,7 @@ struct NativeLiveInterruptionSample: Sendable {
         self.deviceState = deviceState ?? Self.defaultDeviceRunningSomewhere(input:)
         self.now = now ?? { Date() }
         self.isBuiltInOutput = isBuiltInOutput ?? { Self.isBuiltInSpeakers(outputID: Self.defaultDevice(input: false).id) }
+        self.outputLevelReading = outputLevelReading ?? { Self.defaultOutputLevel() }
     }
     var hasJournal: Bool { journal != nil }
     /// Test seam: adopt the stretcher the running graph would own, then flush it, without opening hardware.
@@ -677,6 +689,39 @@ struct NativeLiveInterruptionSample: Sendable {
     func rebuildForTesting() throws { try build { _, _ in } }
     func log(_ name: String, _ fields: [String: String] = [:]) {
         journal?.record(NativeAudioEvent(name: name, fields: fields))
+    }
+
+    /// Test seam: close the open played window now, so the window arithmetic is provable without a
+    /// five second wait. Production closes it from its own timer only.
+    func flushPlaybackLevelForTesting() { flushPlaybackLevel() }
+    /// L12b: one `playback_level` receipt per window of audio Naya actually played, off the audio path.
+    /// A window with no frames has no level, so it leaves no line rather than a floor of silence.
+    private func flushPlaybackLevel() {
+        let frames = playedFrames, peak = playedPeak, sumSquares = playedSumSquares
+        playedFrames = 0; playedPeak = 0; playedSumSquares = 0
+        guard frames > 0 else { return }
+        log("playback_level", ["peakDb": Self.dB(peak), "rmsDb": Self.dB((sumSquares / Double(frames)).squareRoot()),
+                               "frames": String(frames)])
+    }
+    /// A level as decibels, floored at the silence floor, so a digital zero reads as the floor and not as -inf.
+    private static func dB(_ level: Double) -> String {
+        let value = level > 0 ? 20 * log10(level) : silenceFloorDb
+        return String(format: "%.1f", max(silenceFloorDb, value))
+    }
+    private func startPlaybackLevelWindow() {
+        playbackLevelTask?.cancel()
+        playbackLevelTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: UInt64(Self.playbackLevelWindowMs) * 1_000_000) }
+                catch { return }
+                guard let self, !Task.isCancelled else { return }
+                self.flushPlaybackLevel()
+            }
+        }
+    }
+    private func stopPlaybackLevelWindow() {
+        playbackLevelTask?.cancel(); playbackLevelTask = nil
+        playedFrames = 0; playedPeak = 0; playedSumSquares = 0
     }
     func routeChanged() {
         let input = inputDevice()
@@ -801,6 +846,46 @@ struct NativeLiveInterruptionSample: Sendable {
         return value as String
     }
     func resumeInput() { recovery.resume(); if isCapturing { onResume?() } }
+
+    /// L12a: the default output's volume scalar and mute flag as this release found them, read through
+    /// CoreAudio getters on the output scope and never written. `unknown` when the device or a getter
+    /// refuses, so a quiet call leaves a receipt instead of a guess about what it inherited.
+    static func defaultOutputLevel() -> (volume: String, mute: String) {
+        let device = defaultDeviceID(input: false)
+        guard device != kAudioObjectUnknown else { return outputLevelText(volume: nil, mute: nil) }
+        let virtualMain = outputScalar(device, kAudioHardwareServiceDeviceProperty_VirtualMainVolume)
+        let main = outputScalar(device, kAudioDevicePropertyVolumeScalar)
+        let channels = [outputScalar(device, kAudioDevicePropertyVolumeScalar, element: 1),
+                        outputScalar(device, kAudioDevicePropertyVolumeScalar, element: 2)].compactMap { $0 }
+        let volume = virtualMain ?? main ?? (channels.isEmpty ? nil : channels.reduce(0, +) / Float(channels.count))
+        let mute = outputFlag(device, kAudioDevicePropertyMute)
+            ?? outputFlag(device, kAudioDevicePropertyMute, element: 1)
+        return outputLevelText(volume: volume, mute: mute)
+    }
+    /// The closed text of one output reading: a scalar inside 0...1 to two decimals and a boolean mute,
+    /// and `unknown` for whichever getter refused, so a missing reading is never a zero and never a crash.
+    static func outputLevelText(volume: Float?, mute: UInt32?) -> (volume: String, mute: String) {
+        (volume.map { String(format: "%.2f", min(1, max(0, $0))) } ?? "unknown",
+         mute.map { $0 == 0 ? "false" : "true" } ?? "unknown")
+    }
+    private static func outputScalar(_ device: AudioDeviceID, _ selector: AudioObjectPropertySelector,
+                                     element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> Float? {
+        var property = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeOutput,
+                                                  mElement: element)
+        var value: Float32 = 0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
+    private static func outputFlag(_ device: AudioDeviceID, _ selector: AudioObjectPropertySelector,
+                                   element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> UInt32? {
+        var property = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeOutput,
+                                                  mElement: element)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
 
     /// A1-R2: true when the default input or output device is already running somewhere else.
     /// The reading is taken at call start, before Didi starts any engine, so it reflects other apps only.
@@ -1063,10 +1148,15 @@ struct NativeLiveInterruptionSample: Sendable {
             throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.engineFailure(error as NSError)
         }
         owner.didStartEngine(holder: ObjectIdentifier(self))
+        startPlaybackLevelWindow()
+        // L12a: what the default output is set to, read only, next to the route it will play on.
+        let reading = outputLevelReading()
         log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false",
                               "busyAtCallStart": deviceBusy ? "true" : "false",
                               "outputTransport": Self.routeClassification(input: false),
-                              "outputUID": Self.defaultOutputUID()])
+                              "outputUID": Self.defaultOutputUID(),
+                              "outputVolume": reading.volume,
+                              "outputMute": reading.mute])
         // One rate receipt per session accompanies the queue measurements.
         log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
@@ -1250,11 +1340,16 @@ struct NativeLiveInterruptionSample: Sendable {
         // A chunk that lands on a dry queue is the first of a new segment.
         let newSegment = !playbackQueue.playing && playbackQueue.scheduledFrames <= 0
         var sum: Double = 0
+        var peak: Double = 0
         pcm.withUnsafeBytes { bytes in
             for sample in bytes.bindMemory(to: Int16.self) {
                 let value = Double(Int16(littleEndian: sample)) / 32768; sum += value * value
+                let magnitude = abs(value); if magnitude > peak { peak = magnitude }
             }
         }
+        // L12b: the same decode the level already walks feeds the played window, so the render thread
+        // sees no new code: two sums and a count, no allocation and no lock.
+        if frames > 0 { playedPeak = max(playedPeak, peak); playedSumSquares += sum; playedFrames += frames }
         let level = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
         let audible = level >= 0.00316227766
         let arrival = playbackQueue.arrival(frames: frames, atMs: nowMs(), audible: audible, level: level)
@@ -1317,6 +1412,9 @@ struct NativeLiveInterruptionSample: Sendable {
         outputOrb.reset()
     }
     func stop() {
+        // L12b: the window that was open at the end is reported before the call is gone.
+        flushPlaybackLevel()
+        stopPlaybackLevelWindow()
         // The call is over: the last played segment gets one terminal receipt, whichever stop it was.
         if playbackSegment > terminatedSegment {
             emitReceipt(.terminated, segment: playbackSegment, reason: "session_end")

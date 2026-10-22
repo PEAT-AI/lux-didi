@@ -16,7 +16,7 @@
  * for one requested message), and 8 calendar events of 150 characters. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
-import { knowledgeSourceLinks, withOpenHandles } from './open-handles.js';
+import { bodySourceLinks, withOpenHandles, mintOpenLine } from './open-handles.js';
 export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
@@ -281,7 +281,7 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const sourceNote = metadata ? '[Metadata-only view requested; body was not acquired.]' : unavailable ? '[Body unavailable in source response; no body bytes acquired.]' : coverage['complete'] === false ? '[Source reports incomplete inline body coverage.]' : coverage['complete'] !== true ? '[Source inline body completeness is unverified.]' : '';
   const omitted = Math.max(0, received.length - body.length) + cut.omitted;
   const note = omitted > 0 ? `\n\n[omitted: ${omitted} received characters of body omitted from this display]` : '';
-  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted });
+  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted, sources: bodySourceLinks(cut.text, 'mail_body') });
 }
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
@@ -297,6 +297,8 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const named = header(entry, 'Subject');
     const url = inboxUrl(entry['id']);
     if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
+    // Open2: the handle line rides its own item, so a reply rebuilt from `- ` lines keeps it there.
+    const openLine = url ? mintOpenLine({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' }) : undefined;
     const idValue = str(entry['id']);
     // A field the source truly lacks is omitted, never filled with the word "unknown".
     const segments: string[] = [named || '(no subject)'];
@@ -308,8 +310,9 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     if (excerpt) segments.push(excerpt);
     const full = `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
     const cut = cutAtSentence(full, 600);
-    if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line: cut.text, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length });
-    return full;
+    const line = openLine ? `${cut.text}\n${openLine}` : cut.text;
+    if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length });
+    return line;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
   const upstream = Boolean(data['nextPageToken']) || data['sourceIncomplete'] === true;
@@ -358,6 +361,8 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     if (description) lines.push(`  ${description}`);
     const link = field(entry, 'htmlLink');
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
+    const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
+    if (openLine) lines.splice(1, 0, openLine);
     const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
     if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
@@ -559,12 +564,12 @@ function knowledgeHeading(hit: Record<string, unknown>): string {
   const id = scalar(hit['id']);
   return `### ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}`;
 }
-/** A search hit's excerpt. The cut names get_insight, which returns the full body (not this bound). */
+/** A search hit's excerpt. The cut names the research tool, which reads the whole entry by its id. */
 function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
   const cut = cutAtSentence(body, KNOWLEDGE_EXCERPT_CHARS);
   const id = scalar(hit['id']);
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `call get_insight with ids=[${id}] for the full insight` : 'final, ask for the full insight by its id'}]` : '';
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `ask research with ids=[${id}] for the whole note` : 'final, ask research again with this note id for the whole note'}]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 /** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
@@ -593,7 +598,7 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       const body = field(parsed, 'content', 'text', 'body');
       if (body || parsed['insights'] === undefined && parsed['results'] === undefined) {
         const hit = knowledgeBody(parsed);
-        return withOpenHandles({ text: hit.text, partial: hit.omitted > 0, originalCharacters: hit.original, omittedCharacters: hit.omitted, sources: knowledgeSourceLinks(hit.text) });
+        return withOpenHandles({ text: hit.text, partial: hit.omitted > 0, originalCharacters: hit.original, omittedCharacters: hit.omitted, sources: bodySourceLinks(hit.text) });
       }
     }
   }
@@ -602,11 +607,20 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
   const clean = stripKnowledgePreamble(raw);
   const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: knowledgeSourceLinks(cut.text) });
+  return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) });
 }
 
 const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;
 const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
+
+/** ROUTE-1022 K17: the hit count the digest states above its hits, so the coverage line is the server's. */
+const KNOWLEDGE_HIT_COUNT = /\b(\d{1,3})\s+(?:hits?|results?|insights?|entries|matches)\b/iu;
+function statedHitCount(raw: string): number | undefined {
+  const header = raw.split('\n').map(line => line.trim()).find(line => KNOWLEDGE_HEADER.test(line));
+  if (header === undefined) return undefined;
+  const count = Number(KNOWLEDGE_HIT_COUNT.exec(header)?.[1] ?? Number.NaN);
+  return Number.isSafeInteger(count) && count > 0 ? count : undefined;
+}
 
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
 function knowledgeRanked(raw: string): ShapedResult | undefined {
@@ -632,21 +646,24 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
     // so the bound follows the hit's position, never a shape marker in the text.
     const cut = cutAtSentence(inner, kept.length === 0 ? KNOWLEDGE_RANKED_TOP_CHARS : KNOWLEDGE_RANKED_EXCERPT_CHARS);
     const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
-    const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; call get_insight with ids=[${id ?? 'the id above'}] for the whole insight]` : '';
+    const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; ask research again with ids=[${id ?? 'the id above'}] for this note's whole text]` : '';
     const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
     if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
     kept.push(text);
     used += text.length + 2;
     omitted += cut.omitted;
   }
-  const tail = trimmed > 0 ? `\n\n[showing ${kept.length} of ${parts.length} hits; ask a narrower question or a higher limit for the rest]` : '';
+  // K17: the server may state more hits than its digest carried, and the coverage line says so.
+  const total = Math.max(statedHitCount(raw) ?? 0, parts.length);
+  const short = trimmed > 0 || total > kept.length;
+  const tail = short ? `\n\n[showing ${kept.length} of ${total} hits; ask a narrower question or a higher limit for the rest]` : '';
   const text = `${kept.join('\n\n')}${tail}`;
-  return withOpenHandles({ text, partial: trimmed > 0 || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: knowledgeSourceLinks(text) });
+  return withOpenHandles({ text, partial: short || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: bodySourceLinks(text) });
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
   const body = listed(shapedHits.map(hit => hit.text), KNOWLEDGE_HITS, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
-  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => knowledgeSourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
+  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => bodySourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
 }

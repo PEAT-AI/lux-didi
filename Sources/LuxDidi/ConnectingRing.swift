@@ -129,6 +129,20 @@ struct ConnectingRingRecord: Equatable {
     }
 }
 
+/// L12c: the one `connecting_chime` native log record. The connected chime used to be silent about
+/// its own outcome, so a quiet call could not say whether she was ever greeted by it.
+struct ConnectingChimeRecord: Equatable {
+    let played: Bool
+    /// One closed reason when nothing played: the presence moved on, the tone was not built, or the player refused.
+    let reason: String?
+
+    var fields: [String: Any] {
+        var fields: [String: Any] = ["event": "connecting_chime", "played": played]
+        if let reason { fields["reason"] = reason }
+        return fields
+    }
+}
+
 /// The presence-to-ring rule: start on connecting, stop on any other state, and a start that a
 /// stop outran never plays. No clock, no engine, so the rule is testable on its own.
 struct ConnectingRingDirector {
@@ -318,16 +332,28 @@ final class ConnectingRing {
             let token = playToken
             // The chime follows the ring only on the move to live: never on a warm unmute, never
             // on a failure. It plays after the ramp, on the ring's own player.
-            let chimeBuffer = reason == PresenceState.live.rawValue ? ConnectingChimeTone.buffer() : nil
+            let chimeRequested = reason == PresenceState.live.rawValue
+            let chimeBuffer = chimeRequested ? ConnectingChimeTone.buffer() : nil
             // The record lands here, as it did before the chime existed, so a presence edge inside
             // the 30 ms ramp can never drop it. `chime` names the connected chime this ring asks for.
             receipt?(ConnectingRingRecord(startedAt: startedAt, stoppedAt: startedAt + ms, reason: reason,
-                                          played: ringPlayed, chime: chimeBuffer != nil).fields)
+                                          played: ringPlayed, chime: chimeRequested).fields)
             output.rampDown(overMs: ConnectingRingTone.stopRampMs) { [weak self, output] in
                 guard let self else { return }
                 // The ramp ended with the player and the engine stopped, like the no-chime path.
                 outputRunning = false
-                guard let chimeBuffer, token == playToken, output.playChime(chimeBuffer) else { return }
+                guard chimeRequested else { return }
+                guard let chimeBuffer else {
+                    self.receipt?(ConnectingChimeRecord(played: false, reason: "no_buffer").fields)
+                    return
+                }
+                guard token == playToken else {
+                    self.receipt?(ConnectingChimeRecord(played: false, reason: "token_mismatch").fields)
+                    return
+                }
+                let played = output.playChime(chimeBuffer)
+                self.receipt?(ConnectingChimeRecord(played: played, reason: played ? nil : "output_refused").fields)
+                guard played else { return }
                 outputRunning = true
                 playToken &+= 1
                 let chimeToken = playToken

@@ -221,3 +221,29 @@ test('Z1: a research line with an unsafe id reports the rejection instead of van
   assert.equal(JSON.stringify(safeEvent(progress)).includes('\u2014'), false, 'the line never carries the value');
   assert.deepEqual(safeEvent({ ...progress, researchId: 'ok-id' }), { ...progress, researchId: 'ok-id' }, 'a safe id still writes its own line');
 });
+
+test('1022: the connector lifecycle lines carry closed fields and nothing else', () => {
+  assert.deepEqual(safeEvent({ event: 'connector_connected', endpointId: 'gmail', connectMs: 2569 }),
+    { event: 'connector_connected', endpointId: 'gmail', connectMs: 2569 });
+  assert.equal(safeEvent({ event: 'connector_connected', endpointId: 'gmail', connectMs: 2569, url: 'https://x' }), undefined, 'a url never rides a connect line');
+  assert.deepEqual(safeEvent({ event: 'connector_recovered', endpointId: 'gmail', attempts: 1, connectMs: 900 }),
+    { event: 'connector_recovered', endpointId: 'gmail', attempts: 1, connectMs: 900 });
+  assert.deepEqual(safeEvent({ event: 'connector_recovery_exhausted', endpointId: 'gmail', attempts: 3, reason: 'identity_unverified' }),
+    { event: 'connector_recovery_exhausted', endpointId: 'gmail', attempts: 3, reason: 'identity_unverified' });
+  assert.equal(safeEvent({ event: 'connector_recovery_exhausted', endpointId: 'gmail', attempts: 3, reason: 'the helper said no' }), undefined, 'a free text reason is refused');
+  assert.deepEqual(safeEvent({ event: 'connector_helper_stderr', endpointId: 'gmail', bytes: 4096 }),
+    { event: 'connector_helper_stderr', endpointId: 'gmail', bytes: 4096 });
+  assert.equal(safeEvent({ event: 'connector_helper_stderr', endpointId: 'gmail', bytes: 4096, text: 'boom' }), undefined, 'never the helper text');
+  assert.deepEqual(safeEvent({ event: 'connector_identity', connector: 'google', proven: true, match: true, endpointId: 'gmail' }),
+    { event: 'connector_identity', connector: 'google', proven: true, match: true, endpointId: 'gmail' }, '#533: one proof names its endpoint');
+  assert.deepEqual(safeEvent({ event: 'calendar_digest', state: 'absent', items: 0, ageMs: 0 }),
+    { event: 'calendar_digest', state: 'absent', items: 0, ageMs: 0 }, 'an absent digest is stated as absent');
+});
+
+test('C-R2: both skip reasons the summarizer already logs pass the sanitizer', () => {
+  for (const reason of ['history_provenance_unavailable', 'summary_route_class_denied']) {
+    assert.deepEqual(safeEvent({ event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason }),
+      { event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason }, `C-R2: ${reason} reaches host.log`);
+  }
+  assert.equal(safeEvent({ event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason: 'free text reason' }), undefined, 'and the closed set still refuses anything else');
+});

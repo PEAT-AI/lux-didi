@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
-import { createServer, type IncomingMessage } from 'node:http';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
@@ -32,6 +34,8 @@ interface FixtureOptions {
   tools?: Array<{ name: string; inputSchema: Record<string, unknown> }>;
   /** Per tool call: how long the answer takes and the JSON payload it carries. */
   call?: (tool: string) => { delayMs?: number; payload: unknown };
+  /** The endpoint's own token route, so a refresh can be made to fail the way the owner's Mac saw it. */
+  token?: (res: ServerResponse) => void;
 }
 
 async function fixture(options: FixtureOptions = {}) {
@@ -40,6 +44,7 @@ async function fixture(options: FixtureOptions = {}) {
     try {
       const bytes = await body(req);
       if ((req.method ?? 'GET') === 'DELETE') { res.writeHead(200); res.end(); return; }
+      if (req.url === '/oauth/token') { options.token?.(res); return; }
       const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       sdk.setRequestHandler('tools/list', () => {
         requests += 1;
@@ -259,11 +264,11 @@ test('a gmail proof that runs out of time is retried until it proves the account
     endpoints: [googleConfig(gmail.url, 'gmail', 'mail'), googleConfig(calendar.url, 'calendar', 'calendar')],
   }), { mode: 0o600 });
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const identity: Array<{ connector: string; proven: boolean; match: boolean | null }> = [];
+  const identity: Array<{ connector: string; proven: boolean; match: boolean | null; endpointId: string }> = [];
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
     callDeadlineMs: 2000, recoveryDelaysMs: FAST,
-    identityLog: (connector, proven, match) => { identity.push({ connector, proven, match }); },
+    identityLog: (connector, proven, match, endpointId) => { identity.push({ connector, proven, match, endpointId: endpointId ?? '' }); },
   });
   t.after(() => runtime.close());
   const first = runtime.status().endpoints;
@@ -289,4 +294,137 @@ test('a gmail proof that runs out of time is retried until it proves the account
   assert.equal(identity.length, 3, 'calendar once, gmail twice');
   assert.equal(identity.filter(entry => !entry.proven).length, 1, 'only gmail was unproven, and only once');
   assert.equal(identity.filter(entry => entry.proven).length, 2);
+});
+
+// --- 1022: a sign-in is never asked for a network blip, a recovery says so, and a pinned helper is replaced ---
+
+/** The same record the login writer produces, pointed at the fixture's own token route. */
+function oauthRecordAt(configDir: string, base: string): void {
+  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
+    schemaVersion: 2, base, clientId: 'client', redirectPort: 45871,
+    account: ACCOUNT, accessToken: 'current-access', refreshToken: 'refresh-token-1',
+    expiresAt: 1, consentStartedAt: Date.now(),
+  }), { mode: 0o600 });
+}
+
+type Lifecycle = { event: string; endpointId: string; attempts?: number; reason?: string; connectMs?: number; bytes?: number };
+
+async function mongooseRuntime(t: { after: (fn: () => void) => void }, f: { url: string; close: () => Promise<void> }) {
+  const configDir = configDirFor(f.url, 'mongoose-mcp');
+  oauthRecordAt(configDir, f.url.replace(/\/mcp$/, ''));
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-unreachable-'));
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: Lifecycle[] = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    recoveryDelaysMs: FAST, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
+  t.after(() => { void runtime.close(); });
+  return { runtime, lifecycle };
+}
+
+test('1022: an unreachable token endpoint is retried and recovers, it never asks for a sign-in', async t => {
+  let tokens = 0;
+  const f = await fixture({ token: res => {
+    tokens += 1;
+    if (tokens === 1) { res.destroy(); return; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ access_token: 'access-token-refreshed', refresh_token: 'refresh-token-2', token_type: 'Bearer', expires_in: 3600 }));
+  } });
+  t.after(() => f.close());
+  const { runtime, lifecycle } = await mongooseRuntime(t, f);
+  const failed = runtime.status().endpoints[0]!;
+  assert.equal(failed.error, 'credential-refresh-unavailable', 'a network blip is its own closed code');
+  assert.equal(failed.retrying, true, 'and it stays on the bounded recovery schedule');
+  await until(() => runtime.status().endpoints[0]!.state === 'connected');
+  const recovered = lifecycle.filter(entry => entry.event === 'connector_recovered');
+  assert.equal(recovered.length, 1, 'one line for the recovery that landed');
+  assert.equal(recovered[0]!.endpointId, 'mongoose');
+  assert.equal(recovered[0]!.attempts, 1, 'the first recovery round proved it');
+  assert.ok(Number.isFinite(recovered[0]!.connectMs), 'and the line carries how long it took');
+});
+
+test('1022: a token endpoint that refuses the refresh still parks the connector for a sign-in', async t => {
+  const f = await fixture({ token: res => { res.writeHead(400, { 'content-type': 'application/json' }); res.end('{"error":"invalid_grant"}'); } });
+  t.after(() => f.close());
+  const { runtime, lifecycle } = await mongooseRuntime(t, f);
+  const failed = runtime.status().endpoints[0]!;
+  assert.equal(failed.error, 'credential-refresh-failed', 'a real refusal keeps its own code');
+  assert.equal(failed.retrying, false, 'and is never retried behind the owner');
+  assert.equal(lifecycle.filter(entry => entry.event === 'connector_recovered').length, 0);
+});
+
+test('1022: a recovery round that never succeeds says so once, with the reason', async t => {
+  const f = await fixture({ tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] });
+  t.after(() => f.close());
+  const configDir = configDirFor(f.url, null);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-exhausted-'));
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: Lifecycle[] = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    recoveryDelaysMs: FAST, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
+  t.after(() => { void runtime.close(); });
+  assert.equal(runtime.status().endpoints[0]!.retrying, true);
+  await until(() => lifecycle.some(entry => entry.event === 'connector_recovery_exhausted'), 4000);
+  const exhausted = lifecycle.filter(entry => entry.event === 'connector_recovery_exhausted');
+  assert.equal(exhausted.length, 1, 'one line when the bounded round is spent');
+  assert.equal(exhausted[0]!.endpointId, 'mongoose');
+  assert.equal(exhausted[0]!.attempts, FAST.length, 'every delay was used');
+  assert.ok((exhausted[0]!.reason ?? '').length > 0, 'and it names the closed reason it gave up on');
+});
+
+/** A helper that refuses the identity probe for the life of one process and proves it in a fresh one. */
+const HELPER = `
+import { existsSync, writeFileSync } from 'node:fs';
+import { Server } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+const marker = process.argv[2]; const owner = process.argv[3];
+const first = !existsSync(marker);
+if (first) writeFileSync(marker, 'seen');
+const sdk = new Server({ name: 'fake-google', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+sdk.setRequestHandler('tools/list', () => ({ tools: [
+  { name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {} } },
+  { name: 'gmail_search', inputSchema: { type: 'object', properties: {} } },
+] }));
+sdk.setRequestHandler('tools/call', request => {
+  if (request.params.name !== 'gmail_get_profile') return { content: [{ type: 'text', text: JSON.stringify({ messages: [] }) }] };
+  if (first) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'identity_unverified' }) }] };
+  return { content: [{ type: 'text', text: JSON.stringify({ emailAddress: owner }) }] };
+});
+await sdk.connect(new StdioServerTransport());
+`;
+
+test('1022: a stdio helper that pins a refused identity is replaced before the recovery probe', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-stdio-pinned-'));
+  // Beside the compiled test so the child resolves the same node_modules the test itself does.
+  const helper = join(dirname(fileURLToPath(import.meta.url)), `pinned-helper-${randomUUID()}.mjs`);
+  writeFileSync(helper, HELPER);
+  t.after(() => { rmSync(helper, { force: true }); });
+  const marker = join(dir, 'started');
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT,
+    endpoints: [{ id: 'gmail', transport: 'stdio', command: process.execPath, args: [helper, marker, ACCOUNT],
+      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+      connector: 'google', account: 'local', resource: 'google-gmail', credentialRef: null,
+      enabled: true, allowEgress: true, unknownClass: 'private' }],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: Lifecycle[] = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    recoveryDelaysMs: FAST, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
+  t.after(() => { void runtime.close(); });
+  const failed = runtime.status().endpoints[0]!;
+  assert.equal(failed.state, 'error', 'the pinned helper refused the proof');
+  assert.equal(failed.retrying, true, 'so one bounded round is scheduled');
+  await until(() => runtime.status().endpoints[0]!.state === 'connected');
+  const recovered = lifecycle.filter(entry => entry.event === 'connector_recovered');
+  assert.equal(recovered.length, 1, 'the recovery round proved the account');
+  assert.equal(recovered[0]!.attempts, 1, 'on its first attempt, because the retry got a fresh helper');
+});
+
+test('1022: an unreachable refresh reads as unreachable in the browser, never as a sign-in', () => {
+  assert.equal(connectionReasonCode({ state: 'error', error: 'credential-refresh-unavailable', signIn: true }), 'unreachable',
+    'a network blip is not a reason to show the sign-in step');
+  assert.equal(connectionReasonCode({ state: 'error', error: 'credential-refresh-failed', signIn: true }), 'needs_sign_in',
+    'a real refusal still asks for the sign-in');
 });

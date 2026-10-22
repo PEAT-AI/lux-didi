@@ -56,7 +56,7 @@ test('memory startup integration: stale HTTP wait stays bounded and unconfigured
     await cache.refresh(); now += 31 * 60_000; f.advance(31 * 60_000); f.host.tools.calendarDigest!.forStart = () => cache.forStart();
     const started = performance.now(), response = await f.post('/api/v1/live-sessions'), elapsed = performance.now() - started;
     assert.equal(response.status, 200); const { data } = await response.json(); assert.ok(!snapshot(f.host.store, data.liveSessionId).system.includes('expired synthetic item'));
-    assert.ok(elapsed >= 1400 && elapsed < 2500, `1500ms bound, measured ${elapsed}`); assert.equal(reads, 2); assert.equal(f.providerCalls(), 0);
+    assert.ok(elapsed < 1000, `create never waits on the calendar read, measured ${elapsed}`); assert.equal(reads, 2); assert.equal(f.providerCalls(), 0);
     settle?.({ state: 'present', text: '09:00 current synthetic item', items: 1, fetchedAt: now }); await cache.refresh();
     const later = await f.post('/api/v1/live-sessions', 'after-refresh'); assert.ok(snapshot(f.host.store, (await later.json()).data.liveSessionId).system.includes('current synthetic item'));
   } finally { cache.stop(); await f.cleanup(); }

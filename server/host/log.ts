@@ -22,7 +22,7 @@ const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
-const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale'];
+const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
@@ -41,7 +41,7 @@ const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 's
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
-const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model'];
+const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model', 'history_provenance_unavailable', 'summary_route_class_denied'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
 /** W4: why a progress decision stayed silent, as a closed set (never free text, never the line itself). */
@@ -178,12 +178,40 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'connector_identity') {
-    // Closed identity proof only: a connector name and two booleans, never the identity itself.
+    // Closed identity proof only: a connector name and two booleans, never the identity itself. The
+    // endpoint id is optional so one proof names which endpoint of the account it was (#533).
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
-    if (Object.keys(value).sort().join(',') !== ['connector', 'event', 'match', 'proven'].sort().join(',')) return;
+    const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
+    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : [])];
+    if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.proven !== 'boolean') return;
     if (value.match !== null && typeof value.match !== 'boolean') return;
-    return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match };
+    if (hasEndpoint && !isSafeId(value.endpointId)) return;
+    return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match,
+      ...(hasEndpoint ? { endpointId: value.endpointId } : {}) };
+  }
+  if (value.event === 'connector_connected' || value.event === 'connector_recovered'
+    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_helper_stderr') {
+    // #533: a connect that landed used to be silent, so silent meant unknown. These four lines are closed
+    // counts and ids only: no url, no account, no helper text.
+    const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 900_000;
+    const count = (v: unknown, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= max;
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
+    if (!isSafeId(value.endpointId)) return;
+    if (value.event === 'connector_connected') {
+      if (!closedKeys(value, ['connectMs', 'endpointId', 'event']) || !ms(value.connectMs)) return;
+      return { event: 'connector_connected', endpointId: value.endpointId, connectMs: value.connectMs };
+    }
+    if (value.event === 'connector_recovered') {
+      if (!closedKeys(value, ['attempts', 'connectMs', 'endpointId', 'event']) || !count(value.attempts, 8) || !ms(value.connectMs)) return;
+      return { event: 'connector_recovered', endpointId: value.endpointId, attempts: value.attempts, connectMs: value.connectMs };
+    }
+    if (value.event === 'connector_recovery_exhausted') {
+      if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 8) || !token(value.reason)) return;
+      return { event: 'connector_recovery_exhausted', endpointId: value.endpointId, attempts: value.attempts, reason: value.reason };
+    }
+    if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
+    return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };
   }
   if (value.event === 'mattermost_shape') {
     // Closed shape: tool, recognised shape kind and sizes only, never any message content.

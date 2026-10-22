@@ -274,3 +274,23 @@ test('a lock held by a live writer refuses, a stale one is reclaimed, and no loc
     assert.equal(readdirSync(dir).includes('.mongoose-mcp.json.lock'), false);
   } finally { cleanup(); }
 });
+
+test('1022: a refresh that cannot reach the network is unavailable, not a refusal that needs a sign-in', async () => {
+  const { dir, cleanup } = configDir();
+  try {
+    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    const offline = (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: offline }),
+      (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-unavailable');
+  } finally { cleanup(); }
+});
+
+test('1022: a 4xx answer to the refresh keeps the refused code, so only a new sign-in fixes it', async () => {
+  const { dir, cleanup } = configDir();
+  try {
+    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    const refused = (async () => new Response('{"error":"invalid_grant"}', { status: 400 })) as unknown as typeof fetch;
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: refused }),
+      (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-failed');
+  } finally { cleanup(); }
+});

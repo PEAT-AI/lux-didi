@@ -96,10 +96,10 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });
 
-test('K2: an opened body renders at 3000 characters and a search hit keeps the asked-for window', () => {
+test('ROUTE-1022: a body read is never clipped by the host, and the search window it asks for is 3000', () => {
   const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
   assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
-  assert.ok(opened.lines[0]!.endsWith('cut at 3000 chars'), opened.lines[0]!.slice(-40));
+  assert.equal(opened.lines[0]!.includes('cut at'), false, 'a body read reaches the reply whole');
   assert.equal(opened.source, 'knowledge');
   // F3: the wider window belongs to a body read. A named-id read stays whole.
   const deepBody = `${'Deep body sentence. '.repeat(400)}End of the entry.`;

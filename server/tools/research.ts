@@ -3615,7 +3615,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // because the search reply already carries the body.
           const second: IntentSubCall[] = [];
           const primaryText = results.filter(result => result.ok).map(result => result.text).join('\n');
-          if (kind === 'mail_search' && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
+          if (served.some(call => call.name === INTERNAL.mailList) && /what|who wrote|say|says|read|content|mean|about/i.test(question)) {
             const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
             ids.forEach((id, index) => second.push({ key: `mo${index}`, name: INTERNAL.mailRead, args: { id } }));
           }

@@ -42,17 +42,20 @@ test('research publishes one live step per actual source read, including mail bo
     assert.equal(collector.steps.length, 8, 'three searches and the actual mail body follow-up each start and end');
     const starts = collector.steps.filter(step => step.phase === 'start');
     const ends = collector.steps.filter(step => step.phase === 'end');
-    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
+    // RUN-R3: with the selector gone the fallback plan dispatches chat before mail, and knowledge stays first.
+    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'chat', 'mail', 'mail']);
     assert.deepEqual(starts.map(step => step.action), ['search', 'search', 'search', 'read']);
-    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
+    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'chat', 'mail', 'mail']);
     assert.deepEqual(ends.map(step => step.action), ['search', 'search', 'search', 'read']);
     for (const step of collector.steps) {
       assert.equal(step.callId, CALL_ID, 'every step names the research call it belongs to');
       assert.ok(step.stepId, 'a step carries its own id');
     }
     // A step describes actual dispatched arguments, not an unused selector window.
-    assert.equal(starts[1]!.subject, 'release freeze');
-    assert.equal(starts[2]!.subject, 'release freeze');
+    assert.equal(starts[0]!.subject, 'happened release freeze');
+    // ROUTE-1022 owes the brief plan a mail query authored from the question; until then the mail search
+    // step carries the plan's own window query, and a step still describes what was really dispatched.
+    assert.equal(starts[2]!.subject, 'newer_than:2d');
     // The end step replaces its own start line, so both share one id.
     for (const [index, start] of starts.entries()) assert.equal(ends[index]!.stepId, start.stepId);
     for (const step of ends) {

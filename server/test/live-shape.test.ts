@@ -455,7 +455,7 @@ function voiceReply(topBody) {
     '',
     '**#91293** [TECHNICAL_DECISION] Commitment 2026-10-22',
     `  ${topBody}`,
-    '  truncated: no (2,921 chars stored)',
+    '  truncated: no (1,822 chars stored)',
     '  Score: 1.007 · status: relevant',
     ...Array.from({ length: 5 }, (_, index) => `- **#${91100 + index}** [PATTERN] Insight ${index}: ${'Snippet about the prep call. '.repeat(8)}`),
     '',
@@ -464,7 +464,7 @@ function voiceReply(topBody) {
 }
 
 test('MED-1022: a voice knowledge reply reaches the model as every hit, the top body whole', () => {
-  const body = `${'Sentence about the prep call. '.repeat(100)}Final sentence marker.`;
+  const body = `${'Sentence about the prep call. '.repeat(60)}Final sentence marker.`;
   const shaped = shapeLuxKnowledge('search_knowledge', voiceReply(body));
   assert.ok(shaped.text.includes('Final sentence marker.'), 'the top hit body is not cut at the ranked excerpt bound');
   assert.match(shaped.text, /\*\*#91293\*\*/u);

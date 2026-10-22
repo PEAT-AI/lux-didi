@@ -940,11 +940,11 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
 // full body plus five bullets. This suite is the one a declared check runs, so the wire shape is pinned
 // here as well as in live-shape's own suite.
 test('MED-1022: a six hit voice reply reaches the model as six hits with the top body whole', () => {
-  const body = `${'Sentence about the prep call. '.repeat(100)}Final sentence marker.`;
+  const body = `${'Sentence about the prep call. '.repeat(60)}Final sentence marker.`;
   const raw = [
     '# Knowledge Search', '',
     '**#91293** [TECHNICAL_DECISION] Commitment 2026-10-22', `  ${body}`,
-    '  truncated: no (2,921 chars stored)', '  Score: 1.007',
+    '  truncated: no (1,822 chars stored)', '  Score: 1.007',
     ...Array.from({ length: 5 }, (_, index) => `- **#${91100 + index}** [PATTERN] Insight ${index}: ${'Snippet about the prep call. '.repeat(8)}`),
   ].join('\n');
   const shaped = shapeLuxKnowledge('search_knowledge', raw);

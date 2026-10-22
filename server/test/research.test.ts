@@ -635,11 +635,17 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
   assert.notEqual(log.status, 'answered', 'a cut read is a partial answer, never an answered one');
 });
 
-test('R6: the call answers at 4.5 s while a slow source is still reading, and never cuts it', async () => {
+test('R6: a question about one source waits past the first-answer point for that source, and never cuts it', async () => {
   const clock = fakeClock();
   let mailAborted = false;
+  const waiting: (() => void)[] = [];
+  const releaseMail = (): void => { for (const done of waiting.splice(0)) done(); };
   const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
-    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => { mailAborted = true; reject(new Error('aborted')); }; if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
+    if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((resolve, reject) => {
+      const stop = (): void => { mailAborted = true; reject(new Error('aborted')); };
+      if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true });
+      waiting.push(() => resolve(subs.map(call => sub(call.name, '- Release email | Rob | Fri | we ship on Friday [id m1]', true, call.key))));
+    });
     return subs.map(call => sub(call.name, '### Insight (PATTERN) [id 7]\nthe release is green', true, call.key));
   } });
   const controller = new AbortController();
@@ -647,15 +653,21 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   h.deps.background = done => { reading = done; };
   const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release email' }, controller.signal);
   await settle();
-  // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
+  // Depth beats speed: the reply waits for the source the question is about, not for whichever read lands first.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
   assert.equal(heard, false, 'no source has a finding done, so the call has not answered yet');
   clock.advance(RESEARCH.firstAnswerMs);
+  const waited = await Promise.race([running.then(() => 'answered'), settle().then(() => 'waiting')]);
+  assert.equal(waited, 'waiting', 'the question is about mail, so the answer waits for that read inside the run budget');
+  let answered = false;
+  void running.then(() => { answered = true; });
+  for (let n = 0; n < 20 && !answered; n++) { releaseMail(); await settle(); }
   const reply = await running;
   assert.equal(mailAborted, false, 'the first answer never cuts a reader');
-  assert.deepEqual(reply['pending'], ['mail'], 'the source still reading is named as pending');
-  assert.ok((reply['unchecked'] as string[]).includes('mail'), 'and it is honest about what it has not read');
-  assert.equal(h.logs[0]?.elapsedMs, undefined, 'the run line is the run\'s own end, not the answer point');
+  assert.deepEqual(reply['pending'], [], 'the source the question is about has answered, so nothing is left pending');
+  assert.ok(!(reply['unchecked'] as string[]).includes('mail'), 'the mail read it waited for is not reported unchecked');
+  assert.match(JSON.stringify(reply['findings']), /we ship on Friday/, 'the mail findings it waited for reach the answer');
+  assert.equal(h.logs[0]?.elapsedMs, clock.now(), 'the run line is the run\'s own end, not the answer point');
   controller.abort();
   await reading;
 });

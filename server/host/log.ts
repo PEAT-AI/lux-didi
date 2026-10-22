@@ -864,7 +864,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
-    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback', 'routed'])) return;
+    if (!isSafeMember(value.queryAuthor, ['routed', 'fallback', 'hint'])) return;
     // A resolved window is two calendar dates in the id form, never a query and never an event title.
     if (hasFrom !== hasTo) return;
     if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;

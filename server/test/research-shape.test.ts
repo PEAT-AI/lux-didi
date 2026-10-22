@@ -214,11 +214,12 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
 // --- Metadata log shape ----------------------------------------------------------------------
 
 test('research_subcall is a closed metadata shape, never the query or text', () => {
-  const good = { event: 'research_subcall', researchId: 'r1', kind: 'mail_search', tool: 'gmail_search_messages', ok: true, items: 3, rawBytes: 100, keptBytes: 80, queryChars: 20, queryAuthor: 'selector' };
+  const good = { event: 'research_subcall', researchId: 'r1', kind: 'mail_search', tool: 'gmail_search_messages', ok: true, items: 3, rawBytes: 100, keptBytes: 80, queryChars: 20, queryAuthor: 'routed' };
   assert.deepEqual(safeEvent(good), good);
   assert.equal(safeEvent({ ...good, query: 'secret terms' }), undefined, 'a query key refuses the whole event');
   assert.equal(safeEvent({ ...good, errorCode: 'invalid-query' })?.errorCode, 'invalid-query');
   assert.equal(safeEvent({ ...good, queryAuthor: 'model' }), undefined);
+  assert.equal(safeEvent({ ...good, queryAuthor: 'selector' }), undefined, 'the retired selector author is not a token any more');
 });
 
 test('research_subcall matches results by position even when execute keys are composed call ids', async () => {

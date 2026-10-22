@@ -1367,7 +1367,7 @@ export interface ResearchSubcallLog {
   /** Calendar reads only: the resolved window as two dates, never the query that produced it. */
   windowFrom?: string; windowTo?: string;
   errorCode?: string; items: number; rawBytes: number; keptBytes: number; queryChars: number;
-  queryAuthor: 'selector' | 'fallback' | 'routed';
+  queryAuthor: 'routed' | 'fallback' | 'hint';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
   window?: WindowKind;
   /** Calendar sub-calls only: how many selected calendars the read did not reach before the deadline. */
@@ -3491,6 +3491,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (driver === undefined) driver = 'fallback';
       }
 
+      // F5: which author wrote the query, a closed set: the owner's hint, the router, or the fallback recipe.
+      const selectionAuthor: 'routed' | 'fallback' | 'hint' = hint.length > 0 ? 'hint' : routed !== undefined ? 'routed' : 'fallback';
+
       // A single-source hint must always run that source, even when the question carried no terms
       // the fallback could match (an empty or terse spoken question): seed the hinted searches.
       if (narrowed !== undefined) {
@@ -3733,7 +3736,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           if (results.some(result => result.ok)) run.readKinds.add(kind);
           const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
           if (id) run.evidence.set(kind, id);
-          const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
           // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
           // `results` is `[...issued, ...freshSecond]`, so position is the stable key.
           for (const [index, sub] of [...issued, ...freshSecond].entries()) {
@@ -3746,7 +3748,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
               items: result ? itemLines(result.text).length : 0,
               rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
-              queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
+              queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor: selectionAuthor,
               ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today'), ...windowDates(action?.window ?? 'today', now(), deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) } : {}),
               ...(partial ? { unread: Number(partial[1]) } : {}),
             });

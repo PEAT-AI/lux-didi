@@ -1975,8 +1975,11 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   for (const result of ok) {
     const raw = itemLines(result.text);
     if (result.name === INTERNAL.mailList) {
-      for (const line of raw.filter(entry => entry.startsWith('- '))) {
-        const parts = line.slice(2).replace(/\s*\[id [^\]]+\]/g, '').trim().split(' | ');
+      for (const line of withItemOpenLines(raw).filter(entry => entry.startsWith('- '))) {
+        // Open2: the handle line the shaper attached stays on the message line it belongs to.
+        const open = line.indexOf('\nopen: ') < 0 ? '' : line.slice(line.indexOf('\nopen: '));
+        const bullet = open === '' ? line : line.slice(0, line.indexOf('\nopen: '));
+        const parts = bullet.slice(2).replace(/\s*\[id [^\]]+\]/g, '').trim().split(' | ');
         const subject = parts[0] ?? '';
         let sender = ''; let date = '';
         const rest: string[] = [];
@@ -1986,7 +1989,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
           else rest.push(part);
         }
         const excerpt = clip(rest.join(' | '), RESEARCH.mailSnippetChars);
-        lines.push([sender, subject, date, excerpt].filter(value => value !== '').join(' | '));
+        lines.push(`${[sender, subject, date, excerpt].filter(value => value !== '').join(' | ')}${open}`);
         total += 1;
       }
     } else if (result.name === INTERNAL.mailRead) {

@@ -344,9 +344,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'fe0c181f6049070157ee54d268c554bcf1d2f1fd548179f26eb5cc92ebf18a97');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '2ca2238a802616c788a2f4fd0c4c966f04350cf5b3373debd8969db7911988fd');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'dd04a7be16384d01eb5d92c968c3fb4ef27bc774b439f2e7c5fa2d0c74305699');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '1b55e8c385eb02f601e7822c9b5cc2219df825eed15665a1303505c47389fec3');
+  assert.equal(sha(NAYA_TOOLS), '8521c91c01fccb39549141e85a1a55d6bc6fbd3d65b7b82229daaa103789e989');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -1183,10 +1183,11 @@ test('O-R2: the open paragraph asks for several sources in one research call wit
 
 test('OPEN2-7: the open paragraph says she opens only a handle she was shown and names what opened', async () => {
   const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
-  assert.match(NAYA_OPEN_SURFACE, /Open only a handle that came back in a lookup result/);
+  assert.match(NAYA_OPEN_SURFACE, /open only a handle you were shown here/);
   assert.match(NAYA_OPEN_SURFACE, /one you were not shown does not exist/);
   assert.match(NAYA_OPEN_SURFACE, /say what opened from that title/);
-  assert.match(NAYA_OPEN_SURFACE, /not the kind he asked for/);
+  assert.match(NAYA_OPEN_SURFACE, /not what he asked for/);
   assert.match(NAYA_OPEN_SURFACE, /instead of claiming success/);
+  assert.equal(NAYA_OPEN_SURFACE.length <= 844, true, 'the paragraph stays inside the frozen voice budget');
   assert.equal(/https?:|\/\/|\.com|\.google|\.ai/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });

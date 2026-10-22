@@ -35,8 +35,8 @@ export const KNOWLEDGE_SNIPPET_MAX_CHARS = 6_000;
 export interface LuxKnowledgeSearchInput {
   query: string;
   limit: number;
-  /** 3r: snippets (the old shape) or bounded stored bodies. */
-  detail?: 'snippets' | 'bodies';
+  /** 3r: snippets (the old shape) or bounded stored bodies; MED-1022 adds the voice shape. */
+  detail?: 'snippets' | 'bodies' | 'voice';
   /** 3r: per-body character cap, within the server's own 200..6000 range. */
   maxChars?: number;
   /** 3r: the search's own time budget, within the server's own 500..30000 range. */

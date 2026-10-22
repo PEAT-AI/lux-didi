@@ -3303,7 +3303,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         selectorPending ??= deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]))
           .then(result => { selectorOutput = result; selectorSettledMs = now() - selStart; return result; })
           .catch(() => { selectorOutput = null; selectorSettledMs = now() - selStart; return null; });
-        const output = round > 1 && selectorPending !== undefined && run.ledger.size === 0 ? (selectorOutput ?? null) : null;
+        const output = round > 1 && selectorPending !== undefined ? (selectorOutput ?? null) : null;
         if (output !== null) selectorMs += selectorSettledMs;
         if (output === null) {
           fallbackUsed = true;

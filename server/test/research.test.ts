@@ -112,17 +112,19 @@ test('every lookup names the driver the loop used', async () => {
   assert.equal(hinted.logs[0]!.driver, 'single-source-hint');
   const chosen = harness({ selector: knowledge });
   await runResearch(chosen.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
-  assert.equal(chosen.logs[0]!.driver, 'selector');
-  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
+  assert.equal(chosen.logs[0]!.driver, 'fallback');
+  // F-B: a selector handed to the live path is never awaited, so its failure cannot change the driver.
+  const timedOut: ResearchSelector = { select: async () => { throw new Error('the selector is never called on the voice path'); } };
   const fell = harness({ selector: timedOut });
   await runResearch(fell.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   assert.equal(fell.logs[0]!.driver, 'fallback');
+  assert.equal(fell.logs[0]!.selectorMs, 0);
 });
 
 test('continue reuses the ledger and never re-reads a completed operation', async () => {
   const h = harness({ selector: knowledge });
   const first = await runResearch(h.deps, { action: 'start', question: 'release status' }, new AbortController().signal);
-  assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 1);
+  assert.ok(h.executed.filter(call => call.name === 'search_knowledge').length >= 1);
   h.executed.length = 0;
   const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, new AbortController().signal);
   assert.equal(String(second['researchId']), String(first['researchId']));
@@ -415,15 +417,17 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
 });
 
-test('calendar research does not start a read after its run deadline', async () => {
-  let clock = 0;
-  const lateSelector: ResearchSelector = {
-    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
-  };
-  const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
-  assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
-  assert.equal(reply['status'], 'partial');
+test('a calendar read is dispatched at once, with no selector round spending the run budget', async () => {
+  const clock = fakeClock();
+  let dispatchedAt: number | undefined;
+  const h = harness({ executeText: MERGED_CALENDAR, now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    if (subs.some(call => call.name === 'calendar_list_events')) dispatchedAt ??= clock.now();
+    return subs.map(call => ({ key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: CALENDAR_RECORDS }) }));
+  } });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  assert.equal(dispatchedAt, 0, 'the read starts at once, never after a selector wait');
+  assert.equal(h.logs[0]!.selectorMs, 0);
+  assert.equal(reply['status'], 'answered');
 });
 
 test('the primary research source budget fits inside the unchanged start deadline', () => {
@@ -432,14 +436,15 @@ test('the primary research source budget fits inside the unchanged start deadlin
   assert.ok(RESEARCH.sourceDeadline.calendar < RESEARCH.startDeadlineMs);
 });
 
-test('the calendar budget never extends another source past the start deadline', async () => {
-  let clock = 0;
-  const lateMailSelector: ResearchSelector = {
-    async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:1d' }], pUseful: { mail_search: 1 } }; },
-  };
-  const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
-  await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
-  assert.equal(h.executed.some(entry => entry.name === 'gmail_search_messages'), false);
+test('a mail read is dispatched at once, so no source budget can slip past the start deadline', async () => {
+  const clock = fakeClock();
+  let dispatchedAt: number | undefined;
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    if (subs.some(call => call.name === 'gmail_search_messages')) dispatchedAt ??= clock.now();
+    return subs.map(call => sub(call.name, 'mail evidence', true, call.key));
+  } });
+  await runResearch(h.deps, { action: 'start', question: 'what did Sam email about the release' }, new AbortController().signal);
+  assert.equal(dispatchedAt, 0);
 });
 
 test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {

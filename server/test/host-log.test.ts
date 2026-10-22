@@ -9,6 +9,19 @@ const LIVE_SESSION_ID = '11111111-2222-4333-8444-555555555555';
 
 const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
 
+// Release 3: the shed receipt carries the speech and silence split of what the uplink dropped, counts only.
+const SHED = { event: 'uplink_shed', bytes: 42_528, bufferedPeak: 123_904, shedRuns: 1, drainBytesPerSec: 19_200, notOpenBytes: 0,
+  lostMs: 660, speechShedMs: 0, silenceShedMs: 660, speechShedBytes: 0, silenceShedBytes: 42_528 };
+
+test('uplink_shed keeps its closed receipt including the speech and silence split', () => {
+  assert.deepEqual(safeEvent(SHED), SHED);
+  assert.equal(safeEvent({ ...SHED, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...SHED, lostMs: 1.5 }), undefined, 'a fractional count is refused');
+  assert.equal(safeEvent({ ...SHED, speechShedMs: -1 }), undefined, 'a negative count is refused');
+  assert.equal(safeEvent({ ...SHED, speechShedBytes: 'many' }), undefined, 'a non-numeric count is refused');
+  assert.equal(safeEvent({ ...SHED, silenceShedMs: undefined }), undefined, 'a missing split field is refused');
+});
+
 test('live_instruction_sizes keeps a closed section schema of counts only', () => {
   assert.deepEqual(safeEvent(SIZE), SIZE);
   assert.equal(safeEvent({ ...SIZE, extra: 1 }), undefined, 'an extra key fails closed');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, knowledgeHydrateIds, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type ResearchSelector, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -91,17 +91,17 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', CUT_SEARCH)]);
   assert.equal(block.lines[0], 'knowledge: confidence=medium top=0.37 candidates=yes');
   assert.ok(!block.text.includes('Score:'), 'the incomparable per-hit score line is dropped');
-  assert.ok(block.lines.some(line => line.endsWith('cut at 1200 chars')), 'a search snippet stays short');
+  assert.ok(block.lines.some(line => line.endsWith('cut at 3000 chars')), 'the search reply carries the full body window');
   const bare = shapeBlock('knowledge_search', [sub('search_knowledge', '**#9** [PATTERN] A plain hit')]);
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });
 
-test('K2: an opened body renders at 3000 characters and a search hit keeps the server window', () => {
-  const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY, true, RESEARCH.knowledgeHydrateKey)]);
+test('K2: an opened body renders at 3000 characters and a search hit keeps the asked-for window', () => {
+  const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
   assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
   assert.ok(opened.lines[0]!.endsWith('cut at 3000 chars'), opened.lines[0]!.slice(-40));
   assert.equal(opened.source, 'knowledge');
-  // F3: the wider window belongs to the hydration hop only. An explicit read by id stays whole.
+  // F3: the wider window belongs to a body read. A named-id read stays whole.
   const deepBody = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
   const named = shapeBlock('knowledge_search', [sub('get_insight', `### Release 3p scope [id 412]\n${deepBody}`, true, 'kr0')]);
   assert.ok(named.lines[0]!.includes('End of the entry.'), 'a named-id read is never clipped by the host');
@@ -110,43 +110,6 @@ test('K2: an opened body renders at 3000 characters and a search hit keeps the s
   const whole = 'x'.repeat(4_000);
   const searched = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${whole}`)]);
   assert.ok(searched.lines[0]!.endsWith(whole));
-});
-
-test('K1: a cut search reply is followed by a read of the top id, inside the same read', async () => {
-  const searched = selectorOf(
-    { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } },
-  );
-  const calls: IntentSubCall[] = [];
-  const h = harness({
-    selector: searched,
-    execute: async subs => { for (const call of subs) calls.push(call); return subs.map(call => sub(call.name, call.name === 'search_knowledge' ? CUT_SEARCH : LONG_BODY, true, call.key)); },
-  });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
-  const read = calls.find(call => call.name === 'get_insight');
-  assert.deepEqual(read?.args, { ids: [123] });
-  const findings = reply['findings'] as { source: string; text: string }[];
-  const knowledge = findings.find(finding => finding.source === 'knowledge');
-  assert.ok(knowledge !== undefined && knowledge.text.includes('cut at 3000 chars'), 'the opened body reaches the reply');
-});
-
-test('K1: a reply that proved its hit complete opens nothing', async () => {
-  const searched = selectorOf(
-    { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } },
-  );
-  const calls: IntentSubCall[] = [];
-  const h = harness({
-    selector: searched,
-    execute: async subs => { for (const call of subs) calls.push(call); return subs.map(call => sub(call.name, '**#123** [PATTERN] A whole hit\nthe whole stored body\ntruncated: no', true, call.key)); },
-  });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
-  assert.equal(calls.filter(call => call.name === 'get_insight').length, 0);
-});
-
-test('K1 and K5: a reply that calls its own match weak never triggers a body read', async () => {
-  const low = CUT_SEARCH.replace('_confidence: medium', '_confidence: low');
-  assert.deepEqual(knowledgeHydrateIds(low, new Set()), [], 'a weak match is not opened');
-  assert.deepEqual(knowledgeHydrateIds(CUT_SEARCH, new Set()), [123]);
-  assert.deepEqual(knowledgeHydrateIds(CUT_SEARCH, new Set([123])), [], 'a hit the server proved complete is not opened');
 });
 
 test('K8: knowledge latency is stated at its measured p50, and the log carries the read span not the wait', async () => {

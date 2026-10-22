@@ -48,7 +48,7 @@ test('research publishes one live step per actual source read, including mail bo
     const reply = await runResearch(deps(selectorOf(['knowledge_search', 'mail_search', 'chat_search'], 'release freeze', 'week'), execute),
       { action: 'start', question: 'what did the team decide about the release freeze', callId: CALL_ID }, new AbortController().signal);
 
-    assert.equal(reply['status'], 'answered');
+    assert.equal(reply['status'], 'complete');
     assert.equal(collector.steps.length, 8, 'three searches and the actual mail body follow-up each start and end');
     const starts = collector.steps.filter(step => step.phase === 'start');
     const ends = collector.steps.filter(step => step.phase === 'end');

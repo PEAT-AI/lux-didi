@@ -110,7 +110,7 @@ test('a routed start skips the selector and reads every named layer at once', as
   ]);
   assert.equal(h.selectorCalls(), 0, 'the selector is never called on a routed start');
   assert.deepEqual(entered, ['search_knowledge', 'gmail_search_messages'], 'both lookups were dispatched before either was awaited');
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
   assert.deepEqual(reply['sources'], { knowledge: 'ok', mail: 'ok' }, 'one combined reply with per-source status');
   const findings = reply['findings'] as { source: string; text: string }[];
   assert.deepEqual(findings.map(finding => finding.source).sort(), ['knowledge', 'mail']);
@@ -149,7 +149,7 @@ test('a routed lookup that fails is isolated and the other layers still answer',
   const findings = reply['findings'] as { source: string }[];
   assert.deepEqual(findings.map(finding => finding.source), ['knowledge'], 'the failed source contributes no finding');
   assert.match(String(reply['note']), /could not reach mail/);
-  assert.equal(reply['status'], 'answered', 'one good layer answers the call');
+  assert.equal(reply['status'], 'complete', 'one good layer answers the call');
 });
 
 test('a source the session did not configure is reported unavailable, never dispatched', async () => {

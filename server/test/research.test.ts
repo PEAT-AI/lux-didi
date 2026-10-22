@@ -83,7 +83,7 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
   assert.equal(h.logs[0]!.driver, 'fallback');
   assert.equal(h.logs[0]!.rounds, 1);
   assert.ok(h.executed.length >= 1);
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
 });
 
 test('a single-source hint narrows the offered kinds and skips the selector entirely', async () => {
@@ -323,7 +323,7 @@ test('Z1: a continue with an unknown researchId is a typed error, never a silent
 test('the word stop in a question never stops a run: stop is only a tool action', async () => {
   const h = harness({ selector: knowledge });
   const reply = await runResearch(h.deps, { action: 'start', question: 'stop the presses and tell me the release status' }, new AbortController().signal);
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
 });
 
 test('validate accepts the three actions and rejects invented keys', () => {
@@ -543,7 +543,7 @@ test('an empty-but-successful read is a search that matched nothing, never an un
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
   assert.match(note, /I searched your mail for "invoice" and found nothing matching/, 'the model gets a line it can voice');
   assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
-  assert.equal(reply['status'], 'answered', 'a search that matched nothing still answered the question');
+  assert.equal(reply['status'], 'complete', 'a search that matched nothing still answered the question');
 });
 
 test('an identical duplicate read in one run is executed once', async () => {
@@ -815,7 +815,7 @@ test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget 
   clock.advance(6_000); await settle();
   release([sub('mattermost_search', '- release freeze agreed on Friday', true, 'c0')]);
   const reply = await running;
-  assert.equal(reply['status'], 'answered', 'a 6 s chat read inside its 12 s deadline answers');
+  assert.equal(reply['status'], 'complete', 'a 6 s chat read inside its 12 s deadline answers');
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', 12_000]], 'the receipt names the deadline the chat read really had');
 });
 
@@ -996,7 +996,7 @@ test('R6: a call with no findings at 4.5 s waits for its sources instead of answ
   gate.resolve();
   const reply = await call;
   assert.equal(reply['pending'], undefined, 'a call that waited names no pending source');
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete');
   assert.deepEqual(first, [], 'no first answer receipt without a first answer');
 });
 
@@ -1163,7 +1163,7 @@ test('research 469: stopped known continuation fails while retained delivery rem
   const before = steps.length;
   assert.equal(calls, 1); assert.equal(before, 2, 'one start and end for the actual source read');
   const retained = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
-  assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'answered'); assert.equal(retained['error'], undefined);
+  assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'complete'); assert.equal(retained['error'], undefined);
   assert.deepEqual(retained['findings'], []);
   const stopped = await scheduler.call({ action: 'stop', researchId }, signal);
   assert.equal(stopped['status'], 'stopped'); assert.equal(stopped['error'], undefined);

@@ -3737,7 +3737,6 @@ function progressPort() {
           commentary.push(input.text);
           return true;
         },
-        sendThinking(input: { text: string }): void { thinking.push(input.text); },
         close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
@@ -3899,7 +3898,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
   assert.equal(late[0]!['delivered'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
-  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model is always told');
+  assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
   assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
@@ -3996,9 +3995,9 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1);
-  assert.equal(late[0]!['delivered'], 'thinking', 'silent context only');
+  assert.equal(late[0]!['delivered'], 'ledger', 'kept in the run ledger for the next continuation');
   assert.notEqual(late[0]!['reason'], 'quiet', 'and the receipt says why it stayed silent');
-  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model still carries it');
+  assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
   assert.deepEqual(fake.commentary, [], 'the owner hears nothing over herself');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4027,14 +4026,14 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1);
-  assert.equal(late[0]!['delivered'], 'thinking', 'silent context only');
+  assert.equal(late[0]!['delivered'], 'ledger', 'kept in the run ledger for the next continuation');
   assert.equal(late[0]!['reason'], 'owner_speaking', 'her own voice, not the model\'s answer audio');
   assert.deepEqual(fake.commentary, [], 'nothing is said over the owner');
-  assert.equal(fake.thinking.filter(text => text.startsWith('Later findings from chat')).length, 1, 'the model still carries it');
+  assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
   h.owner.revoke(session.liveSessionId);
 });
 
-test('R6: Gemini has no thinking channel on this path, so a late finding is dropped with a receipt', async t => {
+test('R6: a Gemini late finding rides the response channel, not a thinking channel it does not have', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -4054,9 +4053,10 @@ test('R6: Gemini has no thinking channel on this path, so a late finding is drop
   release();
   for (let i = 0; i < 400; i++) { if (receipts.some(entry => entry['event'] === 'research_late_findings')) break; await tick(); }
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
-  assert.equal(late.length, 1, 'one receipt, and nothing appended');
-  assert.equal(late[0]!['delivered'], 'dropped');
-  assert.equal(late[0]!['reason'], 'no_thinking_channel');
+  assert.equal(late.length, 1, 'one receipt, and nothing silently appended');
+  // #438/#516: the finding is delivered through the one channel every adapter has, or kept in the ledger.
+  assert.notEqual(late[0]!['delivered'], 'dropped', 'a late finding is never thrown away for a missing channel');
+  assert.ok(['response', 'ledger'].includes(String(late[0]!['delivered'])), `delivered through a real channel: ${late[0]!['delivered']}`);
 });
 
 test('a tool past the host ceiling is answered once with a timeout and one continuation', async t => {
@@ -4238,11 +4238,10 @@ test('W4: a research-only batch still gets its silent line', async t => {
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'research-thinking');
-  // W4-R2: the tool-call handler used to hand #sendThinking a list it had already stripped of the research call,
-  // so a batch of nothing but research looked like a batch of nothing at all and no line went out.
+  // W4-R2: the tool-call handler must not invent a waiting line for a batch that is one research call.
   fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
   await settlePort();
-  assert.equal(fake.thinking.length, 0, 'the research lookup injects no waiting line');
+  assert.equal(fake.thinking.length, 0, 'the research lookup injects no provider append');
   assert.equal(fake.texts.length, 0, 'and no host text either');
   release();
   await settlePort();
@@ -5204,4 +5203,24 @@ test('W6/H22: a research receipt names the call it answers', async t => {
   assert.equal(receipts.some(entry => 'query' in entry), false, 'never the question or the query text');
   attachment.close();
   await attachment.done;
+});
+
+// #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
+// next. A start before the first owner input is answered at once and reaches no source at all.
+test('#451: an opener research start before the owner speaks is answered at once and runs no source', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'opener-gate');
+  const started = Date.now();
+  await settleLiveTool(h, 'opener1', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] });
+  const elapsed = Date.now() - started;
+  assert.equal(h.calls.length, 0, 'no source ran before the owner spoke');
+  t.diagnostic(`gated reply in ${elapsed} ms`);
+  assert.ok(elapsed < 500, `the gated reply is immediate, took ${elapsed} ms`);
+  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.match(String(gated?.tool?.markdown ?? ''), /^research: refused \(no_owner_input\)$/, 'the model is told nothing was fetched yet');
+  // The owner speaks: the same lookup now runs for real.
+  h.f.send({ inputTranscription: 'so what is on my calendar today' });
+  await settlePort();
+  await settleLiveTool(h, 'opener2', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] });
+  assert.ok(h.calls.length > 0, 'after the owner speaks the lookup reaches its source');
 });

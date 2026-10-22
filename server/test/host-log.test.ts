@@ -4,6 +4,7 @@ import { safeEvent } from '../host/log.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
+const LIVE_SESSION_ID = '11111111-2222-4333-8444-555555555555';
 
 const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
 
@@ -42,6 +43,12 @@ test('an accent string never survives the host-log allowlist', () => {
 test('live_state keeps a closed transition shape for the orb timeline', () => {
   const event = { event: 'live_state', state: 'speaking', from: 'thinking', cause: 'audio', at: 1_700_000_000_000 };
   assert.deepEqual(safeEvent(event), event);
+  const identified = { ...event, liveSessionId: LIVE_SESSION_ID, generation: 2 };
+  assert.deepEqual(safeEvent(identified), identified, 'a state line names the session and its generation');
+  assert.equal(safeEvent({ ...identified, generation: -1 }), undefined, 'a negative generation is refused');
+  assert.equal(safeEvent({ ...identified, liveSessionId: 'not-a-session' }), undefined, 'a non-uuid session is refused');
+  assert.equal(safeEvent({ event: 'live_state', state: 'listening', cause: 'ready', at: 1_700_000_000_000, liveSessionId: LIVE_SESSION_ID, generation: 0 })?.cause,
+    'ready', 'the provider ready event is a legal state cause (#451)');
   assert.deepEqual(safeEvent({ event: 'live_state', state: 'listening', cause: 'created', at: 1_700_000_000_000 }),
     { event: 'live_state', state: 'listening', cause: 'created', at: 1_700_000_000_000 }, 'the opening state has no from');
   assert.equal(safeEvent({ ...event, extra: 1 }), undefined, 'an extra key fails closed');
@@ -119,13 +126,35 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
-const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120 };
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, liveSessionId: LIVE_SESSION_ID, generation: 4 };
 test('live_recovery keeps a closed metadata-only shape', () => {
   assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
   assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
   assert.equal(safeEvent({ ...RECOVERY, path: 'carrier_pigeon' }), undefined, 'an unknown path is refused');
   assert.equal(safeEvent({ ...RECOVERY, closeCode: 70000 }), undefined, 'an out-of-range close code is refused');
   assert.equal(safeEvent({ ...RECOVERY, seedChars: -1 }), undefined, 'a negative seed size is refused');
+  assert.equal(safeEvent({ ...RECOVERY, liveSessionId: 'nope' }), undefined, 'a recovery line names a real session (#527)');
+});
+test('the timing waterfall lines keep closed, count-only shapes (#451)', () => {
+  const open = { event: 'live_provider_open', liveSessionId: LIVE_SESSION_ID, generation: 1, instructionChars: 40_000, seedChars: 900, tools: 2 };
+  assert.deepEqual(safeEvent(open), open);
+  assert.equal(safeEvent({ ...open, instructionChars: -1 }), undefined, 'a negative size is refused');
+  const ready = { event: 'live_provider_ready', liveSessionId: LIVE_SESSION_ID, generation: 1, msSinceOpen: 3_600, closeCode: null };
+  assert.deepEqual(safeEvent(ready), ready);
+  assert.equal(safeEvent({ ...ready, msSinceOpen: -1 }), undefined, 'a negative span is refused');
+  assert.equal(safeEvent({ ...ready, closeCode: 70_000 }), undefined, 'an out-of-range close code is refused');
+  const step = { event: 'live_handshake', step: 'socket_open', ms: 120 };
+  assert.deepEqual(safeEvent(step), step);
+  assert.equal(safeEvent({ ...step, step: 'prayed' }), undefined, 'an unknown handshake step is refused');
+  const first = { event: 'live_first_audio', liveSessionId: LIVE_SESSION_ID, generation: 1, msSinceReady: 700, msSinceOpen: 4_300 };
+  assert.deepEqual(safeEvent(first), first);
+  const answer = { event: 'live_answer_audio', liveSessionId: LIVE_SESSION_ID, generation: 1, msSinceReady: 700, msSinceOpen: 4_300 };
+  assert.deepEqual(safeEvent(answer), answer);
+  const arrived = { event: 'research_call_arrived', liveSessionId: LIVE_SESSION_ID, generation: 1, calls: 2 };
+  assert.deepEqual(safeEvent(arrived), arrived);
+  const output = { event: 'tool_output_sent', liveSessionId: LIVE_SESSION_ID, generation: 1, tools: 2, msSinceArrived: 1_400 };
+  assert.deepEqual(safeEvent(output), output);
+  assert.equal(safeEvent({ ...output, msSinceArrived: -5 }), undefined, 'a negative span is refused');
 });
 test('live_go_away and live_upstream_queue keep counts only', () => {
   assert.deepEqual(safeEvent({ event: 'live_go_away', timeLeftMs: 30000 }), { event: 'live_go_away', timeLeftMs: 30000 });

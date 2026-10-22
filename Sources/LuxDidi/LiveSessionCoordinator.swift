@@ -368,7 +368,11 @@ public actor LiveSessionCoordinator {
                     previousSequence = marker.sequence
                     rebased = false
                     if marker.kind == .ready {
-                        guard state == .attaching else { throw LiveClientError.invalidFrame }
+                        // A ready marker announces a live provider session. A rebuild's own ready completes the
+                        // recovery, so a session in rebuilding returns to active instead of failing the call
+                        // (#527); the terminal frame is what takes the client out of active, and it does so in
+                        // every state.
+                        guard state == .attaching || state == .rebuilding else { throw LiveClientError.invalidFrame }
                         state = .active
                     } else {
                         guard state == .active else { throw LiveClientError.invalidFrame }

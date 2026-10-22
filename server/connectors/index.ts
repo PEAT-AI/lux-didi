@@ -3,7 +3,7 @@ import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, Sto
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot } from '../tools/types.js';
-import { createLuxKnowledgeReader, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
+import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
@@ -177,17 +177,24 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           // lookup. They are not offered in `parameters`, so the text-chat call shape is unchanged.
           // K4 (#1021): a project tag or hint from the research path travels the same way, and never
           // widens the text-chat call shape, because neither key is offered in `parameters`.
-          if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms' || key === 'project' || key === 'project_hint')) return false;
+          // MED-1022: the voice shape and the meeting day travel the same way, accepted here and never
+          // offered in `parameters`, so the text-chat call shape is unchanged.
+          if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms' || key === 'project' || key === 'project_hint'
+            || key === 'snippet_chars' || key === 'meeting_date_from' || key === 'meeting_date_to')) return false;
           if (!keys.includes('query') || !keys.includes('limit')) return false;
           const query = args['query']; const limit = args['limit'];
           if (!(typeof query === 'string' && query.trim().length > 0 && query.length <= bounds.maxQueryChars && Number.isSafeInteger(limit) && (limit as number) > 0 && (limit as number) <= bounds.maxSearchLimit)) return false;
           const detail = args['detail']; const maxChars = args['max_chars']; const deadlineMs = args['deadline_ms'];
-          if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies') return false;
+          if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies' && detail !== 'voice') return false;
           if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return false;
           if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return false;
           // K4: a tag is one corpus project name, never a pattern the model composed.
           const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
           if (!projectName(args['project']) || !projectName(args['project_hint'])) return false;
+          const snippetChars = args['snippet_chars'];
+          if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return false;
+          // MED-1022: the day bounds are two calendar days, never a date expression.
+          if (!isCalendarDay(args['meeting_date_from']) || !isCalendarDay(args['meeting_date_to'])) return false;
           return true;
         },
       },
@@ -219,7 +226,10 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
       async call(tool, args, signal) {
         if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
         // The declaration speaks the wire names; the reader takes the connector's own field names.
-        const search = args as { query: string; limit: number; detail?: 'snippets' | 'bodies'; max_chars?: number; deadline_ms?: number; project?: string; project_hint?: string };
+        const search = args as {
+          query: string; limit: number; detail?: 'snippets' | 'bodies' | 'voice'; max_chars?: number; deadline_ms?: number;
+          project?: string; project_hint?: string; snippet_chars?: number; meeting_date_from?: string; meeting_date_to?: string;
+        };
         return await reader.search({
           query: search.query, limit: search.limit,
           ...(search.detail === undefined ? {} : { detail: search.detail }),
@@ -227,6 +237,9 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           ...(search.deadline_ms === undefined ? {} : { deadlineMs: search.deadline_ms }),
           ...(search.project === undefined ? {} : { project: search.project }),
           ...(search.project_hint === undefined ? {} : { projectHint: search.project_hint }),
+          ...(search.snippet_chars === undefined ? {} : { snippetChars: search.snippet_chars }),
+          ...(search.meeting_date_from === undefined ? {} : { meetingDateFrom: search.meeting_date_from }),
+          ...(search.meeting_date_to === undefined ? {} : { meetingDateTo: search.meeting_date_to }),
         }, signal);
       },
     };

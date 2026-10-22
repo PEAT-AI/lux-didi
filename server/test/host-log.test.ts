@@ -247,3 +247,28 @@ test('C-R2: both skip reasons the summarizer already logs pass the sanitizer', (
   }
   assert.equal(safeEvent({ event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason: 'free text reason' }), undefined, 'and the closed set still refuses anything else');
 });
+
+// MED-1022/T-R2: a knowledge receipt names the query's term count, whether the day filter was applied
+// and what became of the chat date operator, as counts and closed tokens, never the query text.
+test('MED-1022: the knowledge receipt keeps its counts and closed tokens and refuses anything else', () => {
+  const base = {
+    event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1,
+    knowledge: { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 7, dateFilter: true, chatDateOperator: 'compiled' },
+  };
+  const kept = safeEvent(base);
+  assert.ok(kept !== undefined, 'a receipt with the three new fields is kept');
+  assert.deepEqual(kept!['knowledge'], base.knowledge, 'and every field survives unchanged');
+  const row = (patch: Record<string, unknown>): Record<string, unknown> => ({ ...base, knowledge: { ...base.knowledge, ...patch } });
+  const without = (key: string): Record<string, unknown> => {
+    const knowledge: Record<string, unknown> = { ...base.knowledge };
+    delete knowledge[key];
+    return { ...base, knowledge };
+  };
+  assert.equal(safeEvent(without('queryTerms')), undefined, 'a receipt missing the term count is refused');
+  assert.equal(safeEvent(row({ queryTerms: -1 })), undefined, 'a negative term count is refused');
+  assert.equal(safeEvent(row({ queryTerms: 'seven' })), undefined, 'the term count is never text');
+  assert.equal(safeEvent(row({ dateFilter: 'yes' })), undefined, 'the day filter is a boolean, never a word');
+  assert.equal(safeEvent(row({ chatDateOperator: 'after:2026-10-21' })), undefined, 'the date itself never rides the receipt');
+  for (const token of ['compiled', 'dropped', 'none']) assert.ok(safeEvent(row({ chatDateOperator: token })) !== undefined, `${token} is a closed token`);
+  assert.equal(safeEvent(row({ note: 'extra' })), undefined, 'an unknown field is refused');
+});

@@ -811,3 +811,28 @@ test('an unavailable endpoint reports a sanitized error and a connector read is 
     assert.equal(Array.isArray(result), false);
   } finally { await mcp.close(); store.close(); }
 });
+
+// MED-1022: the voice shape and the meeting day are research-only fields, accepted from that path and
+// never offered in `parameters`, so the text-chat call shape is unchanged.
+test('MED-1022: the voice bound and the meeting day reach the wire, and a bad value is refused', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    complete(await reader.search({ query: 'ocp prep call', limit: 6, detail: 'voice', maxChars: 3_000, snippetChars: 300, meetingDateFrom: '2026-10-21', meetingDateTo: '2026-10-21' }));
+    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: {
+      query: 'ocp prep call', limit: 6, include_sensitive: false, detail: 'voice', max_chars: 3_000, snippet_chars: 300,
+      meeting_date_from: '2026-10-21', meeting_date_to: '2026-10-21',
+    } }]);
+    const outs = await Promise.all([
+      reader.search({ query: 'x', limit: 1, snippetChars: 99 }),
+      reader.search({ query: 'x', limit: 1, snippetChars: 6_001 }),
+      reader.search({ query: 'x', limit: 1, meetingDateFrom: 'yesterday' }),
+      reader.search({ query: 'x', limit: 1, meetingDateTo: '2026-13-01' }),
+    ]);
+    assert.deepEqual(outs.map(out => out.state === 'refused' ? out.reason : out.state), [
+      'snippet-chars-out-of-range', 'snippet-chars-out-of-range', 'invalid-meeting-date', 'invalid-meeting-date',
+    ]);
+    assert.equal(f.calls.length, 1, 'a refused search never reaches the wire');
+  } finally { await adapter.close(); await f.close(); }
+});

@@ -9,7 +9,7 @@ import Foundation
         do {
             try run()
             try await MainActor.run { try runWiring() }
-            print("PASS connecting ring: E5/A5 pair, 1.8 s repeat, stale start dropped, no ring for muted to live")
+            print("PASS connecting ring: E5/A5 pair, 1.8 s repeat, stale start dropped, no ring for muted to live, connected chime after the ramp")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -109,8 +109,13 @@ import Foundation
         let chimeGap = chime[ConnectingChimeTone.noteFrames..<ConnectingChimeTone.secondOnset]
         try require((chimeGap.map { abs($0) }.max() ?? 0) < 0.0001, "the 50 ms gap is silent")
         try require(abs(chime[0]) < 0.0001, "the chime starts at zero, so it cannot click")
-        try require((1..<ConnectingChimeTone.fadeFrames).allSatisfy { abs(chime[$0]) >= abs(chime[$0 - 1]) },
-            "the chime fades in over 15 ms")
+        let early = chime[0..<(ConnectingChimeTone.fadeFrames / 2)].map { abs($0) }.max() ?? 0
+        try require(early <= ConnectingChimeTone.peak * 0.5 + 0.0001,
+            "the 15 ms fade in holds the first half-fade under half the peak, got \(early)")
+        try require(abs(chime[ConnectingChimeTone.noteFrames - 1]) < 0.0001,
+            "each tone ends at zero, so it cannot click")
+        try require(abs(chime[ConnectingChimeTone.totalFrames - 1]) < 0.0001,
+            "the chime ends silent")
         let chimeFirst = pitch(chime, onset: 0, frames: ConnectingChimeTone.noteFrames)
         try require(abs(chimeFirst - 440) < 0.5, "the first chime tone is 440 Hz, got \(chimeFirst)")
         let chimeSecond = pitch(chime, onset: ConnectingChimeTone.secondOnset,

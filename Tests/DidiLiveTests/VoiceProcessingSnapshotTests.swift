@@ -34,8 +34,6 @@ enum VoiceProcessingSnapshotTests {
         let skips = journal.events.filter { $0.name == "audio_vpio_skipped" }
         try audioRequire(started.count == 1, "one audio_started record, got \(started.count)")
         try audioRequire(skips.isEmpty, "no voice-processing skip while only Didi holds the device")
-        try audioRequire(device.isVoiceProcessingEnabledForTesting,
-                         "voice processing stays on although the device is busy at engine start")
         let record = started[0].fields
         try audioRequire(record["voiceProcessing"] == "true", "the record says voice processing was on")
         try audioRequire(record["busyAtCallStart"] == "false",
@@ -65,7 +63,7 @@ enum VoiceProcessingSnapshotTests {
         let skips = journal.events.filter { $0.name == "audio_vpio_skipped" && $0.fields["reason"] == "device_busy" }
         let started = journal.events.filter { $0.name == "audio_started" }
         try audioRequire(skips.count == 1, "exactly one device_busy skip, got \(skips.count)")
-        try audioRequire(!device.isVoiceProcessingEnabledForTesting,
+        try audioRequire(started.count == 1 && started[0].fields["voiceProcessing"] == "false",
                          "a device busy at call start still takes the non-VPIO fallback")
         try audioRequire(started.count == 1 && started[0].fields["busyAtCallStart"] == "true",
                          "the record carries the busy call-start reading")

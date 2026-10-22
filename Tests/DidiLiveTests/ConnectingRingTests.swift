@@ -285,7 +285,7 @@ import Foundation
         muteRing.presenceChanged(.connecting, failed: false)
         muteClock.ms = 500
         muteRing.presenceChanged(.live, failed: false)
-        try require(muteRecords.count == 1 && muteRecords[0]["chime"] as? Bool == true,
+        try require(muteRecords.count == 2 && muteRecords[0]["chime"] as? Bool == true,
             "the record still names the connected chime this ring asked for")
         try require(mutePending.isEmpty && !muteOutput.engineRunning,
             "a chime that could not start schedules no stop and leaves no engine")

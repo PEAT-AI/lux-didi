@@ -459,6 +459,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
+  if (value.event === 'live_mute') {
+    // The owner's mute, one record per change: which session and generation, whether the provider
+    // session was still open after it, and how long the mute had lasted.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'muted', 'warm', 'msSinceMute'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.msSinceMute)) return;
+    if (typeof value.muted !== 'boolean' || typeof value.warm !== 'boolean') return;
+    return { event: 'live_mute', liveSessionId: value.liveSessionId, generation: value.generation,
+      muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute };
+  }
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
     if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;

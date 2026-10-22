@@ -185,6 +185,8 @@ export interface LiveAttachment {
   readonly output: AsyncIterable<LiveOutputChunk>;
   readonly done: Promise<LiveSessionSnapshot>;
   sendAudio(input: { readonly pcm: Uint8Array }): void;
+  /** The owner's mute, on the same control channel: the session stays open on the host's cost cap. */
+  setInputMuted(muted: boolean): void;
   /** O1b-N: one bounded native playback receipt frame, validated before it reaches the trace store. */
   playbackReceipt(frame: string): void;
   endAudioStream(): void;

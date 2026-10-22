@@ -281,25 +281,26 @@ expect(hotkey.presence.state == .live && hotkey.fences.last == false && !hotkey.
 
 // Acceptance 2: muted for six minutes. The session goes at the mute, the owner still sees
 // MUTED (purple) the whole time, and the next tap reconnects and opens the mic.
+let closedBeforeMute = hotkey.closed
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
 expect(hotkey.presence.state == .hotMuted, "the day's mute starts from a live session")
-// AC3, by construction: the mute ends the provider session, so a proactive or callback speech
-// request has no session to play into while she waits, and nothing reopens one on its own.
-expect(hotkey.closed == 2 && hotkey.fences.last == true,
-    "the mute closes the session and the fence, which is where a held speech request would land")
+// Warm mute: the provider session and its generation stay open for the host's 180 s window, so a
+// proactive or callback speech request still has nowhere to play and nothing reopens a session.
+expect(hotkey.closed == closedBeforeMute && hotkey.fences.last == true,
+    "the mute keeps the session, closes the fence and mutes the provider input")
+expect(hotkey.presence.mutedWarm, "a live mute holds the session warm for the window")
 let openedDuringMute = hotkey.opened
 hotkey.presence.wake()
 expect(hotkey.opened == openedDuringMute,
     "a wake while muted asks for no session, so no held speech can be spoken")
-let mutedSession = hotkey.presence.generation &- 1
-hotkey.presence.sessionEnded(mutedSession)
+hotkey.presence.sessionEnded(hotkey.presence.generation)
 hotkey.clock += 6 * 60
 expect(hotkey.opened == openedDuringMute && hotkey.presence.posture.muted,
     "six minutes muted open nothing by themselves, they only keep her purple")
-expect(hotkey.presence.state == .hotMuted && hotkey.presence.posture.muted,
-    "the ended session is the generation the mute left, so MUTED holds instead of going cold")
+expect(hotkey.presence.state == .hotMuted && !hotkey.presence.mutedWarm && hotkey.presence.posture.muted,
+    "the session the host ended on its cost cap leaves a held, cold mute that stays purple")
 var openedBeforeLateTap = hotkey.opened
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)

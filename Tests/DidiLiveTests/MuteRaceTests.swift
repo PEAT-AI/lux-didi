@@ -41,7 +41,8 @@ import Foundation
             setCaptureMuted: { [unowned self] muted in self.fences.append(muted) },
             cancelPlayback: {},
             providerInputMute: { [unowned self] muted in self.inputs.append(muted) },
-            receipt: { [unowned self] record in self.receipts.append(record) }))
+            receipt: { [unowned self] record in self.receipts.append(record) }),
+            now: { [unowned self] in self.now })
 
         private func randomDelay() -> Double {
             seed = seed &* 6364136223846793005 &+ 1442695040888963407
@@ -139,6 +140,7 @@ import Foundation
         // cold, and the next tap opens exactly one new session on the same conversation.
         presence.tap(.hotkey)
         try require(presence.state == .hotMuted && presence.mutedWarm, "the tap mutes warm again")
+        host.advance(to: host.now + NativePresence.warmWindow + 1)
         host.endSession()
         host.settle()
         try require(presence.state == .hotMuted && presence.mutedHeld && !presence.mutedWarm,
@@ -163,7 +165,9 @@ import Foundation
             "the earlier generation's callbacks never move the held mute")
 
         // A genuine failure of the session that opens from a muted tap still goes cold and says so.
+        host.advance(to: host.now + NativePresence.warmWindow + 1)
         host.endSession()
+        host.settle()
         presence.tap(.hotkey)
         try require(presence.state == .connecting, "the tap reconnects")
         host.failNextSession()

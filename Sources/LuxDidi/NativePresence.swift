@@ -59,11 +59,23 @@ final class NativePresence {
     /// The trigger that opened CONNECTING, so the readiness receipt names the tap.
     private var connectingTrigger: PresenceTrigger?
     /// The owner muted her: MUTED is the mute, and it holds until the next tap, a Stop or
-    /// sleep. Nothing time-based ends it, so the session stays closed for as long as she waits.
+    /// sleep.
     var mutedHeld: Bool { state == .hotMuted }
+    /// The provider session the mute kept open, so a tap inside the window listens again with no
+    /// reconnect. The host ends that session on its own cost cap, which lands here as an ended or
+    /// a failure and leaves a held, cold mute.
+    private(set) var mutedWarm = false
+    /// When the owner muted, on the machine's own clock.
+    private var mutedAt: Double = 0
+    private let now: @MainActor () -> Double
+    /// The window the host keeps a muted session open (server/live/index.ts). Past it the session is
+    /// already gone on the host, so a tap connects rather than resuming a session nobody holds.
+    static let warmWindow: Double = 180
 
-    init(effects: PresenceEffects = PresenceEffects()) {
+    init(effects: PresenceEffects = PresenceEffects(),
+         now: @escaping @MainActor () -> Double = { Date().timeIntervalSince1970 }) {
         self.effects = effects
+        self.now = now
     }
 
     /// What the surfaces render now. `muted` is the owner's own mute, and it stays purple
@@ -87,6 +99,7 @@ final class NativePresence {
     func sessionEnded(_ generation: UInt64) {
         guard generation == self.generation, state != .cold else { return }
         connectingTrigger = nil
+        if state == .hotMuted { mutedWarm = false; return }
         move(to: .cold, trigger: .app)
     }
 
@@ -123,27 +136,36 @@ final class NativePresence {
         }
     }
 
-    /// The owner's mute (R4): the fence closes, queued speech goes, and the provider session
-    /// ends at once, so nothing is sent while she waits. The mute itself is what stays: purple
-    /// until the next tap, however long, and the next tap reconnects and opens the mic.
-    /// The generation moves first, so the session this misses is already the owner's past.
+    /// The owner's mute (R4): the fence closes, queued speech goes, and the provider input is muted.
+    /// A live mute keeps the session and its generation open for the host's 180 s window, so a tap
+    /// inside it resumes the very same session; a mute while connecting ends the pending session.
     func mute(_ trigger: PresenceTrigger) {
         guard state == .live || state == .connecting else { return }
-        generation &+= 1
+        let warm = state == .live
+        // The generation moves first, so a session this mute does not keep is already the owner's past.
+        if !warm { generation &+= 1 }
         // The fence closes before the state says muted, so no frame outlives the receipt.
-        if state == .live { effects.setCaptureMuted(true) }
+        if warm { effects.setCaptureMuted(true) }
         move(to: .hotMuted, trigger: trigger)
         effects.cancelPlayback()
         effects.providerInputMute(true)
         connectingTrigger = nil
-        effects.closeSession()
+        if warm { mutedWarm = true; mutedAt = now() } else { effects.closeSession() }
     }
 
-    /// The unmute: the session the mute ended is gone, so this opens a new one, on the same
-    /// app conversation, and readiness opens the mic. It never restores a session that ended.
+    /// The unmute: a session the mute kept opens its fence again on the same generation, and a
+    /// session that already ended is never restored, so this connects instead.
     func unmute(_ trigger: PresenceTrigger) {
         guard state == .hotMuted else { return }
-        connect(trigger)
+        guard mutedWarm, now() - mutedAt < Self.warmWindow else {
+            mutedWarm = false
+            connect(trigger)
+            return
+        }
+        mutedWarm = false
+        effects.setCaptureMuted(false)
+        effects.providerInputMute(false)
+        move(to: .live, trigger: trigger)
     }
 
     /// `NSWorkspace.willSleepNotification`: the session goes now and never reconnects on wake,
@@ -166,6 +188,8 @@ final class NativePresence {
     /// generation the owner already left is the past session's, and it changes nothing.
     func fail(_ generation: UInt64) {
         guard generation == self.generation else { return }
+        // A session that fails under the owner's mute is a held, cold mute, never an error over one.
+        if state == .hotMuted { mutedWarm = false; return }
         failed = true
         guard state != .cold else { effects.surface(posture); return }
         teardown(.error)
@@ -191,6 +215,7 @@ final class NativePresence {
 
     private func cancelConnecting(_ trigger: PresenceTrigger) {
         generation &+= 1
+        mutedWarm = false
         connectingTrigger = nil
         effects.setCaptureMuted(true)
         move(to: .cold, trigger: trigger)
@@ -199,6 +224,7 @@ final class NativePresence {
 
     private func teardown(_ trigger: PresenceTrigger) {
         generation &+= 1
+        mutedWarm = false
         if state != .connecting { effects.setCaptureMuted(true) }
         connectingTrigger = nil
         move(to: .cold, trigger: trigger)

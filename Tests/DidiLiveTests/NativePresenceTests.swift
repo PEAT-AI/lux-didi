@@ -21,6 +21,7 @@ import Foundation
         var opened: [UInt64] = []
         var receipts: [[String: Any]] = []
         var surfaces: [(PresenceState, Bool)] = []
+        var clock: Double = 0
     }
 
     @MainActor static func run() throws {
@@ -33,7 +34,7 @@ import Foundation
             cancelPlayback: { record.calls.append("cancelPlayback") },
             providerInputMute: { muted in record.calls.append("inputMute:\(muted)") },
             receipt: { record.receipts.append($0) },
-            surface: { posture in record.surfaces.append((posture.state, posture.alwaysShow)) }))
+            surface: { posture in record.surfaces.append((posture.state, posture.alwaysShow)) }), now: { record.clock })
 
         // COLD at start, with the presence orb the only surface.
         try require(presence.state == .cold && !presence.mutedHeld, "a fresh machine is cold and unmuted")
@@ -85,9 +86,22 @@ import Foundation
             "the mic opens again on the session that was kept")
         try require(presence.generation == warmGeneration, "the resume keeps the generation")
 
-        // A second warm round trip, then the session dies while muted: muted cold, never an error.
+        // A mute older than the host's window never resumes: the tap connects.
+        record.clock += NativePresence.warmWindow + 1
         presence.tap(.hotkey)
         try require(presence.state == .hotMuted && presence.mutedWarm, "the third tap mutes warm again")
+        record.clock += NativePresence.warmWindow + 1
+        record.calls.removeAll()
+        presence.tap(.hotkey)
+        try require(presence.state == .connecting && !presence.mutedWarm,
+            "a tap past the host's window connects instead of resuming a session nobody holds")
+        try require(record.calls == ["open"], "the expired window opens exactly one session, got \(record.calls)")
+        presence.ready(presence.generation)
+        try require(presence.state == .live, "the new session's readiness opens the mic")
+
+        // A warm mute, then the session dies while muted: muted cold, never an error.
+        presence.tap(.hotkey)
+        try require(presence.state == .hotMuted && presence.mutedWarm, "the fourth tap mutes warm again")
         record.calls.removeAll()
         presence.sessionEnded(presence.generation)
         try require(presence.state == .hotMuted && presence.mutedHeld && !presence.mutedWarm,

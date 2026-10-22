@@ -57,7 +57,7 @@ export interface LiveService {
 
 const audioPath = /^\/api\/v1\/live-sessions\/([^/]+)\/audio$/;
 const sessionIdPattern = /^[0-9a-fA-F-]{36}$/;
-const controls = ['endAudioStream', 'close'] as const;
+export const LIVE_CONTROLS = ['endAudioStream', 'close', 'inputMuted', 'inputLive'] as const;
 const statusText: Record<number, string> = { 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 409: 'Conflict', 503: 'Service Unavailable' };
 
 /** Map an owner or guard failure to a closed HTTP error. Never leaks prompt/key bytes. */
@@ -94,14 +94,14 @@ function markerFrame(marker: LivePublicMarker): Record<string, unknown> {
 }
 
 /** Strict tiny control: exactly one `type` key with a known command, else null. */
-function control(raw: string): (typeof controls)[number] | null {
+function control(raw: string): (typeof LIVE_CONTROLS)[number] | null {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   const keys = Object.keys(parsed);
   if (keys.length !== 1 || keys[0] !== 'type') return null;
   const type = (parsed as { type?: unknown }).type;
-  return typeof type === 'string' && (controls as readonly string[]).includes(type) ? type as (typeof controls)[number] : null;
+  return typeof type === 'string' && (LIVE_CONTROLS as readonly string[]).includes(type) ? type as (typeof LIVE_CONTROLS)[number] : null;
 }
 
 /** Parse one JSON frame without judging it; the native-action bus owns its own closed shape. */
@@ -252,6 +252,7 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       if (raw.includes('"playback_receipt"')) { attachment.playbackReceipt(raw); return; }
       const type = control(raw);
       if (type === null) { ws.close(1002, 'invalid_control'); return; }
+      if (type === 'inputMuted' || type === 'inputLive') { attachment.setInputMuted(type === 'inputMuted'); return; }
       if (type === 'endAudioStream') { try { attachment.endAudioStream(); } catch { ws.close(1002, 'invalid_command'); } return; }
       // The explicit Stop: the app released the microphone and wants the call over, not the socket merely quieter.
       attachment.close();

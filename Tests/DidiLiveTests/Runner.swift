@@ -1020,6 +1020,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             }
             _ = try LiveSocketTransport.decode(.string("{\"type\":\"waitingForInput\",\"sequence\":1,\"journalSequence\":1,\"value\":true}"))
             try require(LiveControl.endAudioStream.json == "{\"type\":\"endAudioStream\"}" && LiveControl.close.json == "{\"type\":\"close\"}", "strict control grammar")
+            try require(LiveControl.inputMuted.json == "{\"type\":\"inputMuted\"}" && LiveControl.inputLive.json == "{\"type\":\"inputLive\"}",
+                "the mute frames are the same one-key control shape as the stop frames")
             for invalid in ["{}", "{\"type\":\"marker\",\"kind\":\"ready\"}", "{\"type\":\"ready\",\"sequence\":true,\"journalSequence\":1}", String(repeating: "x", count: 65537)] {
                 var refused = false
                 do { _ = try LiveSocketTransport.decode(.string(invalid)) } catch LiveClientError.invalidFrame { refused = true }
@@ -1057,6 +1059,19 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await stopHTTP.finish()
             print("PASS stop control survives a busy send queue and its receipt names the press")
             record("stop-control")
+
+            // The owner's mute travels on the same wire, one frame per change and never on a dead session.
+            await stop.setInputMuted(true)
+            await stop.setInputMuted(true)
+            try require(await stopSocket.controls.contains(.inputMuted), "the mute reaches the host socket")
+            try require(await stopSocket.controls.filter { $0 == .inputMuted }.count == 1, "a repeated mute sends no second frame")
+            await stop.setInputMuted(false)
+            try require(await stopSocket.controls.contains(.inputLive), "the unmute reaches the host socket")
+            try require(LiveControl.inputLive.json == "{\"type\":\"inputLive\"}", "one-key frame")
+            await stop.close(trigger: .button)
+            await stop.setInputMuted(true)
+            try require(await stopSocket.controls.filter { $0 == .inputMuted }.count == 1,
+                "a muted frame after the stop is skipped, the teardown path owns that socket")
 
             // #476/V10: one Stop is one teardown. A repeated stop() gets no second receipt, so the
             // native log cannot hold a second live_stop / socket_close_sent pair for one press.

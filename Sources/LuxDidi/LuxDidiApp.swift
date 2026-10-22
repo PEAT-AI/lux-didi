@@ -350,7 +350,21 @@ import WebKit
     /// stops forwarding and holds any answer that arrives while the owner is silent.
     func setPresenceProviderInputMute(_ muted: Bool) { live?.setProviderInputMuted(muted) }
     /// The presence receipt: a `presence_state` record in the native log, never audio or text.
-    func appendPresenceReceipt(_ record: [String: Any]) { liveJournal.append(record) }
+    /// The connecting ring (#529) rides the same record, so its start and stop are presence facts.
+    func appendPresenceReceipt(_ record: [String: Any]) {
+        if record["event"] as? String == "presence_state",
+           let to = record["to"] as? String, let next = PresenceState(rawValue: to) {
+            connectingRing.presenceChanged(next, failed: record["failed"] as? Bool ?? false)
+        }
+        liveJournal.append(record)
+    }
+    /// The gentle ring while a connection is built (#529): its `connecting_ring` record goes back
+    /// through the presence receipt path above.
+    private lazy var connectingRing: ConnectingRing = {
+        let ring = ConnectingRing()
+        ring.receipt = { [weak self] fields in self?.appendPresenceReceipt(fields) }
+        return ring
+    }()
     /// The surface receipts of this launch. `mini_present_failed` and `mini_presented` name the
     /// reason and the panel's own facts, so a pill that is not there leaves a trace instead of
     /// an absence; the copy in memory lets the UI proof assert the record without reading a file.

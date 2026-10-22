@@ -72,6 +72,12 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveJournal.swift \
   Tests/DidiLiveTests/WaitCueTests.swift "$work/audio-callback-bridge.o" -o "$work/wait-cue"
 "$work/wait-cue"
+# Issue #529 connecting ring: presence in, ring schedule and PCM out. No engine and no audio device.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -target "$target" \
+  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
+  Tests/DidiLiveTests/ConnectingRingTests.swift -o "$work/connecting-ring"
+"$work/connecting-ring"
 # #283 orb band analyzer and playback-aligned output timeline: synthetic PCM only, no engine or audio.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   -target "$target" \

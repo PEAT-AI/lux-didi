@@ -421,3 +421,10 @@ test('1022: a stdio helper that pins a refused identity is replaced before the r
   assert.equal(recovered.length, 1, 'the recovery round proved the account');
   assert.equal(recovered[0]!.attempts, 1, 'on its first attempt, because the retry got a fresh helper');
 });
+
+test('1022: an unreachable refresh reads as unreachable in the browser, never as a sign-in', () => {
+  assert.equal(connectionReasonCode({ state: 'error', error: 'credential-refresh-unavailable', signIn: true }), 'unreachable',
+    'a network blip is not a reason to show the sign-in step');
+  assert.equal(connectionReasonCode({ state: 'error', error: 'credential-refresh-failed', signIn: true }), 'needs_sign_in',
+    'a real refusal still asks for the sign-in');
+});

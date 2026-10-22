@@ -579,7 +579,9 @@ test('1022: a helper that exits non-zero is reported by its stderr byte count al
   } finally { await adapter.close(); }
   assert.equal(seen.length, 1, 'one line for the child that refused');
   assert.equal(seen[0]!.endpointId, 'noisy-exit');
-  assert.ok(seen[0]!.bytes > 0 && seen[0]!.bytes <= 200 * 1024, `the byte count is the only thing kept (${seen[0]!.bytes})`);
+  // The child writes 200 KiB into a 64 KiB pipe and exits at once, so the drain keeps exactly one pipe
+  // buffer. Only the count is kept and never the text; this pins the bound that made it a count.
+  assert.equal(seen[0]!.bytes, 65_536, 'one pipe buffer, counted and dropped');
 });
 
 test('1022: the stdio connect budget is 12 s and the http one stays at 5 s', async () => {
@@ -599,14 +601,59 @@ await sdk.connect(new StdioServerTransport());
   const registry = new McpRegistry();
   registry.register(config('slow-start', 'serve', join(tmpdir(), `slow-${randomUUID()}.pid`), 'stdio-pong', { args: [child] }));
   registry.enable('slow-start'); registry.allowEgress('slow-start');
-  const short = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, connectTimeoutMs: { stdio: 300, http: 300 } });
+  // Distinct values per transport: a code path that read the http value here would connect instead.
+  const short = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, connectTimeoutMs: { stdio: 300, http: 4000 } });
   try {
     const cut = await short.discover('slow-start');
-    assert.notEqual(cut.state, 'discovered', 'the budget is real, not a number in a comment');
+    assert.notEqual(cut.state, 'discovered', 'a stdio endpoint reads the stdio budget, not the http one');
   } finally { await short.close(); }
-  const longer = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, connectTimeoutMs: { stdio: 3000, http: 300 } });
+  const longer = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, connectTimeoutMs: { stdio: 3000, http: 200 } });
   try {
     const ok = await longer.discover('slow-start');
     assert.equal(ok.state, 'discovered', 'a start past the short budget still fits the long one');
   } finally { await longer.close(); }
+});
+
+test('[slow] 1022: a stdio helper that takes 7 s to start connects under the 12 s stdio budget', async t => {
+  const child = generatedChild(t, `
+import { Server } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+await new Promise(resolve => setTimeout(resolve, 7000));
+const sdk = new Server({ name: 'cold-start', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'echo', inputSchema: { type: 'object', properties: {} } }] }));
+await sdk.connect(new StdioServerTransport());
+`);
+  const registry = new McpRegistry();
+  registry.register(config('cold-start', 'serve', join(tmpdir(), `cold-${randomUUID()}.pid`), 'stdio-pong', { args: [child] }));
+  registry.enable('cold-start'); registry.allowEgress('cold-start');
+  // Only the default connect budget is under test here: the call deadline is set far above it.
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 20_000 } });
+  try {
+    const discovery = await adapter.discover('cold-start');
+    assert.equal(discovery.state, 'discovered', 'a 7 s cold start fits the 12 s stdio budget the owner\'s Mac needed');
+  } finally { await adapter.close(); }
+});
+
+test('[slow] 1022: an http handshake answered in 6 s times out under the 5 s http budget', async () => {
+  const listener = createServer((_req, res) => {
+    // The initialize request is answered only after 6 s, so the 5 s http budget must give up first.
+    const timer = setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, 6000);
+    res.on('close', () => clearTimeout(timer));
+  });
+  listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
+  const address = listener.address(); assert.ok(address && typeof address !== 'string');
+  const registry = new McpRegistry();
+  registry.register({ id: 'slow-http', url: `http://127.0.0.1:${address.port}/mcp`, account: ACCOUNT, resource: RESOURCE });
+  registry.enable('slow-http'); registry.allowEgress('slow-http');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 20_000 } });
+  try {
+    const startedAt = Date.now();
+    const discovery = await adapter.discover('slow-http');
+    const elapsed = Date.now() - startedAt;
+    assert.notEqual(discovery.state, 'discovered', 'the 5 s http budget ends a handshake that answers at 6 s');
+    assert.ok(elapsed < 6000, `the http budget is the one applied, measured ${elapsed} ms`);
+  } finally {
+    await adapter.close(); listener.closeAllConnections();
+    await new Promise<void>(resolve => listener.close(() => resolve()));
+  }
 });

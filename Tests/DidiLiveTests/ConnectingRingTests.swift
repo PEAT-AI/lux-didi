@@ -91,10 +91,39 @@ import Foundation
         let second = pitch(samples, onset: ConnectingRingTone.secondOnset)
         try require(abs(second - 880) < 0.5, "the second note is A5 880 Hz, got \(second)")
 
+        // The connected chime, copied from Vicuna's playConnected: 440 then 550 Hz, 100 ms each
+        // with a 50 ms gap, peak 0.15 and a 15 ms linear fade.
+        let chime = ConnectingChimeTone.samples()
+        try require(chime.count == 6000, "the chime is 250 ms at 24 kHz, got \(chime.count)")
+        try require(ConnectingChimeTone.firstTone == 440 && ConnectingChimeTone.secondTone == 550,
+            "the chime notes are exactly 440 and 550 Hz")
+        try require(ConnectingChimeTone.noteMs == 100 && ConnectingChimeTone.gapMs == 50,
+            "each tone is 100 ms and the gap is 50 ms")
+        try require(ConnectingChimeTone.peak == 0.15 && ConnectingChimeTone.fadeMs == 15,
+            "the chime gain is 0.15 with a 15 ms fade")
+        try require(ConnectingChimeTone.noteFrames == 2400 && ConnectingChimeTone.gapFrames == 1200
+            && ConnectingChimeTone.secondOnset == 3600, "the chime timing in frames is pinned")
+        let chimePeak = chime.map { abs($0) }.max() ?? 0
+        try require(chimePeak <= 0.15 + 0.0001 && chimePeak > 0.14,
+            "the chime peak stays at 0.15, got \(chimePeak)")
+        let chimeGap = chime[ConnectingChimeTone.noteFrames..<ConnectingChimeTone.secondOnset]
+        try require((chimeGap.map { abs($0) }.max() ?? 0) < 0.0001, "the 50 ms gap is silent")
+        try require(abs(chime[0]) < 0.0001, "the chime starts at zero, so it cannot click")
+        try require((1..<ConnectingChimeTone.fadeFrames).allSatisfy { abs(chime[$0]) >= abs(chime[$0 - 1]) },
+            "the chime fades in over 15 ms")
+        let chimeFirst = pitch(chime, onset: 0, frames: ConnectingChimeTone.noteFrames)
+        try require(abs(chimeFirst - 440) < 0.5, "the first chime tone is 440 Hz, got \(chimeFirst)")
+        let chimeSecond = pitch(chime, onset: ConnectingChimeTone.secondOnset,
+                                frames: ConnectingChimeTone.noteFrames)
+        try require(abs(chimeSecond - 550) < 0.5, "the second chime tone is 550 Hz, got \(chimeSecond)")
+
         // The one native record per ring.
         let record = ConnectingRingRecord(startedAt: 1_700_000_000_000,
-                                          stoppedAt: 1_700_000_004_000, reason: "live")
+                                          stoppedAt: 1_700_000_004_000, reason: "live",
+                                          played: true, chime: true)
         try require(record.ms == 4000, "the record counts the ring's length, got \(record.ms)")
+        try require(record.fields["played"] as? Bool == true && record.fields["chime"] as? Bool == true,
+            "the record says the ring and the chime actually played")
         try require(record.fields["event"] as? String == "connecting_ring", "the record names itself")
         try require(record.fields["reason"] as? String == "live", "the record names the ending state")
         try require(record.fields["started_at"] as? Int == 1_700_000_000_000,
@@ -126,6 +155,11 @@ import Foundation
         try require(records[0]["reason"] as? String == "live", "the record names live")
         try require(records[0]["started_at"] as? Int == 0 && records[0]["stopped_at"] as? Int == 4000,
             "the record carries the start and the stop")
+        try require(output.chimes == 1, "live plays the connected chime once, got \(output.chimes)")
+        try require(output.order == ["ring", "ramp", "chime"],
+            "the chime follows the ring's ramp, got \(output.order)")
+        try require(records[0]["played"] as? Bool == true, "the record says the ring played")
+        try require(records[0]["chime"] as? Bool == true, "the record says the chime played")
 
         // Example 2: connecting then failure to cold ramps out with reason failed.
         let failedClock = TestClock()
@@ -142,6 +176,10 @@ import Foundation
         try require(failedRecords.first?["reason"] as? String == "failed",
             "the record names the failure, got \(String(describing: failedRecords.first?["reason"]))")
         try require(failedRecords.first?["ms"] as? Int == 900, "the failed ring is 900 ms")
+        try require(failedOutput.chimes == 0, "a failed connect plays no chime")
+        try require(failedRecords.first?["chime"] as? Bool == false &&
+                    failedRecords.first?["played"] as? Bool == true,
+            "the failed ring played and chimed nothing")
 
         // Example 3: a stop that lands while the start is still preparing never reaches the output.
         let staleClock = TestClock()
@@ -170,26 +208,73 @@ import Foundation
         warmClock.ms = 100
         warmRing.presenceChanged(.live, failed: false)
         try require(warmOutput.plays == 0 && warmOutput.ramps.isEmpty, "a warm unmute plays nothing")
+        try require(warmOutput.chimes == 0, "a warm unmute plays no connected chime")
         try require(warmRecords.isEmpty, "a warm unmute leaves no record")
+
+        // Example 5: the ring's own player refuses to start, so the record says it never played.
+        let deafClock = TestClock()
+        let deafOutput = RecordingRingOutput()
+        deafOutput.playResult = false
+        var deafRecords: [[String: Any]] = []
+        let deafRing = ConnectingRing(output: deafOutput, now: { deafClock.ms },
+                                      deferStart: { body in body() })
+        deafRing.receipt = { deafRecords.append($0) }
+        deafRing.presenceChanged(.connecting, failed: false)
+        deafClock.ms = 1200
+        deafRing.presenceChanged(.live, failed: false)
+        try require(deafRecords.count == 1 && deafRecords[0]["played"] as? Bool == false,
+            "a ring whose player refused to start records played=false")
+        try require(deafOutput.chimes == 1 && deafRecords[0]["chime"] as? Bool == true,
+            "the connected chime does not depend on the ring's own start")
+
+        // Example 6: the chime's engine refuses to start, so the record says the chime did not play.
+        let muteClock = TestClock()
+        let muteOutput = RecordingRingOutput()
+        muteOutput.chimeResult = false
+        var muteRecords: [[String: Any]] = []
+        let muteRing = ConnectingRing(output: muteOutput, now: { muteClock.ms },
+                                      deferStart: { body in body() })
+        muteRing.receipt = { muteRecords.append($0) }
+        muteRing.presenceChanged(.connecting, failed: false)
+        muteClock.ms = 500
+        muteRing.presenceChanged(.live, failed: false)
+        try require(muteRecords.count == 1 && muteRecords[0]["chime"] as? Bool == false,
+            "a chime that could not play records chime=false")
     }
 
     /// Stands in for the ring's own player, so no engine and no audio device is started.
     @MainActor final class RecordingRingOutput: ConnectingRingOutput {
         private(set) var plays = 0
+        private(set) var chimes = 0
         private(set) var ramps: [Int] = []
+        /// The player calls in order, so the chime is proven to follow the ring's ramp.
+        private(set) var order: [String] = []
+        var playResult = true
+        var chimeResult = true
         func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool {
             plays += 1
-            return true
+            order.append("ring")
+            return playResult
         }
-        func rampDown(overMs ms: Int) { ramps.append(ms) }
+        func playChime(_ buffer: AVAudioPCMBuffer) -> Bool {
+            chimes += 1
+            order.append("chime")
+            return chimeResult
+        }
+        func rampDown(overMs ms: Int, after: (@MainActor () -> Void)?) {
+            ramps.append(ms)
+            order.append("ramp")
+            after?()
+        }
     }
 
     @MainActor final class TestClock { var ms = 0 }
 
     /// The note's pitch from its first and last positive zero crossing, each time interpolated
     /// between the two samples that bracket it, so the estimate is not quantized to 10 Hz.
-    static func pitch(_ samples: [Float], onset: Int) -> Double {
-        let end = onset + ConnectingRingTone.noteFrames
+    static func pitch(_ samples: [Float], onset: Int,
+                      frames: Int = ConnectingRingTone.noteFrames) -> Double {
+        let end = onset + frames
         var crossings = 0
         var first = 0.0
         var last = 0.0

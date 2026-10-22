@@ -3447,7 +3447,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           knowledgeStartedAt = now();
           // K8: the read's own span is stamped when it settles, so the source log states the read and
           // never the wait it spent in the selector's shadow.
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal])).then((results: IntentSubResult[]) => {
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs)])).then((results: IntentSubResult[]) => {
             knowledgeEndedAt = now();
             return results;
           }).catch((error: unknown) => {
@@ -3542,7 +3542,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (remainingMs <= 0) { stopReason = 'deadline'; break; }
         // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on
         // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
-        const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs), answerCut.signal]);
+        const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);
         const latencies = new Map<CandidateKind, number>();
         const readStarted = new Set<CandidateKind>();
         const cutKinds = new Set<CandidateKind>();

@@ -18,6 +18,7 @@ import { GeminiAdapter } from '../adapters/model/index.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
 import { createSummarizer } from '../services/summarize.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { buildEarlierConversationsSection, composeLiveInstruction, composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { DomainContext, SourceRef } from '../contracts/domain.js';
 
@@ -485,7 +486,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f2.store), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(domainVersions(f2.store), domainMigrations.map(m => m.version));
       const indexSql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
       assert.match(indexSql, /source_references\(owner_id, owner_kind\)/);
       assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', [])), entriesBefore);
@@ -500,7 +501,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     } finally { raw.close(); }
     const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(domainVersions(f3.store), domainMigrations.map(m => m.version));
       assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
     } finally { f3.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -611,6 +612,8 @@ test('a distilled session A is injected into session B chat context and Live ins
         ['live-A', f.store.assistantId, f.store.authorityEpoch, 'key-A', 'fp-A', 'client', 'audit', 'profile', 'prompt', 'terminal',
           JSON.stringify({ state: 'closed', code: 'normal' }), 0, 0, 0]);
       for (const text of ['one', 'two']) tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)', ['live-A', 'inputTranscription', text, text.length, 0]);
+      // The distiller reads the trusted history eligibility row the terminal path records.
+      recordHistorySession(tx, 'live-A', f.store.assistantId, ['ordinary'], [], 0);
     });
     // A deterministic double behind the real adapter, so controlled() runs for real.
     const adapter = new GeminiAdapter({ modelId: 'gemini-2.5-flash', keyReference: 'gemini-primary',
@@ -622,7 +625,8 @@ test('a distilled session A is injected into session B chat context and Live ins
         const bytes = new TextEncoder().encode(`data: ${JSON.stringify(body)}\r\n\r\n`);
         return new Response(new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }), { headers: { 'content-type': 'text/event-stream' } });
       } });
-    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => 0, log: () => {} });
+    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', modelAllowedClasses: ['ordinary'],
+      assistantName: 'Naya', timeZone: 'UTC', now: () => 0, log: () => {}, delay: () => Promise.resolve() });
     await summarizer.distill('live-A');
     const row = f.store.transaction(tx => summaries.getBySession(tx, 'live-A'))!;
     assert.equal(row.status, 'complete');

@@ -16,11 +16,21 @@ export const SUMMARY_TEMPERATURE = 0.2;
 export const DISTILLATION_INPUT_MAX_CHARS = 24_000;
 export const DISTILLATION_INPUT_HEAD_CHARS = 4_000;
 export const DISTILLATION_INPUT_TAIL_CHARS = 20_000;
-/** Up to two more attempts, only for transport or provider errors. */
+/** Up to two more attempts in the same host life, only for transport or provider errors. */
 export const SUMMARY_MAX_RETRIES = 2;
+/** The wall-clock wait before each in-life retry; the last value repeats if the budget ever grows. */
+export const SUMMARY_RETRY_BACKOFF_MS: readonly number[] = [2_000, 10_000];
+/** A failed summary is retried at the next host start only after the start-up window, when connectors and keys are up. */
+export const SUMMARY_BOOT_REQUEUE_DELAY_MS = 30_000;
+/** One session is attempted in at most this many host starts before the reason is closed for good. */
+export const SUMMARY_HOST_START_LIMIT = 3;
+/** A failed summary older than this is never retried. */
+export const SUMMARY_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+/** The attempt budget across host starts; a start that could exceed it is not begun. */
+export const SUMMARY_RETRY_MAX_ATTEMPTS = (SUMMARY_MAX_RETRIES + 1) * SUMMARY_HOST_START_LIMIT;
 /** The default wall-clock budget, in milliseconds, for one distillation model call. */
 export const SUMMARY_DEADLINE_BUDGET_MS = 30_000;
-/** The newest failed-deadline sessions a single host start re-queues; older ones wait for a later start. */
+/** The newest retryable sessions a single host start re-queues; older ones wait for a later start. */
 export const SUMMARY_RECOVERY_LIMIT = 30;
 export const SUMMARY_MIN_OWNER_TURNS = 2;
 
@@ -154,6 +164,8 @@ export interface SummarizerOptions {
   readonly log: (event: SummarizerLogEvent) => void;
   /** A relative budget in milliseconds; the summarizer turns it into an absolute epoch. */
   readonly deadlineBudgetMs?: number;
+  /** How the retry and boot waits pass; a test hands in a fake clock, the host leaves it out. */
+  readonly delay?: (ms: number) => Promise<void>;
 }
 
 export interface Summarizer {
@@ -161,12 +173,35 @@ export interface Summarizer {
   schedule(liveSessionId: string): void;
   /** Distil every ended session without a row, one at a time. */
   reconcile(): Promise<void>;
-  /** Host start: re-run distillation once for failed-deadline sessions whose journal survives, newest first. */
+  /** Host start: retry the newest transiently failed sessions whose journal survives, after the boot delay. */
   requeueFailed(): Promise<void>;
   distill(liveSessionId: string, options?: { deadHost?: boolean }): Promise<void>;
 }
 
 const RETRYABLE: ReadonlySet<string> = new Set(['error', 'deadline', 'cancelled']);
+
+/** The closed failure classes a row and the log may name, never the provider's own text. */
+export type SummaryFailureCode = 'deadline' | 'cancelled' | 'network' | 'credential_unavailable' | 'provider'
+  | 'provider_blocked' | 'route_denied' | 'invalid_output' | 'model_error' | 'retry_exhausted';
+
+/** Adapter reason tokens that survive to this layer; anything else is a plain provider failure. */
+const FAILURE_BY_REASON: Readonly<Record<string, SummaryFailureCode>> = {
+  transport_error: 'network',
+  credential_unavailable: 'credential_unavailable',
+  provider_finish_error: 'provider',
+  model_request_failed: 'provider',
+};
+
+function failureCode(result: ModelResult): SummaryFailureCode {
+  if (result.status === 'deadline') return 'deadline';
+  if (result.status === 'cancelled') return 'cancelled';
+  if (result.status === 'blocked') return 'provider_blocked';
+  if (result.status === 'denied') return 'route_denied';
+  return FAILURE_BY_REASON[result.reason] ?? 'provider';
+}
+
+const pause = (delay: SummarizerOptions['delay'], ms: number): Promise<void> =>
+  ms > 0 ? (delay ? delay(ms) : new Promise<void>(resolve => { setTimeout(resolve, ms).unref(); })) : Promise.resolve();
 
 export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
@@ -190,7 +225,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     return options.model!.generate(request, { signal, deadlineMs: deadlineAt(Date.now(), options.deadlineBudgetMs ?? SUMMARY_DEADLINE_BUDGET_MS) });
   }
 
-  async function distill(liveSessionId: string, runOptions: { deadHost?: boolean } = {}): Promise<void> {
+  async function distill(liveSessionId: string, runOptions: { deadHost?: boolean; priorRetries?: number } = {}): Promise<void> {
     const prepared = options.store.transaction(tx => {
       if (historyForgotten(tx, liveSessionId)) return null;
       const existing = summaries.getBySession(tx, liveSessionId);
@@ -237,8 +272,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     const truncated = input.truncated || !!runOptions.deadHost;
     options.log({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();
-    let retryCount = 0;
-    let lastError = 'unknown';
+    const firstRetry = runOptions.priorRetries ?? 0;
+    let retryCount = firstRetry;
+    let lastError: SummaryFailureCode = 'model_error';
     for (;;) {
       let result: ModelResult | null = null;
       try {
@@ -249,14 +285,15 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           return;
         }
         result = await callModel(input.text, source.dataClass, controller.signal);
-      } catch (error) {
-        lastError = error instanceof Error && /^[A-Za-z0-9_]+$/.test(error.message) ? error.message : 'model_error';
+      } catch {
+        lastError = 'model_error';
       }
       if (result && !RETRYABLE.has(result.status)) {
         const parsed = parseDistillationResult(result.text);
         if (!parsed) {
-          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: 'invalid_output', now: options.now() }));
-          options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: 'invalid_output', retryCount });
+          const sealed: SummaryFailureCode = result.status === 'blocked' || result.status === 'denied' ? failureCode(result) : 'invalid_output';
+          options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: sealed, now: options.now() }));
+          options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: sealed, retryCount });
           return;
         }
         if (parsed.skip || !parsed.summary) {
@@ -268,8 +305,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
         options.log({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
         return;
       }
-      lastError = result ? result.status : lastError;
-      if (retryCount >= SUMMARY_MAX_RETRIES) break;
+      lastError = result ? failureCode(result) : lastError;
+      if (retryCount - firstRetry >= SUMMARY_MAX_RETRIES) break;
+      await pause(options.delay, SUMMARY_RETRY_BACKOFF_MS[Math.min(retryCount - firstRetry, SUMMARY_RETRY_BACKOFF_MS.length - 1)] ?? 0);
       retryCount += 1;
     }
     options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
@@ -277,21 +315,36 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
   }
 
   /**
-   * Host start: recover summaries lost while the deadline bug was live. Failed-deadline rows whose
-   * journal still exists are removed and distilled once more through the normal path; only the newest
-   * `SUMMARY_RECOVERY_LIMIT` are retried, older ones are counted and left for a later start.
+   * Host start: retry summaries that failed for a transient reason. When there is anything to retry, the pass
+   * waits out the start-up window first, because connectors and credentials are not up in the first seconds
+   * after a boot; with nothing to retry it never arms a timer. A row that already spent its attempt budget
+   * across host starts, or is older than the age cap, is closed with a final reason instead of being retried.
+   * Only the newest `SUMMARY_RECOVERY_LIMIT` are considered in one start.
    */
   async function requeueFailed(): Promise<void> {
     if (!options.model) return;
-    const candidates = options.store.transaction(tx => summaries.failedDeadlineSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
-    const total = options.store.transaction(tx => summaries.countFailedDeadlineSessionsWithJournal(tx));
-    options.log({ event: 'conversation_summary_recovery', requeued: candidates.length, skipped: Math.max(0, total - candidates.length) });
+    const candidates = options.store.transaction(tx => summaries.failedRetryableSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
+    const total = options.store.transaction(tx => summaries.countFailedRetryableSessionsWithJournal(tx));
+    if (candidates.length > 0) await pause(options.delay, SUMMARY_BOOT_REQUEUE_DELAY_MS);
+    const now = options.now();
+    let requeued = 0;
+    let skipped = Math.max(0, total - candidates.length);
     for (const candidate of candidates) {
+      const expired = candidate.endedAt !== null && now - candidate.endedAt > SUMMARY_RETRY_MAX_AGE_MS;
+      const spent = candidate.retryCount + 1 + (SUMMARY_MAX_RETRIES + 1) > SUMMARY_RETRY_MAX_ATTEMPTS;
+      if (expired || spent) {
+        const closed = options.store.transaction(tx => summaries.closeFailedRetry(tx, candidate.liveSessionId));
+        if (closed) options.log({ event: 'conversation_summary_failed', liveSessionId: candidate.liveSessionId, errorCode: 'retry_exhausted', retryCount: candidate.retryCount });
+        skipped += 1;
+        continue;
+      }
+      requeued += 1;
       await serialize(async () => {
         const removed = options.store.transaction(tx => summaries.removeFailed(tx, candidate.liveSessionId));
-        if (removed) await distill(candidate.liveSessionId);
+        if (removed) await distill(candidate.liveSessionId, { priorRetries: candidate.retryCount });
       });
     }
+    options.log({ event: 'conversation_summary_recovery', requeued, skipped });
   }
 
   return {

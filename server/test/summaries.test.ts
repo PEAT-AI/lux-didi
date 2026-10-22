@@ -10,11 +10,12 @@ import * as summaries from '../domain/summaries.js';
 import { buildEarlierConversationsSection, earlierConversationsBudget } from '../prompt/live-persona.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
-import type { ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
+import type { DataClass, ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import {
   OPEN_LOOP_MAX_CHARS, SUMMARY_MAX_RETRIES, SUMMARY_PROMPT_VERSION, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
-  createSummarizer, distillationPrompt, parseDistillationResult,
+  createSummarizer, distillationPrompt, parseDistillationResult, type SummarizerOptions,
 } from '../services/summarize.js';
 
 const NOW = 1_700_000_000_000;
@@ -40,6 +41,8 @@ function seedSession(store: Store, id: string, options: { outcome?: string; memo
         [`grant-${id}`, id, 'gemini', 'synthetic-live', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']),
           options.inputClass, 1, NOW]);
     }
+    // The distiller reads the trusted history eligibility row the terminal path records, never the grant.
+    recordHistorySession(tx, id, 'owner', [(options.inputClass ?? 'ordinary') as DataClass], [], NOW);
   });
 }
 
@@ -47,6 +50,16 @@ function seedTurn(store: Store, id: string, kind: 'inputTranscription' | 'output
   store.transaction(tx => tx.run(
     'INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
     [id, kind, text, text.length, NOW]));
+}
+
+/**
+ * A complete summary the selector can offer: since migration 8 a row must carry the class and the source revision
+ * it witnessed, and the session must still have its history eligibility row.
+ */
+function insertPastSummary(store: Store, id: string, summary: string, endedAt = NOW): void {
+  seedSession(store, id);
+  store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: id, status: 'complete', summary,
+    dataClass: 'ordinary', sourceRevision: 1, endedAt, now: NOW }));
 }
 
 function reply(text: string, status: ModelResult['status'] = 'complete'): ModelResult {
@@ -64,8 +77,10 @@ class FakeModel implements ModelPort {
   }
 }
 
-function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya') {
-  return createSummarizer({ store, model, modelId: 'synthetic-text-model', assistantName, timeZone: 'UTC', now: () => NOW, log: () => {} });
+function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya', extra: Partial<SummarizerOptions> = {}) {
+  // The host always names the route's permitted classes; without them the distiller fails closed and skips a session.
+  return createSummarizer({ store, model, modelId: 'synthetic-text-model', modelAllowedClasses: ['ordinary'],
+    assistantName, timeZone: 'UTC', now: () => NOW, log: () => {}, delay: () => Promise.resolve(), ...extra });
 }
 
 function withTurns(store: Store, id: string, outcome?: string): void {
@@ -112,7 +127,7 @@ test('the input cap keeps the first 4000 and last 20000 characters and marks the
 test('a complete distillation stores one row with the session provenance', async () => {
   const h = open();
   try {
-    seedSession(h.store, 's-complete', { memoryProvenance: { status: 'empty', selectedIds: [], omitted: [], injectedSummaryIds: ['prior-a'] } });
+    seedSession(h.store, 's-complete', { memoryProvenance: { status: 'empty', selectedIds: [], omitted: [], injectedSummaryIds: [] } });
     seedTurn(h.store, 's-complete', 'inputTranscription', 'What is on my plate?');
     seedTurn(h.store, 's-complete', 'inputTranscription', 'And tomorrow?');
     seedTurn(h.store, 's-complete', 'outputTranscription', 'You have two meetings.');
@@ -281,7 +296,7 @@ test('migration v5 upgrades a populated v4 database preserving sessions and turn
     before.close();
     const after = new Store(dir, [...domainMigrations, ...liveMigrations]);
     try {
-    assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), domainMigrations.map(m => m.version));
       assert.ok(after.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'")));
       assert.equal(after.transaction(tx => tx.get("SELECT text FROM entries WHERE id='e1'"))!['text'], 'synthetic note');
       assert.deepEqual(after.transaction(tx => summaries.listSummaries(tx)), []);
@@ -292,7 +307,7 @@ test('migration v5 upgrades a populated v4 database preserving sessions and turn
 test('voice and text chat render the same summary for the same past session', () => {
   const h = open();
   try {
-    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 'past-1', status: 'complete', summary: 'The owner said they moved to Lisbon; Naya noted the timezone change.', endedAt: NOW, now: NOW }));
+    insertPastSummary(h.store, 'past-1', 'The owner said they moved to Lisbon; Naya noted the timezone change.');
     // One store read serves both surfaces.
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     const section = buildEarlierConversationsSection(candidates, { now: NOW + 1, timeZone: 'UTC' });
@@ -324,7 +339,7 @@ test('a summary completes through the real controlled() path within its computed
   try {
     withTurns(h.store, 's-real');
     const model = distillAdapter('The owner asked about the calendar.');
-    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => Date.now(), log: () => {} });
+    const s = summarizer(h.store, model, 'Naya', { modelId: 'gemini-2.5-flash', now: () => Date.now() });
     await s.distill('s-real');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-real'))!;
     assert.equal(row.status, 'complete');
@@ -338,7 +353,7 @@ test('an already-expired absolute deadline fails loud through the real controlle
     withTurns(h.store, 's-expired');
     let transports = 0;
     const model = distillAdapter('never sent', async () => { transports++; throw Error('transport must not run'); });
-    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => Date.now(), deadlineBudgetMs: -1, log: () => {} });
+    const s = summarizer(h.store, model, 'Naya', { modelId: 'gemini-2.5-flash', now: () => Date.now(), deadlineBudgetMs: -1 });
     await s.distill('s-expired');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-expired'))!;
     assert.equal(row.status, 'failed');
@@ -358,10 +373,10 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
     seedSession(h.store, 's-nojournal');
     h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-nojournal', status: 'failed', errorCode: 'deadline', endedAt: NOW + 100, now: NOW }));
 
-    const bounded = h.store.transaction(tx => summaries.failedDeadlineSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
+    const bounded = h.store.transaction(tx => summaries.failedRetryableSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
     assert.equal(bounded.length, 30, 'the requeue list is capped at the newest 30');
     assert.equal(bounded[0]!.liveSessionId, 's-rec-35', 'newest first');
-    assert.equal(h.store.transaction(tx => summaries.countFailedDeadlineSessionsWithJournal(tx)), 36, 'a row with no journal is excluded');
+    assert.equal(h.store.transaction(tx => summaries.countFailedRetryableSessionsWithJournal(tx)), 36, 'a row with no journal is excluded');
 
     const model = new FakeModel([reply('{"skip": false, "summary": "recovered"}')]);
     await summarizer(h.store, model).requeueFailed();
@@ -377,8 +392,8 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
 test('twenty complete summaries fill the space left under the target instead of the old six', () => {
   const h = open();
   try {
-    for (let i = 0; i < 20; i++) h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: `past-${String(i).padStart(2, '0')}`,
-      status: 'complete', summary: `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, endedAt: NOW - i * 3_600_000, now: NOW }));
+    for (let i = 0; i < 20; i++) insertPastSummary(h.store, `past-${String(i).padStart(2, '0')}`,
+      `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, NOW - i * 3_600_000);
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     assert.equal(candidates.length, 20);
     const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
@@ -491,7 +506,7 @@ test('migration v6 upgrades a populated v5 database and v1 rows read as openLoop
     before.close();
     const after = new Store(dir, [...domainMigrations, ...liveMigrations]);
     try {
-      assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), domainMigrations.map(m => m.version));
       const old = after.transaction(tx => summaries.getBySession(tx, 's-old'))!;
       assert.equal(old.status, 'complete');
       assert.equal(old.summary, 'The owner said they moved to Lisbon.');

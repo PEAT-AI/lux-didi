@@ -65,7 +65,7 @@ class FakeModel implements ModelPort {
 }
 
 function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya') {
-  return createSummarizer({ store, model, modelId: 'synthetic-text-model', assistantName, timeZone: 'UTC', now: () => NOW, log: () => {} });
+  return createSummarizer({ store, model, modelId: 'synthetic-text-model', assistantName, timeZone: 'UTC', now: () => NOW, log: () => {}, delay: () => Promise.resolve() });
 }
 
 function withTurns(store: Store, id: string, outcome?: string): void {
@@ -358,10 +358,10 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
     seedSession(h.store, 's-nojournal');
     h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-nojournal', status: 'failed', errorCode: 'deadline', endedAt: NOW + 100, now: NOW }));
 
-    const bounded = h.store.transaction(tx => summaries.failedDeadlineSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
+    const bounded = h.store.transaction(tx => summaries.failedRetryableSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
     assert.equal(bounded.length, 30, 'the requeue list is capped at the newest 30');
     assert.equal(bounded[0]!.liveSessionId, 's-rec-35', 'newest first');
-    assert.equal(h.store.transaction(tx => summaries.countFailedDeadlineSessionsWithJournal(tx)), 36, 'a row with no journal is excluded');
+    assert.equal(h.store.transaction(tx => summaries.countFailedRetryableSessionsWithJournal(tx)), 36, 'a row with no journal is excluded');
 
     const model = new FakeModel([reply('{"skip": false, "summary": "recovered"}')]);
     await summarizer(h.store, model).requeueFailed();

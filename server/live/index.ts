@@ -1483,7 +1483,8 @@ export class LiveSessionOwner {
   #armDeadAir(handle: ActiveSession): void {
     if (this.#settled(handle)) return;
     // 3j: the tool result is conversational activity, so the idle clock restarts here rather than on mic frames.
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    // A muted session suspends that clock as well, so research finishing while muted cannot time the call out.
+    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs);
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
     this.#armDelegationDeadline(handle);

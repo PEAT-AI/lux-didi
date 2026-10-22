@@ -5232,12 +5232,14 @@ test('MUTE: a muted turn still delivers its tool result, and the answer it earns
   fake.emit(portEvent(audibleFrame));
   await settlePort();
   assert.equal(chunks.filter(chunk => chunk.kind === 'audio').length, 0, 'a muted owner is played none of the answer');
+  assert.deepEqual(texts, [], 'and nothing is spoken about it while the owner is still muted');
 
-  attachment.setInputMuted(false);
-  await settlePort();
-  scheduler.now += 2_000; scheduler.runDue(); await settlePort();
-  assert.equal(texts.length, 1, 'the silent owner gets one short item that the answer arrived while muted');
-  attachment.close();
+  // The tool result restarted the idle clock in the ordinary path. A muted session must not idle out,
+  // so the only thing that can end it is the host's own cost cap.
+  scheduler.now += 600_000; scheduler.runDue(); await settlePort();
+  const terminal = h.owner.get(session.liveSessionId).terminal;
+  assert.deepEqual(terminal, { state: 'closed', code: 'muted_expired' },
+    'a muted session ends on the mute cost cap, never as idle_timeout');
   await attachment.done;
 });
 

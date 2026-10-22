@@ -52,6 +52,16 @@ function seedTurn(store: Store, id: string, kind: 'inputTranscription' | 'output
     [id, kind, text, text.length, NOW]));
 }
 
+/**
+ * A complete summary the selector can offer: since migration 8 a row must carry the class and the source revision
+ * it witnessed, and the session must still have its history eligibility row.
+ */
+function insertPastSummary(store: Store, id: string, summary: string, endedAt = NOW): void {
+  seedSession(store, id);
+  store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: id, status: 'complete', summary,
+    dataClass: 'ordinary', sourceRevision: 1, endedAt, now: NOW }));
+}
+
 function reply(text: string, status: ModelResult['status'] = 'complete'): ModelResult {
   return { status, text, providerContent: { role: 'model', parts: [{ text }] }, reason: '',
     prompt: { version: 'fixture', hash: 'fixture', omittedContextIds: [] },
@@ -117,7 +127,7 @@ test('the input cap keeps the first 4000 and last 20000 characters and marks the
 test('a complete distillation stores one row with the session provenance', async () => {
   const h = open();
   try {
-    seedSession(h.store, 's-complete', { memoryProvenance: { status: 'empty', selectedIds: [], omitted: [], injectedSummaryIds: ['prior-a'] } });
+    seedSession(h.store, 's-complete', { memoryProvenance: { status: 'empty', selectedIds: [], omitted: [], injectedSummaryIds: [] } });
     seedTurn(h.store, 's-complete', 'inputTranscription', 'What is on my plate?');
     seedTurn(h.store, 's-complete', 'inputTranscription', 'And tomorrow?');
     seedTurn(h.store, 's-complete', 'outputTranscription', 'You have two meetings.');
@@ -297,7 +307,7 @@ test('migration v5 upgrades a populated v4 database preserving sessions and turn
 test('voice and text chat render the same summary for the same past session', () => {
   const h = open();
   try {
-    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 'past-1', status: 'complete', summary: 'The owner said they moved to Lisbon; Naya noted the timezone change.', endedAt: NOW, now: NOW }));
+    insertPastSummary(h.store, 'past-1', 'The owner said they moved to Lisbon; Naya noted the timezone change.');
     // One store read serves both surfaces.
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     const section = buildEarlierConversationsSection(candidates, { now: NOW + 1, timeZone: 'UTC' });
@@ -382,8 +392,8 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
 test('twenty complete summaries fill the space left under the target instead of the old six', () => {
   const h = open();
   try {
-    for (let i = 0; i < 20; i++) h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: `past-${String(i).padStart(2, '0')}`,
-      status: 'complete', summary: `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, endedAt: NOW - i * 3_600_000, now: NOW }));
+    for (let i = 0; i < 20; i++) insertPastSummary(h.store, `past-${String(i).padStart(2, '0')}`,
+      `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, NOW - i * 3_600_000);
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     assert.equal(candidates.length, 20);
     const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],

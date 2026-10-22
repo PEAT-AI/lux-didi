@@ -1369,3 +1369,77 @@ test('W10: a connected endpoint whose read grant has not published is named, wit
   // Without a granted set the report is the one W9 wrote: a connected endpoint is not reported.
   assert.deepEqual(configuredSourcesForEndpoints(endpoints), []);
 });
+
+// --- ROUTE-1022 (#526): route without waiting, answer with the source asked about ---------------
+
+const calendarEvent = { id: 'e1', start: '1970-01-02T10:00:00Z', summary: 'Standup with Ana' };
+const calendarPage = (key: string, name: string): IntentSubResult => ({ key, name, ok: true, ...shapeGcalList({ events: [calendarEvent] }) } as IntentSubResult);
+
+test('ROUTE-1022: a calendar question never calls the selector and answers with the calendar', async () => {
+  const clock = fakeClock();
+  let selectorCalls = 0;
+  const selector: ResearchSelector = { select: async () => { selectorCalls += 1; return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
+  const execute: ResearchDeps['execute'] = async subs => {
+    const calendar = subs.some(call => call.name === 'calendar_list_events');
+    await new Promise<void>(resolve => { clock.schedule(() => resolve(), calendar ? 4_700 : 2_900); });
+    return subs.map(call => call.name === 'calendar_list_events' ? calendarPage(call.key, call.name) : sub(call.name, 'a stored note', true, call.key));
+  };
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute, configured: ['knowledge', 'calendar'] });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  await tick();
+  clock.advance(2_900); await settle();
+  clock.advance(4_500); await settle();
+  clock.advance(4_700); await settle();
+  const reply = await running;
+  assert.equal(selectorCalls, 0, 'an unambiguous calendar question never spends the selector call');
+  assert.match(JSON.stringify(reply['findings']), /Standup/, 'the first answer waits for the calendar the question is about');
+  assert.equal(h.logs[0]!.driver, 'routed');
+});
+
+test('ROUTE-1022: the selector is capped at 1.5 s and its failure still answers from the recipe', async () => {
+  assert.equal(RESEARCH.selectorDeadlineMs, 1_500);
+  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
+  const h = harness({ selector: timedOut });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  assert.equal(h.logs[0]!.fallbackUsed, true);
+  assert.equal(h.logs[0]!.driver, 'fallback');
+  assert.ok(Array.isArray(reply['findings']));
+});
+
+test('ROUTE-1022: a second start for the same owner question attaches instead of cancelling', async () => {
+  const gate = deferred<void>();
+  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = scheduler.call({ action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  await tick();
+  const second = scheduler.call({ action: 'start', question: "what's on my calendar tomorrow?" }, new AbortController().signal);
+  await tick();
+  gate.resolve();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a['superseded'], undefined, 'the run in flight is never cancelled by a repeated question');
+  assert.equal(b['researchId'], a['researchId'], 'both calls read the same run');
+  assert.deepEqual(b['findings'], a['findings']);
+  assert.equal(h.joined.length, 1);
+});
+
+test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one names what is still reading', async () => {
+  const complete = harness({ selector: knowledge });
+  const done = await runResearch(complete.deps, { action: 'start', question: 'q' }, new AbortController().signal);
+  assert.equal(done['status'], 'complete');
+  assert.equal(done['canContinue'], false);
+  assert.equal(done['note'], RESEARCH.completeNote);
+  const clock = fakeClock();
+  const slow: ResearchDeps['execute'] = async subs => {
+    await new Promise<void>(resolve => { clock.schedule(() => resolve(), 20_000); });
+    return subs.map(call => call.name === 'calendar_list_events' ? calendarPage(call.key, call.name) : sub(call.name, 'a stored note', true, call.key));
+  };
+  const h = harness({ selector: knowledge, now: clock.now, schedule: clock.schedule, execute: slow, configured: ['knowledge', 'calendar'] });
+  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  await tick();
+  clock.advance(4_500); await settle();
+  clock.advance(20_000); await settle();
+  const partial = await running;
+  assert.equal(partial['status'], 'partial');
+  assert.equal(partial['canContinue'], true);
+  assert.match(String(partial['note']), /calendar/, 'a partial reply names exactly what is still reading');
+});

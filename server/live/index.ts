@@ -325,6 +325,8 @@ interface ActiveSession {
   mutedResponse: boolean;
   /** L19: whether this turn's reply has an output transcript row; a spoken turn without one is receipted. */
   outputJournalled: boolean;
+  /** L19: this turn produced audible speech, which survives the trailing modelTurnStarted of the same batch. */
+  spokenThisTurn: boolean;
   /** L7: the muted time inside this turn, so `live_dead_air` measures the wait the owner actually heard. */
   mutedMs: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
@@ -1363,7 +1365,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, spokenThisTurn: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -2306,8 +2308,8 @@ export class LiveSessionOwner {
         if (event.type === 'turnComplete' || event.type === 'interrupted') handle.mutedResponse = false;
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
-          // The previous response is over: only now may a new one play (LIVE2-R6 F1).
-          handle.dropResponse = false; handle.outputJournalled = false;
+          // A trailing modelTurnStarted of the same batch never reopens a cancelled response (LIVE2-R6 F1).
+          if (handle.turnCompleteSeen) { handle.dropResponse = false; handle.outputJournalled = false; handle.turnCompleteSeen = false; }
           if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
@@ -2408,8 +2410,9 @@ export class LiveSessionOwner {
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
           // L19 second clause: a reply that was spoken with no transcript row is receipted, never silent.
-          if (handle.firstAudioAt !== undefined && !handle.outputJournalled)
+          if (handle.spokenThisTurn && !handle.outputJournalled)
             hostLogEvent({ event: 'live_reply_unjournalled', liveSessionId: handle.liveSessionId, generation: handle.generation });
+          handle.spokenThisTurn = false; handle.dropResponse = false;
           handle.speaking = false; this.#cancelSpeakingHold(handle); handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
@@ -2445,6 +2448,7 @@ export class LiveSessionOwner {
             const sinceOpen = handle.openedAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.openedAt);
             const sinceReady = handle.readyAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.readyAt);
             const answer = handle.researchAnsweredAt !== undefined;
+            handle.spokenThisTurn = true;
             hostLogEvent({ event: answer ? 'live_answer_audio' : 'live_first_audio', liveSessionId: handle.liveSessionId, generation, msSinceReady: sinceReady, msSinceOpen: sinceOpen });
             if (handle.inputFinalAt !== undefined) {
               hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs) });

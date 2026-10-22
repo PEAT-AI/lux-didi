@@ -2360,8 +2360,9 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   await tick(); await tick();
   // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.
   const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [session.liveSessionId]));
-  assert.ok(rows.length >= 1, 'the first spoken reply of the call has its transcript row');
-  assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 0, 'and the unjournalled receipt stays silent when a row exists');
+  // The provider sent no output transcript at all: the reply is receipted, never silent.
+  assert.equal(rows.length, 0, 'the fake provider sent no transcript row');
+  assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 1, 'the spoken reply is receipted');
 });
 
 test('L14: a tag split across two deltas is stripped from the assembled seed, and other brackets survive', async t => {

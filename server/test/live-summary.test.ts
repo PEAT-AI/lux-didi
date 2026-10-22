@@ -193,6 +193,40 @@ test('a summary that fails for a transient reason is retried with backoff, then 
   } finally { h.cleanup(); }
 });
 
+test('a summary writes a pending row before the model call and replaces it with the outcome', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-pending');
+    const seen: (summaries.SummaryRecord | null)[] = [];
+    const model: ModelPort = {
+      async generate(): Promise<ModelResult> {
+        seen.push(h.store.transaction(tx => summaries.getBySession(tx, 's-pending')));
+        return modelResult('complete', '{"skip": false, "summary": "The owner discussed the mint window."}');
+      },
+    };
+    await worker(h.store, model, []).distill('s-pending');
+    assert.equal(seen[0]?.status, 'failed', 'a row exists before the model call');
+    assert.equal(seen[0]?.errorCode, summaries.PENDING_SUMMARY_ERROR_CODE, 'and it says the summary is in flight');
+    const done = storedRow(h.store, 's-pending')!;
+    assert.equal(done.status, 'complete', 'the outcome replaces the in-flight row');
+    assert.equal(done.errorCode, null, 'and the in-flight code is gone');
+  } finally { h.cleanup(); }
+});
+
+test('a pending row left by a host that exited is requeued at the next start', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-pending-crash');
+    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-pending-crash', status: 'failed',
+      errorCode: summaries.PENDING_SUMMARY_ERROR_CODE, retryCount: 0, now: SUMMARY_NOW }));
+    const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "late"}')]);
+    const waits: number[] = [];
+    await worker(h.store, model, waits).requeueFailed();
+    assert.deepEqual(waits, [SUMMARY_BOOT_REQUEUE_DELAY_MS], 'the boot requeue waits out the start-up window');
+    assert.equal(storedRow(h.store, 's-pending-crash')!.status, 'complete', 'the orphaned summary is distilled');
+  } finally { h.cleanup(); }
+});
+
 test('a summary that failed in one host start is retried at the next start, after the boot delay', async () => {
   const h = summarizerFixture();
   try {

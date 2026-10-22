@@ -126,7 +126,7 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
-const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, liveSessionId: LIVE_SESSION_ID, generation: 4 };
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, liveSessionId: LIVE_SESSION_ID, generation: 4 };
 test('live_recovery keeps a closed metadata-only shape', () => {
   assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
   assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');

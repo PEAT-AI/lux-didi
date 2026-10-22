@@ -772,6 +772,22 @@ test('the same socket death with an open delegation detaches once and ends the s
   await pumpIntoDeadSocket(t, true);
 });
 
+test('a Quit ends the live session as app_quit, never as the Stop button', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const quitSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => quitSink());
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'quit-reason');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what the owner said' } } });
+  await drain(h, session.liveSessionId, 2);
+  await h.owner.shutdown();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'app_quit' });
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.equal(end.length, 1, 'one receipt for the Quit');
+  assert.deepEqual(end[0], { event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+});
+
 test('a user Stop ends the live session at once as user_stop and keeps its journal', async t => {
   const scheduler = new DeadlineClock();
   const receipts: Record<string, unknown>[] = [];
@@ -2213,47 +2229,59 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   await attachment.done;
 });
 
-test('three consecutive failed recoveries end the call, each with its own new socket', async t => {
+test('a drop that outlasts the 60 s budget settles the call resume_failed, never at a fixed attempt count', async t => {
   const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
   const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
-  const { session, attachment } = await attached(h, 'recovery-bound');
-  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-bound-resumption-secret' } });
-  // Each recovery socket fails before it is ready; backoff is 0 s, then 2 s, then 5 s.
-  h.f.remoteClose('', 1011);
-  await h.f.frame(2); h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
-  await h.f.frame(3); h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
-  await h.f.frame(4); h.f.remoteClose('', 1011);
+  const { session, attachment } = await attached(h, 'recovery-budget');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-budget-resumption-secret' } });
+  const dropAt = scheduler.now;
+  h.f.remoteClose('', 1006);
+  // Every recovery socket dies before its ready event until the whole budget has passed.
+  let refused = 1;
+  while (scheduler.now - dropAt < 60_000) {
+    refused += 1;
+    await advanceUntil(h.advance, scheduler, () => h.f.connections >= refused);
+    await h.f.frame(refused);
+    h.f.remoteClose('', 1006);
+  }
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 4, 'three failed recoveries, each a new socket, then the call ends');
-  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+  assert.ok(refused > 4, 'the call kept reopening far past the old three-attempt cap');
+  const recoveries = receipts.filter(record => record.event === 'live_recovery');
+  assert.ok(recoveries.length >= refused - 1, 'every attempt is a receipt');
+  assert.ok(recoveries.every(record => typeof record['msSinceDrop'] === 'number' && Number(record['msSinceDrop']) >= 0),
+    'each attempt names how long the episode had been running');
+  assert.deepEqual(recoveries.map(record => record['attempt']), recoveries.map((_, index) => index + 1), 'the count is consecutive');
+  h.owner.revoke(session.liveSessionId);
 });
 
-test('#527: sockets that die before ready end the call at the ceiling instead of storming', async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-reset-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+test('a network that returns inside the budget recovers the call instead of ending it', async t => {
   const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
   const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
-  const { session, attachment } = await attached(h, 'recovery-reset');
-  h.f.send({ serverContent: { inputTranscription: { text: 'first turn', finished: true } } });
-  await settlePort();
-  const first = h.f.connections;
-  h.f.remoteClose('', 1011);
-  // Every new socket dies before its ready event: each is one failed attempt that pays its own backoff.
-  for (const expected of [2, 3, 4]) {
-    await advanceUntil(h.advance, scheduler, () => h.f.connections >= expected);
-    h.f.remoteClose('', 1011);
+  const { session } = await attached(h, 'recovery-survives');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-survives-resumption-secret' } });
+  const dropAt = scheduler.now;
+  h.f.remoteClose('', 1006);
+  // Refuse every open for 21 s (two attempts), then the network is back and the next socket goes live.
+  for (let refused = 2; scheduler.now - dropAt < 21_000; refused += 1) {
+    await advanceUntil(h.advance, scheduler, () => h.f.connections >= refused);
+    await h.f.frame(refused);
+    h.f.remoteClose('', 1006);
+    assert.ok(scheduler.now - dropAt < 60_000, 'the outage is inside the budget');
   }
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' }, 'the ceiling ends the call');
-  assert.equal(h.f.connections, 4, 'one socket and three attempts, never an endless round');
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attempt?: number; code?: string });
-  const recoveries = lines.filter(line => line.event === 'live_recovery');
-  assert.deepEqual(recoveries.map(line => line.code), ['open_failed', 'open_failed', 'open_failed'], 'a socket that never said ready is a failed attempt, never an opening');
-  assert.deepEqual(recoveries.map(line => line.attempt), [1, 2, 3], 'and the count is consecutive');
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
+  await h.f.frame(4);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(h.owner.get(session.liveSessionId).terminal, undefined, 'the call is still up after the outage');
+  assert.ok(receipts.filter(record => record.event === 'live_recovery').every(record => typeof record['msSinceDrop'] === 'number'),
+    'every attempt names how long the episode had been running');
+  h.f.send({ serverContent: { inputTranscription: { text: 'after the blip', finished: true } } });
   h.owner.revoke(session.liveSessionId);
-  void first;
 });
 
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {

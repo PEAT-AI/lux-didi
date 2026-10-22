@@ -41,6 +41,13 @@ function liveSession(t: TestContext, rows: readonly Row[]): Store {
   return f.store;
 }
 
+/** A refusal carries the guidance she must say; the code and shape are asserted exactly, so it is stripped here. */
+function refusal(result: Record<string, unknown>): Record<string, unknown> {
+  const { guidance, ...rest } = result;
+  assert.equal(typeof guidance, 'string', 'every refusal carries guidance she must say');
+  return rest;
+}
+
 function remember(store: Store, text: string, now = NOW) {
   return store.transaction(tx => rememberOwnerNote(tx, SESSION, { text, kind: 'preference' }, now));
 }
@@ -69,36 +76,36 @@ test('a note whose content only appears in the model output transcript is refuse
     { text: 'what is worth remembering here', finished: true },
     { kind: 'outputTranscription', text: 'Rob prefers short answers in the morning', finished: true },
   ]);
-  assert.deepEqual(await remember(store, 'Rob prefers short answers in the morning'), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a note copied from a tool result is refused', async t => {
   const store = liveSession(t, [{ text: 'what does the mint entry say', finished: true }]);
-  assert.deepEqual(await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon'), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a support ratio below 60 percent is refused, and exactly 60 percent is accepted', async t => {
   const store = liveSession(t, [{ text: 'the plumber comes on tuesday morning with a ladder', finished: true }]);
-  assert.deepEqual(await remember(store, 'plumber tuesday drill attachment hammer wrench'), { remembered: false, code: 'owner_text_mismatch' },
+  assert.deepEqual(refusal(await remember(store, 'plumber tuesday drill attachment hammer wrench')), { remembered: false, code: 'owner_text_mismatch' },
     'two of five content words is 40 percent');
   assert.equal((await remember(store, 'plumber tuesday morning ladder drill')).remembered, true, 'three of five content words is 60 percent');
 });
 
 test('an owner turn older than the ten minute window is refused', async t => {
   const store = liveSession(t, deltas(LONG_TURN, NOW - 11 * MINUTE));
-  assert.deepEqual(await remember(store, 'Rob prefers short answers in the morning'), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('the same supporting owner turn is remembered once', async t => {
   const store = liveSession(t, deltas(LONG_TURN));
   const first = await remember(store, 'Rob prefers short answers in the morning');
   assert.equal(first.remembered, true);
-  assert.deepEqual(await remember(store, 'Rob prefers short answers in the morning'), { remembered: false, code: 'already_remembered', entryId: first.entryId });
+  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'already_remembered', entryId: first.entryId });
 });
 
 test('a note the owner marked private stays refused', async t => {
   const store = liveSession(t, [{ text: 'remember this as private: the mint is Friday', finished: true }]);
-  assert.deepEqual(await remember(store, 'the mint is Friday'), { remembered: false, code: 'private_memory_unsupported' });
+  assert.deepEqual(refusal(await remember(store, 'the mint is Friday')), { remembered: false, code: 'private_memory_unsupported' });
 });
 
 test('a third-person paraphrase of one owner sentence is stored', async t => {
@@ -123,13 +130,13 @@ test('a note combining words from no owner turn is still refused', async t => {
     { text: 'remember the plumber comes on tuesday', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  assert.deepEqual(await remember(store, 'the dentist needs a passport in lisbon'), { remembered: false, code: 'owner_text_mismatch' });
+  assert.deepEqual(refusal(await remember(store, 'the dentist needs a passport in lisbon')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
 test('a note that negates what the owner affirmed is refused', async t => {
   // Every content word is spoken, but the claim is the opposite one: the ratio cannot see polarity.
   const store = liveSession(t, [{ text: 'i want the tuesday plumber to come with a ladder', finished: true }]);
-  assert.deepEqual(await remember(store, 'Rob does not want the tuesday plumber to come with a ladder'),
+  assert.deepEqual(refusal(await remember(store, 'Rob does not want the tuesday plumber to come with a ladder')),
     { remembered: false, code: 'owner_text_mismatch' });
 });
 
@@ -196,4 +203,25 @@ test('the memory_note receipt is a closed shape of counts and no text', async ()
   assert.equal(safeEvent({ ...receipt, supportRatio: 2 }), undefined, 'a ratio is a share');
   assert.equal(safeEvent({ event: 'memory_note', remembered: false, code: 'owner_text_mismatch', words: 4, supportRatio: 0.25 }), undefined,
     'the window turn count is part of the receipt');
+});
+
+test('a mismatch says the note was not saved and asks for one sentence', async t => {
+  const store = liveSession(t, [{ text: 'i take tea with milk', finished: true }]);
+  const result = await remember(store, 'the dentist needs a passport in lisbon');
+  assert.equal(result.remembered, false);
+  assert.equal(result.code, 'owner_text_mismatch');
+  assert.match(String(result.guidance), /not saved/i);
+  assert.match(String(result.guidance), /one sentence/i);
+});
+
+test('a note keeping under a fifth of a long request returns partial and says what was saved', async t => {
+  const request = 'remember that i want the blue folder carried to the upstairs office before the plumber comes on tuesday '
+    + 'and that the spare key stays in the kitchen drawer by the back door so nobody has to wait outside in the rain again '
+    + 'because the last time the bell was broken and nobody heard it from the garden';
+  const store = liveSession(t, [{ text: request, finished: true }]);
+  const result = await remember(store, 'blue folder');
+  assert.equal(result.remembered, true);
+  assert.equal(result.status, 'partial', 'two words of a long request is a fragment');
+  assert.match(String(result.guidance), /blue folder/);
+  assert.match(String(result.guidance), /one sentence/i);
 });

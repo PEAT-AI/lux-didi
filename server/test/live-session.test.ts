@@ -4855,7 +4855,7 @@ test('mail integration: the deterministic plan shares the native page collector'
   const reply = frame.toolResponse.functionResponses[0]!.response;
   const calls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(calls.length, 2);
   // ROUTE-1022: the fallback plan sends its own window query, and the native page collector follows it.
-  assert.equal(String((calls[0]!.args as Record<string, unknown>)['q']), 'newer_than:2d', 'the plan sent its own mail query, not a selector one');
+  assert.equal(String((calls[0]!.args as Record<string, unknown>)['q']), 'in:inbox newer_than:14d', 'the plan sent its own inbox scan, not a selector one');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
 });

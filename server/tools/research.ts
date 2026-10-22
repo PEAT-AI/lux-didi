@@ -418,6 +418,9 @@ const MAIL_FILLER = new Set([
   'whether', 'if', 'actually', 'someone', 'anyone', 'still', 'currently', 'recently', 'earlier', 'later', 'think',
   'mention', 'mentioning', 'mentions', 'mentioned', 'thread', 'threads', 'share', 'shared', 'shares', 'sharing', 'next', 'before', 'after',
   'came', 'come', 'coming', 'went', 'gone', 'arrived', 'thanks', 'thank', 'cheers', 'regards', 'hello', 'hi', 'hey',
+  // INTEG-R2: the instruction words of an inbox ask are never Gmail search terms, so
+  // 'show me anything in my email' compiles to the plain recent-inbox scan instead.
+  'list', 'show', 'anything', 'everything', 'recent', 'latest', 'new',
 ]);
 /** The correspondence verbs that make "mail from or to that person" explicit. */
 const MAIL_DIRECTION = /\b(?:from|to|sent|send|received|receive|reply|replied|wrote|written|email|emails|emailed|mailed|hear from|heard from)\b/iu;

@@ -43,9 +43,9 @@ test('research publishes one live step per actual source read, including mail bo
     const starts = collector.steps.filter(step => step.phase === 'start');
     const ends = collector.steps.filter(step => step.phase === 'end');
     // RUN-R3: with the selector gone the fallback plan dispatches chat before mail, and knowledge stays first.
-    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'chat', 'mail', 'mail']);
+    assert.deepEqual(starts.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
     assert.deepEqual(starts.map(step => step.action), ['search', 'search', 'search', 'read']);
-    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'chat', 'mail', 'mail']);
+    assert.deepEqual(ends.map(step => step.source), ['knowledge', 'mail', 'chat', 'mail']);
     assert.deepEqual(ends.map(step => step.action), ['search', 'search', 'search', 'read']);
     for (const step of collector.steps) {
       assert.equal(step.callId, CALL_ID, 'every step names the research call it belongs to');

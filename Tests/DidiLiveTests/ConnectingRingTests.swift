@@ -103,6 +103,8 @@ import Foundation
             "the chime gain is 0.15 with a 15 ms fade")
         try require(ConnectingChimeTone.noteFrames == 2400 && ConnectingChimeTone.gapFrames == 1200
             && ConnectingChimeTone.secondOnset == 3600, "the chime timing in frames is pinned")
+        try require(ConnectingChimeTone.lengthMs == 250,
+            "the bounded chime stop uses the 250 ms length, got \(ConnectingChimeTone.lengthMs)")
         let chimePeak = chime.map { abs($0) }.max() ?? 0
         try require(chimePeak <= 0.15 + 0.0001 && chimePeak > 0.14,
             "the chime peak stays at 0.15, got \(chimePeak)")
@@ -145,7 +147,9 @@ import Foundation
         let clock = TestClock()
         let output = RecordingRingOutput()
         var records: [[String: Any]] = []
-        let ring = ConnectingRing(output: output, now: { clock.ms }, deferStart: { body in body() })
+        var pending: [@MainActor () -> Void] = []
+        let ring = ConnectingRing(output: output, now: { clock.ms }, deferStart: { body in body() },
+                                  after: { _, body in pending.append(body) })
         ring.receipt = { records.append($0) }
         ring.presenceChanged(.connecting, failed: false)
         try require(output.plays == 1, "connecting starts the loop once, got \(output.plays)")
@@ -163,6 +167,15 @@ import Foundation
         try require(output.chimes == 1, "live plays the connected chime once, got \(output.chimes)")
         try require(output.order == ["ring", "ramp", "chime"],
             "the chime follows the ring's ramp, got \(output.order)")
+        // F1: the chime's own stop is scheduled, and firing it releases the player and the engine.
+        try require(pending.count == 1, "one chime stop is scheduled, got \(pending.count)")
+        try require(output.engineRunning, "the chime holds the player while it plays")
+        pending.removeFirst()()
+        try require(output.stopCalls == 1 && !output.engineRunning,
+            "the chime's stop runs once and the engine is released, got \(output.stopCalls) stop(s)")
+        // A second call's call-start reading sees no Didi engine: the device is free again.
+        let callStartBusy = output.engineRunning
+        try require(!callStartBusy, "a second call's call-start reading sees the device free")
         try require(records[0]["played"] as? Bool == true, "the record says the ring played")
         try require(records[0]["chime"] as? Bool == true, "the record says the chime played")
 
@@ -182,6 +195,8 @@ import Foundation
             "the record names the failure, got \(String(describing: failedRecords.first?["reason"]))")
         try require(failedRecords.first?["ms"] as? Int == 900, "the failed ring is 900 ms")
         try require(failedOutput.chimes == 0, "a failed connect plays no chime")
+        try require(!failedOutput.engineRunning && failedOutput.stopCalls == 0,
+            "a failed connect leaves no engine running and schedules no chime stop")
         try require(failedRecords.first?["chime"] as? Bool == false &&
                     failedRecords.first?["played"] as? Bool == true,
             "the failed ring played and chimed nothing")
@@ -214,6 +229,8 @@ import Foundation
         warmRing.presenceChanged(.live, failed: false)
         try require(warmOutput.plays == 0 && warmOutput.ramps.isEmpty, "a warm unmute plays nothing")
         try require(warmOutput.chimes == 0, "a warm unmute plays no connected chime")
+        try require(!warmOutput.engineRunning && warmOutput.stopCalls == 0,
+            "a warm unmute leaves no engine running and stops nothing")
         try require(warmRecords.isEmpty, "a warm unmute leaves no record")
 
         // Example 5: the ring's own player refuses to start, so the record says it never played.
@@ -237,38 +254,83 @@ import Foundation
         let muteOutput = RecordingRingOutput()
         muteOutput.chimeResult = false
         var muteRecords: [[String: Any]] = []
+        var mutePending: [@MainActor () -> Void] = []
         let muteRing = ConnectingRing(output: muteOutput, now: { muteClock.ms },
-                                      deferStart: { body in body() })
+                                      deferStart: { body in body() },
+                                      after: { _, body in mutePending.append(body) })
         muteRing.receipt = { muteRecords.append($0) }
         muteRing.presenceChanged(.connecting, failed: false)
         muteClock.ms = 500
         muteRing.presenceChanged(.live, failed: false)
         try require(muteRecords.count == 1 && muteRecords[0]["chime"] as? Bool == false,
             "a chime that could not play records chime=false")
+        try require(mutePending.isEmpty && !muteOutput.engineRunning,
+            "a chime that could not play schedules no stop and leaves no engine")
+
+        // Example 7: a stop lands mid-chime. The chime's own stop still runs exactly once and the
+        // player and engine are released, so Didi holds no output device between calls.
+        let midClock = TestClock()
+        let midOutput = RecordingRingOutput()
+        var midRecords: [[String: Any]] = []
+        var midPending: [@MainActor () -> Void] = []
+        let midRing = ConnectingRing(output: midOutput, now: { midClock.ms },
+                                     deferStart: { body in body() },
+                                     after: { _, body in midPending.append(body) })
+        midRing.receipt = { midRecords.append($0) }
+        midRing.presenceChanged(.connecting, failed: false)
+        midClock.ms = 600
+        midRing.presenceChanged(.live, failed: false)
+        try require(midOutput.engineRunning && midPending.count == 1,
+            "the chime is playing with its stop pending")
+        midClock.ms = 700
+        midRing.presenceChanged(.cold, failed: false)
+        midPending.removeFirst()()
+        try require(midOutput.stopCalls == 1 && !midOutput.engineRunning,
+            "a stop during the chime stops the pair once, got \(midOutput.stopCalls) stop(s)")
+        try require(midOutput.order.filter { $0 == "chime" }.count == 1,
+            "the chime plays once, got \(midOutput.order)")
+        try require(midRecords.count == 1 && midRecords[0]["chime"] as? Bool == true,
+            "the record still names the chime that played")
     }
 
-    /// Stands in for the ring's own player, so no engine and no audio device is started.
+    /// Stands in for the ring's own player, so no engine and no audio device is started. It models
+    /// the one thing the ruling cares about: whether the player and its engine are running.
     @MainActor final class RecordingRingOutput: ConnectingRingOutput {
         private(set) var plays = 0
         private(set) var chimes = 0
         private(set) var ramps: [Int] = []
         /// The player calls in order, so the chime is proven to follow the ring's ramp.
         private(set) var order: [String] = []
+        /// The player and engine are running, as the device-busy reading would see them.
+        private(set) var engineRunning = false
+        /// The chime's own stop: `stopOutput` calls.
+        private(set) var stopCalls = 0
+        /// The ramp-down's own player.stop(); engine.stop() pair.
+        private(set) var rampStops = 0
         var playResult = true
         var chimeResult = true
         func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool {
             plays += 1
             order.append("ring")
+            if playResult { engineRunning = true }
             return playResult
         }
         func playChime(_ buffer: AVAudioPCMBuffer) -> Bool {
             chimes += 1
             order.append("chime")
+            if chimeResult { engineRunning = true }
             return chimeResult
+        }
+        func stopOutput() {
+            stopCalls += 1
+            order.append("stop")
+            engineRunning = false
         }
         func rampDown(overMs ms: Int, after: (@MainActor () -> Void)?) {
             ramps.append(ms)
             order.append("ramp")
+            rampStops += 1
+            engineRunning = false
             after?()
         }
     }

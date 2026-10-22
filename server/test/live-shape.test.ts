@@ -416,7 +416,7 @@ test('R6: organizer renders, and a capped attendee list says and others', () => 
 function rankedHit(id: number, title: string, body: string): string {
   return [`**#${id}** [TECHNICAL_DECISION] ${title}`, body, '  Score: 1.00' + String(id).slice(-2), ''].join('\n');
 }
-function ranked(parts) {
+function ranked(parts: readonly string[]): string {
   return ["# Knowledge Search: 'ocp prep call'", '', '_confidence: high | top score: 1.01 | relevant candidate: yes', '', ...parts].join('\n');
 }
 

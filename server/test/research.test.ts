@@ -672,6 +672,54 @@ test('R6: a question about one source waits past the first-answer point for that
   await reading;
 });
 
+test('RUN-R11: a start whose question is only instruction words joins the pending run and delivers its findings', async () => {
+  const clock = fakeClock();
+  let releaseKnowledge!: () => void;
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'search_knowledge')) return await new Promise<IntentSubResult[]>((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      releaseKnowledge = () => resolve(subs.map(call => sub(call.name, '### Insight (PATTERN) [id 7]\nthe partner ranking is settled', true, call.key)));
+    });
+    return subs.map(call => sub(call.name, 'release freeze decided on Friday', true, call.key));
+  } });
+  const reading = runResearch(h.deps, { action: 'start', question: 'what did we decide about partner ranking' }, new AbortController().signal);
+  await settle();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const pendingRun = String(h.progress[0]?.researchId);
+  const meta = runResearch(h.deps, { action: 'start', question: 'wait findings.' }, new AbortController().signal);
+  await settle();
+  releaseKnowledge();
+  const joined = await meta; const first = await reading;
+  assert.equal(joined['researchId'], pendingRun, 'the meta start joins the run that is already reading');
+  assert.match(JSON.stringify(joined['findings']) + JSON.stringify(first['findings']), /partner ranking is settled/, 'the findings it asked for arrive without a new run');
+  assert.notEqual(joined['status'], 'cancelled', 'the pending run was never cancelled');
+  assert.ok(h.logs.some(log => log.metaStartAsContinue === true), 'the receipt says the meta start became a continue');
+  assert.equal(first['researchId'], pendingRun);
+});
+
+test('RUN-R11: a superseding start aborts the old run\'s reads, and its late result never reaches a reply', async () => {
+  let aborted = 0;
+  let releaseLate: (() => void) | undefined;
+  const h = harness({ execute: async (subs, signal) => {
+    if (subs.some(call => call.name === 'gmail_search_messages')) {
+      return await new Promise<IntentSubResult[]>((resolve, reject) => {
+        signal.addEventListener('abort', () => { aborted += 1; reject(new Error('aborted')); }, { once: true });
+        releaseLate = () => resolve(subs.map(call => sub(call.name, 'OLD RUN LATE FINDING', true, call.key)));
+      });
+    }
+    return subs.map(call => sub(call.name, 'release freeze decided on Friday', true, call.key));
+  } });
+  const old = runResearch(h.deps, { action: 'start', question: 'what did the team decide about the release mail' }, new AbortController().signal);
+  await settle();
+  const fresh = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the hiring plan' }, new AbortController().signal);
+  assert.ok(aborted >= 1, 'the superseding start aborts the old run\'s connector read');
+  releaseLate?.();
+  await settle();
+  const late = await old;
+  assert.ok(h.logs.some(log => (log.supersededAborts ?? 0) > 0), 'the old run\'s receipt counts the aborted dispatch');
+  assert.doesNotMatch(JSON.stringify(late) + JSON.stringify(fresh), /OLD RUN LATE FINDING/);
+});
+
 // Reviewer T1: the source that answered keeps its own second hop, and the reader behind it is not abandoned.
 test('R6: the source that answered keeps its own second hop, and the slow reader is credited late', async () => {
   const clock = fakeClock();

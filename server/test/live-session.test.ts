@@ -4930,6 +4930,31 @@ test('Lux body integration: exact received opaque content reaches its retained t
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
 
+test('RUN-R11: a 16,800-character mail body arrives in at most four replies, every character once', async t => {
+  const body = 'Mail body evidence line. '.repeat(600).slice(0, 16_800);
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], headers: { Subject: 'Long body' }, body, bodyCoverage: { complete: true } }) });
+  const last = (): Record<string, unknown> => {
+    const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
+    return frame.toolResponse.functionResponses[0]!.response;
+  };
+  await attached(h, 'long-mail-body');
+  await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
+  const researchId = String(last()['researchId']); let collected = '', replies = 1, started = -1;
+  for (;;) {
+    const slices = last()['bodySlices'] as { text: string; offset: number }[] | undefined;
+    if (Array.isArray(slices)) for (const slice of slices) {
+      if (started < 0) started = slice.offset;
+      assert.equal(slice.offset, started + collected.length, 'every slice continues where the last one stopped');
+      collected += slice.text;
+    }
+    assert.ok(JSON.stringify(last()).length <= 6000, 'every reply stays under the reply limit');
+    if (!last()['canContinue']) break;
+    assert.ok(replies < 4, 'a 16,800 character body costs at most four replies');
+    replies += 1;
+    await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
+  }
+  assert.ok(collected.length >= body.length, 'the pages cover the whole body, with no page left behind');
+});
 test('VOICE-R4: a research call sends no status line at six seconds', async t => {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => receipts.push(raw as Record<string, unknown>) }); t.after(detach);

@@ -465,6 +465,9 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
+/** R7: the dropped-line opener is cancellable only until its own audio has started. */
+export function openerCancelled(dropOpener: boolean, openerSpoken: boolean): boolean { return dropOpener && !openerSpoken; }
+
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
 
@@ -1817,7 +1820,7 @@ export class LiveSessionOwner {
   #openTurn(handle: ActiveSession): void {
     // R7: the owner spoke before the dropped-line opener became audible, so it is cancelled and his own
     // turn is answered; once the opener is speaking it finishes, exactly as before.
-    if (handle.dropOpener) { if (!handle.spokenThisTurn) handle.dropResponse = true; handle.dropOpener = false; }
+    if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
     const connection = handle.connection;
     // #451 H12: a second owner utterance arrives before the provider's turnComplete, so the turn it
     // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.
@@ -2474,6 +2477,8 @@ export class LiveSessionOwner {
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal) {
+            // R7: the cancelled opener's frames end with the owner's turn; his answer must be audible.
+            handle.dropResponse = false;
             handle.inputFinalAt = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
@@ -2547,6 +2552,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
+      handle.dropResponse = false;
       handle.inputFinalAt = this.#now(); handle.mutedMs = 0;
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));

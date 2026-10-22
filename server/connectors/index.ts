@@ -194,7 +194,8 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           const snippetChars = args['snippet_chars'];
           if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return false;
           // MED-1022: the day bounds are two calendar days, never a date expression.
-          const isoDay = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value));
+          const isoDay = (value: unknown): boolean => value === undefined
+    || (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value);
           if (!isoDay(args['meeting_date_from']) || !isoDay(args['meeting_date_to'])) return false;
           return true;
         },

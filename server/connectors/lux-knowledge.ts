@@ -205,7 +205,8 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
   if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return { ok: false, reason: 'max-chars-out-of-range' };
   if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return { ok: false, reason: 'deadline-ms-out-of-range' };
   if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return { ok: false, reason: 'snippet-chars-out-of-range' };
-  const isoDay = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value));
+  const isoDay = (value: unknown): boolean => value === undefined
+    || (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value);
   if (!isoDay(meetingDateFrom) || !isoDay(meetingDateTo)) return { ok: false, reason: 'invalid-meeting-date' };
   return {
     ok: true,

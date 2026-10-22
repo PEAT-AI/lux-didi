@@ -474,6 +474,8 @@ export async function startHost(config: HostConfig) {
       { now: digestNow, timeZone: digestTimeZone, log: event => log.event(event) });
     const digestRefreshLog: CalendarDigestRefreshLog = event => log.event(event);
     refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), now: digestNow, log: digestRefreshLog });
+    // The supervised host defers connector start (deferConnectors), so every connector_connected lands after
+    // this bind; a host that connected inside composeMcpRuntime would fire it against the placeholder above.
     refreshCalendarFirstConnect = bindCalendarFirstConnect({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), startedAt: hostStartedAt, now: digestNow, log: digestRefreshLog });
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.

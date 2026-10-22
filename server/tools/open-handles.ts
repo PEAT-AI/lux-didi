@@ -8,7 +8,7 @@ export const OPEN_HANDLE_CAP = 3;
 export const HOME_APPS = ['gmail', 'calendar', 'mattermost'] as const;
 export type HomeApp = (typeof HOME_APPS)[number];
 export type OpenKind = 'gmail' | 'calendar' | 'docs' | 'drive' | 'youtube' | 'mattermost' | 'home' | 'file' | 'app';
-export type OpenProvenance = 'structured' | 'knowledge_body';
+export type OpenProvenance = 'structured' | 'knowledge_body' | 'mail_body';
 export interface OpenHandle { handle: string; url: string; kind: OpenKind; provenance: OpenProvenance; title: string }
 export interface SourceLink { title: string; url?: string; sourceType?: string }
 
@@ -75,22 +75,55 @@ export function homeDestination(app: HomeApp): { url: string; kind: OpenKind } |
 }
 
 const handles = new Map<string, OpenHandle>();
+/** Open2: a minted handle is openable only once its `open:` line reached the model in this session. */
+const exposed = new Set<string>();
 let session: string | undefined;
 let minted = 0;
 
 /** One registry per Live session: a new session drops every handle the last one minted. */
 export function beginHandleSession(runId: string): void {
   if (session === runId) return;
-  handles.clear(); minted = 0; session = runId;
+  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = runId;
 }
 
 export function endHandleSession(runId: string): void {
   if (session !== runId) return;
-  handles.clear(); minted = 0; session = undefined;
+  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = undefined;
 }
 
+/** A handle resolves only when its line was in the text the model was actually given. */
 export function resolveHandle(handle: string): OpenHandle | undefined {
-  return HANDLE_PATTERN.test(handle) ? handles.get(handle) : undefined;
+  return HANDLE_PATTERN.test(handle) && exposed.has(handle) ? handles.get(handle) : undefined;
+}
+
+/**
+ * Open2: called with the text handed to the model, so a handle minted for a result it never saw stays
+ * closed. Minting alone exposes nothing.
+ */
+export function exposeHandles(text: string): void {
+  // OPEN2-R5: only an exact line this session minted can expose its handle, so a lookalike inside delivered
+  // content (a mail body, a chat post, a note) never opens an item the model was never shown. The line is
+  // compared raw and JSON-escaped, because a delivered tool result is JSON text; a line the reply carries
+  // inline, such as the calendar day line, is still an exact substring of it.
+  for (const line of mintedLines) {
+    if (!text.includes(line) && !text.includes(JSON.stringify(line).slice(1, -1))) continue;
+    const handle = /^open: (L[0-9]{1,4}) = /.exec(line)?.[1];
+    if (handle !== undefined && handles.has(handle)) exposed.add(handle);
+  }
+}
+
+/** A line shaped like a handle line, which only the host writes; tool text carrying one is stripped. */
+const OPEN_LINE = /^\s*open: L[0-9]{1,4}(?:\s*=|\s|$)/;
+/** The exact handle lines this session minted, so a lookalike inside a body is never taken for one. */
+const mintedLines = new Set<string>();
+
+/**
+ * Open2: a mail body, note or chat post cannot smuggle a handle line into the model text. Only a line
+ * the host itself minted survives, and this runs before any minting this result still owes.
+ */
+export function stripOpenLines(text: string): string {
+  if (!text.includes('open: L')) return text;
+  return text.split('\n').filter(line => !OPEN_LINE.test(line) || mintedLines.has(line.trim())).join('\n');
 }
 
 function safeTitle(title: string): string {
@@ -119,31 +152,42 @@ function sourceDestination(source: SourceLink): { url: string; kind: OpenKind } 
   return destination;
 }
 
+/** One item's handle line; the provenance is the only trace of where the destination came from. */
+export function mintOpenLine(source: SourceLink): string | undefined {
+  const destination = sourceDestination(source);
+  if (!destination) return undefined;
+  const provenance: OpenProvenance = source.sourceType === 'knowledge' ? 'knowledge_body' : source.sourceType === 'mail_body' ? 'mail_body' : 'structured';
+  const handle = `L${++minted}`;
+  const title = safeTitle(source.title);
+  handles.set(handle, { handle, url: destination.url, kind: destination.kind, provenance, title });
+  const line = `open: ${handle} = ${title}${provenance === 'knowledge_body' ? ' (from knowledge note)' : ''}`;
+  mintedLines.add(line);
+  return line;
+}
+
 export function withOpenHandles<T extends { text: string; sources?: readonly SourceLink[] }>(result: T): T {
-  if (result.text.includes('\nopen: L')) return result;
+  const text = stripOpenLines(result.text);
+  const stripped = text === result.text ? result : { ...result, text };
+  // A shaper that already attached a handle to its own item keeps it; nothing is minted twice.
+  if (text.split('\n').some(line => OPEN_LINE.test(line))) return stripped;
   const lines: string[] = [];
   for (const source of result.sources ?? []) {
     if (lines.length >= OPEN_HANDLE_CAP) break;
-    const destination = sourceDestination(source);
-    if (!destination) continue;
-    const provenance: OpenProvenance = source.sourceType === 'knowledge' ? 'knowledge_body' : 'structured';
-    const handle = `L${++minted}`;
-    const title = safeTitle(source.title);
-    handles.set(handle, { handle, url: destination.url, kind: destination.kind, provenance, title });
-    lines.push(`open: ${handle} = ${title}${provenance === 'knowledge_body' ? ' (from knowledge note)' : ''}`);
+    const line = mintOpenLine(source);
+    if (line !== undefined) lines.push(line);
   }
-  return lines.length === 0 ? result : { ...result, text: `${result.text}\n${lines.join('\n')}` };
+  return lines.length === 0 ? stripped : { ...stripped, text: `${text}\n${lines.join('\n')}` };
 }
 
-/** Links the host pulls out of a knowledge body; every one still passes the destination policy. */
-export function knowledgeSourceLinks(text: string): SourceLink[] {
+/** Links the host pulls out of a body it shaped; every one still passes the destination policy. */
+export function bodySourceLinks(text: string, sourceType: 'knowledge' | 'mail_body' = 'knowledge'): SourceLink[] {
   const found: SourceLink[] = [];
   for (const raw of text.match(/https:\/\/[^\s<>"'`)\]]+/g) ?? []) {
     if (found.length >= OPEN_HANDLE_CAP) break;
     const destination = openDestination(raw.replace(/[.,;:]+$/, ''));
     if (!destination || destination.kind === 'home') continue;
     if (found.some(link => link.url === destination.url)) continue;
-    found.push({ title: kindTitle(destination.url), url: destination.url, sourceType: 'knowledge' });
+    found.push({ title: kindTitle(destination.url), url: destination.url, sourceType });
   }
   return found;
 }

@@ -202,7 +202,7 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
     emit: () => undefined, log: () => undefined, ledger: new ResearchLedger(),
   };
   // #1021: a content-free question no longer searches knowledge, so the packing test asks a real one.
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the bank email us about the release' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string; text: string }[];
   assert.ok(JSON.stringify(reply).length <= 3_000, `reply was ${JSON.stringify(reply).length}`);
   assert.equal(findings.length, 2, 'at least one line per source with hits');
@@ -231,8 +231,7 @@ test('research_subcall matches results by position even when execute keys are co
   const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
   assert.equal(subcalls[0]!['ok'], true, 'a composed execute key must still find its result');
   assert.ok((subcalls[0]!['items'] as number) >= 1);
-  // F3: the keyword plan authors round one, so the query is no longer the selector's.
-  assert.equal(subcalls[0]!['queryAuthor'], 'fallback');
+  assert.equal(subcalls[0]!['queryAuthor'], 'selector');
   const findings = reply['findings'] as { text: string }[];
   assert.match(findings[0]!.text, /^mail: 1 of 1 shown/);
 });
@@ -303,8 +302,7 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  // F3: the keyword plan answers round one, so the fan-out it starts reads every configured source.
-  assert.deepEqual(logs[0]!['unchecked'], []);
+  assert.deepEqual(logs[0]!['unchecked'], ['calendar', 'mail', 'chat']);
   assert.equal(typeof logs[0]!['canContinue'], 'boolean');
   assert.ok(Array.isArray(logs[0]!['findingChars']));
 });

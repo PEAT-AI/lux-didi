@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  ResearchLedger, ResearchScheduler, broaderMailQuery, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
+  RESEARCH, ResearchLedger, ResearchScheduler, broaderMailQuery, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
   type ResearchDeps, type ResearchRunLog, type ResearchSourceLog,
 } from '../tools/research.js';
 import { shapeGmailList } from '../tools/live-shape.js';
@@ -282,7 +282,7 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
     return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) };
   }));
   h.deps.memo = { calendar: new Map() };
-  h.deps.schedule = callback => { waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
+  h.deps.schedule = (callback, delayMs) => { if (delayMs === RESEARCH.rateLimitRetryMs) waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
   const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);

@@ -11,6 +11,7 @@ import { createLiveSessionOwner, liveMigrations, MUTE_WARM_MS, MUTED_OFFER_SILEN
   type LiveContext, type LiveAttachment, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { LIVE_CONTROLS } from '../http/live-upgrade.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm } from './live-voice-fixture.js';
@@ -219,4 +220,9 @@ test('a muted attachment accepts the same mute twice and a late frame after the 
   live.attachment.setInputMuted(false);
   await flush();
   assert.deepEqual(mutes(live).map(event => event.muted), [true, false], 'the pair is recorded in order');
+});
+
+test('the mute frames are the same closed one-key control shape the socket already parses', () => {
+  assert.deepEqual([...LIVE_CONTROLS], ['endAudioStream', 'close', 'inputMuted', 'inputLive'],
+    'the upgrader accepts exactly the mute pair the native client sends');
 });

@@ -94,11 +94,12 @@ test('gmail read reports a body cut as final, never mid-sentence and never promi
 
 test('gmail list keeps sender, date, snippet, unread flag and thread size for every message', () => {
   const shaped = shapeGmailList({ messages: [
-    { headers: { Subject: 'One', From: 'A <a@example.invalid>', Date: 'Mon' }, snippet: 'hello there', labelIds: ['UNREAD'], threadSize: 3 },
+    { id: 'm1', headers: { Subject: 'One', From: 'A <a@example.invalid>', Date: 'Mon' }, snippet: 'hello there', labelIds: ['UNREAD'], threadSize: 3 },
     { id: 'm2', headers: { Subject: 'Two', From: 'B <b@example.invalid>', Date: 'Tue' } },
   ] });
   assert.match(shaped.text, /- One \| from: A \| date: Mon \[unread\] \(thread 3\) \| hello there/);
   assert.match(shaped.text, /- Two \| from: B \| date: Tue/);
+  // A message with no id is not a readable page entry, so both entries here carry one.
   assert.equal(shaped.partial, false);
 });
 

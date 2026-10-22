@@ -278,3 +278,8 @@ test('MED-1022: an internal question that says latest never offers the web read'
   assert.ok(fallbackSelection('what is the weather in Pune', ['web']).actions.some(action => action.kind === 'web_search'), 'a public question still offers it');
   assert.deepEqual(fallbackSelection('what is the cost of the licences', ['web']).actions.filter(action => action.kind === 'web_search'), [], 'cost is internal, not public intent');
 });
+
+test('T-R5: a price question about our own licence is internal, never a web read', () => {
+  assert.deepEqual(fallbackSelection('what is our API licence price', ['web', 'knowledge']).actions.filter(action => action.kind === 'web_search'), [], 'price is how the owner asks about his own business');
+  assert.deepEqual(fallbackSelection('what are the prices on the plan', ['web']).actions.filter(action => action.kind === 'web_search'), []);
+});

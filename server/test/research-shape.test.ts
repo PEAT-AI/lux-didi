@@ -367,6 +367,10 @@ test('MED-1022: a named meeting and a date word become the connector meeting bou
   assert.equal('meeting_date_from' in (noDate[0]?.args ?? {}), false, 'a meeting with no date word is not narrowed');
   const noMeeting = candidateSubs('knowledge_search', { ...config, question: 'what did we ship yesterday' });
   assert.equal('meeting_date_from' in (noMeeting[0]?.args ?? {}), false, 'a date with no meeting named is not narrowed');
+  // T-R5: last week is the previous Monday to Sunday in the owner's zone, not an unresolved window.
+  const lastWeek = candidateSubs('knowledge_search', { ...config, question: "what did we agree in last week's call" });
+  assert.equal(lastWeek[0]?.args['meeting_date_from'], '2026-10-12', 'Monday of the previous week');
+  assert.equal(lastWeek[0]?.args['meeting_date_to'], '2026-10-18', 'and its Sunday');
 });
 
 test('MED-1022: a chat date word compiles to the ISO operator the connector parses', () => {

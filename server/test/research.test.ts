@@ -974,6 +974,17 @@ test('MED-1022: a six hit voice reply reaches the model as six hits with the top
   assert.equal(shaped.text.includes('[showing'), false, 'every hit was sent, so none is dropped');
 });
 
+// T-R5: the common narrow search finds one note and nothing else. Its body must arrive whole, or the
+// model pays the get_insight hop this change exists to remove.
+test('MED-1022: a one hit voice reply arrives whole, with no get_insight tail', () => {
+  const body = `${'Sentence about the prep call. '.repeat(70)}Final sentence marker.`;
+  const raw = ['# Knowledge Search', '', '**#91293** [TECHNICAL_DECISION] Commitment 2026-10-22', `  ${body}`, '  truncated: no (2,037 chars stored)', '  Score: 1.007'].join('\n');
+  const shaped = shapeLuxKnowledge('search_knowledge', raw);
+  assert.ok(shaped.text.includes('Final sentence marker.'), 'the one hit body is not cut to an excerpt');
+  assert.equal(shaped.partial, false, 'nothing was left out');
+  assert.equal(shaped.text.includes('get_insight'), false, 'and no round trip is asked for');
+});
+
 // --- R6: the first answer point, and what a late source hands over --------------------------------
 
 test('R6: a call answers at 4.5 s with the layers still reading, then hands over what landed later', async () => {

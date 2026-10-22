@@ -33,9 +33,12 @@ export const KNOWLEDGE_HITS = 3;
 /** A get_insight fetch is the explicit "read the whole entry" path, so it keeps the generous final
  * bound (W7-R4: >= 20000) instead of the 2000-character single-result ceiling. */
 export const KNOWLEDGE_BODY_CHARS = 20000;
-/** A ranked Markdown search reply shows every hit: one sentence-cut excerpt each, under one total bound. */
+/** A ranked Markdown search reply shows every hit: the leading body whole, one sentence-cut excerpt each
+ * behind it, under one total bound. MED-1022: the leading bound is the search's own body window, so the
+ * common one-note answer needs no get_insight hop; the total holds that body plus five excerpts. */
+export const KNOWLEDGE_RANKED_TOP_CHARS = 3000;
 export const KNOWLEDGE_RANKED_EXCERPT_CHARS = 600;
-export const KNOWLEDGE_RANKED_TOTAL_CHARS = 4000;
+export const KNOWLEDGE_RANKED_TOTAL_CHARS = 6400;
 /** Hard ceiling on the shaped text of any single model-visible Live tool result, and the larger
  * ceiling for a result that combines several sources (for example a brief). */
 export const LIVE_RESULT_CHARS = 2000;
@@ -604,19 +607,10 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
 
 const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;
 const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
-/** MED-1022: the voice reply answers the best hit in full and names each further hit on one bullet. */
-const KNOWLEDGE_VOICE_BULLET = /^- \*\*#[0-9]+\*\*/mu;
-const KNOWLEDGE_VOICE_TOP_CHARS = 3_000;
-const KNOWLEDGE_VOICE_TOTAL_CHARS = 6_000;
 
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
 function knowledgeRanked(raw: string): ShapedResult | undefined {
   const clean = stripKnowledgePreamble(raw);
-  // The voice shape spends the budget on the leading body, so its own bound is the connector's
-  // max_chars rather than the per-hit excerpt a bodies reply is already bounded by.
-  const voice = KNOWLEDGE_VOICE_BULLET.test(clean);
-  const hitChars = voice ? KNOWLEDGE_VOICE_TOP_CHARS : KNOWLEDGE_RANKED_EXCERPT_CHARS;
-  const totalChars = voice ? KNOWLEDGE_VOICE_TOTAL_CHARS : KNOWLEDGE_RANKED_TOTAL_CHARS;
   const parts = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
   if (parts.length === 0) return undefined;
   const kept: string[] = [];
@@ -633,11 +627,14 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
     for (let index = lines.length - 1; index > 0; index -= 1) { if (KNOWLEDGE_SCORE_LINE.test(lines[index]!)) { scoreAt = index; break; } }
     const inner = lines.slice(1, scoreAt > 0 ? scoreAt : lines.length).join('\n').trim();
     const score = scoreAt > 0 ? lines[scoreAt]!.trim() : '';
-    const cut = cutAtSentence(inner, hitChars);
+    // MED-1022: the leading hit is the answer, so it keeps the body window the search asked for; the
+    // hits behind it keep the short excerpt. A voice reply carries no bullet when it found one entry,
+    // so the bound follows the hit's position, never a shape marker in the text.
+    const cut = cutAtSentence(inner, kept.length === 0 ? KNOWLEDGE_RANKED_TOP_CHARS : KNOWLEDGE_RANKED_EXCERPT_CHARS);
     const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
     const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; call get_insight with ids=[${id ?? 'the id above'}] for the whole insight]` : '';
     const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
-    if (kept.length > 0 && used + text.length + 2 > totalChars) { trimmed += 1; omitted += block.length; continue; }
+    if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
     kept.push(text);
     used += text.length + 2;
     omitted += cut.omitted;

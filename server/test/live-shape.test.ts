@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cleanMailBody, cutAtSentence, noEmptyResult, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
-  CALENDAR_EVENT_CHARS, GMAIL_BODY_CHARS, GMAIL_LIST_EXCERPT_CHARS, KNOWLEDGE_EXCERPT_CHARS, KNOWLEDGE_HITS, LIVE_RESULT_CHARS, MATTERMOST_CHANNELS, MATTERMOST_MESSAGE_CHARS, MATTERMOST_MESSAGES,
+  CALENDAR_EVENT_CHARS, GMAIL_BODY_CHARS, GMAIL_LIST_EXCERPT_CHARS, KNOWLEDGE_EXCERPT_CHARS, KNOWLEDGE_HITS, KNOWLEDGE_RANKED_EXCERPT_CHARS, KNOWLEDGE_RANKED_TOTAL_CHARS, LIVE_RESULT_CHARS, MATTERMOST_CHANNELS, MATTERMOST_MESSAGE_CHARS, MATTERMOST_MESSAGES,
 } from '../tools/live-shape.js';
 // Synthetic Mattermost upstream shapes (mattermost-mcp src/search/serialize.ts and REST v4
 // /posts). Invented names and text only. These are W12's committed fixtures: every one of them
@@ -426,7 +426,7 @@ test('O-R1: a six hit ranked knowledge reply reaches the model as six hits insid
   const shaped = shapeLuxKnowledge('search_knowledge', text);
   for (let index = 0; index < 6; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`), `hit ${index} stays`);
   assert.equal(shaped.text.includes('[showing'), false, 'six hits fit the total bound, so none is trimmed');
-  assert.ok(shaped.text.length <= 4000, `the shaped text stays under the knowledge total bound (${shaped.text.length})`);
+  assert.ok(shaped.text.length <= KNOWLEDGE_RANKED_TOTAL_CHARS, `the shaped text stays under the knowledge total bound (${shaped.text.length})`);
   assert.match(shaped.text, /Score: 1\./, 'every kept hit keeps its score line');
 });
 
@@ -471,4 +471,20 @@ test('MED-1022: a voice knowledge reply reaches the model as every hit, the top 
   for (let index = 0; index < 5; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`, 'u'), `hit ${index} reaches the model`);
   assert.equal(shaped.text.includes('[showing'), false, 'six hits fit the voice budget, so none is trimmed');
   assert.equal(shaped.text.includes('Knowledge Search'), false, 'the search header is still stripped');
+});
+
+test('MED-1022: a voice reply that found one entry arrives whole, with no get_insight tail', () => {
+  const body = `${'Sentence about the prep call. '.repeat(70)}Final sentence marker.`;
+  assert.ok(body.length > KNOWLEDGE_RANKED_EXCERPT_CHARS, `the fixture body is longer than an excerpt (${body.length})`);
+  const shaped = shapeLuxKnowledge('search_knowledge', [
+    "# Knowledge Search: 'ocp prep call'",
+    '',
+    '**#91293** [TECHNICAL_DECISION] Commitment 2026-10-22',
+    `  ${body}`,
+    '  truncated: no (2,037 chars stored)',
+    '  Score: 1.007',
+  ].join('\n'));
+  assert.ok(shaped.text.includes('Final sentence marker.'), 'the one hit body is not cut to an excerpt');
+  assert.equal(shaped.partial, false, 'nothing was left out, so the result is whole');
+  assert.equal(shaped.text.includes('get_insight'), false, 'and no round trip is asked for');
 });

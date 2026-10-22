@@ -798,9 +798,10 @@ export function ownerScheduleQuestion(question: string): boolean {
 const MAIL_WORDS = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/u;
 const CALENDAR_WORDS = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/u;
 const CHAT_WORDS = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/u;
-/** MED-1022: a web read is for explicit public intent only. `latest` and `cost` are how the owner asks
- * about his own work, and the 18:34 call spent a web read on "the latest" and got a soap result. */
-const WEB_WORDS = /\b(news|headlines|weather|forecast|price|prices|opening hours|search the web|on the internet|google it)\b/u;
+/** MED-1022: a web read is for explicit public intent only. `latest`, `cost` and `price` are how the
+ * owner asks about his own work (the 18:34 call spent a web read on "the latest" and got a soap
+ * result), so only the public list below offers the web. */
+const WEB_WORDS = /\b(news|headlines|weather|forecast|opening hours|search the web|on the internet|google it)\b/u;
 const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
 
 /** The source a question is about, in the order the first answer waits for them. */
@@ -970,8 +971,9 @@ export function meetingBounds(question: string, query: string | undefined, nowMs
     return { from: day, to: day };
   }
   try {
-    // windowRange reads today, tomorrow, this and next week, a weekday and an ISO day, never yesterday.
-    const range = windowRange(word, nowMs, timeZone);
+    // windowRange reads today, tomorrow, this and next week, a weekday and an ISO day, never yesterday
+    // and never last week, so the previous week is this week's own Monday..Sunday moved back seven days.
+    const range = windowRange(word === 'last week' ? 'this week' : word, nowMs, timeZone);
     const weeks = word === 'last week' ? -7 : word === 'next week' ? 7 : 0;
     return { from: dayShift(localDay(range.timeMin, timeZone), weeks), to: dayShift(localDay(range.timeMax, timeZone), weeks - 1) };
   } catch { return undefined; }

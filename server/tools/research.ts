@@ -3,7 +3,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import type { HistoryArguments } from '../domain/history-reader.js';
 import { calendarRange } from './calendar-window.js';
 import { randomUUID } from 'node:crypto';
-import type { ToolResultBinding, JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
+import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
@@ -63,8 +63,6 @@ export const RESEARCH = Object.freeze({
    */
   mailPageCap: 4,
   rateLimitRetryMs: 1_000,
-  /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
-  selectorDeadlineMs: 1_500,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
@@ -324,16 +322,6 @@ export function worthContinuing(input: WorthInput): boolean {
 // ---------------------------------------------------------------------------------------------
 // Selector
 
-export interface SelectorInput {
-  question: string;
-  questionClass?: QuestionClass | undefined;
-  direction?: string | undefined;
-  configured: readonly SourceKind[];
-  /** Completed operations, so the selector never re-picks what is already known. */
-  completed: readonly { kind: CandidateKind; summary: string }[];
-  /** Choices the selector is allowed to make, already closed over configuration and prerequisites. */
-  candidates: readonly CandidateKind[];
-}
 
 export interface SelectorAction {
   kind: CandidateKind;
@@ -348,110 +336,6 @@ export interface SelectorOutput {
   questionClass: QuestionClass;
   actions: SelectorAction[];
   pUseful: Partial<Record<CandidateKind, number>>;
-}
-
-export interface ResearchSelector {
-  select(input: SelectorInput, signal: AbortSignal): Promise<SelectorOutput | null>;
-  /** The public web read this selector was built with, so production wires the same binding the selector uses. */
-  web?: WebSearchPort | undefined;
-}
-
-export const SELECTOR_SYSTEM = 'You choose which reads are worth running to answer one owner question, and you write the query each read runs. '
-  + 'Reply with JSON only: {"questionClass":"quick_fact|cross_source|explicit_continue","actions":[{"kind":"...","requirement":"...","query":"...","window":"..."}],'
-  + '"pUseful":{"kind":0.0}}. Choose only from the offered candidate kinds; never invent a kind, an id or a source. '
-  + 'pUseful is your probability (0..1) that the action yields something that changes the answer. Omit an action when it is redundant. '
-  + 'Write a real query for every search kind, never the whole spoken sentence. '
-  + 'mail_search query: Gmail syntax, e.g. in:inbox newer_than:2d is:unread is:important from:alice@example.com subject:invoice "exact phrase". '
-  + 'chat_search query: Mattermost keywords (a few words, not a sentence), optional from:, in:, after:YYYY-MM-DD. '
-  + 'knowledge_search query: 3 to 5 content keywords, no filler. '
-  + 'web_search query: 3 to 10 plain words for the public question itself; use it only for public-world facts that need looking up (news, current events, prices, opening hours, public documents) or when the owner asks you to search the web, never for personal commitments, correspondence, mail, calendar or private matters, and never put a name, address, message text or other private detail in the query. '
-  + 'calendar_window: use today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD date. Unresolved or contradictory windows are refused; never widen them. ';
-
-export function buildSelectorPrompt(input: SelectorInput): { system: string; user: string } {
-  const lines = [
-    `Question: ${input.question}`,
-    input.direction !== undefined ? `Owner direction: ${input.direction}` : '',
-    `Configured sources: ${input.configured.join(', ') || 'none'}`,
-    `Candidates: ${input.candidates.join(', ')}`,
-    input.completed.length ? `Already read: ${input.completed.map(entry => `${entry.kind}: ${entry.summary}`).join(' | ')}` : 'Already read: nothing',
-  ];
-  return { system: SELECTOR_SYSTEM, user: lines.filter(Boolean).join('\n') };
-}
-
-const QUESTION_CLASSES: readonly QuestionClass[] = ['quick_fact', 'cross_source', 'explicit_continue'];
-
-/** A selector query: one line, trimmed, length-capped, or undefined when empty. */
-export function normalizeQuery(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const collapsed = value.replace(/\s+/g, ' ').trim();
-  return collapsed ? collapsed.slice(0, RESEARCH.queryLimitChars) : undefined;
-}
-
-/** Preserve bounded selector text for the canonical calendar resolver; unknown text is unresolved. */
-export function normalizeWindow(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const token = value.trim().toLowerCase().replace(/\s+/g, ' ');
-  return token && token.length <= RESEARCH.queryLimitChars ? token : undefined;
-}
-
-/** Parse selector JSON defensively: any invalid output is `null`, which falls back to the recipe. */
-export function parseSelector(text: string): SelectorOutput | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  let raw: unknown;
-  try { raw = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
-  if (raw === null || typeof raw !== 'object') return null;
-  const record = raw as Record<string, unknown>;
-  const questionClass = record['questionClass'];
-  if (typeof questionClass !== 'string' || !QUESTION_CLASSES.includes(questionClass as QuestionClass)) return null;
-  const actionsRaw = record['actions'];
-  const actions: SelectorAction[] = [];
-  if (Array.isArray(actionsRaw)) {
-    for (const entry of actionsRaw) {
-      if (entry === null || typeof entry !== 'object') continue;
-      const cell = entry as Record<string, unknown>;
-      const kind = cell['kind'];
-      if (typeof kind !== 'string' || !CANDIDATES.some(candidate => candidate.kind === kind)) continue;
-      const action: SelectorAction = { kind: kind as CandidateKind };
-      const requirement = cell['requirement'];
-      if (typeof requirement === 'string' && requirement.trim()) action.requirement = requirement;
-      const query = normalizeQuery(cell['query']);
-      if (query !== undefined) action.query = query;
-      const window = normalizeWindow(cell['window']);
-      if (kind === 'calendar_window') action.window = window ?? 'unresolved';
-      else if (window !== undefined) action.window = window;
-      actions.push(action);
-    }
-  }
-  const pUseful: Partial<Record<CandidateKind, number>> = {};
-  const pRaw = record['pUseful'];
-  if (pRaw !== null && typeof pRaw === 'object') {
-    for (const [kind, value] of Object.entries(pRaw as Record<string, unknown>)) {
-      if (!CANDIDATES.some(candidate => candidate.kind === kind)) continue;
-      if (typeof value === 'number' && Number.isFinite(value)) pUseful[kind as CandidateKind] = Math.min(1, Math.max(0, value));
-    }
-  }
-  return { questionClass: questionClass as QuestionClass, actions, pUseful };
-}
-
-/** The real selector: the same-provider Gemini text adapter, one structured request, its deadline is selectorDeadlineMs. */
-export function createGeminiSelector(model: ModelPort, promptVersion = 'research-selector-v1', web?: WebSearchPort): ResearchSelector {
-  return {
-    ...(web === undefined ? {} : { web }),
-    async select(input, signal) {
-      const { system, user } = buildSelectorPrompt(input);
-      const request: ModelRequest = {
-        system, promptVersion,
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 0 },
-      };
-      const control = { signal, deadlineMs: Date.now() + RESEARCH.selectorDeadlineMs };
-      const result = await model.generate(request, control);
-      if (result.status !== 'complete' || typeof result.text !== 'string') return null;
-      return parseSelector(result.text);
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1399,7 +1283,6 @@ export interface ResearchDeps {
    * entry may carry its reason (a credential failure, a stop), so the reply names the cause.
    */
   unavailableNow?: (() => readonly (SourceKind | UnavailableSource)[]) | undefined;
-  selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
   log(event: ResearchRunLog): void;

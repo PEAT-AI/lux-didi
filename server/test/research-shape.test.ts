@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, knowledgeQuery, parseSelector, runResearch, shapeBlock,
-  type CandidateKind, type ResearchDeps, type ResearchSelector, type SourceKind,
+  RESEARCH, ResearchLedger, candidateSubs, researchDeclaration, extractInsightIds, fallbackSelection, knowledgeQuery, runResearch, shapeBlock,
+  type CandidateKind, type ResearchDeps, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { safeEvent } from '../host/log.js';
@@ -17,29 +17,6 @@ function sub(name: string, text: string, ok = true, key = name): IntentSubResult
 }
 
 // --- Selector authors queries and a calendar window -----------------------------------------
-
-test('parseSelector reads a per-action query and calendar window, trims and caps them', () => {
-  const parsed = parseSelector('{"questionClass":"quick_fact","actions":['
-    + '{"kind":"mail_search","query":"in:inbox newer_than:2d is:important"},'
-    + '{"kind":"calendar_window","window":"tomorrow"},'
-    + '{"kind":"knowledge_search","query":"  lux   didi  decisions "}],"pUseful":{}}');
-  assert.equal(parsed?.actions[0]?.query, 'in:inbox newer_than:2d is:important');
-  assert.equal(parsed?.actions[1]?.window, 'tomorrow');
-  assert.equal(parsed?.actions[2]?.query, 'lux didi decisions');
-  const long = parseSelector(JSON.stringify({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'x'.repeat(500) }], pUseful: {} }));
-  assert.equal(long?.actions[0]?.query?.length, RESEARCH.queryLimitChars);
-  const bad = parseSelector('{"questionClass":"quick_fact","actions":[{"kind":"calendar_window","window":"whenever"}],"pUseful":{}}');
-  assert.equal(bad?.actions[0]?.window, 'whenever', 'unsupported text reaches the resolver and cannot silently become today');
-  assert.equal(parseSelector('{"questionClass":"quick_fact","actions":[{"kind":"mail_search","query":"a\\nb"}],"pUseful":{}}')?.actions[0]?.query, 'a b');
-});
-
-test('SELECTOR_SYSTEM teaches the per-source query syntax', () => {
-  assert.match(SELECTOR_SYSTEM, /in:inbox/);
-  assert.match(SELECTOR_SYSTEM, /newer_than/);
-  assert.match(SELECTOR_SYSTEM, /after:YYYY-MM-DD/);
-  assert.match(SELECTOR_SYSTEM, /3 to 5 content keywords/);
-  assert.match(SELECTOR_SYSTEM, /window/);
-});
 
 // W11: the model authors mail queries too, so the declaration itself says how to ask mail well.
 test('the research declaration tells the model to ask mail in short Gmail syntax with a window', () => {
@@ -166,16 +143,9 @@ test('evidence ids reach mail_open and chat_thread', () => {
 
 test('a mail search id flows into a second read in the same run', async () => {
   const executed: { name: string; args: unknown }[] = [];
-  const selector: ResearchSelector = {
-    async select(input) {
-      const kind = input.candidates.includes('mail_search') ? 'mail_search' : 'mail_open';
-      return { questionClass: 'cross_source', actions: [{ kind }], pUseful: { [kind]: 1 } };
-    },
-  };
   const deps: ResearchDeps = {
     now: () => 0,
     configured: CONFIGURED,
-    selector,
     execute: async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
       return subs.map(call => call.name === 'gmail_search_messages'
@@ -196,9 +166,8 @@ test('a mail search id flows into a second read in the same run', async () => {
 test('packing floors at one line per source, caps at the reply limit and sets canContinue', async () => {
   const knowledge = Array.from({ length: 8 }, (_, i) => `### Insight ${i} (PATTERN | 2026-10-0${i}) [id ${i + 1}]\n${'k'.repeat(600)}`).join('\n');
   const mail = Array.from({ length: 8 }, (_, i) => `- Subject ${i} | from: Sender ${i} | date: Mon | ${'m'.repeat(190)} [id m${i}]`).join('\n');
-  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 1, mail_search: 1 } }; } };
   const deps: ResearchDeps = {
-    now: () => 0, configured: CONFIGURED, selector, replyLimit: 3_000,
+    now: () => 0, configured: CONFIGURED, replyLimit: 3_000,
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? knowledge : mail, true, call.key)),
     emit: () => undefined, log: () => undefined, ledger: new ResearchLedger(),
   };
@@ -224,9 +193,8 @@ test('research_subcall is a closed metadata shape, never the query or text', () 
 
 test('research_subcall matches results by position even when execute keys are composed call ids', async () => {
   const subcalls: Record<string, unknown>[] = [];
-  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }; } };
   const deps: ResearchDeps = {
-    now: () => 0, configured: CONFIGURED, selector,
+    now: () => 0, configured: CONFIGURED,
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '- Subject | Sender | Mon | body [id m1]', originalCharacters: 40, omittedCharacters: 0 })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
@@ -240,9 +208,8 @@ test('research_subcall matches results by position even when execute keys are co
 
 test('ROUTE-1022: a knowledge read is one search call and logs no second hop', async () => {
   const subcalls: Record<string, unknown>[] = [];
-  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'lux didi' }], pUseful: { knowledge_search: 1 } }; } };
   const deps: ResearchDeps = {
-    now: () => 0, configured: CONFIGURED, selector,
+    now: () => 0, configured: CONFIGURED,
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({
       key: `r0~${n}~${call.key}`, name: call.name, ok: true,
       text: call.name === 'search_knowledge' ? '### Title (PATTERN) [id 7]\nbody text' : 'full body',
@@ -271,9 +238,8 @@ test('shapeBlock shapes the real knowledge item form too', () => {
 test('a failed sub-call is retried once inside the round', async () => {
   let mailCalls = 0;
   const subcalls: Record<string, unknown>[] = [];
-  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }; } };
   const deps: ResearchDeps = {
-    now: () => 0, configured: CONFIGURED, selector,
+    now: () => 0, configured: CONFIGURED,
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => {
       if (call.name !== 'gmail_search_messages') return { key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '### Title [id 1]', originalCharacters: 10, omittedCharacters: 0 };
       mailCalls += 1;
@@ -297,9 +263,8 @@ test('shapeBlock keeps mattermost posts rendered as **header** lines', () => {
 
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {
   const logs: Record<string, unknown>[] = [];
-  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 1 } }; } };
   const deps: ResearchDeps = {
-    now: () => 0, configured: CONFIGURED, selector,
+    now: () => 0, configured: CONFIGURED,
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '### Title (PATTERN) [id 1]\nbody', true, call.key)),
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, ownerScheduleQuestion, parseSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -120,10 +120,9 @@ test('calendar retained remainder is invalidated by a new start, cancellation, c
   }
 });
 
-test('calendar selector uses the shared primary collector and never retries a failed page', async () => {
+test('calendar uses the shared primary collector and never retries a failed page', async () => {
   for (const fail of [false, true]) {
     const h = fixture(Array.from({ length: 15 }, (_, n) => event(19, n)), { token: 'second', pageSize: 12 });
-    h.deps.selector = { select: async () => ({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'this week' }], pUseful: { calendar_window: 1 } }) };
     const execute = h.deps.execute;
     let calls = 0;
     h.deps.execute = async (subs, abort) => {
@@ -216,17 +215,18 @@ test('calendar in-flight continuation retains received events and never replays 
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2);
 });
 
-test('calendar R4: real selector JSON parsing preserves named windows and refuses invalid or missing windows', () => {
-  for (const window of ['Wednesday this week', 'next Wednesday', 'this week', 'whenever', 42, undefined]) {
-    // F-B: the voice path never awaits the selector, so the parser is pinned on its own output.
-    const parsed = parseSelector(JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 0.9 } }));
-    assert.ok(parsed !== null, String(window));
-    assert.equal(parsed.actions.length, 1, String(window));
-    const resolved = typeof window === 'string' && window !== 'whenever';
-    if (resolved) assert.equal(String(parsed.actions[0]!.window).toLowerCase(), window.toLowerCase(), String(window));
-    else assert.equal(parsed.actions[0]!.window, 'whenever', String(window));
-    if (resolved) assert.doesNotThrow(() => windowRange(String(parsed.actions[0]!.window), fixedNow, 'UTC'));
-  }
+test('calendar R4: the plan resolves the window itself, with no selector round', async () => {
+  const h = scheduleFixture();
+  await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, signal());
+  const read = h.calls.find(call => call.name === 'calendar_list_events');
+  assert.ok(read !== undefined, 'the plan reads the calendar');
+  assert.equal(read.args['timeMin'], windowRange('tomorrow', fixedNow, 'UTC').timeMin, 'tomorrow resolves to the real window start');
+  // A question with no window word still names real dates, so the read is never open ended.
+  const plain = scheduleFixture();
+  await runResearch(plain.deps, { action: 'start', question: 'what is on my calendar' }, signal());
+  const today = plain.calls.find(call => call.name === 'calendar_list_events');
+  assert.ok(today !== undefined, 'the plan reads the calendar with no window word');
+  assert.equal(today.args['timeMin'], windowRange('today', fixedNow, 'UTC').timeMin, 'the default window is today');
 });
 
 test('calendar R5: scheduler Stop invalidates a completed retained run before later Continue', async () => {
@@ -409,12 +409,11 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
 
 // ROUTE-1022 (D2): gmail and the calendar are two endpoints on one connector. A gmail endpoint that
 // failed its identity proof marked the calendar unreachable too, so every calendar read was skipped.
-function scheduleFixture(opts: { unavailable?: readonly { source: SourceKind; reason: string }[]; selector?: ResearchSelector } = {}) {
+function scheduleFixture(opts: { unavailable?: readonly { source: SourceKind; reason: string }[] } = {}) {
   const calls: { name: string; args: Record<string, unknown> }[] = [];
   const logs: ResearchRunLog[] = [];
   const deps: ResearchDeps = {
     now: () => fixedNow, configured: ['calendar', 'mail'], ledger: new ResearchLedger(), timeZone: 'UTC',
-    ...(opts.selector === undefined ? {} : { selector: opts.selector }),
     ...(opts.unavailable === undefined ? {} : { unavailableNow: () => opts.unavailable! }),
     emit() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {}, log: entry => logs.push(entry),
     execute: async subs => subs.map(call => {
@@ -427,16 +426,8 @@ function scheduleFixture(opts: { unavailable?: readonly { source: SourceKind; re
   return { deps, calls, logs };
 }
 
-const scheduleSelector: ResearchSelector = {
-  select: async () => ({
-    questionClass: 'cross_source',
-    actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:1d' }, { kind: 'calendar_window', window: 'tomorrow' }],
-    pUseful: { mail_search: 0.4, calendar_window: 0.5 },
-  }),
-};
-
 test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a schedule question', async () => {
-  const h = scheduleFixture({ selector: scheduleSelector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
+  const h = scheduleFixture({ unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
   const reply = await runResearch(h.deps, { action: 'start', question: 'check my mail and my calls tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the calendar endpoint connected, so its read runs');
   assert.equal(h.calls.some(call => call.name === 'gmail_search_messages'), false, 'the mail endpoint is never dispatched to');
@@ -447,19 +438,17 @@ test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a sche
   assert.equal('error' in reply, false);
 });
 
-test('ROUTE-1022: a schedule question reads the calendar even when the selector fails', async () => {
-  const selector: ResearchSelector = { select: async () => { throw new Error('selector deadline'); } };
-  const h = scheduleFixture({ selector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
+test('ROUTE-1022: a schedule question reads the calendar with no selector in the path', async () => {
+  const h = scheduleFixture({ unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
+  assert.equal('selector' in h.deps, false, 'the voice path carries no selector to wait on');
   await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
-  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'a selector timeout leaves the calendar in the plan');
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the plan reads the calendar with no selector round');
   assert.equal(h.logs.at(-1)!.driver, 'routed', 'and the run records the router as the decider');
 });
 
 test('ROUTE-1022: a schedule question keeps the calendar in a plan that omitted it', async () => {
-  const mailOnly: ResearchSelector = {
-    select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:7d' }], pUseful: { mail_search: 0.5 } }),
-  };
-  const h = scheduleFixture({ selector: mailOnly });
+  const h = scheduleFixture();
+  assert.equal(ownerScheduleQuestion('am I free next week for the offsite'), true, 'the owner schedule question forces the calendar read');
   await runResearch(h.deps, { action: 'start', question: 'am I free next week for the offsite' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the owner schedule question adds the calendar read');
 });
@@ -495,10 +484,7 @@ test('ROUTE-1022: end-to-end availability follows the endpoint id, not the share
 });
 
 test('ROUTE-1022: a general question about the week does not force a calendar read', async () => {
-  const mailOnly: ResearchSelector = {
-    select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:7d' }], pUseful: { mail_search: 0.5 } }),
-  };
-  const h = scheduleFixture({ selector: mailOnly });
+  const h = scheduleFixture();
   await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
   // F8: bare "week" is the product's daily language, so the forcing rule stays with the questions the defect named.
   assert.equal(ownerScheduleQuestion('what did the team say this week'), false);

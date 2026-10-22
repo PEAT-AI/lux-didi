@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, SELECTOR_SYSTEM, candidateSubs, fallbackSelection, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, fallbackSelection, type ResearchDeps, type SourceKind } from '../tools/research.js';
 import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
 import { safeEvent } from '../host/log.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -113,9 +113,6 @@ test('rate limiting and an outage are named, never answered as if they were sear
 
 test('the closed candidate set offers web_search on the web source', () => {
   assert.ok(CANDIDATES.some(candidate => candidate.kind === 'web_search' && candidate.source === 'web'));
-  assert.equal(SELECTOR_SYSTEM.includes('web_search query:'), true);
-  assert.match(SELECTOR_SYSTEM, /public-world facts/);
-  assert.match(SELECTOR_SYSTEM, /never for personal commitments/);
   assert.equal(RESEARCH.sourceDeadline.web, 4_000);
   const subs = candidateSubs('web_search', { question: 'bridge reopening date', configured: ['web'], evidence: new Map(), query: 'bridge reopening date' });
   assert.deepEqual(subs, [{ key: 'w0', name: WEB_SEARCH_ACTION, args: { query: 'bridge reopening date' } }]);
@@ -131,12 +128,6 @@ function harness(outcome: WebOutcome | (() => Promise<WebOutcome>)): Harness {
   const sources: object[] = [];
   const executed: string[] = [];
   const webCalls: string[] = [];
-  let round = 0;
-  const selector: ResearchSelector = {
-    select: async () => (round++ === 0
-      ? { questionClass: 'quick_fact', actions: [{ kind: 'web_search', query: 'bridge reopening date' }], pUseful: { web_search: 0.9 } }
-      : { questionClass: 'quick_fact', actions: [{ kind: 'stop_answer' }], pUseful: {} }),
-  };
   const web: WebSearchPort = {
     search: async ({ query }) => {
       webCalls.push(query);
@@ -145,8 +136,7 @@ function harness(outcome: WebOutcome | (() => Promise<WebOutcome>)): Harness {
   };
   const deps: ResearchDeps = {
     now: () => 0,
-    configured: [] as readonly SourceKind[],
-    selector,
+    configured: ['web'] as readonly SourceKind[],
     web,
     execute: async (subs: readonly IntentSubCall[]) => { executed.push(...subs.map(call => call.name)); return [] as IntentSubResult[]; },
     emit: () => {},

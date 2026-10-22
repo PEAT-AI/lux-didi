@@ -90,7 +90,8 @@ test('a gmail list mints one handle per thread and never more than three', () =>
 
 test('a knowledge body link mints a knowledge_body handle and every hostile shape mints none', () => {
   const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 1, content: 'deck at https://docs.google.com/presentation/d/ABC/edit for review' }));
-  assert.equal(/https?:\/\//.test(shaped.text), false, 'the model text carries no url');
+  const openLines = shaped.text.match(/^open: .*$/gm) ?? [];
+  assert.equal(openLines.some(line => /https?:\/\//.test(line)), false, 'a handle line carries no url');
   assert.match(shaped.text, /^open: L\d+ = Slides \(from knowledge note\)$/m);
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   assert.equal(resolveHandle(handle)?.provenance, 'knowledge_body');

@@ -2186,7 +2186,9 @@ export class LiveSessionOwner {
           handle.ready = true; handle.lastHealthyAt = this.#now();
           if (handle.rebuilding) { handle.rebuilding = false; this.#noteState(handle, 'rebuild'); this.#continuity(handle, 'resumed'); continue; }
         }
-        if (IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
+        // Provider activity restarts the idle clock everywhere except under the owner's mute, which
+        // suspends that clock until the unmute re-arms it.
+        if (!handle.muted && IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;

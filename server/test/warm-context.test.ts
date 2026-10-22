@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestRefreshMs, calendarDigestStartWaitMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestRefreshMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
 import { CALENDAR_DIGEST_READ_MS, readCalendarDigest, type CalendarDigestRead, type GcalListInput, type GoogleResult } from '../connectors/google.js';
 import { NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 
@@ -227,17 +227,24 @@ test('1015: a 6 s read fills the cache and the next start uses it with state pre
   assert.equal(clock.now, digestMonday + 6_000, 'and no clock moved waiting for it');
 });
 
-test('1015: with no cache and a read in flight, a start waits out its budget then says timeout', async () => {
+test('1022: a start never waits on a calendar read, an empty cache is stated absent', async () => {
   const { cache } = digestCache({ fail: 'hang' });
   void cache.refresh();
   const startedAt = Date.now();
-  // The budget is the seam; the constant's own 1,500 ms value is asserted in the constants test below.
-  const started = await cache.forStart(20);
+  const started = await cache.forStart();
   const waited = Date.now() - startedAt;
-  assert.equal(started.state, 'timeout', 'a start never reports a hung read as an empty day');
+  assert.equal(started.state, 'absent', 'no digest yet is said out loud, never an empty day');
   assert.equal(started.text, undefined);
-  assert.ok(waited >= 20, `waited out its budget (${waited} ms)`);
-  assert.ok(waited < 1_000, `and not a whole read (${waited} ms)`);
+  assert.ok(waited < 1_000, `create never blocks on a connector read (${waited} ms)`);
+});
+
+test('1022: a digest that lands after a start is there for the next one', async () => {
+  const { cache, read } = digestCache({});
+  const filling = cache.refresh();
+  await cache.forStart();
+  await filling;
+  assert.equal((await cache.forStart()).state, 'present', 'the read that landed is used by the next start');
+  assert.equal(read.calls.length, 1, 'and a start never dispatches a read of its own');
 });
 
 test('1015: a stale cache whose refresh does not arrive is reported stale with its own fetch time', async () => {
@@ -245,7 +252,7 @@ test('1015: a stale cache whose refresh does not arrive is reported stale with i
   await cache.refresh();
   clock.now += calendarDigestFreshMs;
   script.fail = 'hang';
-  const started = await cache.forStart(20);
+  const started = await cache.forStart();
   assert.equal(started.state, 'stale', 'the receipt says stale, not that a read just timed out');
   assert.equal(started.text, undefined, 'and the aged text never rides the assembly');
   assert.equal(started.fetchedAt, digestMonday, 'the answer carries the last real fetch time, so ageMs is honest');
@@ -306,7 +313,6 @@ test('1015: the digest read budget is 30 s, so the aborted 5 s read cannot be a 
   assert.equal(CALENDAR_DIGEST_READ_MS, 30_000);
   assert.equal(calendarDigestRefreshMs, 15 * 60 * 1000, 'the background owner refreshes every 15 min');
   assert.equal(calendarDigestFreshMs, 30 * 60 * 1000, 'a start accepts a cache under 30 min old');
-  assert.equal(calendarDigestStartWaitMs, 1_500, 'and waits at most 1,500 ms for a read in flight');
 });
 
 test('1015: the background owner reads at host start and on every interval until it is stopped', async t => {

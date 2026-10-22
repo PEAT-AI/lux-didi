@@ -178,7 +178,7 @@ async function gmailHost(email: string) {
   const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
   const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; reasonCode?: string; identity?: IdentityProof }>;
   const log = await readFile(join(dir, 'state', 'logs', 'host.log'), 'utf8');
-  const identityLog = log.trim().split('\n').map(line => JSON.parse(line)).filter(record => record.event === 'connector_identity').map(record => ({ event: record.event, connector: record.connector, proven: record.proven, match: record.match }));
+  const identityLog = log.trim().split('\n').map(line => JSON.parse(line)).filter(record => record.event === 'connector_identity').map(record => ({ event: record.event, connector: record.connector, proven: record.proven, match: record.match, endpointId: record.endpointId }));
   await host.close();
   endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done()));
   await rm(dir, { recursive: true, force: true });
@@ -191,7 +191,7 @@ test('a proven mismatch refuses the connector and logs the closed identity event
   assert.equal(reports[0]!.state, 'error');
   assert.equal(reports[0]!.reasonCode, 'identity_mismatch');
   assert.deepEqual(reports[0]!.identity, { proven: true, match: false, value: OTHER });
-  assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: false }]);
+  assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: false, endpointId: 'gmail' }]);
 });
 
 test('a proven match keeps the connector and logs only the booleans', async () => {
@@ -199,7 +199,7 @@ test('a proven match keeps the connector and logs only the booleans', async () =
   assert.equal(reports[0]!.state, 'connected');
   assert.equal(reports[0]!.reasonCode, undefined);
   assert.deepEqual(reports[0]!.identity, { proven: true, match: true, value: OWNER.toUpperCase() });
-  assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
+  assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true, endpointId: 'gmail' }]);
 });
 
 test('one proof per connector endpoint per boot, and no diagnostic capture at start', async () => {

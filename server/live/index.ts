@@ -471,7 +471,7 @@ function logTurnScript(handle: ActiveSession): void {
  * owner's own speech silences it.
  */
 function correctOpenClaim(handle: ActiveSession): void {
-  if (handle.inputFinal === false || handle.muted || handle.turnChars === 0) return;
+  if (handle.inputFinal === false || handle.muted) return;
   const correction = openClaimCorrection(handle.liveSessionId);
   if (correction === undefined) return;
   hostLogEvent({ event: 'open_claim_corrected', reason: correction.reason });
@@ -2324,8 +2324,8 @@ export class LiveSessionOwner {
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
-          logTurnScript(handle);
           correctOpenClaim(handle);
+          logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
           // fact the timeline reads instead of inferring one from a missing receipt (D12-3).

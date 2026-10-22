@@ -85,7 +85,7 @@ test('a gmail list mints one handle per thread and keeps it on that thread line'
   const messages = Array.from({ length: 10 }, (_, index) => ({ id: `m${index}`, snippet: `note ${index}` }));
   const shaped = shapeGmailList({ messages });
   assert.equal(/https?:\/\//.test(shaped.text), false, 'the model text carries no url');
-  const lines = shaped.text.match(/^open: L\d+ = /gm) ?? [];
+  const lines = shaped.text.match(/^open: L\d+ = .*$/gm) ?? [];
   assert.equal(lines.length, 10, 'every listed thread carries its own handle');
   for (const line of lines) assert.match(line, /^open: L\d+ = Open in Gmail$/);
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;

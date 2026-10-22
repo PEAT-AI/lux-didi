@@ -47,7 +47,7 @@ test('the public Naya character is new, bounded, neutral and names no biography'
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
+  assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -342,11 +342,11 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
-  assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
+  assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'fe0c181f6049070157ee54d268c554bcf1d2f1fd548179f26eb5cc92ebf18a97');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '14f198566d3e535cfd0d033d592487e4b7593cb194ecc689a1b2b822576a8194');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '2ca2238a802616c788a2f4fd0c4c966f04350cf5b3373debd8969db7911988fd');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '585a9155024d27e7723a5e564dff42ad2a0792bcb847180ca60012197ba8c22e');
+  assert.equal(sha(NAYA_TOOLS), '1b55e8c385eb02f601e7822c9b5cc2219df825eed15665a1303505c47389fec3');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -637,7 +637,8 @@ test('tool conduct retrieves relevant past context and distinguishes missing evi
     'look in memory or his knowledge vault first unless that evidence is already in the conversation',
     'Put independent lookups for one question into one research request.',
     'Use returned identities for dependent detail reads.',
-    'Then take a position: one recommendation and what it costs.',
+    'Lead with your position or verdict in one sentence, then think in connected steps.',
+    'Land on the recommendation and what it costs.',
   ]) assert.equal(wrapper.split(sentence).length - 1, 1);
   assert.match(NAYA_VOICE_TOOLS, /never call a partial search complete/);
   assert.match(NAYA_VOICE_TOOLS, /State a material gap briefly while giving the useful confirmed result/);
@@ -654,8 +655,9 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 // interruption and honesty rules), and the accent block (pinned verbatim by PV1-R1)
 // keeps its wording.
 const WRAPPER_3O_CHARS = 6603;
-/** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. */
-const WRAPPER_W5_CHARS = 10_942;
+/** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. W11 raises it for the
+ * one open paragraph, which names what she can open and the handle she opens it with. */
+const WRAPPER_W5_CHARS = 11_831;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -676,7 +678,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // backend guide to it; the bound keeps both halves and carries the measured growth at this sha (3,943, then
   // 4,339 once VOICE-R1 replaced the retired five-word cue with the contract's one silence rule).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
-  const cap = 4_500;
+  const cap = 5_400;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1131,7 +1133,7 @@ const W5_REPLACED = [
   'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
 ];
 /** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
-const W5_VOICE_BEFORE = 7376;
+const W5_VOICE_BEFORE = 8265;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1156,4 +1158,25 @@ test('W5: the four rules stay out of the backend procedure, which the executing 
 test('W5: the voice instruction does not grow', () => {
   const voice = NAYA_CHARACTER.length + NAYA_VOICE_SURFACE.length + NAYA_VOICE_TOOLS.length;
   assert.ok(voice <= W5_VOICE_BEFORE, `the voice instruction gains no chars (${voice} vs ${W5_VOICE_BEFORE})`);
+});
+
+test('the open paragraph says what she can open, names open_source, and carries no url', async () => {
+  const { NAYA_OPEN_SURFACE, NAYA_TOOLS, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
+  assert.ok(NAYA_VOICE_TOOLS.includes(NAYA_OPEN_SURFACE), 'the voice tools carry the open paragraph');
+  assert.ok(NAYA_TOOLS.includes(NAYA_OPEN_SURFACE), 'the full tool conduct carries the open paragraph');
+  for (const surface of ['email threads', 'calendar events', 'documents and decks', 'mattermost threads and channels', 'videos', 'local files and apps']) {
+    assert.ok(NAYA_OPEN_SURFACE.toLowerCase().includes(surface), `the open paragraph names ${surface}`);
+  }
+  assert.match(NAYA_OPEN_SURFACE, /open_source/);
+  assert.match(NAYA_OPEN_SURFACE, /only after the open tool returned opened/);
+  assert.equal(/https?:|\/\/|\.com|\.google/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
+});
+
+test('O-R2: the open paragraph asks for several sources in one research call with its lookups list', async () => {
+  const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
+  assert.match(NAYA_OPEN_SURFACE, /one research call/);
+  assert.match(NAYA_OPEN_SURFACE, /lookups list/);
+  assert.match(NAYA_OPEN_SURFACE, /up to four/);
+  assert.match(NAYA_OPEN_SURFACE, /instead of one call after another/);
+  assert.equal(/https?:|\/\/|\.com/.test(NAYA_OPEN_SURFACE), false, 'the batching line carries no url');
 });

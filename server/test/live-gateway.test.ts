@@ -1055,19 +1055,20 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   await h.f.frame(1);
   const declared = (h.f.frames[0] as { setup: { tools?: { functionDeclarations: { name: string; description: string }[] }[] } }).setup.tools
     ?.flatMap(entry => entry.functionDeclarations) ?? [];
-  const openUrl = declared.find(entry => entry.name === 'open_url');
-  assert.ok(openUrl, 'the model is offered open_url');
-  assert.match(openUrl.description, /only open things/);
+  const openHome = declared.find(entry => entry.name === 'open_home');
+  assert.ok(openHome, 'the model is offered open_home');
+  assert.match(openHome.description, /only open things/);
+  assert.equal(declared.some(entry => entry.name === 'open_url'), false, 'a free https url is no longer a tool');
   h.f.send({ setupComplete: {} });
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
 
-  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_url', args: { url: 'https://example.test/notes/plan' } }] } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_home', args: { app: 'gmail' } }] } });
   await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
   const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
   const action = parsed.find(frame => frame?.type === 'native_action')!;
   assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
-  assert.equal(action.action, 'open_url');
-  assert.equal(action.target, 'https://example.test/notes/plan');
+  assert.equal(action.action, 'open_url', 'the home tool rides the internal url transport');
+  assert.equal(action.target, 'https://mail.google.com/mail/u/0/', 'the host fixes the gmail home destination');
 
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
   const toolResponses = () => (h.f.frames as Record<string, unknown>[]).filter(frame => 'toolResponse' in frame);

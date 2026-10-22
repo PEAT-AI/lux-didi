@@ -1865,7 +1865,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
   // OC1 (#228): the host-native open tools are declared beside research and remember_note.
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_url', 'remember_note', 'research']);
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'remember_note', 'research']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
   assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();

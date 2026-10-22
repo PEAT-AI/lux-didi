@@ -268,7 +268,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
     callDeadlineMs: 2000, recoveryDelaysMs: FAST,
-    identityLog: (connector, proven, match, endpointId) => { identity.push({ connector, proven, match, endpointId }); },
+    identityLog: (connector, proven, match, endpointId) => { identity.push({ connector, proven, match, endpointId: endpointId ?? '' }); },
   });
   t.after(() => runtime.close());
   const first = runtime.status().endpoints;

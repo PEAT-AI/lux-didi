@@ -39,6 +39,7 @@ export function connectionReasonCode(input: { state: string; error: string; reas
   if (configurationError) return 'configuration_error';
   if (/^credential .* missing or invalid$/.test(error)) return 'credential_missing';
   if (/^not_signed_in$/.test(error)) return signIn ? 'needs_sign_in' : 'not_signed_in';
+  if (/^credential-refresh-unavailable$/.test(error)) return 'unreachable';
   if (/^credential-(missing|refresh-failed|consent-expired)$/.test(error)) return signIn ? 'needs_sign_in' : 'unknown';
   // An identity probe that ran out of time says nothing about whose account it is, so it is unreachable.
   if (input.reasonCode === 'identity_timeout' || /timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|unreachable/.test(error)) return 'unreachable';

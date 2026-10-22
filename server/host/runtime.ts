@@ -326,7 +326,10 @@ export async function startHost(config: HostConfig) {
       for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
       return null;
     };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
+    // A calendar connector that recovered reads the digest the start missed. The hook is bound after the
+    // composition because the reader it needs is the composition itself.
+    let refreshCalendarDigest = (_endpointId: string): void => { /* bound once the composition exists */ };
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: event => { log.event(event); if (event.event === 'connector_recovered') refreshCalendarDigest(event.endpointId); } });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -334,6 +337,10 @@ export async function startHost(config: HostConfig) {
     const calendarDigest = new CalendarDigestCache(
       async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: digestTimeZone }),
       { now: digestNow, timeZone: digestTimeZone });
+    refreshCalendarDigest = endpointId => {
+      const grant = selectCalendarEndpoint(mcp.status().endpoints, id => mcp.registry.currentGrant(id));
+      if (grant !== undefined && grant.endpointId === endpointId) void calendarDigest.refresh();
+    };
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });

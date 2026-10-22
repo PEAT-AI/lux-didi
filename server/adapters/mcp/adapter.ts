@@ -8,8 +8,19 @@ import type { CallRequest, CallResult, CompletedResult, DiscoveryResult, Endpoin
 
 export interface McpTransportState { endpointId: string; session: number; revision: number; state: 'unavailable' | 'retired'; reason: string; recoverable: boolean }
 
+/**
+ * How long one connect may take, per transport. A cold helper process needs longer than an HTTP
+ * handshake: the owner's Mac saw a healthy stdio connect at 6.3 s against a flat five second bound.
+ */
+export const STDIO_CONNECT_TIMEOUT_MS = 12_000;
+export const HTTP_CONNECT_TIMEOUT_MS = 5_000;
+export interface ConnectTimeoutMs { readonly stdio: number; readonly http: number }
 export interface McpAdapterOptions {
   onTransportState?: (event: McpTransportState) => void;
+  /** One closed line when a helper's stderr told us why it refused; the byte count only, never the text. */
+  onHelperStderr?: (detail: { endpointId: string; bytes: number }) => void;
+  /** Test seam: the per-transport connect budgets; production uses the two constants above. */
+  connectTimeoutMs?: Partial<ConnectTimeoutMs>;
   registry: McpRegistry;
   store: ResultStorePort;
   resolveCredential?: (reference: string) => Promise<string>;
@@ -27,7 +38,7 @@ class PolicyError extends Error { constructor(readonly reason: string) { super(r
  * so it carries its own reason and the child-exit code the host log already speaks.
  */
 class ConnectorStartFailure extends Error { constructor(readonly code: 'child_exited' | 'pipe_closed', readonly className: string) { super('connector-unavailable'); } }
-interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly pid?: number; readonly stdout?: { once(event: string, listener: () => void): unknown } | null; kill(signal?: NodeJS.Signals): boolean }
+interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly pid?: number; readonly stdout?: { once(event: string, listener: () => void): unknown } | null; readonly once?: (event: string, listener: (value: unknown) => void) => unknown; kill(signal?: NodeJS.Signals): boolean }
 /** The child may ignore the MCP close; after the bounded close it is SIGKILLed so the host can exit. */
 function killChild(child: ChildExit | undefined): void {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -260,7 +271,7 @@ class EndpointGate {
     return () => { this.exclusive = false; this.pump(); if (this.active === 0) this.wakeIdle(); };
   }
 }
-export function createMcpAdapter(options: McpAdapterOptions): McpPort {
+export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire(endpointId: string): Promise<void> } {
   const budgets: McpBudgets = { timeoutMs: 5000, maxResponseBytes: 1024 * 1024, maxPages: 64, maxTools: 1000, projectionChars: 2048, ...options.budgets };
   for (const value of Object.values(budgets)) if (!Number.isSafeInteger(value) || value <= 0) throw new Error('invalid-adapter-budget');
   const callTimeouts = new Map(options.callTimeoutMsByEndpoint);
@@ -323,24 +334,45 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     client.setNotificationHandler('notifications/tools/list_changed', async () => { session.failures.add('hard'); suspend(config.id); options.onTransportState?.({ endpointId: config.id, session: session.id, revision: options.registry.revision(config.id), state: 'unavailable', reason: 'catalog_changed', recoverable: false }); });
     // Capture the stdio child the instant the transport spawns it, before connect() runs the
     // initialize handshake, so the shutdown bound can SIGKILL a child that never answers.
+    // A piped stderr nobody reads blocks the helper after 64 KiB and loses the one line that says why
+    // it refused. Drain it here, keep the byte count and never the text.
+    let stderrBytes = 0;
+    let stderrReported = false;
+    const reportStderr = (): void => {
+      if (stderrReported || stderrBytes === 0) return;
+      stderrReported = true;
+      options.onHelperStderr?.({ endpointId: config.id, bytes: stderrBytes });
+    };
     const captureChild = (source: unknown): void => {
       const child = childProcess(source);
       if (!child || session.child !== undefined) return;
       session.child = child;
       child.stdout?.once('end', () => { session.pipeClosed = true; });
+      child.once?.('exit', (code: unknown) => { if (typeof code === 'number' && code !== 0) reportStderr(); });
     };
     let transport: StdioClientTransport | StreamableHTTPClientTransport;
+    const stdioConnect = options.connectTimeoutMs?.stdio ?? STDIO_CONNECT_TIMEOUT_MS;
+    const httpConnect = options.connectTimeoutMs?.http ?? HTTP_CONNECT_TIMEOUT_MS;
     if (isStdioEndpoint(config)) {
       const stdio = new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' });
       const start = stdio.start.bind(stdio);
-      stdio.start = async () => { const pending = start(); captureChild(stdio); return pending; };
+      stdio.start = async () => {
+        const pending = start();
+        captureChild(stdio);
+        const stderr = (stdio as unknown as { stderr?: NodeJS.ReadableStream | null }).stderr;
+        stderr?.on('data', (chunk: Buffer | string) => { stderrBytes += Buffer.byteLength(chunk as string); });
+        stderr?.on('error', () => { /* the tail is diagnostic only, never a failure of its own */ });
+        return pending;
+      };
       transport = stdio;
     } else {
       transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id), (endpointId, code) => credentialRefusals.set(endpointId, code)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     }
     sessions.set(config.id, session);
-    try { await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs)); }
+    const connectMs = isStdioEndpoint(config) ? stdioConnect : httpConnect;
+    try { await bounded(client.connect(transport, { timeout: connectMs }), AbortSignal.timeout(connectMs)); }
     catch (error) {
+      if (isStdioEndpoint(config)) reportStderr();
       // A stdio child that closes before the handshake never started, so name that cause instead of
       // letting it surface as an anonymous discovery failure.
       if (isStdioEndpoint(config) && error instanceof SdkError && error.code === SdkErrorCode.ConnectionClosed) {
@@ -375,6 +407,8 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     };
   }
   return {
+    /** Drop this endpoint's live session so the next probe starts a fresh helper (stdio) or handshake. */
+    retire: async (endpointId: string): Promise<void> => { await retire(endpointId); },
     async discover(endpointId: string): Promise<DiscoveryResult> {
       if (closed) return { state: 'unavailable', reason: 'adapter-closed' };
       // Discovery is exclusive: it waits for in-flight calls and blocks new ones so tools never change under a call.

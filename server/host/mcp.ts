@@ -139,7 +139,8 @@ export interface ConnectorFailureDetail {
  * inconclusive and worth one; a mismatch, or a refusal that only a new sign-in fixes, is not.
  */
 export function identityFailureRetryable(proof: IdentityProof): boolean {
-  return proof.match !== false && proof.code !== 'credential_missing';
+  // A revoked credential and a missing one are answered by a new sign-in, never by another probe.
+  return proof.match !== false && proof.code !== 'credential_missing' && proof.code !== 'credential_revoked';
 }
 
 /** Every restart delay of one bounded background recovery round, after a retryable connect failure. */
@@ -175,11 +176,23 @@ export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_REC
   };
 }
 
+/**
+ * The closed lifecycle lines a connector connect writes: a connect that lands, a recovery that lands, a
+ * bounded recovery round that gives up, and a helper that told us why on stderr. The last one carries a
+ * byte count only, so no helper text ever reaches host.log.
+ */
+export type ConnectorLifecycleEvent =
+  | { event: 'connector_connected'; endpointId: string; connectMs: number }
+  | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
+  | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
+  | { event: 'connector_helper_stderr'; endpointId: string; bytes: number };
+
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
   log?: ToolsOwnerOptions['log'];
   connectorLog?: (connector: string, stage: string, detail?: ConnectorFailureDetail) => void;
-  identityLog?: (connector: string, proven: boolean, match: boolean | null) => void;
+  identityLog?: (connector: string, proven: boolean, match: boolean | null, endpointId?: string) => void;
+  lifecycleLog?: (event: ConnectorLifecycleEvent) => void;
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   now?: () => number;
@@ -226,7 +239,8 @@ export async function composeMcpRuntime(options: {
       throw Error(`credential ${reference} missing or invalid`);
     }
   };
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential, onTransportState: event => transportState(event) });
+  const helperStderr = (detail: { endpointId: string; bytes: number }): void => options.lifecycleLog?.({ event: 'connector_helper_stderr', ...detail });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential, onHelperStderr: helperStderr, onTransportState: event => transportState(event) });
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
@@ -239,8 +253,11 @@ export async function composeMcpRuntime(options: {
   // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
   // can ride out, and a retried or repeated pass never doubles the line.
   const failuresReported = new Set<string>();
+  // The last closed reason per endpoint, so the one exhaustion line can name what it gave up on.
+  const failureReasons = new Map<string, string>();
   const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
     reason: string, exceptionCode?: string): void => {
+    failureReasons.set(entry.id, reason);
     if (attempt !== 'first-connect' || failuresReported.has(entry.id)) return;
     failuresReported.add(entry.id);
     options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}) });
@@ -367,20 +384,34 @@ export async function composeMcpRuntime(options: {
   // refresh verifies the account again instead of inheriting the boot-time proof.
   // A retryable failure schedules one bounded background round: a fresh generation, a fresh proof and a
   // full settle, so a late result from the failed round is fenced out instead of overwriting this one.
+  // A helper process that refused the first identity probe keeps that judgment for its whole life, so a
+  // retry that re-probes through it can never recover. Retire the session before the recovery round does.
+  const replaceSession = new Set<string>();
   const retryEndpoint = async (entry: McpEndpointEntry): Promise<{ retryable: boolean }> => {
     if (closed) return { retryable: false };
     const token = (generations.get(entry.id) ?? 0) + 1;
     generations.set(entry.id, token);
     ready.delete(entry.id);
     registry.suspend(entry.id);
-    return settle(entry, token, 'refresh', identityProofMemo()).catch(() => ({ retryable: false }));
+    if (replaceSession.delete(entry.id)) await port.retire(entry.id);
+    const started = now();
+    const result = await settle(entry, token, 'refresh', identityProofMemo()).catch(() => ({ retryable: false }));
+    if (!result.retryable && reports.get(entry.id)?.state === 'connected') {
+      options.lifecycleLog?.({ event: 'connector_recovered', endpointId: entry.id, attempts: recovery.attempts(entry.id), connectMs: Math.max(0, now() - started) });
+    }
+    return result;
   };
   const scheduleRecovery = (entry: McpEndpointEntry): void => {
-    recovery.next(entry.id, () => {
+    const scheduled = recovery.next(entry.id, () => {
       void retryEndpoint(entry).then(result => { if (result.retryable) scheduleRecovery(entry); else recovery.stop(entry.id); });
     });
+    if (!scheduled) {
+      options.lifecycleLog?.({ event: 'connector_recovery_exhausted', endpointId: entry.id, attempts: recovery.attempts(entry.id),
+        reason: failureReasons.get(entry.id) ?? 'connector-unavailable' });
+    }
   };
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
+    const roundStarted = now();
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
@@ -420,7 +451,9 @@ export async function composeMcpRuntime(options: {
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
         // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
         // credential or configuration error is stable and a later refresh still reconnects it.
-        return { retryable: stage === 'first_call' };
+        // A refresh the transport could not reach is a network blip, not a refusal: the bounded round
+        // is scheduled for it, and a real 4xx refusal keeps its own park-for-sign-in behaviour.
+        return { retryable: stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
       }
       const envelope = connectorEnvelopes[entry.connector] ?? [];
       const accepts = readClassifiers[entry.connector] ?? (() => true);
@@ -529,7 +562,7 @@ export async function composeMcpRuntime(options: {
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
             // The receipt belongs to the read that happened, so a reused proof writes no second line.
-            options.identityLog?.(entry.connector, proof.proven, proof.match);
+            options.identityLog?.(entry.connector, proof.proven, proof.match, entry.id);
             return proof;
           });
         } finally { registry.clearProbe(entry.id); }
@@ -542,17 +575,19 @@ export async function composeMcpRuntime(options: {
           // background recovery. Only a definite refusal stays failed until the next reconnect.
           const retryable = identityFailureRetryable(identity);
           reportFailure(entry, 'handshake', attempt, code);
+          if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
           return { retryable };
         }
         if (!identity.proven) {
           reportFailure(entry, 'handshake', attempt, 'identity_unverified');
+          if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', ...(identity.code ? { reasonCode: identity.code } : {}), identity });
           return { retryable: identityFailureRetryable(identity) };
         }
       } else if (identitySource && expectedIdentities.length === 0) {
         // No owner identity configured and a non-strict source: the explicit no-comparison policy.
-        options.identityLog?.(entry.connector, true, null);
+        options.identityLog?.(entry.connector, true, null, entry.id);
       }
       if (stale()) return { retryable: false };
       // Publish synchronously: re-read the durable policy, re-check liveness, then swap the
@@ -576,6 +611,7 @@ export async function composeMcpRuntime(options: {
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false };
       }
       ready.add(entry.id);
+      options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
       return { retryable: false };
     } catch (error) {

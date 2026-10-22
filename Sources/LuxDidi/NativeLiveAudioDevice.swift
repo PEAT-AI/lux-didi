@@ -633,7 +633,7 @@ struct NativeLiveInterruptionSample: Sendable {
     private let deviceState: (Bool) -> Bool
     private let now: () -> Date
     private let isBuiltInOutput: () -> Bool
-    private let outputLevel: () -> (volume: String, mute: String)
+    private let outputLevelReading: () -> (volume: String, mute: String)
     /// Test seams: an engine/player/format factory and a start hook stand in for real hardware.
     var engineFactoryForTesting: (() -> (AVAudioEngine, AVAudioPlayerNode, AVAudioFormat))?
     var startForTesting: ((AVAudioEngine) throws -> Void)?
@@ -667,7 +667,7 @@ struct NativeLiveInterruptionSample: Sendable {
          owner: AudioOwner = .shared, journal: NativeAudioJournal? = nil,
          deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil,
          isBuiltInOutput: (() -> Bool)? = nil,
-         outputLevel: (() -> (volume: String, mute: String))? = nil) {
+         outputLevelReading: (() -> (volume: String, mute: String))? = nil) {
         self.captureInput = captureInput
         self.inputDevice = defaultInput ?? { Self.defaultDevice(input: true) }
         self.owner = owner
@@ -675,7 +675,7 @@ struct NativeLiveInterruptionSample: Sendable {
         self.deviceState = deviceState ?? Self.defaultDeviceRunningSomewhere(input:)
         self.now = now ?? { Date() }
         self.isBuiltInOutput = isBuiltInOutput ?? { Self.isBuiltInSpeakers(outputID: Self.defaultDevice(input: false).id) }
-        self.outputLevel = outputLevel ?? { Self.defaultOutputLevel() }
+        self.outputLevelReading = outputLevelReading ?? { Self.defaultOutputLevel() }
     }
     var hasJournal: Bool { journal != nil }
     /// Test seam: adopt the stretcher the running graph would own, then flush it, without opening hardware.
@@ -1142,13 +1142,13 @@ struct NativeLiveInterruptionSample: Sendable {
         owner.didStartEngine(holder: ObjectIdentifier(self))
         startPlaybackLevelWindow()
         // L12a: what the default output is set to, read only, next to the route it will play on.
-        let outputLevel = outputLevel()
+        let reading = outputLevelReading()
         log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false",
                               "busyAtCallStart": deviceBusy ? "true" : "false",
                               "outputTransport": Self.routeClassification(input: false),
                               "outputUID": Self.defaultOutputUID(),
-                              "outputVolume": outputLevel.volume,
-                              "outputMute": outputLevel.mute])
+                              "outputVolume": reading.volume,
+                              "outputMute": reading.mute])
         // One rate receipt per session accompanies the queue measurements.
         log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.

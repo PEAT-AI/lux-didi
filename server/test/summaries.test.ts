@@ -10,11 +10,12 @@ import * as summaries from '../domain/summaries.js';
 import { buildEarlierConversationsSection, earlierConversationsBudget } from '../prompt/live-persona.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
-import type { ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
+import type { DataClass, ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import {
   OPEN_LOOP_MAX_CHARS, SUMMARY_MAX_RETRIES, SUMMARY_PROMPT_VERSION, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
-  createSummarizer, distillationPrompt, parseDistillationResult,
+  createSummarizer, distillationPrompt, parseDistillationResult, type SummarizerOptions,
 } from '../services/summarize.js';
 
 const NOW = 1_700_000_000_000;
@@ -40,6 +41,8 @@ function seedSession(store: Store, id: string, options: { outcome?: string; memo
         [`grant-${id}`, id, 'gemini', 'synthetic-live', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']),
           options.inputClass, 1, NOW]);
     }
+    // The distiller reads the trusted history eligibility row the terminal path records, never the grant.
+    recordHistorySession(tx, id, 'owner', [(options.inputClass ?? 'ordinary') as DataClass], [], NOW);
   });
 }
 
@@ -64,8 +67,10 @@ class FakeModel implements ModelPort {
   }
 }
 
-function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya') {
-  return createSummarizer({ store, model, modelId: 'synthetic-text-model', assistantName, timeZone: 'UTC', now: () => NOW, log: () => {}, delay: () => Promise.resolve() });
+function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya', extra: Partial<SummarizerOptions> = {}) {
+  // The host always names the route's permitted classes; without them the distiller fails closed and skips a session.
+  return createSummarizer({ store, model, modelId: 'synthetic-text-model', modelAllowedClasses: ['ordinary'],
+    assistantName, timeZone: 'UTC', now: () => NOW, log: () => {}, delay: () => Promise.resolve(), ...extra });
 }
 
 function withTurns(store: Store, id: string, outcome?: string): void {
@@ -281,7 +286,7 @@ test('migration v5 upgrades a populated v4 database preserving sessions and turn
     before.close();
     const after = new Store(dir, [...domainMigrations, ...liveMigrations]);
     try {
-    assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), domainMigrations.map(m => m.version));
       assert.ok(after.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'")));
       assert.equal(after.transaction(tx => tx.get("SELECT text FROM entries WHERE id='e1'"))!['text'], 'synthetic note');
       assert.deepEqual(after.transaction(tx => summaries.listSummaries(tx)), []);
@@ -324,7 +329,7 @@ test('a summary completes through the real controlled() path within its computed
   try {
     withTurns(h.store, 's-real');
     const model = distillAdapter('The owner asked about the calendar.');
-    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => Date.now(), log: () => {} });
+    const s = summarizer(h.store, model, 'Naya', { modelId: 'gemini-2.5-flash', now: () => Date.now() });
     await s.distill('s-real');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-real'))!;
     assert.equal(row.status, 'complete');
@@ -338,7 +343,7 @@ test('an already-expired absolute deadline fails loud through the real controlle
     withTurns(h.store, 's-expired');
     let transports = 0;
     const model = distillAdapter('never sent', async () => { transports++; throw Error('transport must not run'); });
-    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', assistantName: 'Naya', timeZone: 'UTC', now: () => Date.now(), deadlineBudgetMs: -1, log: () => {} });
+    const s = summarizer(h.store, model, 'Naya', { modelId: 'gemini-2.5-flash', now: () => Date.now(), deadlineBudgetMs: -1 });
     await s.distill('s-expired');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-expired'))!;
     assert.equal(row.status, 'failed');
@@ -491,7 +496,7 @@ test('migration v6 upgrades a populated v5 database and v1 rows read as openLoop
     before.close();
     const after = new Store(dir, [...domainMigrations, ...liveMigrations]);
     try {
-      assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(after.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => Number(r.version))), domainMigrations.map(m => m.version));
       const old = after.transaction(tx => summaries.getBySession(tx, 's-old'))!;
       assert.equal(old.status, 'complete');
       assert.equal(old.summary, 'The owner said they moved to Lisbon.');

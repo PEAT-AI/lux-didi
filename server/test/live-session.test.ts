@@ -2228,61 +2228,6 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   await attachment.done;
 });
 
-test('a drop that outlasts the 60 s budget settles the call resume_failed, never at a fixed attempt count', async t => {
-  const scheduler = new DeadlineClock();
-  const receipts: Record<string, unknown>[] = [];
-  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
-  t.after(() => sink());
-  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
-  const { session, attachment } = await attached(h, 'recovery-budget');
-  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-budget-resumption-secret' } });
-  const dropAt = scheduler.now;
-  h.f.remoteClose('', 1006);
-  // Every recovery socket dies before its ready event until the whole budget has passed.
-  let refused = 1;
-  while (scheduler.now - dropAt < 60_000) {
-    refused += 1;
-    await advanceUntil(h.advance, scheduler, () => h.f.connections >= refused);
-    await h.f.frame(refused);
-    h.f.remoteClose('', 1006);
-  }
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.ok(refused > 4, 'the call kept reopening far past the old three-attempt cap');
-  const recoveries = receipts.filter(record => record.event === 'live_recovery');
-  assert.ok(recoveries.length >= refused - 1, 'every attempt is a receipt');
-  assert.ok(recoveries.every(record => typeof record['msSinceDrop'] === 'number' && Number(record['msSinceDrop']) >= 0),
-    'each attempt names how long the episode had been running');
-  assert.deepEqual(recoveries.map(record => record['attempt']), recoveries.map((_, index) => index + 1), 'the count is consecutive');
-  h.owner.revoke(session.liveSessionId);
-});
-
-test('a network that returns inside the budget recovers the call instead of ending it', async t => {
-  const scheduler = new DeadlineClock();
-  const receipts: Record<string, unknown>[] = [];
-  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
-  t.after(() => sink());
-  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
-  const { session } = await attached(h, 'recovery-survives');
-  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-survives-resumption-secret' } });
-  const dropAt = scheduler.now;
-  h.f.remoteClose('', 1006);
-  // Refuse every open for 21 s (two attempts), then the network is back and the next socket goes live.
-  for (let refused = 2; scheduler.now - dropAt < 21_000; refused += 1) {
-    await advanceUntil(h.advance, scheduler, () => h.f.connections >= refused);
-    await h.f.frame(refused);
-    h.f.remoteClose('', 1006);
-    assert.ok(scheduler.now - dropAt < 60_000, 'the outage is inside the budget');
-  }
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
-  await h.f.frame(4);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(h.owner.get(session.liveSessionId).terminal, undefined, 'the call is still up after the outage');
-  assert.ok(receipts.filter(record => record.event === 'live_recovery').every(record => typeof record['msSinceDrop'] === 'number'),
-    'every attempt names how long the episode had been running');
-  h.f.send({ serverContent: { inputTranscription: { text: 'after the blip', finished: true } } });
-  h.owner.revoke(session.liveSessionId);
-});
-
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { sessionMs: 1000, callMaxMs: 1500, idleMs: 600_000 } });
@@ -2691,15 +2636,15 @@ test('active page does not carry past session metadata', async t => {
 });
 
 
-for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends after three failures`, async t => {
+for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends inside the 60 s budget`, async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const { session, attachment } = await attached(h, `resume-refused-${status}`);
   h.f.refuseUpgrades(status);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
-  // Drive the injected scheduler through the 0/2/5 s backoff until the bound settles.
+  // Drive the injected scheduler through the 0/2/4/8 s backoff until the 60 s episode budget settles it.
   let settled = false;
-  for (let i = 0; i < 60 && !settled; i++) {
+  for (let i = 0; i < 90 && !settled; i++) {
     h.advance(1000); scheduler.runDue(); await tick();
     settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
   }

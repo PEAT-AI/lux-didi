@@ -457,7 +457,7 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 /** L14: a breath is not a word. The provider's non-lexical tags never reach the journal or the script count;
  *  a closed list only, so any other bracketed text is the owner's own and stays untouched. */
 const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
-export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ' ').replace(/\s+/gu, ' ').trim(); }
+export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }

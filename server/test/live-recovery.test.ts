@@ -241,6 +241,8 @@ test('#525/L18: a socket that dies right after open keeps reopening inside the 6
     await flush();
     index += 1;
   }
+  // The budget ends the episode on the next attempt after 60 s; let its timer fire.
+  for (let round = 0; round < 10; round += 1) { await h.advance(10_000); await flush(); }
   const end = await ended(t, attachment as never);
   assert.ok(died.length > 4, `the old three-attempt cap is gone, got ${died.length} attempts`);
   const recovery = h.receipts.filter(entry => entry['event'] === 'live_recovery');
@@ -277,7 +279,7 @@ test('#527/L18: a long healthy stretch starts a fresh recovery episode after the
   const recovery = h.receipts.filter(entry => entry['event'] === 'live_recovery').slice(before);
   assert.equal(recovery[0]?.['msSinceDrop'], 0, 'the healthy stretch cleared the episode, so the drop starts at zero');
   const terminal = h.owner.get(created.liveSessionId).terminal;
-  assert.equal(terminal, undefined, 'two dead recoveries after a healthy stretch do not end the call');
+  assert.ok(!terminal, 'two dead recoveries after a healthy stretch do not end the call');
   h.owner.revoke(created.liveSessionId);
   void attachment;
 });

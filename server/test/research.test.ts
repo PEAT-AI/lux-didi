@@ -420,7 +420,7 @@ test('calendar research does not start a read after its run deadline', async () 
     async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'today' }], pUseful: { calendar_window: 1 } }; },
   };
   const h = harness({ selector: lateSelector, executeText: MERGED_CALENDAR, now: () => clock });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
   assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
   assert.equal(reply['status'], 'partial');
 });
@@ -437,7 +437,7 @@ test('the calendar budget never extends another source past the start deadline',
     async select() { clock = RESEARCH.startDeadlineMs + 1_000; return { questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:1d' }], pUseful: { mail_search: 1 } }; },
   };
   const h = harness({ selector: lateMailSelector, executeText: 'mail evidence', now: () => clock });
-  await runResearch(h.deps, { action: 'start', question: 'any mail today' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'summarize the thing again' }, new AbortController().signal);
   assert.equal(h.executed.some(entry => entry.name === 'gmail_search_messages'), false);
 });
 
@@ -496,7 +496,7 @@ test('a source that read successfully is not unchecked and carries no unreachabl
   const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   assert.equal((reply['unchecked'] as string[]).includes('calendar'), false);
-  assert.equal(reply['note'], undefined);
+  assert.equal(reply['note'], RESEARCH.completeNote, 'the only note is the terminal one, never an unreachable source');
 });
 
 test('the connector to source map covers the approved connectors', () => {
@@ -1274,7 +1274,7 @@ test('a quick_fact continuation reads deterministically: no second selector roun
   const quick = countingSelector({ questionClass: 'quick_fact', actions: [{ kind: 'stop_answer' }], pUseful: { mail_search: 0.9 } }, () => { selects += 1; });
   const h = harness({ selector: quick });
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  const first = await scheduler.call({ action: 'start', question: 'what is the landlord invoice number' }, new AbortController().signal);
   assert.equal(selects, 1);
   assert.equal(first['canContinue'], true, 'the first round leaves a continuation open');
   const readsBefore = h.executed.length;

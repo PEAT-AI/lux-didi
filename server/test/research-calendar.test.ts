@@ -219,7 +219,7 @@ test('calendar R4: real selector JSON parsing preserves named windows and refuse
       status: 'complete', text: JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 1 } }),
       providerContent: { role: 'model', parts: [] }, reason: 'synthetic', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null },
     }) });
-    const reply = await runResearch(h.deps, { action: 'start', question: 'Synthetic named calendar window' }, signal());
+    const reply = await runResearch(h.deps, { action: 'start', question: 'Synthetic named window' }, signal());
     const calls = h.calls.filter(call => call['name'] === 'calendar_list_events');
     if (typeof window === 'string' && window !== 'whenever') {
       assert.equal(calls.length, 1);
@@ -264,7 +264,7 @@ test('calendar R6: a distinct Scheduler Start owns a new window and invalidates 
       : { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: Array.from({ length: 12 }, (_, n) => ({ id: `${call.args['timeMin']}:${n}`, start: call.args['timeMin'], summary: `Synthetic ${call.args['timeMin']} event ${n}` })), ...(!call.args['pageToken'] && String(call.args['timeMin']).startsWith('2026-10-19') ? { nextPageToken: 'held-monday-page' } : {}) }) });
   };
   const scheduler = new ResearchScheduler(h.deps);
-  const pending = scheduler.call({ action: 'start', question: 'Synthetic Monday', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
+  const pending = scheduler.call({ action: 'start', question: 'Synthetic held read', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
   await started; assert.ok(due); due();
   const first = await pending;
   try {

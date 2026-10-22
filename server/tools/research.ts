@@ -2808,6 +2808,8 @@ interface FirstAnswerState {
   releaseAt?: () => number;
   /** Woken when a source settles, so the wait is event-driven and never a poll. */
   wake?: () => void;
+  /** Set when the run's own budget cut its reads: nothing more is coming for this reply. */
+  cut?: boolean;
 }
 
 const lineKey = (line: string): string => line.trim().toLowerCase().replace(/\s+/gu, ' ');
@@ -2863,7 +2865,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     if (live === undefined) return undefined;
     const waiting = [...first.required].some(source => first.reading.has(source) && !live.run.sourcesDone.has(source));
     const left = first.releaseAt() - deps.now();
-    if (!waiting || left <= 0) break;
+    if (!waiting || left <= 0 || first.cut === true) break;
     const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
     const next = await Promise.race([settled, woken, wait(left)]);
     delete first.wake;
@@ -3041,6 +3043,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const required = new Set(requiredSources(question || run.direction || '').filter(source => configured.includes(source)));
   if (required.size > 0) first.required = required;
   first.releaseAt = () => started + answerMs;
+  // ROUTE-1022: a cut read ends the wait, so a source that never answers cannot hold the reply.
+  answerCut.signal.addEventListener('abort', () => { first.cut = true; first.wake?.(); }, { once: true });
 
   if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
   if (call.action === 'continue' && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);

@@ -80,11 +80,11 @@ import Foundation
         let clock = MutableClock()
         let limited = NativeActions(home: home, opener: { _, _ in true }, clock: { clock.now })
         var codes: [NativeActionCode] = []
-        for _ in 0..<6 { codes.append(await limited.perform(.openURL, target: "https://example.test").code) }
+        for _ in 0..<6 { codes.append(await limited.perform(.openURL, target: "https://mail.google.com/mail/u/0/#inbox/limit").code) }
         check(codes.prefix(5).allSatisfy { $0 == .opened }, "the first five opens pass")
         check(codes.last == .notAllowed, "the sixth open in a minute is refused")
         clock.advance(by: 61)
-        check(await limited.perform(.openURL, target: "https://example.test").code == .opened, "the window slides")
+        check(await limited.perform(.openURL, target: "https://mail.google.com/mail/u/0/#inbox/limit").code == .opened, "the window slides")
 
         let openedCount = await counter.count
         check(openedCount >= 3, "the injected opener saw the allowed opens only")

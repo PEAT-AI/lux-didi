@@ -101,7 +101,9 @@ export function resolveHandle(handle: string): OpenHandle | undefined {
  * closed. Minting alone exposes nothing.
  */
 export function exposeHandles(text: string): void {
-  for (const match of text.matchAll(/\bopen: (L[0-9]{1,4}) = /g)) if (handles.has(match[1]!)) exposed.add(match[1]!);
+  // No word boundary: a delivered tool result is JSON text, so a line break arrives as the two characters
+  // `\n` and `open:` is preceded by the word character `n`. Only minted handles are ever exposed.
+  for (const match of text.matchAll(/open: (L[0-9]{1,4}) = /g)) if (handles.has(match[1]!)) exposed.add(match[1]!);
 }
 
 /** A line shaped like a handle line, which only the host writes; tool text carrying one is stripped. */

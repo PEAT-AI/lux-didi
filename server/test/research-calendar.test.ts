@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -370,6 +370,16 @@ test('E8: a trimmed calendar answer says how many events it left out', async () 
   assert.ok(shown > 0 && shown < 30, 'the byte budget trims the answer instead of the window being cut to eight events');
   assert.match(String(reply['note']), /I left out \d+ calendar events to keep this answer short\./u);
   assert.equal(reply['canContinue'], true, 'the left-out events are still reachable');
+});
+
+// ROUTE-1022 K5: the brief's calendar read is the same primary window an explicit today read pays for,
+// so a second identical brief read inside the memo window hits the live session's own memo entry.
+test('ROUTE-1022 K5: a brief calendar read shares the memo key of an explicit today read', () => {
+  const brief = candidateSubs('brief', { question: "what's on my calendar tomorrow", configured: ['calendar', 'knowledge'], evidence: new Map() });
+  const read = brief.find(call => call.name === 'calendar_list_events');
+  assert.ok(read !== undefined, 'a question about the schedule still reads the calendar');
+  const explicit = candidateSubs('calendar_window', { question: 'today', configured: ['calendar'], evidence: new Map(), window: 'today' });
+  assert.deepEqual(read.args, explicit[0]!.args, 'same args, so the calendar memo keys them the same');
 });
 
 test('E8: one calendar list and one window read per live session', async () => {

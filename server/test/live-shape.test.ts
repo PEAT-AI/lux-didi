@@ -79,25 +79,27 @@ test('gmail read decodes entities in the header and the plain-text body to text'
 test('gmail read omits an absent sender and date instead of printing the word unknown', () => {
   const shaped = shapeGmailRead({ headers: { Subject: 'Only a subject' }, body: 'hello' });
   assert.equal(shaped.text.includes('unknown'), false);
-  assert.match(shaped.text, /^subject: Only a subject\n\nhello$/);
+  // The read ends with the source's own body-coverage status, which is not a missing field.
+  assert.match(shaped.text, /^subject: Only a subject\n\nhello\n\[Source inline body completeness is unverified\.\]$/);
 });
 
 test('gmail read reports a body cut as final, never mid-sentence and never promising a re-read', () => {
   const body = 'First sentence. Second sentence. Third sentence. '.repeat(600);
   const shaped = shapeGmailRead({ headers: HEADERS, body });
   assert.equal(shaped.partial, true);
-  assert.match(shaped.text, /\[omitted: \d+ characters of body; final/);
+  assert.match(shaped.text, /\[omitted: \d+ received characters of body omitted from this display\]/);
   assert.equal(shaped.text.includes('ask for more'), false);
   assert.match(shaped.text.split('\n\n[omitted:')[0]!.trimEnd(), /[.?!]$/);
 });
 
 test('gmail list keeps sender, date, snippet, unread flag and thread size for every message', () => {
   const shaped = shapeGmailList({ messages: [
-    { headers: { Subject: 'One', From: 'A <a@example.invalid>', Date: 'Mon' }, snippet: 'hello there', labelIds: ['UNREAD'], threadSize: 3 },
-    { headers: { Subject: 'Two', From: 'B <b@example.invalid>', Date: 'Tue' } },
+    { id: 'm1', headers: { Subject: 'One', From: 'A <a@example.invalid>', Date: 'Mon' }, snippet: 'hello there', labelIds: ['UNREAD'], threadSize: 3 },
+    { id: 'm2', headers: { Subject: 'Two', From: 'B <b@example.invalid>', Date: 'Tue' } },
   ] });
   assert.match(shaped.text, /- One \| from: A \| date: Mon \[unread\] \(thread 3\) \| hello there/);
   assert.match(shaped.text, /- Two \| from: B \| date: Tue/);
+  // A message with no id is not a readable page entry, so both entries here carry one.
   assert.equal(shaped.partial, false);
 });
 
@@ -213,7 +215,7 @@ test('lux search keeps title, type, date, id and a substantial excerpt, and name
   assert.equal(shaped.text.includes('Insight 21'), false);
 });
 
-test('lux get_insight returns the full body, so the search excerpt follow-up is honest', () => {
+test('lux get_insight returns the full body, and the search excerpt names research for the rest', () => {
   const content = 'Sentence one. '.repeat(400); // ~5600 chars, over the 1200 excerpt bound but under the body bound
   const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 7, insight_title: 'Deep body', content }));
   assert.equal(shaped.partial, false);
@@ -221,7 +223,8 @@ test('lux get_insight returns the full body, so the search excerpt follow-up is 
   assert.equal(shaped.text.includes(content), true, 'the whole insight body must reach the model');
   const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 7, insight_title: 'Deep body', content }] }));
   assert.equal(excerpt.partial, true);
-  assert.match(excerpt.text, /call get_insight with ids=\[7\]/);
+  // ROUTE-1022 K15: the live session reaches a stored note through research, never get_insight.
+  assert.match(excerpt.text, /ask research with ids=\[7\] for the whole note/);
 });
 
 test('plain non-JSON knowledge payloads pass through untouched', () => {
@@ -413,12 +416,38 @@ test('R6: organizer renders, and a capped attendee list says and others', () => 
 
 // O-R1: the owner's 18:34 IST call asked lux-knowledge for six bodies and heard "1 of 1 shown" from a
 // 17 KB ranked reply, because the fallback cut the whole Markdown at the 1,500-character Gmail bound.
-function rankedHit(id, title, body) {
+function rankedHit(id: number, title: string, body: string): string {
   return [`**#${id}** [TECHNICAL_DECISION] ${title}`, body, '  Score: 1.00' + String(id).slice(-2), ''].join('\n');
 }
-function ranked(parts) {
+function ranked(parts: readonly string[]): string {
   return ["# Knowledge Search: 'ocp prep call'", '', '_confidence: high | top score: 1.01 | relevant candidate: yes', '', ...parts].join('\n');
 }
+
+// ROUTE-1022 K15/K17: the note names the tool the live session really has (research, never get_insight),
+// and the coverage line takes the hit count the server states rather than the count that fit.
+test('ROUTE-1022 K15: a cut knowledge excerpt tells the model to ask research, never get_insight', () => {
+  const body = 'Sentence about the prep call. '.repeat(40);
+  const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 4242, insight_title: 'Prep', content: body }] }));
+  assert.equal(excerpt.text.includes('get_insight'), false, 'the live session has no get_insight tool');
+  assert.match(excerpt.text, /ask research with ids=\[4242\] for the whole note/);
+  const rankedText = shapeLuxKnowledge('search_knowledge', ranked([
+    rankedHit(91001, 'First', body), rankedHit(91002, 'Second', body),
+  ]));
+  assert.equal(rankedText.text.includes('get_insight'), false);
+  assert.match(rankedText.text, /ask research again with ids=\[\d+\] for this note's whole text/);
+});
+
+test('ROUTE-1022 K17: the coverage line uses the hit count the server states', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', [
+    "# Knowledge Search: 'ocp prep call' (6 hits)",
+    '',
+    '_confidence: high | top score: 1.01 | relevant candidate: yes',
+    '',
+    ...Array.from({ length: 5 }, (_, index) => rankedHit(92000 + index, `Insight ${index}`, 'Sentence about the prep call.')),
+  ].join('\n'));
+  assert.match(shaped.text, /\[showing 5 of 6 hits;/, 'the server said six hits, and the line says six');
+  assert.equal(shaped.partial, true, 'a reply that carried five of six is partial');
+});
 
 test('O-R1: a six hit ranked knowledge reply reaches the model as six hits inside its own budget', () => {
   const body = 'Sentence about the prep call. '.repeat(40);
@@ -435,7 +464,7 @@ test('O-R1: more hits than the total bound allows never drop silently', () => {
   const text = ranked(Array.from({ length: 12 }, (_, index) => rankedHit(91200 + index, `Insight ${index}`, body)));
   const shaped = shapeLuxKnowledge('search_knowledge', text);
   assert.match(shaped.text, /\[showing \d+ of 12 hits; ask a narrower question or a higher limit for the rest\]/);
-  assert.ok(shaped.text.length <= 4300, `the trimmed text stays near its bound (${shaped.text.length})`);
+  assert.ok(shaped.text.length <= KNOWLEDGE_RANKED_TOTAL_CHARS + 200, `the trimmed text stays near its bound (${shaped.text.length})`);
   assert.equal(shaped.partial, true, 'a trimmed read is partial');
 });
 

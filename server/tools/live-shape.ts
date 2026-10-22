@@ -559,12 +559,12 @@ function knowledgeHeading(hit: Record<string, unknown>): string {
   const id = scalar(hit['id']);
   return `### ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}`;
 }
-/** A search hit's excerpt. The cut names get_insight, which returns the full body (not this bound). */
+/** A search hit's excerpt. The cut names the research tool, which reads the whole entry by its id. */
 function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
   const cut = cutAtSentence(body, KNOWLEDGE_EXCERPT_CHARS);
   const id = scalar(hit['id']);
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `call get_insight with ids=[${id}] for the full insight` : 'final, ask for the full insight by its id'}]` : '';
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `ask research with ids=[${id}] for the whole note` : 'final, ask research again with this note id for the whole note'}]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 /** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
@@ -608,6 +608,15 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
 const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;
 const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
 
+/** ROUTE-1022 K17: the hit count the digest states above its hits, so the coverage line is the server's. */
+const KNOWLEDGE_HIT_COUNT = /\b(\d{1,3})\s+(?:hits?|results?|insights?|entries|matches)\b/iu;
+function statedHitCount(raw: string): number | undefined {
+  const header = raw.split('\n').map(line => line.trim()).find(line => KNOWLEDGE_HEADER.test(line));
+  if (header === undefined) return undefined;
+  const count = Number(KNOWLEDGE_HIT_COUNT.exec(header)?.[1] ?? Number.NaN);
+  return Number.isSafeInteger(count) && count > 0 ? count : undefined;
+}
+
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
 function knowledgeRanked(raw: string): ShapedResult | undefined {
   const clean = stripKnowledgePreamble(raw);
@@ -632,16 +641,19 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
     // so the bound follows the hit's position, never a shape marker in the text.
     const cut = cutAtSentence(inner, kept.length === 0 ? KNOWLEDGE_RANKED_TOP_CHARS : KNOWLEDGE_RANKED_EXCERPT_CHARS);
     const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
-    const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; call get_insight with ids=[${id ?? 'the id above'}] for the whole insight]` : '';
+    const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; ask research again with ids=[${id ?? 'the id above'}] for this note's whole text]` : '';
     const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
     if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
     kept.push(text);
     used += text.length + 2;
     omitted += cut.omitted;
   }
-  const tail = trimmed > 0 ? `\n\n[showing ${kept.length} of ${parts.length} hits; ask a narrower question or a higher limit for the rest]` : '';
+  // K17: the server may state more hits than its digest carried, and the coverage line says so.
+  const total = Math.max(statedHitCount(raw) ?? 0, parts.length);
+  const short = trimmed > 0 || total > kept.length;
+  const tail = short ? `\n\n[showing ${kept.length} of ${total} hits; ask a narrower question or a higher limit for the rest]` : '';
   const text = `${kept.join('\n\n')}${tail}`;
-  return withOpenHandles({ text, partial: trimmed > 0 || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: knowledgeSourceLinks(text) });
+  return withOpenHandles({ text, partial: short || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: knowledgeSourceLinks(text) });
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {

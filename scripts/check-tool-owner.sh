@@ -11,9 +11,11 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-tool-owner.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,host,adapters/model,adapters/mcp,adapters/live-voice,trace}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,domain,test,host,adapters/model,adapters/mcp,adapters/live-voice,trace}
+# server/trace imports the domain modules (labels, history-reader, history-lifecycle): copy them too.
+cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root"/server/tools/*.ts "$out/source/tools/"
-cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
+cp "$root"/server/contracts/{storage,errors,domain}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
 # runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
 cp "$root"/server/trace/*.ts "$out/source/trace/"

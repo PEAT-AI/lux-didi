@@ -142,6 +142,17 @@ test('K8: knowledge latency is stated at its measured p50, and the log carries t
 
 // --- ROUTE-1022 (#526): one knowledge call, full bodies -----------------------------------------
 
+// ROUTE-1022 K7: the model's own instruction words ('wait findings.', 'continue web results') reached the
+// knowledge query and spent its term budget. They are stop words now, so the question's terms answer.
+test('ROUTE-1022 K7: an instruction sentence is no knowledge query', () => {
+  assert.equal(knowledgeQuery('wait findings.', 'wait findings.'), '', 'nothing is left to search');
+  const subs = candidateSubs('knowledge_search', { question: 'wait findings.', configured: ['knowledge'], evidence: new Map() });
+  assert.deepEqual(subs, [], 'a lookup of pure instruction dispatches no search');
+  assert.equal(knowledgeQuery('continue web results agricon 2026', 'continue web results agricon 2026'), 'agricon 2026', 'the content terms survive');
+  assert.deepEqual(candidateSubs('knowledge_search', { question: 'wait findings', query: 'wait findings.', configured: ['knowledge'], evidence: new Map() }), [],
+    'an authored instruction query falls back to no search rather than a sentence');
+});
+
 test('ROUTE-1022: a knowledge question is one search call, with the full body window and no second hop', async () => {
   const executed: IntentSubCall[] = [];
   const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }),

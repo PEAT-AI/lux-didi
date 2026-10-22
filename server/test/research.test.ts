@@ -562,10 +562,27 @@ test('the brief fan-out is credited to every source it read and its findings rea
       : call.name === 'gmail_search_messages' ? '- Invoice | Landlord | Mon | due soon [id m1]'
         : call.name === 'mattermost_search' ? '**team**\nthe decision was recorded'
           : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up on my calendar, mail and team chat' }, new AbortController().signal);
   const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
   for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(sources.includes(source), `the brief read of ${source} is delivered to the answer`);
   assert.deepEqual(reply['unchecked'], [], 'every configured source was credited, so none is unchecked');
+});
+
+// ROUTE-1022 K5: a brief on a question that names no layer read his knowledge and nothing else. The
+// owner's own call spent 22 Gmail pages and three identical 'open loop follow up' searches on a
+// question about the business model.
+test('a brief on a question that names no source reads knowledge only, and searches its own terms', async () => {
+  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
+  const sent: { name: string; args: Record<string, unknown> }[] = [];
+  const h = harness({ selector, execute: async subs => subs.map(call => {
+    sent.push({ name: call.name, args: { ...call.args } });
+    return sub(call.name, '### Insight (PATTERN) [id 1]\nbody', true, call.key);
+  }) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what do you think about our business model' }, new AbortController().signal);
+  assert.deepEqual([...new Set(sent.map(entry => entry.name))], ['search_knowledge'], 'knowledge reads, and no mail, calendar or chat read');
+  assert.equal(JSON.stringify(sent).includes('open loop follow up'), false, 'the old default query is gone');
+  for (const entry of sent) assert.match(String(entry.args['query']), /business model/, 'the brief searches the question\'s own terms');
+  assert.deepEqual(reply['unchecked'], ['calendar', 'mail', 'chat'], 'the layers it did not read are named as unread');
 });
 
 interface FakeClock { now: () => number; schedule: (callback: () => void, delayMs: number) => { unref: () => void; cancel: () => void }; advance: (to: number) => void; pending: () => number }

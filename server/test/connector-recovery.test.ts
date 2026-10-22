@@ -507,7 +507,9 @@ test('L2: the background owner reports its start read and its timer read, and a 
     async () => { reads += 1; clock += 300; return { state: 'present', text: 'one line', items: 1, fetchedAt: clock }; },
     { now: () => clock, timeZone: 'UTC', intervalMs: 60_000, log: event => { receipts.push(event); } });
   cache.begin();
-  // The interval is armed but never fires inside this test: the timer edge is driven directly below.
+  // The interval is armed but never fires inside this test: the timer edge is driven directly below,
+  // once the start read has settled, so the two edges are two reads rather than one joined read.
+  await new Promise(resolve => setImmediate(resolve));
   await cache.refresh('timer');
   cache.stop();
   assert.equal(reads, 2, 'one read at begin and one asked for by the timer');

@@ -272,3 +272,19 @@ test('MED-1022: the knowledge receipt keeps its counts and closed tokens and ref
   for (const token of ['compiled', 'dropped', 'none']) assert.ok(safeEvent(row({ chatDateOperator: token })) !== undefined, `${token} is a closed token`);
   assert.equal(safeEvent(row({ note: 'extra' })), undefined, 'an unknown field is refused');
 });
+
+// ROUTE-1022 K5: a receipt names the plan a brief actually ran, as one closed token and nothing else.
+test('ROUTE-1022: the brief plan token reaches the log only from its closed set', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'knowledge', outcome: 'ok', ms: 12, deadlineMs: 12_000, coalesced: 1 };
+  for (const plan of ['knowledge_only', 'named_sources']) {
+    assert.deepEqual(safeEvent({ ...source, plan }), { ...source, plan }, `${plan} reaches host.log`);
+  }
+  assert.equal(safeEvent({ ...source, plan: 'read everything' }), undefined, 'an unknown plan token is refused');
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [10],
+  };
+  assert.deepEqual(safeEvent({ ...run, plan: 'knowledge_only' }), { ...run, plan: 'knowledge_only' }, 'the run receipt names the plan');
+  assert.equal(safeEvent({ ...run, plan: 'brief' }), undefined, 'and refuses a token outside it');
+});

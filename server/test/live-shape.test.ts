@@ -420,6 +420,32 @@ function ranked(parts) {
   return ["# Knowledge Search: 'ocp prep call'", '', '_confidence: high | top score: 1.01 | relevant candidate: yes', '', ...parts].join('\n');
 }
 
+// ROUTE-1022 K15/K17: the note names the tool the live session really has (research, never get_insight),
+// and the coverage line takes the hit count the server states rather than the count that fit.
+test('ROUTE-1022 K15: a cut knowledge excerpt tells the model to ask research, never get_insight', () => {
+  const body = 'Sentence about the prep call. '.repeat(40);
+  const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 4242, insight_title: 'Prep', content: body }] }));
+  assert.equal(excerpt.text.includes('get_insight'), false, 'the live session has no get_insight tool');
+  assert.match(excerpt.text, /ask research with ids=\[4242\] for the whole note/);
+  const rankedText = shapeLuxKnowledge('search_knowledge', ranked([
+    rankedHit(91001, 'First', body), rankedHit(91002, 'Second', body),
+  ]));
+  assert.equal(rankedText.text.includes('get_insight'), false);
+  assert.match(rankedText.text, /ask research again with ids=\[\d+\] for this note's whole text/);
+});
+
+test('ROUTE-1022 K17: the coverage line uses the hit count the server states', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', [
+    "# Knowledge Search: 'ocp prep call' (6 hits)",
+    '',
+    '_confidence: high | top score: 1.01 | relevant candidate: yes',
+    '',
+    ...Array.from({ length: 5 }, (_, index) => rankedHit(92000 + index, `Insight ${index}`, 'Sentence about the prep call.')),
+  ].join('\n'));
+  assert.match(shaped.text, /\[showing 5 of 6 hits;/, 'the server said six hits, and the line says six');
+  assert.equal(shaped.partial, true, 'a reply that carried five of six is partial');
+});
+
 test('O-R1: a six hit ranked knowledge reply reaches the model as six hits inside its own budget', () => {
   const body = 'Sentence about the prep call. '.repeat(40);
   const text = ranked(Array.from({ length: 6 }, (_, index) => rankedHit(91100 + index, `Insight ${index}`, body)));

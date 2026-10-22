@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -150,6 +150,36 @@ test('a routed lookup that fails is isolated and the other layers still answer',
   assert.deepEqual(findings.map(finding => finding.source), ['knowledge'], 'the failed source contributes no finding');
   assert.match(String(reply['note']), /could not reach mail/);
   assert.equal(reply['status'], 'complete', 'one good layer answers the call');
+});
+
+test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whole mailbox', async () => {
+  const dispatched: Record<string, unknown>[] = [];
+  const h = harness({ execute: async (subs: readonly IntentSubCall[]) => {
+    for (const call of subs) dispatched.push({ ...call.args });
+    return subs.map(call => sub(call.name, '- Invoice | Landlord | Mon | due soon [id m1]', true, call.key));
+  } });
+  await runResearch(h.deps, {
+    action: 'start', question: 'agricon mail', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
+  }, new AbortController().signal);
+  const pages = dispatched.filter(args => typeof args['q'] === 'string');
+  assert.ok(pages.length > 0, 'the mail lookup dispatched a page');
+  for (const args of pages) assert.ok(Number(args['maxResults']) <= RESEARCH.pageResults.mail, `every page is clamped (${String(args['maxResults'])})`);
+  assert.equal(pages[0]!['maxResults'], RESEARCH.pageResults.mail, 'the requested page size is clamped to the mail page');
+  assert.match(String(pages[0]!['q']), /agricon/, 'and the model query is what is asked');
+});
+
+test('ROUTE-1022 K5: a brief on a question that names no layer reads knowledge only', async () => {
+  const subs = candidateSubs('brief', { question: 'what do you think about our business model', configured: CONFIGURED, evidence: new Map() });
+  assert.deepEqual(subs.map(call => call.name), ['search_knowledge'], 'no mail, calendar or chat read');
+  assert.equal(JSON.stringify(subs).includes('open loop follow up'), false, 'the default query is gone');
+  assert.match(String(subs[0]!.args['query']), /business model/);
+});
+
+test('ROUTE-1022 K5: a brief on a question that names a layer reads that layer too', async () => {
+  const subs = candidateSubs('brief', { question: "what's on my calendar tomorrow", configured: CONFIGURED, evidence: new Map() });
+  const names = subs.map(call => call.name);
+  assert.ok(names.includes('calendar_list_events'), 'the layer the question names is read');
+  assert.equal(names.includes('mattermost_search'), false, 'a layer it did not name is not');
 });
 
 test('a source the session did not configure is reported unavailable, never dispatched', async () => {

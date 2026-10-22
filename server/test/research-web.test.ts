@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, SELECTOR_SYSTEM, candidateSubs, fallbackSelection, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, SELECTOR_SYSTEM, candidateSubs, fallbackSelection, runResearch, type ResearchDeps, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
 import { safeEvent } from '../host/log.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -120,6 +120,48 @@ test('the closed candidate set offers web_search on the web source', () => {
   const subs = candidateSubs('web_search', { question: 'bridge reopening date', configured: ['web'], evidence: new Map(), query: 'bridge reopening date' });
   assert.deepEqual(subs, [{ key: 'w0', name: WEB_SEARCH_ACTION, args: { query: 'bridge reopening date' } }]);
   assert.deepEqual(candidateSubs('web_search', { question: 'q', configured: [], evidence: new Map(), query: 'q' }), [], 'no configuration, no read');
+});
+
+// --- ROUTE-1022 K1: a lookup that names the web reads the web, and nothing else answers it -----
+
+/** A routed harness: the model named the layers, so no selector runs. */
+function routedDeps(opts: { configured: readonly SourceKind[]; web?: WebSearchPort; executed: string[]; dispatched: Record<string, unknown>[] }): ResearchDeps {
+  return {
+    now: () => 0,
+    configured: opts.configured,
+    ...(opts.web === undefined ? {} : { web: opts.web }),
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      opts.executed.push(call.name);
+      opts.dispatched.push({ ...call.args });
+      return { key: call.key, name: call.name, ok: true, text: '**team**\nthe decision was recorded', originalCharacters: 30, omittedCharacters: 0 } as IntentSubResult;
+    }),
+    emit: () => {},
+    log: () => {},
+    ledger: new ResearchLedger(),
+  };
+}
+
+test('a web lookup dispatches the web search, never team chat, and the reply credits the web', async () => {
+  const seen: { url?: string; body?: string; signal?: AbortSignal }[] = [];
+  const port = createWebSearch({ credentials: KEY, transport: transportOf(seen, async () => json(body())) });
+  const executed: string[] = [], dispatched: Record<string, unknown>[] = [];
+  const reply = await runResearch(routedDeps({ configured: ['chat'], web: port, executed, dispatched }), {
+    action: 'start', question: 'agricon 2026 dates', lookups: [{ source: 'web', query: 'agricon 2026 dates' }],
+  }, new AbortController().signal);
+  assert.equal(executed.includes('mattermost_search'), false, 'no chat read answers a web lookup');
+  assert.equal(seen.length, 1, 'one real web search ran');
+  assert.deepEqual(reply['sources'], { web: 'ok' }, 'the reply credits the layer that actually ran');
+  assert.deepEqual((reply['findings'] as { source?: string }[]).map(finding => finding.source), ['web']);
+});
+
+test('a web lookup with no web configured says so, and reads nothing else', async () => {
+  const executed: string[] = [], dispatched: Record<string, unknown>[] = [];
+  const reply = await runResearch(routedDeps({ configured: ['chat', 'knowledge'], executed, dispatched }), {
+    action: 'start', question: 'agricon 2026 dates', lookups: [{ source: 'web', query: 'agricon 2026 dates' }],
+  }, new AbortController().signal);
+  assert.deepEqual(executed, [], 'nothing is dispatched for a web this session cannot serve');
+  assert.deepEqual(reply['sources'], { web: 'unavailable' });
+  assert.match(String(reply['note']), /web: not available/, 'the reply names the web as unavailable');
 });
 
 // --- The loop: one web action, evidence in the findings, typed failure in the reply ---------

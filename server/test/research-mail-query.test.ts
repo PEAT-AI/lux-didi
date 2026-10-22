@@ -56,6 +56,24 @@ test('E4: a prose question becomes at most four Gmail terms and the window it na
   }
 });
 
+// ROUTE-1022 K6: the owner's own name is never a person to filter mail by. "what did rob's team send
+// about hawk" reached Gmail as `from:rob's OR to:rob's` and matched nothing, twice, for 8.2 s.
+test('ROUTE-1022 K6: a possessive of the owner is dropped, never a from: or to: filter', () => {
+  const q = compileMailQuery("what did rob's team send about hawk", undefined, NOW, ZONE);
+  assert.equal(/rob/u.test(q), false, `no owner name in the query (${q})`);
+  assert.equal(/from:|to:/u.test(q), false, 'and no direction filter at all');
+  assert.match(q, /hawk/, 'the content terms survive');
+  assert.equal(compileMailQuery("find Rob's mail about the invoice", undefined, NOW, ZONE).includes('from:rob'), false);
+});
+
+test('ROUTE-1022 K6: a question with its own terms adds no implicit two weeks', () => {
+  const july = compileMailQuery('find the agricon mail from july', undefined, NOW, ZONE);
+  assert.equal(july.includes('newer_than'), false, 'the July thread is not hidden behind a fortnight');
+  assert.match(july, /agricon/u);
+  assert.match(july, /after:2026\/06\/30 before:2026\/08\/01/u, 'the month the question named is still resolved');
+  assert.equal(compileMailQuery('Show me the latest messages in my inbox', undefined, NOW, ZONE), 'in:inbox newer_than:14d', 'a bare inbox scan keeps its rolling window');
+});
+
 test('E4: an authored Gmail query is never rewritten, and compiling twice changes nothing', () => {
   const q = compileMailQuery('what did Dana send me about the invoice?', undefined, NOW, ZONE);
   assert.equal(compileMailQuery('what did Dana send me about the invoice?', q, NOW, ZONE), q, 'the compiled query is already Gmail syntax');

@@ -470,8 +470,10 @@ export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<st
   const words = question.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   for (const word of words) {
-    if (STOP_WORDS.has(word) || word.length < 3 || kept.includes(word) || (skip?.has(word) ?? false)) continue;
-    kept.push(word);
+    // K7: a spoken question's punctuation is not a word, so `findings.` is the filler `findings`.
+    const bare = word.replace(/\.+$/u, '');
+    if (STOP_WORDS.has(bare) || bare.length < 3 || kept.includes(bare) || (skip?.has(bare) ?? false)) continue;
+    kept.push(bare);
     if (kept.length >= max) break;
   }
   return kept;
@@ -486,7 +488,7 @@ const KNOWLEDGE_FILLER = new Set([
   'about', 'regarding', 're', 'results', 'result', 'info', 'information', 'details', 'detail', 'owner', 'rob',
   'stuff', 'things', 'related', 'update', 'updates', 'status',
   // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only.
-  'records', 'official', 'content',
+  'records', 'official', 'content', 'web',
   // and the instruction words above, so the model's own keyword fallback drops them too.
   'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific',
   'detailed', 'lookup', 'lookups', 'searching', 'requested',
@@ -566,7 +568,8 @@ export function mailTerms(text: string, max = 4, skip?: ReadonlySet<string>): st
   const words = text.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
   const terms: string[] = [];
   for (const word of words) {
-    if (STOP_WORDS.has(word) || MAIL_FILLER.has(word) || skip?.has(word) === true) continue;
+    // K6: the owner's own name is in every thread, so it is never a term to search for.
+    if (STOP_WORDS.has(word) || MAIL_FILLER.has(word) || OWNER_MAIL_NAMES.has(word) || skip?.has(word) === true) continue;
     if (/^[a-z_]+:$/u.test(word)) continue;
     if (!/\d/u.test(word) && word.length < 3) continue;
     if (terms.includes(word)) continue;
@@ -953,7 +956,9 @@ export function knowledgeQuery(text: string, question?: string): string {
   if (question === undefined) return '';
   // A query the model wrote is already keywords: `team` or `notes` is a stop word for a spoken
   // question, never for a search string, so it is clipped and kept instead of dropped.
-  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(word => Boolean(word) && !KNOWLEDGE_FILLER.has(word)).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
+  // K7: a spoken question's punctuation is not a word, so `findings.` is the filler `findings`.
+  const bare = (word: string): string => word.replace(/[.:]+$/u, '') || word;
+  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(word => Boolean(word) && !KNOWLEDGE_FILLER.has(bare(word))).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
 }
 
 /** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree.

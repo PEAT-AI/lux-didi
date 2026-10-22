@@ -173,7 +173,7 @@ export interface Summarizer {
   schedule(liveSessionId: string): void;
   /** Distil every ended session without a row, one at a time. */
   reconcile(): Promise<void>;
-  /** Host start: re-run distillation once for failed-deadline sessions whose journal survives, newest first. */
+  /** Host start: retry the newest transiently failed sessions whose journal survives, after the boot delay. */
   requeueFailed(): Promise<void>;
   distill(liveSessionId: string, options?: { deadHost?: boolean }): Promise<void>;
 }

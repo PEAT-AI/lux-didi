@@ -142,9 +142,10 @@ test('#525: a provider session that dies right after open costs three attempts a
   const h = harness(t);
   const created = h.owner.create({ idempotencyKey: 'death-loop', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  await attachment.ready;
+  // The attach is ready only once the provider says ready, so the opening socket goes live first.
   const first = (await sessionAt(h, 0))!;
   first.live();
+  await attachment.ready;
   await flush();
   // The session goes live, then dies, and every recovery socket dies before its ready event.
   const died: number[] = [h.clock.now];
@@ -178,9 +179,10 @@ test('#527: the three-strike ceiling still fires after a long healthy stretch', 
   const h = harness(t);
   const created = h.owner.create({ idempotencyKey: 'healthy-then-dead', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  await attachment.ready;
+  // The attach is ready only once the provider says ready, so the opening socket goes live first.
   const first = (await sessionAt(h, 0))!;
   first.live();
+  await attachment.ready;
   await flush();
   // 90 s of health, moved without firing the session window: the drop itself is what the host reacts to.
   h.clock.now += 90_000;

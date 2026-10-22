@@ -2734,7 +2734,14 @@ function toolResponseCount(h: Harness): number {
   return h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).length;
 }
 
-async function settleLiveTool(h: Harness, id: string, name: string, args: unknown): Promise<void> {
+/** #451: the owner's first turn. Before it, a research start is opener work and reaches no source. */
+async function ownerSpoke(h: Harness, text = 'synthetic owner turn'): Promise<void> {
+  h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+  await settlePort();
+}
+
+async function settleLiveTool(h: Harness, id: string, name: string, args: unknown, options: { spoke?: boolean } = {}): Promise<void> {
+  if (name === 'research' && options.spoke !== false) await ownerSpoke(h);
   const before = toolResponseCount(h);
   h.f.send({ toolCall: { functionCalls: [{ id, name, args }] } });
   for (let i = 0; i < 2000 && toolResponseCount(h) === before; i++) await tick();
@@ -3814,6 +3821,7 @@ test('VOICE-R4: no commentary goes out over three six second beats of one lookup
   // A held chat source keeps real work in flight past three beats, which no tool ceiling cuts short.
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
   const { session } = await openPort(h, 'progress-cap');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
   await settlePort();
   for (const beat of [1, 2, 3]) {
@@ -3883,6 +3891,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
@@ -3917,6 +3926,7 @@ test('#472: a late result for a run the model stopped is named a cut, never a so
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   const { session } = await openPort(h, 'late-stopped-472');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'ls1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
@@ -3956,6 +3966,7 @@ test('#472: a late source result reaches the model while the session is live', a
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   const { session } = await openPort(h, 'late-delivery-472');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
@@ -3983,6 +3994,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
@@ -4014,6 +4026,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-owner-speech');
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   // She started talking before any answer could go out, and no turn boundary has arrived yet.
@@ -4044,6 +4057,7 @@ test('R6: a Gemini late finding rides the response channel, not a thinking chann
   note(h, 'r6-mem-gemini', 'he asked me to remember the dentist on Friday');
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
+  await ownerSpoke(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] } });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
@@ -4239,6 +4253,7 @@ test('W4: a research-only batch still gets its silent line', async t => {
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'research-thinking');
   // W4-R2: the tool-call handler must not invent a waiting line for a batch that is one research call.
+  await ownerSpoke(h);
   fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
   await settlePort();
   assert.equal(fake.thinking.length, 0, 'the research lookup injects no provider append');
@@ -5211,7 +5226,7 @@ test('#451: an opener research start before the owner speaks is answered at once
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'opener-gate');
   const started = Date.now();
-  await settleLiveTool(h, 'opener1', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] });
+  await settleLiveTool(h, 'opener1', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] }, { spoke: false });
   const elapsed = Date.now() - started;
   assert.equal(h.calls.length, 0, 'no source ran before the owner spoke');
   t.diagnostic(`gated reply in ${elapsed} ms`);

@@ -1800,7 +1800,7 @@ export class LiveSessionOwner {
    * history is the journal seed and whose opening input is the pickup line. Returns false only on a
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
-  async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null): Promise<boolean> {
+  async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // #527: a new socket is not the old socket's health. Clearing it here makes the three-strike ceiling
@@ -1846,6 +1846,8 @@ export class LiveSessionOwner {
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
     // #525: a recovery is opened only when the provider says the session is live. A socket that dies before
     // its ready event is a failed attempt that pays its backoff, never an opening that re-enters the loop.
+    // A planned window switch is not a recovery, so it keeps the plain open and lets the ready event follow.
+    if (!awaitReady) return true;
     const opened = await this.#awaitProviderReady(handle, handle.session);
     if (!opened) return false;
     handle.ready = true;
@@ -1932,7 +1934,7 @@ export class LiveSessionOwner {
     const window = Math.min(10_000, Math.max(1, remaining));
     const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
     handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded';
-    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline');
+    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline', false);
     if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     this.#logRecovery(handle, 'fresh_seeded', 'session_deadline', null, 'session_timeout', seed);
     return true;

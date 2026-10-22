@@ -248,7 +248,9 @@ test('a failed sub-call is retried once inside the round', async () => {
     }),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  // ROUTE-1022 K5: mail is read only when the question names it, so the fixture names it to exercise
+  // the round's retry.
+  await runResearch(deps, { action: 'start', question: 'anything in my email' }, new AbortController().signal);
   assert.equal(mailCalls >= 2, true, 'the failed call is retried');
   const mailLog = subcalls.find(entry => entry['tool'] === 'gmail_search_messages');
   assert.equal(mailLog!['ok'], true, 'the retried result is the one logged');

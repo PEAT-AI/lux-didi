@@ -981,9 +981,12 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));
     // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
-    // K5: the question's own terms, and no search at all when the question has no term to search.
+    // K5: the question's own terms. A question with no compiled term still reads his knowledge once,
+    // on its own words, so a vague question never leaves every read to another action; a pure
+    // instruction start ("wait findings.") has nothing to search and reads nothing.
     const query = knowledgeQuery(config.question);
-    if (config.configured.includes('knowledge') && query) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'b3'));
+    const asked = query === '' && !metaOnlyQuestion(config.question) ? config.question.trim() : query;
+    if (config.configured.includes('knowledge') && asked !== '') subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(asked, projectHintOf(config.question)), 'b3'));
     return subs;
   }
   return [];
@@ -3757,8 +3760,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             logSource({
               event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
               outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
-              // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it.
-              ms: consumeKnowledge && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
+              // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it,
+              // whether this round pulled it through the answer cut or through the prefetched read.
+              ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
               deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch)) } : {}),
               ...mailReceiptField(mailInfo),

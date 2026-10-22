@@ -944,8 +944,9 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  // ROUTE-1022: the brief bundle reads chat with its own default window, so the receipt says compiled.
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'compiled' }, 'the receipt says where the chat window came from');
+  // ROUTE-1022 K5: a brief on a question that names no source reads his knowledge only, so this run
+  // compiles no chat date operator; the old brief chat window is gone and the receipt says so.
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' }, 'an uncut read names no chat operator it never compiled');
 
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.

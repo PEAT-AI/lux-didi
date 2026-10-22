@@ -2267,7 +2267,7 @@ test('L7: a response that began under the mute is dropped at unmute, and the mut
   await tick(); await tick();
   assert.equal(played.length, 0, 'a stale answer is never played at unmute');
   // The dropped response ends before the next turn begins.
-  h.f.send({ serverContent: { turnComplete: {} } });
+  h.f.send({ serverContent: { turnComplete: true } });
   await tick();
   void session;
 });
@@ -2356,7 +2356,7 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
     await tick();
   }
   assert.ok(events.some(entry => entry.event === 'live_first_audio'), 'the reply was audible');
-  h.f.send({ serverContent: { turnComplete: {} } });
+  h.f.send({ serverContent: { turnComplete: true } });
   await tick(); await tick();
   assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 1, 'the spoken reply is receipted');
 });

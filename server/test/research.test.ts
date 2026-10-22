@@ -109,9 +109,10 @@ test('every lookup names the driver the loop used', async () => {
   const hinted = harness({ selector: knowledge });
   await runResearch(hinted.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(hinted.logs[0]!.driver, 'single-source-hint');
+  // F3: the selector no longer decides round one, so an ambiguous question records the keyword plan.
   const chosen = harness({ selector: knowledge });
   await runResearch(chosen.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
-  assert.equal(chosen.logs[0]!.driver, 'selector');
+  assert.equal(chosen.logs[0]!.driver, 'fallback');
   const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
   const fell = harness({ selector: timedOut });
   await runResearch(fell.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
@@ -641,9 +642,9 @@ test('when the selector deadline passes the fallback starts at once and the mode
 test('deadAirMs measures the longest silence the model hears, never the whole run', async () => {
   const clock = fakeClock();
   const gate = deferred<void>();
-  const slowSelector: ResearchSelector = { select: async () => { await gate.promise; return { questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
-  const h = harness({ selector: slowSelector, now: clock.now, schedule: clock.schedule });
-  const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  // F3: the selector never blocks the run, so the silence a slow read causes is what this measures.
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const running = runResearch(h.deps, { action: 'start', question: 'what did the bank email us about the release' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
   clock.advance(6_000); await settle();
@@ -661,7 +662,7 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything the bank emailed me' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   const reply = await running;
@@ -683,7 +684,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   const controller = new AbortController();
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, controller.signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what did the bank email us about the release' }, controller.signal);
   await settle();
   // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
@@ -747,7 +748,7 @@ test('a cut source logs a disposition the host log admits and the whole run line
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything the bank emailed me' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   await running;

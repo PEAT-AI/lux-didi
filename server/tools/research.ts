@@ -2440,11 +2440,14 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     if (process.env['PI_DEV_MAIL'] === '1') console.error('DEV', { ops: run.ops, failed, limited: limited.length, retried: retried.length, rate: run.mailRateRetried, codes: results.map(r => r?.text?.slice(0, 40)) });
     if (limited.length > 0 && run.mailRateRetried !== true) {
       run.mailRateRetried = true;
+      console.error('DEV pre-pause', limited, run.ops);
       await pause(deps, RESEARCH.rateLimitRetryMs);
+      console.error('DEV post-pause', limited);
       try {
         const again = await deps.execute(limited.map(index => calls[index]!), signal);
+        console.error('DEV retried', again.length);
         limited.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
-      } catch { /* the delayed retry is the last word on this page */ }
+      } catch (error) { console.error('DEV threw', String(error)); }
     }
     reads.forEach((read, n) => {
       read.inflight = false;
@@ -2484,7 +2487,7 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
   return plans.map((plan, n) => {
     const read = reads[n]!, lines = [...read.messages.values()].map(message => message.line);
     // F2: a read that failed or was cut short is not ok, even when it had already carried lines.
-    const outcome: LookupOutcome = read.failed || run.cutShort.has('mail') ? (lines.length > 0 ? 'failed' : 'timeout') : lines.length > 0 ? 'ok' : 'empty';
+    const outcome: LookupOutcome = lines.length > 0 ? (read.failed || run.cutShort.has('mail') ? 'failed' : 'ok') : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
     const info = mailQueryInfo(read);
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }) };
   });
@@ -3299,9 +3302,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         selectorPending ??= deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]))
           .then(result => { selectorOutput = result; selectorSettledMs = now() - selStart; return result; })
           .catch(() => { selectorOutput = null; selectorSettledMs = now() - selStart; return null; });
-        const output = round > 1 && selectorPending !== undefined ? (selectorOutput ?? null) : null;
+        const output = round > 1 && selectorPending !== undefined && run.ledger.size === 0 ? (selectorOutput ?? null) : null;
         if (output !== null) selectorMs += selectorSettledMs;
-        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = routed ?? fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
+        if (output === null) {
+          fallbackUsed = true;
+          usedFallbackThisRound = true;
+          const plan = routed ?? fallbackSelection(question || run.direction || '', configured, now());
+          // F3: the unobvious question reads the cheap source first instead of fanning the whole brief out
+          // before anything is in hand; the rest of that plan waits for a round that has to run anyway.
+          selection = plan.actions.length === 1 && plan.actions[0]!.kind === 'brief'
+            ? { questionClass: plan.questionClass, actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question || run.direction || '', now()) }], pUseful: { knowledge_search: 0.4 } }
+            : plan;
+          if (driver === undefined) driver = 'fallback';
+        }
         else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
       }
 

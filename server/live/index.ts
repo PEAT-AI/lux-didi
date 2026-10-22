@@ -465,9 +465,6 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
-/** R7: the dropped-line opener is cancellable only until its own audio has started. */
-export function openerCancelled(dropOpener: boolean, openerSpoken: boolean): boolean { return dropOpener && !openerSpoken; }
-
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
 
@@ -1818,9 +1815,9 @@ export class LiveSessionOwner {
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
-    // R7/R8: the owner spoke before the dropped-line opener became audible, so it is cancelled; the
-    // provider's barge-in (interrupted) or its turn end frees the answer, never a late opener frame.
-    if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
+    // R7: the owner spoke before the dropped-line opener became audible, so it is cancelled and his own
+    // turn is answered; once the opener is speaking it finishes, exactly as before.
+    if (handle.dropOpener) { if (!handle.spokenThisTurn) handle.dropResponse = true; handle.dropOpener = false; }
     const connection = handle.connection;
     // #451 H12: a second owner utterance arrives before the provider's turnComplete, so the turn it
     // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.
@@ -2312,9 +2309,8 @@ export class LiveSessionOwner {
         if (audible || event.type === 'turnComplete') {
           this.#cancelTimers(handle);
         }
-        // A held answer stays for the offer. A cancelled opener stops applying on a barge-in as well as a
-        // turn end (LIVE2-R8), so the answer to the owner's words is never silenced by it.
-        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; }
+        // A held answer stays for the offer; the cancelled response stays cancelled until the next one starts.
+        if (event.type === 'turnComplete' || event.type === 'interrupted') handle.mutedResponse = false;
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           // A trailing modelTurnStarted of the same batch never reopens a cancelled response (LIVE2-R6 F1).

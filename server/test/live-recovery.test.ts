@@ -257,6 +257,38 @@ test('#525/L18: a socket that dies right after open keeps reopening inside the 6
   assert.equal(end.terminalFrame, true, 'and the terminal frame reaches the client, so the orb leaves live');
 });
 
+test('acceptance 1: an outage that ends at 21 s reopens the call on the next attempt', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'blip-21', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  const dropAt = h.clock.now;
+  first.die();
+  await flush();
+  let index = 1;
+  while (h.clock.now - dropAt < 21_000) {
+    h.clock.now += 8_000; h.clock.runDue(); await flush();
+    if (h.clock.now - dropAt >= 21_000) break;
+    const refused = await sessionAt(h, index);
+    if (!refused) break;
+    refused.die();
+    await flush();
+    index += 1;
+  }
+  const back = await sessionAt(h, index);
+  assert.ok(back, 'the call reopened after the network returned');
+  back!.live();
+  await flush();
+  assert.ok(!h.owner.get(created.liveSessionId).terminal, 'the call is up, never settled failed');
+  const opened = h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened');
+  assert.ok(opened.length >= 1, 'the reopen is a receipt');
+  assert.ok(Number(opened.at(-1)!['msSinceDrop']) < 60_000, 'and it happened inside the budget');
+  h.owner.revoke(created.liveSessionId);
+});
+
 test('#527/L18: a long healthy stretch starts a fresh recovery episode after the drop', async t => {
   const h = await harness(t);
   const created = h.owner.create({ idempotencyKey: 'healthy-then-dead', inputClass: 'ordinary' }, h.ctx);

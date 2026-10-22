@@ -217,8 +217,8 @@ test('a pending row left by a host that exited is requeued at the next start', a
   const h = summarizerFixture();
   try {
     seedConversation(h.store, 's-pending-crash');
-    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-pending-crash', status: 'failed',
-      errorCode: summaries.PENDING_SUMMARY_ERROR_CODE, retryCount: 0, now: SUMMARY_NOW }));
+    // The production writer: the row a host that exits mid-summary leaves behind.
+    h.store.transaction(tx => summaries.markSummaryPending(tx, 's-pending-crash', SUMMARY_NOW, { dataClass: 'ordinary', sourceRevision: 1 }));
     const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "late"}')]);
     const waits: number[] = [];
     await worker(h.store, model, waits).requeueFailed();
@@ -298,5 +298,21 @@ test('a failed summary older than the age cap is closed instead of retried', asy
     await worker(h.store, model, []).requeueFailed();
     assert.equal(model.calls, 0, 'an aged failure is not retried');
     assert.equal(storedRow(h.store, id)!.errorCode, 'retry_exhausted');
+  } finally { h.cleanup(); }
+});
+
+test('a legacy failed row with the old error class is requeued once at the next start', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-legacy-error');
+    // The two rows the owner's store already holds: error_code 'error', retry_count 0.
+    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-legacy-error', status: 'failed',
+      errorCode: 'error', retryCount: 0, now: SUMMARY_NOW }));
+    const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "recovered"}')]);
+    const waits: number[] = [];
+    await worker(h.store, model, waits).requeueFailed();
+    assert.deepEqual(waits, [SUMMARY_BOOT_REQUEUE_DELAY_MS], 'the boot requeue waits out the start-up window');
+    assert.equal(model.calls, 1, 'the legacy row is distilled once');
+    assert.equal(storedRow(h.store, 's-legacy-error')!.status, 'complete', 'and it reaches memory');
   } finally { h.cleanup(); }
 });

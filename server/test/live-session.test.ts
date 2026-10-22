@@ -51,7 +51,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -2317,6 +2317,57 @@ test('L19: a call seeded after a dead one marks its last answer heard and never 
   assert.equal(history.at(-1)?.role, 'user', 'and the seed closes it as heard');
   assert.match(history.at(-1)!.text, /line dropped/i, 'the seed says the line dropped instead of inviting a repeat');
   h.owner.revoke(next.liveSessionId);
+});
+
+test('L19: after a dead call the silent owner hears the drop line, and one who already spoke is answered', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'dead-line-branches');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the answer that never reached her', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-branches-resumption' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
+  assert.equal(settled, true, 'the dead call ended');
+  // Branch 1: the owner has not spoken, so the opener names the drop and offers to continue.
+  const silent = h.owner.create({ idempotencyKey: 'dead-line-silent', inputClass: 'ordinary' }, h.ctx);
+  h.owner.attach({ liveSessionId: silent.liveSessionId }, h.ctx);
+  await tick();
+  const silentRequest = h.requests.at(-1)!;
+  assert.equal(silentRequest.openingText, LIVE_DROPPED_LINE_MARK, 'the silent owner gets the drop line, never a repeat');
+  assert.equal((silentRequest.history ?? []).at(-1)?.role, 'user', 'and the dead answer is closed as heard');
+  h.owner.revoke(silent.liveSessionId);
+});
+
+test('L19: the first spoken reply of a call is never unjournalled without a receipt', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  await attached(h, 'reply-receipt');
+  // The provider speaks with no output transcript at all, which is exactly the missing-row case.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick();
+  h.f.send({ serverContent: { turnComplete: {} } });
+  await tick();
+  assert.equal(events.filter(entry => entry.event === 'live_reply_unjournalled').length, 1, 'the spoken reply is receipted');
+});
+
+test('L14: a tag split across two deltas is stripped from the assembled seed, and other brackets survive', async t => {
+  const h = await harness(t);
+  const { session } = await attached(h, 'split-tag');
+  h.f.send({ serverContent: { inputTranscription: { text: 'meet at [10:30] and bring [DRAFT] plus [bre' } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'ath] the folder', finished: true } } });
+  await drain(h, session.liveSessionId, 3);
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [session.liveSessionId]));
+  const assembled = stripNonLexicalTags(rows.map(row => String(row['text'])).join(''));
+  assert.equal(assembled.includes('[breath]'), false, 'the split tag never assembles into the text');
+  assert.ok(assembled.includes('[10:30]') && assembled.includes('[DRAFT]'), 'other brackets are the owner\'s own');
 });
 
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {

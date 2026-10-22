@@ -500,6 +500,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.responseTokens === undefined || isSafeCount(value.responseTokens))) return;
     return { event: 'live_context_usage', totalTokens: value.totalTokens, ...(value.promptTokens !== undefined ? { promptTokens: value.promptTokens } : {}), ...(value.responseTokens !== undefined ? { responseTokens: value.responseTokens } : {}) };
   }
+  if (value.event === 'live_reply_unjournalled') {
+    // Closed shape: a spoken reply that left no output transcript row. Never text, only the two ids.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation)) return;
+    return { event: 'live_reply_unjournalled', liveSessionId: value.liveSessionId, generation: value.generation };
+  }
   if (value.event === 'live_dead_air_nudge') {
     // Closed shape: the elapsed dead air before a single neutral continuation input was sent.
     if (Object.keys(value).sort().join(',') !== ['event', 'elapsedMs'].sort().join(',')) return;

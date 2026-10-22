@@ -323,6 +323,8 @@ interface ActiveSession {
   dropResponse: boolean;
   /** L7: some of this response arrived under the mute, so it is stale at unmute even if it is still streaming. */
   mutedResponse: boolean;
+  /** L19: whether this turn's reply has an output transcript row; a spoken turn without one is receipted. */
+  outputJournalled: boolean;
   /** L7: the muted time inside this turn, so `live_dead_air` measures the wait the owner actually heard. */
   mutedMs: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
@@ -625,11 +627,11 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   let pending = '', pendingSeq = 0;
   for (const row of rows) {
     pending += String(row.text ?? ''); pendingSeq = Number(row.journal_id);
-    if (Number(row.finished) === 1) { turns.push({ seq: pendingSeq, text: pending }); pending = ''; }
+    if (Number(row.finished) === 1) { turns.push({ seq: pendingSeq, text: stripNonLexicalTags(pending) }); pending = ''; }
   }
   // The model's tool call is the intent: the latest partial turn is owner speech too, because the
   // provider may never set the finished flag before the call arrives.
-  if (pending.trim().length) turns.push({ seq: pendingSeq, text: pending });
+  if (pending.trim().length) turns.push({ seq: pendingSeq, text: stripNonLexicalTags(pending) });
   // The window's own support, for a refusal that has no ask to report: how much of the note any turn
   // in the window carries at all.
   const windowSpoken = new Set(turns.flatMap(turn => tokens(turn.text)));
@@ -1331,8 +1333,12 @@ export class LiveSessionOwner {
     // The port carries the original JSON schemas; each adapter builds its own provider dialect.
     const declarations = modelFacing.map(tool => ({ name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters) }));
     const system = acceptedPrompt.system;
+    // L19 opener: a fresh call after a dead one opens by naming the drop when the owner has not spoken yet;
+    // once the owner has said something, the seeded history already carries his words as the last turn.
+    const silentStart = deadLine && !this.#ownerSpoke(liveSessionId);
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
+      ...(silentStart ? { openingText: LIVE_DROPPED_LINE_MARK } : {}),
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
     const sessionMs = Math.min(this.#profile.limits.sessionMs, this.#profile.limits.callMaxMs);
@@ -1357,7 +1363,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1901,6 +1907,11 @@ export class LiveSessionOwner {
     });
   }
 
+  /** Whether this session already carries owner speech, which the opener answers instead of the drop line. */
+  #ownerSpoke(liveSessionId: string): boolean {
+    return this.#store.transaction(tx => !!tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1", [liveSessionId]));
+  }
+
   #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
     const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
@@ -1908,7 +1919,8 @@ export class LiveSessionOwner {
       [conversationId]));
     const runs: { role: 'user' | 'model'; text: string }[] = [];
     let role: 'user' | 'model' | undefined; let pending = '';
-    const flush = () => { if (role !== undefined && pending.trim().length) runs.push({ role, text: pending.trim() }); pending = ''; role = undefined; };
+    // L14/LIVE2-R6 F4: a tag can split across deltas, so the assembled run is stripped once more.
+    const flush = () => { const text = stripNonLexicalTags(pending).trim(); if (role !== undefined && text.length) runs.push({ role, text }); pending = ''; role = undefined; };
     for (const row of rows) {
       const next: 'user' | 'model' = String(row['kind']) === 'inputTranscription' ? 'user' : 'model';
       if (role !== undefined && role !== next) flush();
@@ -2290,10 +2302,17 @@ export class LiveSessionOwner {
         if (audible || event.type === 'turnComplete') {
           this.#cancelTimers(handle);
         }
-        // A response that ended is no longer streaming, so the next turn is the owner's again; a held answer stays for the offer.
-        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.dropResponse = false; handle.mutedResponse = false; }
-        if (event.type === 'turnComplete') handle.answerAt = undefined;
+        // A held answer stays for the offer; the cancelled response stays cancelled until the next one starts.
+        if (event.type === 'turnComplete' || event.type === 'interrupted') handle.mutedResponse = false;
+        if (event.type === 'turnComplete') {
+          handle.answerAt = undefined;
+          // L19 second clause: a reply that was spoken with no transcript row is receipted, never silent.
+          if (handle.firstAudioAt !== undefined && !handle.outputJournalled)
+            hostLogEvent({ event: 'live_reply_unjournalled', liveSessionId: handle.liveSessionId, generation: handle.generation });
+        }
         if (event.type === 'modelTurnStarted') {
+          // The previous response is over: only now may a new one play (LIVE2-R6 F1).
+          handle.dropResponse = false; handle.outputJournalled = false;
           if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
@@ -3060,6 +3079,7 @@ export class LiveSessionOwner {
     const raw = 'text' in event ? event.text : null;
     const isTranscript = event.type === 'inputTranscription' || event.type === 'outputTranscription';
     const text = raw !== null && isTranscript ? stripNonLexicalTags(raw) : raw;
+    if (event.type === 'outputTranscription') handle.outputJournalled = true;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
     const toolJSON = 'tool' in event ? JSON.stringify(event.tool) : null;

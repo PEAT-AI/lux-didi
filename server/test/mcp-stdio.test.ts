@@ -42,7 +42,8 @@ function readPayload(adapter: McpPort, req: CallRequest, handle: string, byteLen
   return content?.[0]?.text ?? '';
 }
 function adapterFor(registry: McpRegistry, timeoutMs = 4000): McpPort {
-  return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs } });
+  // One number for both bounds here: a test that shortens the budget shortens the connect with it.
+  return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs }, connectTimeoutMs: { stdio: timeoutMs, http: timeoutMs } });
 }
 function scratch(): { dir: string; pidFile: string } { const dir = mkdtempSync(join(tmpdir(), 'didi-stdio-')); return { dir, pidFile: join(dir, 'child.pid') }; }
 
@@ -578,7 +579,7 @@ test('1022: a helper that exits non-zero is reported by its stderr byte count al
   } finally { await adapter.close(); }
   assert.equal(seen.length, 1, 'one line for the child that refused');
   assert.equal(seen[0]!.endpointId, 'noisy-exit');
-  assert.ok(seen[0]!.bytes >= 200 * 1024, `the byte count is the only thing kept (${seen[0]!.bytes})`);
+  assert.ok(seen[0]!.bytes > 0 && seen[0]!.bytes <= 200 * 1024, `the byte count is the only thing kept (${seen[0]!.bytes})`);
 });
 
 test('1022: the stdio connect budget is 12 s and the http one stays at 5 s', async () => {

@@ -174,7 +174,7 @@ export function createHostResourceSampler(input: {
     const elapsed = at - started;
     if (elapsed < intervalMs) return false;
     const used = cpu();
-    const cpuMs = (used.user - cpuStart.user) + (used.system - cpuStart.system);
+    const cpuMs = ((used.user - cpuStart.user) + (used.system - cpuStart.system)) / 1000;
     const mem = memory();
     windowStart = at;
     cpuStart = used;

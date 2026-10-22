@@ -2437,6 +2437,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
         retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
       } catch { /* the first answer stands */ }
     }
+    if (process.env['PI_DEV_MAIL'] === '1') console.error('DEV', { ops: run.ops, failed, limited: limited.length, retried: retried.length, rate: run.mailRateRetried, codes: results.map(r => r?.text?.slice(0, 40)) });
     if (limited.length > 0 && run.mailRateRetried !== true) {
       run.mailRateRetried = true;
       await pause(deps, RESEARCH.rateLimitRetryMs);

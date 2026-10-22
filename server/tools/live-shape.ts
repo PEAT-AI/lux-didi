@@ -602,12 +602,22 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
   return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: knowledgeSourceLinks(cut.text) });
 }
 
-const KNOWLEDGE_HIT_START = /^\*\*#([0-9]+)\*\*/u;
+const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;
 const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
+/** MED-1022: the voice reply answers the best hit in full and names each further hit on one bullet. */
+const KNOWLEDGE_VOICE_BULLET = /^- \*\*#[0-9]+\*\*/mu;
+const KNOWLEDGE_VOICE_TOP_CHARS = 3_000;
+const KNOWLEDGE_VOICE_TOTAL_CHARS = 6_000;
 
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
 function knowledgeRanked(raw: string): ShapedResult | undefined {
-  const parts = stripKnowledgePreamble(raw).split(/^(?=\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
+  const clean = stripKnowledgePreamble(raw);
+  // The voice shape spends the budget on the leading body, so its own bound is the connector's
+  // max_chars rather than the per-hit excerpt a bodies reply is already bounded by.
+  const voice = KNOWLEDGE_VOICE_BULLET.test(clean);
+  const hitChars = voice ? KNOWLEDGE_VOICE_TOP_CHARS : KNOWLEDGE_RANKED_EXCERPT_CHARS;
+  const totalChars = voice ? KNOWLEDGE_VOICE_TOTAL_CHARS : KNOWLEDGE_RANKED_TOTAL_CHARS;
+  const parts = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
   if (parts.length === 0) return undefined;
   const kept: string[] = [];
   let used = 0;
@@ -623,11 +633,11 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
     for (let index = lines.length - 1; index > 0; index -= 1) { if (KNOWLEDGE_SCORE_LINE.test(lines[index]!)) { scoreAt = index; break; } }
     const inner = lines.slice(1, scoreAt > 0 ? scoreAt : lines.length).join('\n').trim();
     const score = scoreAt > 0 ? lines[scoreAt]!.trim() : '';
-    const cut = cutAtSentence(inner, KNOWLEDGE_RANKED_EXCERPT_CHARS);
+    const cut = cutAtSentence(inner, hitChars);
     const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
     const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; call get_insight with ids=[${id ?? 'the id above'}] for the whole insight]` : '';
     const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
-    if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
+    if (kept.length > 0 && used + text.length + 2 > totalChars) { trimmed += 1; omitted += block.length; continue; }
     kept.push(text);
     used += text.length + 2;
     omitted += cut.omitted;

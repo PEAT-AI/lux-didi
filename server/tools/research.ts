@@ -125,14 +125,21 @@ export const RESEARCH = Object.freeze({
    */
   knowledgeHits: 6,
   /**
-   * 3r K1: a voice lookup asks for bounded stored bodies with a deadline instead of snippets, so a hit
+   * 3r K1: a voice lookup asks for a bounded stored body with a deadline instead of snippets, so a hit
    * arrives as text the owner can be read without a get_insight round trip. The cap is the server's
    * default body window; a hit the server cut at it says so in the reply line.
+   * MED-1022: the connector's `voice` shape answers the best hit at `max_chars` and names the rest at
+   * `snippet_chars`, which is one body plus five leads instead of six half-filled panes.
    */
-  knowledgeDetail: 'bodies' as const,
+  knowledgeDetail: 'voice' as const,
+  knowledgeSnippetChars: 300,
   knowledgeDeadlineMs: 8_000,
-  /** K3: the selector writes keywords, and a long string costs ranker score, so the query is clipped. */
-  knowledgeQueryTerms: 5,
+  /**
+   * K3: the selector writes keywords, and a long string costs ranker score, so the query is clipped.
+   * MED-1022: five terms dropped the person and the topic behind the filler, so the knowledge budget is
+   * ten, and filler is dropped before the budget is counted.
+   */
+  knowledgeQueryTerms: 10,
   /**
    * K2: a search snippet stays short, and the body a hit is opened for is shown at three thousand
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
@@ -455,15 +462,39 @@ const STOP_WORDS = new Set(['a', 'an', 'and', 'any', 'anything', 'are', 'around'
 const WORD_SHAPE = /[^a-z0-9@._:-]+/g;
 
 /** The content keywords of a spoken question: stop words and filler removed, 3 to 8 of them. */
-export function contentKeywords(question: string, max = 8): string[] {
+export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<string>): string[] {
   const words = question.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   for (const word of words) {
-    if (STOP_WORDS.has(word) || word.length < 3 || kept.includes(word)) continue;
+    if (STOP_WORDS.has(word) || word.length < 3 || kept.includes(word) || (skip?.has(word) ?? false)) continue;
     kept.push(word);
     if (kept.length >= max) break;
   }
   return kept;
+}
+
+/**
+ * MED-1022: words that carry no meaning to a ranker. The owner's first search spent four of five terms
+ * on them ("lux meeting transcript results about"), so a knowledge query drops them before the budget
+ * is counted. Other sources keep the shared stop list: `status` and `update` are mail and chat terms.
+ */
+const KNOWLEDGE_FILLER = new Set([
+  'about', 'regarding', 're', 'results', 'result', 'info', 'information', 'details', 'detail', 'owner', 'rob',
+  'stuff', 'things', 'related', 'update', 'updates', 'status',
+]);
+
+/** The names a spoken question carries: a capitalised word past the first, never a stop word. */
+function spokenNames(question: string): string[] {
+  const names: string[] = [];
+  for (const sentence of question.split(/[.!?]+/u)) {
+    const words = sentence.replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
+    for (const word of words.slice(1)) {
+      const name = word.toLowerCase();
+      if (!/^[A-Z]/u.test(word) || name.length < 3 || STOP_WORDS.has(name) || names.includes(name)) continue;
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 /** The RFC3339 window in the session timezone, independent of the process timezone. */
@@ -767,7 +798,9 @@ export function ownerScheduleQuestion(question: string): boolean {
 const MAIL_WORDS = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/u;
 const CALENDAR_WORDS = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/u;
 const CHAT_WORDS = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/u;
-const WEB_WORDS = /\b(news|headlines|weather|forecast|price|prices|cost|opening hours|search the web|latest)\b/u;
+/** MED-1022: a web read is for explicit public intent only. `latest` and `cost` are how the owner asks
+ * about his own work, and the 18:34 call spent a web read on "the latest" and got a soap result. */
+const WEB_WORDS = /\b(news|headlines|weather|forecast|price|prices|opening hours|search the web|on the internet|google it)\b/u;
 const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
 
 /** The source a question is about, in the order the first answer waits for them. */
@@ -883,24 +916,65 @@ export function projectHintOf(question: string): string | undefined {
   return KNOWN_PROJECTS.find(project => new RegExp(`(^|[^a-z0-9-])${project.toLowerCase()}([^a-z0-9-]|$)`, 'u').test(spoken));
 }
 
-/** K3: the model writes sentences, and a long string costs ranker score, so the query is keywords. */
-export function knowledgeQuery(text: string): string {
-  const kept = contentKeywords(text, RESEARCH.knowledgeQueryTerms);
-  if (kept.length > 0) return kept.join(' ');
+/**
+ * K3: the model writes sentences, and a long string costs ranker score, so the query is keywords.
+ * MED-1022: a model query keeps its own terms first, then the name and the words of the owner's
+ * question that it dropped, because the owner's question is the one text that holds who and what.
+ */
+export function knowledgeQuery(text: string, question?: string): string {
+  const terms = contentKeywords(text, RESEARCH.knowledgeQueryTerms, KNOWLEDGE_FILLER);
+  if (question !== undefined) {
+    for (const word of [...spokenNames(question), ...contentKeywords(question, RESEARCH.knowledgeQueryTerms, KNOWLEDGE_FILLER)]) {
+      if (terms.length >= RESEARCH.knowledgeQueryTerms) break;
+      if (!terms.includes(word)) terms.push(word);
+    }
+  }
+  if (terms.length > 0) return terms.join(' ');
+  if (question === undefined) return '';
   // A query the model wrote is already keywords: `team` or `notes` is a stop word for a spoken
   // question, never for a search string, so it is clipped and kept instead of dropped.
-  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(Boolean).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
+  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(word => Boolean(word) && !KNOWLEDGE_FILLER.has(word)).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
 }
 
-/** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree. */
-function knowledgeSearchArgs(query: string, projectHint?: string): JsonObject {
+/** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree.
+ * MED-1022: the body answers the best hit and the rest arrive as leads, and a named meeting day narrows
+ * the corpus through the connector's own ISO meeting bounds. */
+function knowledgeSearchArgs(query: string, projectHint?: string, meeting?: { from: string; to: string }): JsonObject {
   return {
     query, limit: RESEARCH.knowledgeHits,
     detail: RESEARCH.knowledgeDetail,
     max_chars: RESEARCH.knowledgeBodyChars,
+    snippet_chars: RESEARCH.knowledgeSnippetChars,
     deadline_ms: RESEARCH.knowledgeDeadlineMs,
+    ...(meeting === undefined ? {} : { meeting_date_from: meeting.from, meeting_date_to: meeting.to }),
     ...(projectHint === undefined ? {} : { project_hint: projectHint }),
   };
+}
+
+const DATE_WORD = /\b(yesterday|today|tomorrow|this week|last week|next week|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b|\b(\d{4}-\d{2}-\d{2})\b/iu;
+const MEETING_WORD = /\b(meetings?|calls?|transcripts?|notes?)\b/iu;
+
+/**
+ * MED-1022: a question that names a meeting and a day asks the corpus about that day. The connector's
+ * meeting bounds are ISO days in the owner's zone; a wrong name would empty the result, so a name never
+ * becomes the participant filter and only the day narrows anything.
+ */
+export function meetingBounds(question: string, query: string | undefined, nowMs: number, timeZone: string): { from: string; to: string } | undefined {
+  const text = `${question} ${query ?? ''}`;
+  if (!MEETING_WORD.test(text)) return undefined;
+  const word = DATE_WORD.exec(text)?.[0].toLowerCase();
+  if (word === undefined) return undefined;
+  const today = localDay(new Date(nowMs).toISOString(), timeZone);
+  if (word === 'yesterday' || word === 'today' || word === 'tomorrow') {
+    const day = dayShift(today, word === 'yesterday' ? -1 : word === 'tomorrow' ? 1 : 0);
+    return { from: day, to: day };
+  }
+  try {
+    // windowRange reads today, tomorrow, this and next week, a weekday and an ISO day, never yesterday.
+    const range = windowRange(word, nowMs, timeZone);
+    const weeks = word === 'last week' ? -7 : word === 'next week' ? 7 : 0;
+    return { from: dayShift(localDay(range.timeMin, timeZone), weeks), to: dayShift(localDay(range.timeMax, timeZone), weeks - 1) };
+  } catch { return undefined; }
 }
 
 /** 3r K1 and K1-R3: the knowledge receipt's metadata, the same on the routed and the selector path.
@@ -910,6 +984,32 @@ function knowledgeReceipt(lines: readonly string[]): { detail: string; maxChars:
     detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeBodyChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
     truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeBodyChars} chars`)),
   };
+}
+
+const CHAT_DATE_OPERATOR = /\b(after|before|on):([^\s]+)/giu;
+
+/**
+ * MED-1022: the Mattermost index reads `After:`/`Before:`/`On:` with an ISO day and ignores any other
+ * word, so `after:yesterday` returned the whole archive. A date word is compiled to the day it names in
+ * the owner's zone, and an operator no calendar can resolve is dropped instead of sent.
+ */
+export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): string {
+  return query.replace(CHAT_DATE_OPERATOR, (_operator: string, kind: string, value: string): string => {
+    const day = isoDay(value, nowMs, timeZone);
+    return day === undefined ? '' : `${kind[0]!.toUpperCase()}${kind.slice(1)}:${day}`;
+  }).split(/\s+/u).filter(Boolean).join(' ');
+}
+
+/** The ISO day a date word names, or nothing when it names none. */
+function isoDay(word: string, nowMs: number, timeZone: string): string | undefined {
+  const lower = word.trim().toLowerCase();
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(lower)) return lower;
+  const today = localDay(new Date(nowMs).toISOString(), timeZone);
+  if (lower === 'today') return today;
+  if (lower === 'yesterday') return dayShift(today, -1);
+  if (lower === 'tomorrow') return dayShift(today, 1);
+  if (!new RegExp(`^(?:this |last |next )?(?:${WEEKDAY_NAMES})$|^(?:this|last|next) week$`, 'iu').test(lower)) return undefined;
+  try { return localDay(windowRange(lower.replace(/^this /u, ''), nowMs, timeZone).timeMin, timeZone); } catch { return undefined; }
 }
 
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
@@ -922,9 +1022,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
-    const query = config.query === undefined ? contentKeywords(config.question, RESEARCH.knowledgeQueryTerms).join(' ') : knowledgeQuery(config.query);
+    const query = config.query === undefined ? knowledgeQuery(config.question) : knowledgeQuery(config.query, config.question);
     if (!query) return [];
-    return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'k0')];
+    const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+    return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
   }
   if (kind === 'calendar_window') {
     // Research keeps the declared primary-calendar scope.
@@ -933,7 +1034,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   }
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
-  if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: config.query ?? 'after:yesterday', limit: RESEARCH.chatLines }, 'c0')];
+  if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: chatQuery(config.query ?? 'after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'c0')];
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
     ? [search(WEB_SEARCH_ACTION, { query: config.query ?? contentKeywords(config.question).join(' ') }, 'w0')] : [];
@@ -945,7 +1046,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
       subs.push(search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'b0'));
     }
     if (config.configured.includes('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
-    if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: 'after:yesterday', limit: RESEARCH.chatLines }, 'b2'));
+    if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));
     // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
     if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(knowledgeQuery(config.question) || 'open loop follow up', projectHintOf(config.question)), 'b3'));
     return subs;

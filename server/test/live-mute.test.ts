@@ -128,8 +128,13 @@ test('a mute keeps the provider session open, uploads nothing and suspends the w
 
   live.attachment.setInputMuted(false);
   await flush();
-  assert.deepEqual(phases(live), ['armed', 'armed'], 'the unmute re-arms the answer that is still owed');
+  assert.deepEqual(phases(live), ['armed'], 'the unmute starts no new debt: the held answer offer owns the pending reply');
   assert.equal(live.fake.sessionsOpened, 1, 'the unmute resumes the same session');
+  // D2: the pre-mute debt is dropped, so the window after the unmute carries no nudge and no reopen.
+  for (let spent = 0; spent < 120_000; spent += 1_000) await live.advance(1_000);
+  assert.deepEqual(phases(live), ['armed'], 'no watchdog step runs on the unmute debt in the whole watchdog window');
+  assert.equal(live.fake.sessionsOpened, 1, 'a silent provider on an unmuted socket is not reopened');
+  assert.equal(live.owner.get(live.liveSessionId).terminal, null, 'the unmute never ends the call by itself');
 
   const events = mutes(live);
   assert.deepEqual(events.map(event => [event.muted, event.warm]), [[true, true], [false, true]],
@@ -137,6 +142,22 @@ test('a mute keeps the provider session open, uploads nothing and suspends the w
   assert.equal(events[1]?.['msSinceMute'], 60_000, 'the unmute receipt carries how long the mute lasted');
   assert.equal(events[0]?.['generation'], events[1]?.['generation'], 'the same generation across the window');
   assert.equal(events[0]?.['liveSessionId'], live.liveSessionId, 'the receipt names the session');
+});
+
+test('D2: a mute that straddles a pending reply asks for nothing at the unmute', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
+  await live.advance(800);
+  live.attachment.setInputMuted(true);
+  await flush();
+  // The provider stays silent for ninety muted seconds: the reply the owner is waiting for never arrives.
+  for (let spent = 0; spent < 90_000; spent += 1_000) await live.advance(1_000);
+  live.attachment.setInputMuted(false);
+  await flush();
+  for (let spent = 0; spent < 120_000; spent += 1_000) await live.advance(1_000);
+  assert.deepEqual(phases(live), ['armed'], 'the unmute neither nudges nor reopens on the debt the mute dropped');
+  assert.equal(live.fake.sessionsOpened, 1, 'the provider socket is the one the mute left open');
+  assert.equal(live.owner.get(live.liveSessionId).terminal, null, 'a quiet unmuted socket is not a stalled one');
 });
 
 test('a mute past the cost cap settles as muted_expired, benign, never paused forever', async t => {

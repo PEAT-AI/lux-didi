@@ -1160,8 +1160,10 @@ test('research 469: stopped known continuation fails while retained delivery rem
   const researchId = String(first['researchId']), cursor = String(first['nextCursor']);
   const next = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
   assert.match(JSON.stringify(next['findings']), /Synthetic continuation 12/);
+  // The end step of a read lands on the tick the batch settles, so it is measured after one turn.
+  await new Promise<void>(resolve => setImmediate(resolve));
   const before = steps.length;
-  assert.equal(calls, 1); assert.equal(before, 2, 'one start and end for the actual source read');
+  assert.equal(calls, 1); assert.deepEqual(steps.map(step => step.phase).sort(), ['end', 'start'], 'one start and end for the actual source read');
   const retained = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
   assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'complete'); assert.equal(retained['error'], undefined);
   assert.deepEqual(retained['findings'], []);
@@ -1173,11 +1175,13 @@ test('research 469: stopped known continuation fails while retained delivery rem
   assert.deepEqual(unavailable, { researchId, error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' });
   const cancellable = await scheduler.call({ action: 'start', question: 'A new synthetic lookup', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] }, signal);
   const cancelledId = String(cancellable['researchId']), beforeCancelSteps = steps.length;
-  assert.equal(calls, 2); h.deps.ledger.cancelActive();
+  // F2: the same mail query is one read for the live session, so the second start reuses it instead of
+  // paging the same mailbox again.
+  assert.equal(calls, 1); h.deps.ledger.cancelActive();
   assert.equal(h.deps.ledger.find(cancelledId)?.cancelled, true); assert.equal(h.deps.ledger.find(cancelledId)?.stopped, false);
   const cancelled = await scheduler.call({ action: 'continue', researchId: cancelledId }, signal);
   assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
-  assert.equal(calls, 2); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
+  assert.equal(calls, 1); assert.equal(steps.length, beforeCancelSteps, 'cancelled known continuation has no source read or step');
 });
 
 // --- #472: a run cut after its first answer is partial, never failed ------------------------------

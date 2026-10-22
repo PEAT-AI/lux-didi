@@ -983,6 +983,7 @@ private func checkPrimaryChannelConversion() throws {
             try checkReleaseLeakAndDeallocation()
             try await checkStartFailureCircuitBreaker()
             try await checkBusyDeviceSkipsVoiceProcessing()
+            try await VoiceProcessingSnapshotTests.run()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }

@@ -21,7 +21,7 @@ import type { CalendarDigestOwner, WarmPrewarmReceipt } from '../live/index.js';
 import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
-import { composeMcpRuntime } from './mcp.js';
+import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { MongooseLoginError, runMongooseLogin } from './mongoose-login.js';
 import type { McpRuntimeComposition } from './mcp.js';
@@ -83,6 +83,34 @@ export function createMongooseSignIn(options: { configDir: string; recover: () =
         release({ status: 'failed', reason: failure ?? 'sign-in-did-not-finish' });
       });
     return first;
+  };
+}
+
+/**
+ * The host's connector lifecycle sink: the closed line goes to host.log, and a recovery owes one
+ * follow-up, a re-read of whatever that connector feeds.
+ */
+export function connectorLifecycleSink(input: {
+  log: (event: ConnectorLifecycleEvent) => void;
+  onRecovered: (endpointId: string) => void;
+}): (event: ConnectorLifecycleEvent) => void {
+  return event => { input.log(event); if (event.event === 'connector_recovered') input.onRecovered(event.endpointId); };
+}
+
+/**
+ * Which recovery re-reads the calendar digest: only the endpoint whose current grant carries the calendar
+ * tool. A mail endpoint of the same account recovering says nothing about the calendar.
+ */
+export function bindCalendarRecovery<G extends { readonly toolNames: readonly string[]; readonly endpointId: string }>(input: {
+  digest: { refresh(): Promise<unknown> } | undefined;
+  endpoints: () => readonly { readonly id: string; readonly connector: string }[];
+  grantOf: (endpointId: string) => G | undefined;
+}): (endpointId: string) => void {
+  return endpointId => {
+    const digest = input.digest;
+    if (digest === undefined) return;
+    const grant = selectCalendarEndpoint(input.endpoints(), input.grantOf);
+    if (grant !== undefined && grant.endpointId === endpointId) void digest.refresh();
   };
 }
 
@@ -326,7 +354,10 @@ export async function startHost(config: HostConfig) {
       for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
       return null;
     };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
+    // A calendar connector that recovered reads the digest the start missed. The hook is bound after the
+    // composition because the reader it needs is the composition itself.
+    let refreshCalendarDigest = (_endpointId: string): void => { /* bound once the composition exists */ };
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -334,6 +365,7 @@ export async function startHost(config: HostConfig) {
     const calendarDigest = new CalendarDigestCache(
       async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: digestTimeZone }),
       { now: digestNow, timeZone: digestTimeZone });
+    refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id) });
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });

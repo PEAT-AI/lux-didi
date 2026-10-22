@@ -29,7 +29,7 @@ export interface IdentitySource {
  * The closed code set a Google helper refuses with (lux-cli E2). Only a code from this set ever
  * reaches a spoken source reason, so neither an address nor a token path can travel with it.
  */
-export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing', 'identity_timeout'] as const;
+export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing', 'identity_timeout', 'credential_refresh_failed', 'credential_revoked'] as const;
 export type IdentityErrorCode = (typeof IDENTITY_ERROR_CODES)[number];
 
 function closedCode(token: string | undefined): IdentityErrorCode | undefined {

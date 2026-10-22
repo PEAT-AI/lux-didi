@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
+import { HOME_APPS, beginHandleSession, endHandleSession, homeDestination, openDestination, resolveHandle, type HomeApp } from './open-handles.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
 export const OPEN_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'native-actions' } as const;
@@ -8,21 +9,32 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 /** The closed set of ack codes; anything else from the native side is reported as failed. */
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
-export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(OPEN_ACTIONS);
+/** What the model sees; `open_url` is only the internal transport for the two item tools. */
+export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app']);
+/** The one sentence the model says when an item open is refused or unknown. */
+export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed', string> = {
+  not_found: 'I could not find that item.',
+  not_allowed: 'That link is not one I am allowed to open.',
+};
 /** A control frame and its ack, exactly as they cross the local Live socket. */
 export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string }
 export interface NativeActionResult { type: 'native_action_result'; id: string; ok: boolean; code: NativeActionCode }
 
 const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
 
-export const OPEN_TOOLS: readonly { name: NativeAction; description: string; parameter: string; pattern: RegExp }[] = [
-  { name: 'open_url', description: `Open an https web page in the owner's browser. ${OPEN_ONLY}`, parameter: 'url', pattern: /^https:\/\// },
+export const OPEN_TOOLS: readonly { name: string; description: string; parameter: string; pattern: RegExp }[] = [
+  { name: 'open_source', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
+  { name: 'open_home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
   { name: 'open_file', description: `Open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
   { name: 'open_app', description: `Open an installed application by name. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
 ];
 
 export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
-  return { type: 'object', properties: { [tool.parameter]: { type: 'string', minLength: 1, maxLength: 1024, description: tool.parameter === 'url' ? 'An https URL.' : tool.parameter === 'path' ? 'An absolute or ~ path inside the home folder.' : 'The application name, without or with .app.' } }, required: [tool.parameter], additionalProperties: false };
+  const shape = tool.parameter === 'handle' ? { type: 'string', minLength: 2, maxLength: 5, description: 'The handle from an open: line of a lookup result, like L3.' }
+    : tool.parameter === 'app' ? { type: 'string', enum: [...HOME_APPS], description: 'Which home page to open.' }
+    : tool.parameter === 'path' ? { type: 'string', minLength: 1, maxLength: 1024, description: 'An absolute or ~ path inside the home folder.' }
+    : { type: 'string', minLength: 1, maxLength: 1024, description: 'The application name, without or with .app.' };
+  return { type: 'object', properties: { [tool.parameter]: shape }, required: [tool.parameter], additionalProperties: false };
 }
 
 /** Exactly one string argument, shaped like the action's target; the native side re-checks the allowlist. */
@@ -43,8 +55,30 @@ export function receiptDetail(action: NativeAction, target: string): string {
 }
 
 /** The one receipt the host writes per action: action, code and a scheme or extension, never the target. */
-export function nativeActionReceipt(action: NativeAction, code: NativeActionCode, target: string): void {
-  hostLogEvent({ event: 'native_action', action, code, detail: receiptDetail(action, target) });
+export function nativeActionReceipt(action: NativeAction, code: NativeActionCode, detail: string): void {
+  hostLogEvent({ event: 'native_action', action, code, detail: /^[a-z0-9]{1,16}$/.test(detail) ? detail : 'none' });
+}
+
+/** One host target for a model-facing open tool: the action, the resolved target and its closed detail token. */
+export interface OpenTarget { action: NativeAction; target: string; detail: string }
+
+/** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
+export function openTarget(toolName: string, args: Record<string, string>): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' } {
+  if (toolName === 'open_source') {
+    const handle = resolveHandle(args['handle']!);
+    if (!handle) return { code: 'not_found' };
+    const destination = openDestination(handle.url);
+    if (!destination) return { code: 'not_allowed' };
+    return { target: { action: 'open_url', target: destination.url, detail: destination.kind } };
+  }
+  if (toolName === 'open_home') {
+    const destination = HOME_APPS.includes(args['app'] as HomeApp) ? homeDestination(args['app'] as HomeApp) : undefined;
+    if (!destination) return { code: 'not_allowed' };
+    return { target: { action: 'open_url', target: destination.url, detail: args['app']! } };
+  }
+  if (toolName === 'open_file') return { target: { action: 'open_file', target: args['path']!, detail: receiptDetail('open_file', args['path']!) } };
+  if (toolName === 'open_app') return { target: { action: 'open_app', target: args['name']!, detail: 'app' } };
+  return { code: 'not_allowed' };
 }
 
 interface Pending { runId: string; resolve(code: NativeActionCode): void; timer: ReturnType<typeof setTimeout> }
@@ -61,12 +95,14 @@ export class NativeActionBus {
 
   /** One sender per Live session; this is what the audio socket already does for audio frames. */
   bind(runId: string, send: (frame: NativeActionFrame) => boolean): () => void {
+    beginHandleSession(runId);
     this.#senders.set(runId, send);
     return () => this.forget(runId);
   }
 
-  /** A closed socket settles every wait it still owes as `failed`. */
+  /** A closed socket settles every wait it still owes as `failed`, and drops the session handles. */
   forget(runId: string): void {
+    endHandleSession(runId);
     this.#senders.delete(runId);
     for (const [id, pending] of this.#pending) if (pending.runId === runId) { clearTimeout(pending.timer); this.#pending.delete(id); pending.resolve('failed'); }
   }

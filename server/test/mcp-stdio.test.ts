@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { isStdioEndpoint } from '../adapters/mcp/port.js';
@@ -42,7 +42,8 @@ function readPayload(adapter: McpPort, req: CallRequest, handle: string, byteLen
   return content?.[0]?.text ?? '';
 }
 function adapterFor(registry: McpRegistry, timeoutMs = 4000): McpPort {
-  return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs } });
+  // One number for both bounds here: a test that shortens the budget shortens the connect with it.
+  return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs }, connectTimeoutMs: { stdio: timeoutMs, http: timeoutMs } });
 }
 function scratch(): { dir: string; pidFile: string } { const dir = mkdtempSync(join(tmpdir(), 'didi-stdio-')); return { dir, pidFile: join(dir, 'child.pid') }; }
 
@@ -527,5 +528,132 @@ test('a soft failure leaves the connector usable; a dead child respawns until th
       await adapter.whenSuspended('cls');
       assert.equal(adapter.visibleTools('cls').length, 0, 'the third child death suspends the connector');
     } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+// --- 1022: helper stderr is drained with a bounded tail, and the connect budget is per transport ---
+
+/** Write a synthetic child beside the compiled test so it resolves the same SDK the test does. */
+function generatedChild(t: { after: (fn: () => void) => void }, source: string): string {
+  const path = join(here, `gen-child-${randomUUID()}.mjs`);
+  writeFileSync(path, source);
+  t.after(() => { rmSync(path, { force: true }); });
+  return path;
+}
+
+const STDERR_FLOOD = `
+import { Server } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+const mode = process.argv[2];
+// Past the 64 KiB pipe buffer: an undrained stderr blocks the helper here and it never serves.
+process.stderr.write('x'.repeat(200 * 1024));
+if (mode === 'exit') process.exit(3);
+const sdk = new Server({ name: 'noisy', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'echo', inputSchema: { type: 'object', properties: {} } }] }));
+sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: 'stdio-pong' }] }));
+await sdk.connect(new StdioServerTransport());
+`;
+
+test('1022: a helper that floods stderr past the pipe buffer still connects', async t => {
+  const child = generatedChild(t, STDERR_FLOOD);
+  const registry = new McpRegistry();
+  registry.register(config('noisy-stdio', 'serve', join(tmpdir(), `noisy-${randomUUID()}.pid`), 'stdio-pong', { args: [child, 'serve'] }));
+  registry.enable('noisy-stdio'); registry.allowEgress('noisy-stdio');
+  const adapter = adapterFor(registry);
+  try {
+    const discovery = await adapter.discover('noisy-stdio');
+    assert.equal(discovery.state, 'discovered', 'a drained stderr never becomes a deadlock');
+  } finally { await adapter.close(); }
+});
+
+test('1022: a helper that exits non-zero is reported by its stderr byte count alone', async t => {
+  const child = generatedChild(t, STDERR_FLOOD);
+  const seen: Array<{ endpointId: string; bytes: number }> = [];
+  const registry = new McpRegistry();
+  registry.register(config('noisy-exit', 'exit', join(tmpdir(), `noisy-exit-${randomUUID()}.pid`), 'stdio-pong', { args: [child, 'exit'] }));
+  registry.enable('noisy-exit'); registry.allowEgress('noisy-exit');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 8000 }, onHelperStderr: detail => { seen.push(detail); } });
+  try {
+    const discovery = await adapter.discover('noisy-exit');
+    assert.notEqual(discovery.state, 'discovered');
+  } finally { await adapter.close(); }
+  assert.equal(seen.length, 1, 'one line for the child that refused');
+  assert.equal(seen[0]!.endpointId, 'noisy-exit');
+  // The child writes 200 KiB into a 64 KiB pipe and exits at once, so the drain keeps exactly one pipe
+  // buffer. Only the count is kept and never the text; this pins the bound that made it a count.
+  assert.equal(seen[0]!.bytes, 65_536, 'one pipe buffer, counted and dropped');
+});
+
+test('1022: the stdio connect budget is 12 s and the http one stays at 5 s', async () => {
+  assert.equal(STDIO_CONNECT_TIMEOUT_MS, 12_000, 'a cold helper needs longer than the observed 6.3 s start');
+  assert.equal(HTTP_CONNECT_TIMEOUT_MS, 5_000);
+});
+
+test('1022: a stdio connect slower than its budget times out, and the same start fits a longer one', async t => {
+  const child = generatedChild(t, `
+import { Server } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+await new Promise(resolve => setTimeout(resolve, 700));
+const sdk = new Server({ name: 'slow-start', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'echo', inputSchema: { type: 'object', properties: {} } }] }));
+await sdk.connect(new StdioServerTransport());
+`);
+  const registry = new McpRegistry();
+  registry.register(config('slow-start', 'serve', join(tmpdir(), `slow-${randomUUID()}.pid`), 'stdio-pong', { args: [child] }));
+  registry.enable('slow-start'); registry.allowEgress('slow-start');
+  // Distinct values per transport: a code path that read the http value here would connect instead.
+  const short = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, connectTimeoutMs: { stdio: 300, http: 4000 } });
+  try {
+    const cut = await short.discover('slow-start');
+    assert.notEqual(cut.state, 'discovered', 'a stdio endpoint reads the stdio budget, not the http one');
+  } finally { await short.close(); }
+  const longer = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, connectTimeoutMs: { stdio: 3000, http: 200 } });
+  try {
+    const ok = await longer.discover('slow-start');
+    assert.equal(ok.state, 'discovered', 'a start past the short budget still fits the long one');
+  } finally { await longer.close(); }
+});
+
+test('[slow] 1022: a stdio helper that takes 7 s to start connects under the 12 s stdio budget', async t => {
+  const child = generatedChild(t, `
+import { Server } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+await new Promise(resolve => setTimeout(resolve, 7000));
+const sdk = new Server({ name: 'cold-start', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'echo', inputSchema: { type: 'object', properties: {} } }] }));
+await sdk.connect(new StdioServerTransport());
+`);
+  const registry = new McpRegistry();
+  registry.register(config('cold-start', 'serve', join(tmpdir(), `cold-${randomUUID()}.pid`), 'stdio-pong', { args: [child] }));
+  registry.enable('cold-start'); registry.allowEgress('cold-start');
+  // Only the default connect budget is under test here: the call deadline is set far above it.
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 20_000 } });
+  try {
+    const discovery = await adapter.discover('cold-start');
+    assert.equal(discovery.state, 'discovered', 'a 7 s cold start fits the 12 s stdio budget the owner\'s Mac needed');
+  } finally { await adapter.close(); }
+});
+
+test('[slow] 1022: an http handshake answered in 6 s times out under the 5 s http budget', async () => {
+  const listener = createServer((_req, res) => {
+    // The initialize request is answered only after 6 s, so the 5 s http budget must give up first.
+    const timer = setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, 6000);
+    res.on('close', () => clearTimeout(timer));
+  });
+  listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
+  const address = listener.address(); assert.ok(address && typeof address !== 'string');
+  const registry = new McpRegistry();
+  registry.register({ id: 'slow-http', url: `http://127.0.0.1:${address.port}/mcp`, account: ACCOUNT, resource: RESOURCE });
+  registry.enable('slow-http'); registry.allowEgress('slow-http');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 20_000 } });
+  try {
+    const startedAt = Date.now();
+    const discovery = await adapter.discover('slow-http');
+    const elapsed = Date.now() - startedAt;
+    assert.notEqual(discovery.state, 'discovered', 'the 5 s http budget ends a handshake that answers at 6 s');
+    assert.ok(elapsed < 6000, `the http budget is the one applied, measured ${elapsed} ms`);
+  } finally {
+    await adapter.close(); listener.closeAllConnections();
+    await new Promise<void>(resolve => listener.close(() => resolve()));
   }
 });

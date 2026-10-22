@@ -156,6 +156,9 @@ enum State: String, CaseIterable {
         guard !dictationIsCapturing() else {
             failure = "Stop dictation before starting Live voice."; state = .failed; return
         }
+        // #1022: the busy reading is taken here, in the synchronous prefix, before the connecting
+        // ring (one main-actor hop after CONNECTING) or any live engine can start.
+        device.noteOutsideDeviceBusy()
         generation &+= 1; let token = generation
         failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
         observer?.cancel()
@@ -289,6 +292,7 @@ enum State: String, CaseIterable {
     }
     private func stopAudioAndSummarize() {
         device.stop()
+        device.clearOutsideDeviceBusy()
         guard let native = device.takeCaptureSummary(), let owner = captureDiagnosticOwner else { return }
         let nativeState = state.rawValue
         captureSummaryTask = Task { [coordinator] in

@@ -639,6 +639,14 @@ struct NativeLiveInterruptionSample: Sendable {
     private var startInputRate: Double = 0
     private var startOutputRate: Double = 0
     private var voiceProcessingFailed = false
+    /// The device-busy reading taken at call start, before the connecting ring or the live engine
+    /// can start: `kAudioDevicePropertyDeviceIsRunningSomewhere` counts Didi itself (#1022).
+    private(set) var outsideBusyAtCallStart: Bool?
+    /// Takes the one busy reading for this call: called from the synchronous prefix of
+    /// `NativeLiveConversation.start`, before the connecting ring or any live engine starts.
+    func noteOutsideDeviceBusy() { outsideBusyAtCallStart = deviceState(true) || deviceState(false) }
+    /// Teardown clears the snapshot, so a stale reading never decides a later call.
+    func clearOutsideDeviceBusy() { outsideBusyAtCallStart = nil }
     private var sessionFailed = false
     private(set) var audioReleaseCount = 0
     private(set) var engineResetCount = 0
@@ -779,10 +787,23 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         return (String(device), status == noErr ? (name?.takeRetainedValue() as String? ?? "Unknown device") : "Unknown device")
     }
+    /// The default output's UID: a stable device identifier, never a person's name.
+    static func defaultOutputUID() -> String {
+        let device = defaultDeviceID(input: false)
+        guard device != kAudioObjectUnknown else { return "unknown" }
+        var property = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var uid: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &uid) == noErr,
+              let value = uid?.takeRetainedValue() else { return "unknown" }
+        return value as String
+    }
     func resumeInput() { recovery.resume(); if isCapturing { onResume?() } }
 
-    /// A1-R2: true when the default input or output device is already running somewhere else,
-    /// read read-only and before Didi starts any engine so it reflects other apps only.
+    /// A1-R2: true when the default input or output device is already running somewhere else.
+    /// The reading is taken at call start, before Didi starts any engine, so it reflects other apps only.
     static func defaultDeviceRunningSomewhere(input: Bool) -> Bool {
         let device = defaultDeviceID(input: input)
         guard device != kAudioObjectUnknown else { return false }
@@ -973,9 +994,11 @@ struct NativeLiveInterruptionSample: Sendable {
         var ready = false
         defer { if !ready { releaseAudio() } }
 
-        // A1-R2: voice processing only on built-in speakers and only when no device is busy.
+        // A1-R2: voice processing only on built-in speakers and only when no other app held the
+        // device at call start. The snapshot is taken before the connecting ring starts its own
+        // engine, so Didi's own ring never makes this reading look like another app (#1022).
         let builtInOutput = isBuiltInOutput()
-        let deviceBusy = deviceState(true) || deviceState(false)
+        let deviceBusy = outsideBusyAtCallStart ?? (deviceState(true) || deviceState(false))
         let useVoiceProcessing = Self.shouldUseVoiceProcessing(
             outputIsBuiltInSpeakers: builtInOutput, deviceBusy: deviceBusy,
             voiceProcessingFailed: voiceProcessingFailed)
@@ -1040,7 +1063,10 @@ struct NativeLiveInterruptionSample: Sendable {
             throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.engineFailure(error as NSError)
         }
         owner.didStartEngine(holder: ObjectIdentifier(self))
-        log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false"])
+        log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false",
+                              "busyAtCallStart": deviceBusy ? "true" : "false",
+                              "outputTransport": Self.routeClassification(input: false),
+                              "outputUID": Self.defaultOutputUID()])
         // One rate receipt per session accompanies the queue measurements.
         log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.

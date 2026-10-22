@@ -11,7 +11,7 @@ import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
@@ -1120,4 +1120,38 @@ test('R7: a prewarm before the first start assembles from sources', async () => 
     assert.equal(second.reason, 'sections', 'a later wake refreshes the sections an assembly already holds');
     await owner.shutdown();
   } finally { await cleanup(); }
+});
+
+test('1022: a recovered calendar connector re-reads the digest, and a recovered mail one does not', async () => {
+  // The two seams startHost binds: the lifecycle sink and the calendar recovery target.
+  let reads = 0;
+  const digest = { refresh: async () => { reads += 1; return undefined; } };
+  const endpoints = () => [{ id: 'gmail', connector: 'google' }, { id: 'calendar', connector: 'google' }];
+  const grants = new Map<string, { endpointId: string; toolNames: readonly string[] }>([
+    ['gmail', { endpointId: 'gmail', toolNames: ['gmail_search'] }],
+    ['calendar', { endpointId: 'calendar', toolNames: ['calendar_list_events'] }],
+  ]);
+  const refresh = bindCalendarRecovery({ digest, endpoints, grantOf: id => grants.get(id) });
+  const logged: Array<{ event: string; endpointId: string }> = [];
+  const sink = connectorLifecycleSink({ log: event => { logged.push({ event: event.event, endpointId: event.endpointId }); }, onRecovered: endpointId => refresh(endpointId) });
+
+  sink({ event: 'connector_connected', endpointId: 'calendar', connectMs: 3120 });
+  assert.equal(reads, 0, 'a first connect already read the digest at start, it owes no second read');
+
+  sink({ event: 'connector_recovered', endpointId: 'gmail', attempts: 1, connectMs: 900 });
+  assert.equal(reads, 0, 'a mail endpoint of the same account recovers without re-reading the calendar');
+
+  sink({ event: 'connector_recovered', endpointId: 'calendar', attempts: 1, connectMs: 1200 });
+  assert.equal(reads, 1, 'the calendar recovery reads the digest the start missed');
+
+  grants.delete('calendar');
+  sink({ event: 'connector_recovered', endpointId: 'calendar', attempts: 2, connectMs: 800 });
+  assert.equal(reads, 1, 'no calendar grant, no reader, no read');
+
+  assert.deepEqual(logged, [
+    { event: 'connector_connected', endpointId: 'calendar' },
+    { event: 'connector_recovered', endpointId: 'gmail' },
+    { event: 'connector_recovered', endpointId: 'calendar' },
+    { event: 'connector_recovered', endpointId: 'calendar' },
+  ], 'every line still reaches host.log, recovered or not');
 });

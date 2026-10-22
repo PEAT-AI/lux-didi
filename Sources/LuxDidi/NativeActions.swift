@@ -60,6 +60,49 @@ public protocol NativeActionExecuting: Sendable {
     func perform(_ action: NativeActionFrame.Action, target: String) async -> NativeActionResult
 }
 
+/// The viewer destinations the native side accepts on its own: an exact host and a viewer path, never a
+/// string prefix, so a destination the host should never have sent is still refused here.
+public struct OpenDestination: Sendable, Equatable {
+    public let kind: String
+    public init(kind: String) { self.kind = kind }
+
+    private static let rejected = "(^|/)(url|redirect|export|download)(/|$)"
+
+    public static func of(_ target: String, mattermostHost: String?) -> OpenDestination? {
+        guard let parts = URLComponents(string: target), parts.scheme?.lowercased() == "https",
+              parts.user == nil, parts.password == nil, parts.port == nil,
+              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.path, rejected),
+              !(parts.queryItems ?? []).contains(where: { $0.name == "q" || $0.name == "redirect" })
+        else { return nil }
+        let path = parts.path
+        let eid = (parts.queryItems ?? []).contains { $0.name == "eid" }
+        let video = (parts.queryItems ?? []).first { $0.name == "v" }?.value?.isEmpty == false
+        switch host {
+        case "mail.google.com":
+            return matches(path, "^/mail/u/[0-9]+/?$") ? OpenDestination(kind: "gmail") : nil
+        case "calendar.google.com":
+            if path == "/" { return OpenDestination(kind: "calendar") }
+            return matches(path, "^/(calendar/)?event/?$") && eid ? OpenDestination(kind: "calendar") : nil
+        case "docs.google.com":
+            return matches(path, "^/(document|presentation|spreadsheets)/d/[A-Za-z0-9_-]{1,256}(/(edit|view))?/?$") ? OpenDestination(kind: "docs") : nil
+        case "drive.google.com":
+            return matches(path, "^/(file/d/[A-Za-z0-9_-]{1,256}|drive/folders/[A-Za-z0-9_-]{1,256})(/view)?/?$") ? OpenDestination(kind: "drive") : nil
+        case "www.youtube.com", "youtube.com":
+            return path == "/watch" && video ? OpenDestination(kind: "youtube") : nil
+        case "youtu.be":
+            return matches(path, "^/[A-Za-z0-9_-]{1,64}/?$") ? OpenDestination(kind: "youtube") : nil
+        default:
+            guard let configured = mattermostHost?.lowercased(), host == configured,
+                  matches(path, "^/(t/)?[A-Za-z0-9._-]{1,64}/(pl|channels)/[A-Za-z0-9._-]{1,64}/?$") else { return nil }
+            return OpenDestination(kind: "mattermost")
+        }
+    }
+
+    private static func matches(_ text: String, _ pattern: String) -> Bool {
+        text.range(of: pattern, options: .regularExpression) != nil
+    }
+}
+
 /// The native boundary. It re-checks the allowlist itself and never trusts the host's argument shape.
 public actor NativeActions: NativeActionExecuting {
     public typealias Opener = @Sendable (URL, Bool) async -> Bool
@@ -71,13 +114,16 @@ public actor NativeActions: NativeActionExecuting {
     private let opener: Opener
     private let clock: @Sendable () -> Date
     private let log: Logger
+    private let mattermostHost: String?
     private var opened: [Date] = []
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                 opener: @escaping Opener = NativeActions.workspaceOpen,
+                mattermostHost: String? = nil,
                 clock: @escaping @Sendable () -> Date = { Date() }) {
         self.home = home.resolvingSymlinksInPath().standardizedFileURL
         self.opener = opener
+        self.mattermostHost = mattermostHost
         self.clock = clock
         self.log = Logger(subsystem: "ai.lux.didi", category: "native-actions")
     }
@@ -96,10 +142,9 @@ public actor NativeActions: NativeActionExecuting {
     public func perform(_ action: NativeActionFrame.Action, target: String) async -> NativeActionResult {
         switch action {
         case .openURL:
-            guard let components = URLComponents(string: target), components.scheme?.lowercased() == "https",
-                  let host = components.host, !host.isEmpty, let url = components.url
+            guard let destination = OpenDestination.of(target, mattermostHost: mattermostHost), let url = URL(string: target)
             else { return receipt(action, .notAllowed, "none") }
-            return await open(url, isApplication: false, action: action, detail: "https")
+            return await open(url, isApplication: false, action: action, detail: destination.kind)
         case .openFile:
             guard let url = fileURL(target) else { return receipt(action, .notAllowed, extensionOf(target)) }
             guard FileManager.default.fileExists(atPath: url.path) else { return receipt(action, .notFound, extensionOf(target)) }

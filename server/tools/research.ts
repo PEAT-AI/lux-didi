@@ -57,6 +57,12 @@ export const RESEARCH = Object.freeze({
   continueRounds: 3,
   maxOps: 8,
   maxConcurrent: 4,
+  /**
+   * F2: one question reads at most this many pages of one mail query, and a rate-limited page waits this
+   * long before its single retry. Four pages is 100 messages at the 25 page size the connector serves.
+   */
+  mailPageCap: 4,
+  rateLimitRetryMs: 1_000,
   /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
   selectorDeadlineMs: 1_500,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
@@ -742,7 +748,16 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
 }
 
 /** ROUTE-1022: the owner's own schedule, in the words a spoken question uses. One deterministic rule, no classifier. */
-const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|calls?|tomorrow|today|next week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|itinerary|out of office)\b/u;
+/**
+ * F8: the forcing rule reads schedule vocabulary only. A time word alone (today, tomorrow, calls) is the
+ * product's daily language, so it never pulls the calendar into a question that did not ask for it.
+ */
+const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|itinerary|out of office)\b/u;
+/**
+ * F8: the router's calendar class is the same schedule vocabulary, plus the temporal phrases that are only
+ * ever a schedule. A bare today, tomorrow or "calls" is the product's daily language and routes nothing.
+ */
+const SCHEDULE_WORDS = new RegExp(`${OWNER_SCHEDULE.source}|\\b(next week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|itinerary|out of office)\\b`, 'u');
 
 export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
@@ -757,7 +772,7 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
 
 /** The source a question is about, in the order the first answer waits for them. */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
-  { source: 'calendar', words: OWNER_SCHEDULE }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
+  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
 ];
 
 /**
@@ -974,6 +989,8 @@ interface MailRead {
   args: JsonObject; messages: Map<string, MailMessage>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   received: number; invalid: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** F2: pages this read has already taken, so one question never pages a mailbox without end. */
+  pages: number;
   /** A connector answer that carried text but no page envelope is one read, kept whole. */
   plain?: string;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
@@ -1001,6 +1018,10 @@ type CalendarReply = JsonObject & { [calendarDelivery]?: CalendarDelivery };
 export interface ResearchMemo {
   calendar: Map<string, { at: number; events: Map<string, RetainedCalendarEvent> }>;
   calendarList?: { scope: CalendarScope; notRead?: string };
+  /** F2: one mail read per query for the live session, so a follow-up continues from its cursor. */
+  mail?: Map<string, MailRead>;
+  /** F6: an identical internal read this session already completed inside the turn window. */
+  reads?: Map<string, { at: number; result: IntentSubResult }>;
 }
 interface CalendarRead {
   args: JsonObject; events: Map<string, RetainedCalendarEvent>; bindings: ToolResultBinding[];
@@ -1011,7 +1032,7 @@ interface CalendarRead {
 }
 export interface RunState {
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
-  mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number;
+  mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number; mailRateRetried?: boolean;
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
@@ -1346,10 +1367,21 @@ export function parseResearch(args: unknown): ParsedResearch {
 
 export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
 
+/** F9: the one repair line a refused call gets, so a repeat attempt changes what was wrong, not just the words. */
+const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
+  lookup_query_length: `The query was too long: keep it under ${RESEARCH.queryLimitChars} characters and shorten the words after source.`,
+  lookup_mail: 'A mail lookup is {"source":"mail","mail":{"q":"search words"}} or {"source":"mail","mail":{"id":"message id"}}, with maxResults 1 to 50 optional; a mail lookup carries no query.',
+  lookup_query_required: 'This lookup needs a query: add {"source":"the source","query":"the words to search"}.',
+  lookup_source: 'The source must be one of knowledge, mail, chat, web, memory.',
+  lookup_history: 'A memory lookup is {"source":"memory","history":{"topic":"..."}}; the history fields are topic and optional limit.',
+  lookups_count: 'Send one to three lookups; more than three cannot be read before the answer is due.',
+  unknown_fields: 'Remove the fields not in the tool schema; only action, question, researchId, sources, direction, cursor and lookups exist.',
+};
+
 export function researchRepair(reason: ResearchRefusalReason): JsonObject {
   return {
     error: 'invalid_research_arguments', state: 'refused', reason,
-    guidance: 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+    guidance: REPAIR_GUIDANCE[reason] ?? 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
   };
 }
 
@@ -1991,7 +2023,8 @@ function calendarCoverageLine(run: RunState): string | undefined {
   const partial = [...run.calendar.values()].some(read => read.failed || read.unread > 0 || read.nextPageToken !== undefined || !read.exhausted);
   if (narrower) return `calendar: covers ${covered}; the rest of ${requested} was NOT read${partial ? ', and part of that window was not read either' : ''}`;
   if (partial) return `calendar: covers ${covered ?? requested}, and part of ${requested} was not read`;
-  if (run.calendarScope?.partial === true) return `calendar: covers ${covered ?? requested}, but the calendar list was not fully read`;
+  // F7: a calendar list with a further page is true of every read on this account, so it says nothing about
+  // the window the owner asked for and no longer takes the completion line's place.
   return undefined;
 }
 
@@ -2079,12 +2112,19 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // read is never a sentence the model has to infer from a count or from silence.
   const coverage = calendarCoverageLine(run);
   const trouble = sourceTroubleLine(run);
+  // F2: a mail read that failed or stopped at its page cap says so in plain words, so a partial mailbox
+  // is never read as the whole one.
+  const mailCoverageNote = mailReads.length === 0 ? undefined
+    : mailReads.some(read => read.failed) ? 'The mail search stopped before the end, so there may be more mail than this.'
+    : mailReads.some(read => !read.exhausted) ? 'The mail search stopped at its page limit, so there may be more mail than this.'
+    : undefined;
   const clauses = [
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
     ...cutShort,
     ...searchedNothing,
     ...(coverage !== undefined ? [coverage] : []),
     ...(trouble !== undefined ? [trouble] : []),
+    ...(mailCoverageNote !== undefined ? [mailCoverageNote] : []),
   ];
   if (run.unavailableReasons.get('calendar') === 'unresolved_window') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   let note = clauses.length === 0 ? undefined : clauses.join(' ');
@@ -2126,7 +2166,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // words, so the model never spends another call fetching what is already in hand.
     const trimmed = dropped > 0 || calendarPending || mailPending;
     const complete = status === 'answered' && !trimmed && [...run.sourcesDone].some(source => configured.includes(source));
-    const settledNote = complete ? (note ?? RESEARCH.completeNote) : note;
+    const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`) : note;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
@@ -2295,10 +2335,23 @@ function mailMessages(run: RunState): Map<string, MailMessage> {
   for (const read of run.mail.values()) for (const [key, message] of read.messages) if (!messages.has(key)) messages.set(key, message);
   return messages;
 }
-function mailRead(run: RunState, args: JsonObject): MailRead {
-  const key = JSON.stringify(args);
-  let read = run.mail.get(key);
-  if (!read) { read = { args: { ...args }, messages: new Map(), bindings: [], tokens: new Set(), exhausted: false, failed: false, received: 0, invalid: 0 }; run.mail.set(key, read); }
+/** F2: one read per query, whatever page size the caller asked for, so a follow-up continues the same read. */
+function mailReadKey(args: JsonObject): string {
+  const normalized: JsonObject = { ...args };
+  delete normalized['maxResults'];
+  return JSON.stringify(normalized);
+}
+function mailRead(run: RunState, args: JsonObject, memo?: ResearchMemo): MailRead {
+  const key = mailReadKey(args);
+  let read = run.mail.get(key) ?? memo?.mail?.get(key);
+  if (!read) {
+    read = { args: { ...args }, messages: new Map(), bindings: [], tokens: new Set(), exhausted: false, failed: false, received: 0, invalid: 0, pages: 0 };
+  }
+  if (run.mail.get(key) !== read) run.mail.set(key, read);
+  if (memo !== undefined) {
+    memo.mail ??= new Map();
+    memo.mail.set(key, read);
+  }
   return read;
 }
 
@@ -2326,6 +2379,16 @@ function mailEmptyPhrase(info: MailQueryInfo | undefined, fallback: string): str
  * E5: one mail read, then exactly one broader retry when a search matched nothing. The wider query
  * shares the source's own deadline and ops budget, and its hits are credited to the first read.
  */
+/** F2: the connector's own rate-limit failure, recognised from its text because the code set has no such word. */
+function rateLimited(result: IntentSubResult | undefined): boolean {
+  return result !== undefined && !result.ok && /rate.?limit|\b429\b/iu.test(result.text);
+}
+
+/** A wait on the injected timer seam, so a test drives the rate-limit delay instead of sleeping. */
+function pause(deps: ResearchDeps, ms: number): Promise<void> {
+  return new Promise<void>(resolve => { (deps.schedule ?? scheduleTimer)(resolve, ms); });
+}
+
 async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: readonly MailRead[], parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   await collectMail(deps, run, parent, remainingMs, now);
   if (parent.aborted) return;
@@ -2356,7 +2419,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
   const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(left, remainingMs)))]);
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
-    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight).slice(0, RESEARCH.maxOps - run.ops);
+    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
     if (!evidenceAllowed(deps, run, signal)) break;
@@ -2365,21 +2428,33 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     let results: IntentSubResult[];
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.inflight = false; read.failed = true; } if (signal.aborted) run.cutShort.add('mail'); break; }
-    if (parent.aborted || run.cancelled || run.stopped) { invalidateEvidence(run); break; }
+    if (parent.aborted || run.cancelled || run.stopped) { for (const read of reads) read.inflight = false; invalidateEvidence(run); break; }
     if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
     // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
     // A native page that failed is terminal for its source, so only a first page is retried.
-    const retried = calls.map((_, index) => index).filter(index => !results[index]?.ok && !calls[index]!.args['pageToken']);
+    // F2: a rate-limited page never takes that immediate retry; it waits once, then the read is closed.
+    const failed = calls.map((_, index) => index).filter(index => !results[index]?.ok);
+    const limited = failed.filter(index => rateLimited(results[index]));
+    const retried = failed.filter(index => !calls[index]!.args['pageToken'] && !limited.includes(index));
     if (retried.length > 0) {
       try {
         const again = await deps.execute(retried.map(index => calls[index]!), signal);
         retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
       } catch { /* the first answer stands */ }
     }
+    if (limited.length > 0 && run.mailRateRetried !== true) {
+      run.mailRateRetried = true;
+      await pause(deps, RESEARCH.rateLimitRetryMs);
+      try {
+        const again = await deps.execute(limited.map(index => calls[index]!), signal);
+        limited.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
+      } catch { /* the delayed retry is the last word on this page */ }
+    }
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
       if (!result?.ok || deps.authorizeEvidence && !result.binding) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      read.pages += 1;
       // A search that answered with text but no page envelope is still that search's answer: each tagged
       // line is one message, so the follow-up read and the reply carry it like any other page.
       if (!result.mailPage) {
@@ -2408,11 +2483,12 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
 
 async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], signal: AbortSignal, remainingMs: number, now: () => number): Promise<RoutedOutcome[]> {
   const started = now();
-  const reads = plans.map(plan => mailRead(run, plan.read.subs[0]!.args));
+  const reads = plans.map(plan => mailRead(run, plan.read.subs[0]!.args, deps.memo));
   await collectMailWithRetry(deps, run, reads, signal, remainingMs, now);
   return plans.map((plan, n) => {
     const read = reads[n]!, lines = [...read.messages.values()].map(message => message.line);
-    const outcome: LookupOutcome = lines.length > 0 ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
+    // F2: a read that failed or was cut short is not ok, even when it had already carried lines.
+    const outcome: LookupOutcome = lines.length > 0 ? (read.failed || run.cutShort.has('mail') ? 'failed' : 'ok') : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
     const info = mailQueryInfo(read);
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }) };
   });
@@ -2629,10 +2705,32 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     }
   });
   if (subs.length === 0) return unserved('unavailable', 'no_query');
-  run.ops += Math.max(1, subs.length);
+  // F6: an identical read the live session already paid for inside the turn window is reused, not dispatched again.
+  const signatures = subs.map(sub => `${sub.name}:${JSON.stringify(sub.args)}`);
+  const remembered = deps.memo?.reads;
+  const cached = signatures.map(signature => {
+    const hit = remembered?.get(signature);
+    return hit !== undefined && context.now() - hit.at <= RESEARCH.coalesceWindowMs ? hit.result : undefined;
+  });
+  const pending = cached.map((hit, index) => hit === undefined ? index : -1).filter(index => index >= 0);
+  run.ops += Math.max(1, pending.length);
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(lookupBound(source, reads.length, remainingMs))]);
   let results: IntentSubResult[];
-  try { results = await deps.execute(subs, signal); }
+  try {
+    if (pending.length === 0) results = cached.map(hit => hit!);
+    else {
+      const executed = await deps.execute(subs.length === pending.length ? subs : pending.map(index => subs[index]!), signal);
+      results = [...cached] as IntentSubResult[];
+      pending.forEach((index, position) => {
+        const result = executed[position]!;
+        results[index] = result;
+        if (result.ok && deps.memo !== undefined) {
+          deps.memo.reads ??= new Map();
+          deps.memo.reads.set(signatures[index]!, { at: context.now(), result });
+        }
+      });
+    }
+  }
   catch { return [...done, ...all(signal.aborted ? 'timeout' : 'failed')]; }
   // The execute contract returns one result per sub, in order, so each lookup keeps its own lines.
   const cutShort = signal.aborted;

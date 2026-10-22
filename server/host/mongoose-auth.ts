@@ -36,7 +36,11 @@ export interface MongooseOAuthRecord {
   consentStartedAt: number;
 }
 
-export type MongooseCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-busy' | 'credential-consent-expired';
+/**
+ * A refresh that never reached the server is its own code: a network blip is not a refusal, so the
+ * host retries it instead of asking the owner to sign in again.
+ */
+export type MongooseCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-unavailable' | 'credential-refresh-busy' | 'credential-consent-expired';
 
 export class MongooseCredentialError extends Error {
   constructor(readonly code: MongooseCredentialCode) { super(code); }
@@ -181,7 +185,7 @@ async function refreshMongooseOAuth(record: MongooseOAuthRecord, options: Mongoo
   let response: Response;
   try {
     response = await post(`${record.base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });
-  } catch { throw new MongooseCredentialError('credential-refresh-failed'); }
+  } catch { throw new MongooseCredentialError('credential-refresh-unavailable'); }
   if (!response.ok) throw new MongooseCredentialError('credential-refresh-failed');
   let payload: TokenResponse;
   try { payload = await response.json() as TokenResponse; } catch { throw new MongooseCredentialError('credential-refresh-failed'); }

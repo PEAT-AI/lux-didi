@@ -52,7 +52,8 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
-  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift "$work/audio-callback-bridge.o" -o "$work/native-audio"
+  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift \
+  Tests/DidiLiveTests/VoiceProcessingSnapshotTests.swift "$work/audio-callback-bridge.o" -o "$work/native-audio"
 "$work/native-audio"
 # Deterministic playback-scheduling schedule replay: no engine, no tap, no permission request.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \

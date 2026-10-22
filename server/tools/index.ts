@@ -19,7 +19,7 @@ import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
-import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, openParameters, validateOpen } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, openParameters, openTarget, validateOpen } from './open.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -524,9 +524,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const subject = args[openTool.parameter]!;
-          const code = await nativeActions.dispatch(runId, openTool.name, subject);
-          nativeActionReceipt(openTool.name, code, subject);
+          const resolved = openTarget(openTool.name, args);
+          const refused = 'target' in resolved ? undefined : resolved.code;
+          const dispatched = 'target' in resolved ? resolved.target : undefined;
+          const code = dispatched === undefined ? refused! : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
+          else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
           if (context.signal.aborted) return { status: 'failed' as const };
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
@@ -537,7 +540,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            return complete(call as ToolCallIntent, { code }, ['ordinary'], tx);
+            return complete(call as ToolCallIntent, refused === undefined ? { code } : { code, guidance: OPEN_GUIDANCE[refused] }, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },

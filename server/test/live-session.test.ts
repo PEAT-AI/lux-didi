@@ -51,7 +51,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -5472,6 +5472,13 @@ test('#451: an opener research start before the owner speaks is answered at once
   await settlePort();
   await settleLiveTool(h, 'opener2', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] });
   assert.ok(h.calls.length > 0, 'after the owner speaks the lookup reaches its source');
+});
+
+test('R7: the dropped-line opener is cancelled only before its own audio starts', async () => {
+  // The decision the mute-free opener takes on the owner's first words (b210596e).
+  assert.equal(openerCancelled(true, false), true, 'the owner spoke before the opener was audible: cancel it');
+  assert.equal(openerCancelled(true, true), false, 'the opener is already speaking: let it finish');
+  assert.equal(openerCancelled(false, false), false, 'a call with no dropped-line opener cancels nothing');
 });
 
 test('R7: the owner\'s final turn frees the answer after a cancelled opener', async t => {

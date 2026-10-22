@@ -5492,3 +5492,54 @@ test('R7: the owner\'s final turn frees the answer after a cancelled opener', as
   for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
   assert.ok(played.length >= 1, 'his answer is audible, never silenced by an earlier cancel');
 });
+
+test('R9: a cancelled dropped-line opener never plays, its late frames stay dropped, and the owner is answered', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'r9-dead');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the last answer of the dead call', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-r9-resumption' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
+  assert.equal(settled, true, 'the previous call settled resume_failed');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'failed', code: 'resume_failed' });
+  // A new call inside the 10 minute window is seeded with the dropped-line marker.
+  const next = h.owner.create({ idempotencyKey: 'r9-next', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  let ready = false; void attachment.ready.then(() => { ready = true; }, () => {});
+  for (let i = 0; i < 80 && !ready; i++) { h.f.send({ setupComplete: {} }); await tick(); }
+  assert.equal(ready, true, 'the new call is open');
+  const request = h.requests.at(-1)!;
+  assert.equal(request.openingText, LIVE_DROPPED_LINE_MARK, 'the opener is the dropped-line marker');
+  assert.equal((request.history ?? []).at(-1)?.role, 'user', 'the dead answer is closed as heard');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  // The opener response begins (its opening input was the marker), then the owner speaks before any audio.
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: false } } });
+  await tick(); await tick();
+  // Late opener audio lands after his speech started and before the barge-in: all of it is dropped.
+  for (let i = 0; i < 5; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.equal(played.length, 0, 'zero opener audio frames reach the device');
+  // The provider ends the cancelled opener on the barge-in; his turn is final; late opener frames are still dropped.
+  h.f.send({ serverContent: { interrupted: true } });
+  await tick();
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: true } } });
+  await tick();
+  for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.ok(played.length >= 1, 'the answer to his words reaches the device');
+  let repeats = 0;
+  for (let i = 0; i < 5; i++) {
+    h.f.send({ serverContent: { outputTranscription: { text: 'here is the folder answer', finished: true } } });
+    await tick();
+  }
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [next.liveSessionId]));
+  const said = rows.map(row => String(row['text'])).join(' ');
+  repeats = said.includes('the last answer of the dead call') ? 1 : 0;
+  assert.equal(repeats, 0, 'the answer never repeats the dead call\'s last answer');
+  h.owner.revoke(next.liveSessionId);
+});

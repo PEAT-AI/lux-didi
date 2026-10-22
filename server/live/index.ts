@@ -1818,8 +1818,8 @@ export class LiveSessionOwner {
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
-    // R7: the owner spoke before the dropped-line opener became audible, so it is cancelled and his own
-    // turn is answered; once the opener is speaking it finishes, exactly as before.
+    // R7/R8: the owner spoke before the dropped-line opener became audible, so it is cancelled; the
+    // provider's barge-in (interrupted) or its turn end frees the answer, never a late opener frame.
     if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
     const connection = handle.connection;
     // #451 H12: a second owner utterance arrives before the provider's turnComplete, so the turn it
@@ -2478,8 +2478,6 @@ export class LiveSessionOwner {
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal) {
-            // R7: the cancelled opener's frames end with the owner's turn; his answer must be audible.
-            handle.dropResponse = false;
             handle.inputFinalAt = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
@@ -2553,7 +2551,6 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
-      handle.dropResponse = false;
       handle.inputFinalAt = this.#now(); handle.mutedMs = 0;
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));

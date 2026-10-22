@@ -140,7 +140,7 @@ test('a mute past the cost cap settles as muted_expired, benign, never paused fo
   await flush();
   await live.advance(MUTE_WARM_MS - 1_000);
   assert.equal(live.owner.get(live.liveSessionId).terminal, null, 'the window is 180 s, not less');
-  await live.advance(1_001);
+  await live.advance(1_000);
   const terminal = live.owner.get(live.liveSessionId).terminal;
   assert.deepEqual(terminal, { state: 'closed', code: 'muted_expired' }, 'the expiry is a benign close');
   const expiry = mutes(live).at(-1);

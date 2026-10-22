@@ -302,6 +302,8 @@ interface ActiveSession {
   awaitingAnswer: boolean; answerAt: number | undefined;
   /** The owner muted: the provider stays open on the host's cost cap, no audio goes up or comes down. */
   muted: boolean; mutedAt: number | undefined; muteTimer?: ReturnType<JobTimer> | undefined;
+  /** The answer debt the mute suspended, so the unmute resumes exactly the watchdog the owner left. */
+  mutedWatchdog: boolean;
   /** An answer that arrived while muted: its audio was dropped, never played later, and it is offered on unmute. */
   heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
@@ -1297,7 +1299,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, mutedWatchdog: false, heldAnswer: false,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1417,6 +1419,7 @@ export class LiveSessionOwner {
     handle.muted = muted;
     if (muted) {
       handle.mutedAt = now;
+      handle.mutedWatchdog = handle.watchdogPhase !== undefined;
       this.#cancelWatchdog(handle);
       handle.idleTimer?.cancel(); handle.idleTimer = undefined;
       handle.muteTimer?.cancel();
@@ -1431,7 +1434,7 @@ export class LiveSessionOwner {
     } else {
       handle.muteTimer?.cancel(); handle.muteTimer = undefined;
       this.#armIdle(handle, this.#profile.limits.idleMs);
-      if (handle.awaitingAnswer) this.#armWatchdog(handle);
+      if (handle.mutedWatchdog) { handle.mutedWatchdog = false; this.#armWatchdog(handle); }
       this.#armMutedOffer(handle);
     }
     hostLogEvent({ event: 'live_mute', liveSessionId: handle.liveSessionId, generation: handle.generation,

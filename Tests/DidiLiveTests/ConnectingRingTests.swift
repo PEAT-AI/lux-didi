@@ -157,7 +157,7 @@ import Foundation
         ring.presenceChanged(.live, failed: false)
         try require(output.ramps == [ConnectingRingTone.stopRampMs],
             "live ramps the ring out over 30 ms, got \(output.ramps)")
-        try require(records.count == 1, "one ring leaves one record, got \(records.count)")
+        try require(records.count == 2, "a ring that chimed leaves its ring record and its chime receipt, got \(records.count)")
         try require(records[0]["event"] as? String == "connecting_ring", "the record names itself")
         try require(records[0]["ms"] as? Int == 4000,
             "the record counts 4000 ms, got \(String(describing: records[0]["ms"]))")
@@ -178,6 +178,11 @@ import Foundation
         try require(!callStartBusy, "a second call's call-start reading sees the device free")
         try require(records[0]["played"] as? Bool == true, "the record says the ring played")
         try require(records[0]["chime"] as? Bool == true, "the record says the chime played")
+        // L12c: the chime's own receipt, next to the ring's, so a quiet call can say whether it ever heard it.
+        try require(records[1]["event"] as? String == "connecting_chime", "the chime leaves its own receipt")
+        try require(records[1]["played"] as? Bool == true, "the receipt says the chime played")
+        try require(records[1]["reason"] == nil, "a chime that played carries no refusal reason")
+        try require(Set(records[1].keys) == ["event", "played"], "the played receipt is a closed shape")
 
         // Example 2: connecting then failure to cold ramps out with reason failed.
         let failedClock = TestClock()
@@ -200,6 +205,24 @@ import Foundation
         try require(failedRecords.first?["chime"] as? Bool == false &&
                     failedRecords.first?["played"] as? Bool == true,
             "the failed ring played and chimed nothing")
+        try require(failedRecords.count == 1, "a connect that never chimed leaves only its ring record")
+
+        // A presence edge inside the ramp means the chime was never owed: it says so, and plays nothing.
+        let movedOutput = RecordingRingOutput()
+        movedOutput.completesRamp = false
+        var movedRecords: [[String: Any]] = []
+        let movedRing = ConnectingRing(output: movedOutput, now: { 0 }, deferStart: { body in body() },
+                                        after: { _, _ in })
+        movedRing.receipt = { movedRecords.append($0) }
+        movedRing.presenceChanged(.connecting, failed: false)
+        movedRing.presenceChanged(.live, failed: false)
+        movedRing.presenceChanged(.connecting, failed: false)
+        movedOutput.pendingRamp?()
+        try require(movedOutput.chimes == 0, "the chime of a superseded ramp never plays")
+        try require(movedRecords.count == 2 && movedRecords[1]["event"] as? String == "connecting_chime"
+            && movedRecords[1]["played"] as? Bool == false
+            && movedRecords[1]["reason"] as? String == "token_mismatch",
+            "the superseded chime records played=false and token_mismatch, got \(movedRecords.map { $0["event"] as? String ?? "?" })")
 
         // Example 3: a stop that lands while the start is still preparing never reaches the output.
         let staleClock = TestClock()
@@ -266,6 +289,12 @@ import Foundation
             "the record still names the connected chime this ring asked for")
         try require(mutePending.isEmpty && !muteOutput.engineRunning,
             "a chime that could not start schedules no stop and leaves no engine")
+        try require(muteRecords.count == 2 && muteRecords[1]["event"] as? String == "connecting_chime"
+            && muteRecords[1]["played"] as? Bool == false
+            && muteRecords[1]["reason"] as? String == "output_refused",
+            "L12c: a chime the player refused records played=false and output_refused, got \(String(describing: muteRecords.last))")
+        try require(Set(muteRecords[1].keys) == ["event", "played", "reason"],
+            "the refused receipt is a closed shape")
 
         // Example 7: a stop lands mid-chime. The chime's own stop still runs exactly once and the
         // player and engine are released, so Didi holds no output device between calls.
@@ -289,8 +318,10 @@ import Foundation
             "a stop during the chime stops the pair once, got \(midOutput.stopCalls) stop(s)")
         try require(midOutput.order.filter { $0 == "chime" }.count == 1,
             "the chime plays once, got \(midOutput.order)")
-        try require(midRecords.count == 1 && midRecords[0]["chime"] as? Bool == true,
+        try require(midRecords.count == 2 && midRecords[0]["chime"] as? Bool == true,
             "the record still names the chime that played")
+        try require(midRecords[1]["event"] as? String == "connecting_chime" && midRecords[1]["played"] as? Bool == true,
+            "the chime's own receipt survives a stop that lands mid-chime")
 
         // F2: a presence edge inside the 30 ms ramp cancels the ramp's completion, and the record
         // must still land: it is written before the ramp starts, as it was before the chime existed.
@@ -349,11 +380,13 @@ import Foundation
         func rampDown(overMs ms: Int, after: (@MainActor () -> Void)?) {
             ramps.append(ms)
             order.append("ramp")
-            guard completesRamp else { return }
+            guard completesRamp else { pendingRamp = after; return }
             rampStops += 1
             engineRunning = false
             after?()
         }
+        /// A ramp the test completes by hand, so a presence edge can land inside it.
+        private(set) var pendingRamp: (@MainActor () -> Void)?
     }
 
     @MainActor final class TestClock { var ms = 0 }

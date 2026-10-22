@@ -653,10 +653,6 @@ class Session implements LiveVoiceSession {
   private clearUploadBlock(): void {
     this.uploadBlockedSince = undefined;
   }
-  private outboundProgress(socket: WebSocket): void {
-    if (this.terminal || socket !== this.socket || this.uploadBlockedSince === undefined) return;
-    this.uploadBlockedSince = Date.now();
-  }
   private queueUpstreamStall(socket: WebSocket, receipt: { silentMs: number } | { noProgressMs: number }): void {
     if (this.upstreamStallQueued) return;
     this.upstreamStallQueued = true;
@@ -1299,7 +1295,6 @@ class Session implements LiveVoiceSession {
       if (!this.checkpoint()) return false;
       if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls++; this.diagnostic.localWriteCallbackPendingPCMBytes += pcmBytes; }
       socket.send(frame, error => {
-        if (!error) this.outboundProgress(socket);
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }

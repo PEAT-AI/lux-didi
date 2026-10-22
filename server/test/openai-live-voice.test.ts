@@ -1565,8 +1565,9 @@ describe('openai gpt-live turn states', () => {
     session.close();
   });
 
-  test('a completed local write resets the blocked episode while the socket remains high', async t => {
+  test('a completed local write never refreshes the deadline while the socket stays high (#475)', async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
     const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
     socket.completeWrites = false;
     session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
@@ -1578,14 +1579,39 @@ describe('openai gpt-live turn states', () => {
       await new Promise<void>(resolve => setImmediate(resolve));
     }
     socket.completePendingWrites();
-    for (let step = 0; step < 4; step += 1) {
+    for (let step = 0; step < 4 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
       session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
       socket.deliver({ type: 'session.keepalive' });
       t.mock.timers.tick(5_000);
       await new Promise<void>(resolve => setImmediate(resolve));
     }
-    assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'local write completion reset the thirty-second clock without claiming remote receipt');
+    // A local send callback says the kernel took the bytes, never that the provider did: with the demand
+    // still blocked at the high-water mark the bounded window elapses and the recoverable stall fires.
+    const stall = receipts().filter(record => record.event === 'live_stall');
+    assert.equal(stall.length, 1, 'the blocked demand stalls even though every local write completed');
+    assert.ok(Number(stall[0]!.noProgressMs) >= 30_000, 'and the receipt names the bounded no-progress window');
     session.close();
+  });
+
+  test('#475: a slow drain that never leaves the blocked band still reaches the stall window', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const receipts = hostReceipts(t);
+    const { socket, session, captured } = await fakeReady(t, { limits: { handshakeMs: 1_000, idleMs: 600_000, sessionMs: 600_000, closeMs: 50 } });
+    // The measured shape: the socket accepts every write and drains a kilobyte every two seconds against a
+    // demand of megabytes, so the buffer falls but never leaves the blocked band.
+    let buffered = 400 * 1024;
+    for (let step = 0; step < 20 && !captured.events.some(event => event.type === 'outcome'); step += 1) {
+      buffered -= 1024;
+      socket.bufferedAmount = buffered;
+      session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
+      socket.deliver({ type: 'session.keepalive' });
+      t.mock.timers.tick(2_000);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const stall = receipts().filter(record => record.event === 'live_stall');
+    assert.equal(stall.length, 1, 'a slow drain is a stall, not progress');
+    assert.ok(Number(stall[0]!.noProgressMs) >= 30_000, 'the window is the bounded no-progress one');
+    assert.equal(captured.events.filter(event => event.type === 'outcome').length, 1, 'and the session ends once');
   });
 
   test('buffer oscillation above the prior low cannot refresh upload progress forever', async t => {

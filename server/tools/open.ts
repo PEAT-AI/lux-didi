@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, beginHandleSession, endHandleSession, homeDestination, openDestination, resolveHandle, type HomeApp } from './open-handles.js';
+import { HOME_APPS, beginHandleSession, endHandleSession, homeDestination, openDestination, resolveHandle, type HomeApp, type OpenKind } from './open-handles.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
 export const OPEN_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'native-actions' } as const;
@@ -13,8 +13,8 @@ export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app']);
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed', string> = {
-  not_found: 'I could not find that item.',
-  not_allowed: 'That link is not one I am allowed to open.',
+  not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
+  not_allowed: 'That link is not one I am allowed to open. Tell him plainly and offer the app home page instead.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
 export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string }
@@ -59,25 +59,103 @@ export function nativeActionReceipt(action: NativeAction, code: NativeActionCode
   hostLogEvent({ event: 'native_action', action, code, detail: /^[a-z0-9]{1,16}$/.test(detail) ? detail : 'none' });
 }
 
-/** One host target for a model-facing open tool: the action, the resolved target and its closed detail token. */
-export interface OpenTarget { action: NativeAction; target: string; detail: string }
+/** What a home app is called in plain words, so the open result can name it back to the owner. */
+const HOME_TITLES: Record<HomeApp, string> = { gmail: 'Gmail', calendar: 'Google Calendar', mattermost: 'Mattermost' };
+
+/** A title the model may speak: no URL, no credential, at most 120 characters. */
+export function safeOpenTitle(title: string): string {
+  const clean = title.replace(/https?:\/\/\S+/gi, ' ').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return clean.length === 0 ? 'item' : clean.slice(0, 120);
+}
+
+function fileTitle(path: string): string {
+  const name = path.split('/').filter(Boolean).at(-1) ?? path;
+  return safeOpenTitle(name);
+}
+
+/**
+ * Open2 claimed-open ledger: what actually opened in a session, and the words a reply used to claim one.
+ * The host asks this after a response finishes; nothing here reads a model argument.
+ */
+export interface OpenedReceipt { kind: OpenKind; title: string }
+const opened = new Map<string, OpenedReceipt[]>();
+
+/** The one place an `opened` ack becomes a receipt the turn ledger can see. */
+export function noteOpened(runId: string, receipt: OpenedReceipt): void {
+  const list = opened.get(runId) ?? [];
+  list.push(receipt);
+  opened.set(runId, list);
+}
+
+export function openedIn(runId: string): readonly OpenedReceipt[] { return opened.get(runId) ?? [] }
+
+const CLAIM = /\b(?:i(?:'|’)ve opened|i (?:have )?opened|opened (?:it|that|the|this)|it(?:'|’)s open|it is open|is open now|it(?:'|’)s up in|should be in (?:your|the) browser|i(?:'|’)ve got (?:it|that) open|i found it and opened)\b/;
+const CLAIMED_KINDS: readonly { words: RegExp; kind: OpenKind }[] = [
+  { words: /\b(?:deck|decks|slides|slide deck|presentation|presentations|document|documents|doc|docs|sheet|sheets|spreadsheet)\b/, kind: 'docs' },
+  { words: /\b(?:email|emails|mail|thread|threads|inbox)\b/, kind: 'gmail' },
+  { words: /\b(?:event|events|calendar|meeting invite)\b/, kind: 'calendar' },
+  { words: /\b(?:channel|channels|chat post|mattermost)\b/, kind: 'mattermost' },
+  { words: /\b(?:video|youtube)\b/, kind: 'youtube' },
+  { words: /\b(?:file|folder|document on disk)\b/, kind: 'file' },
+];
+
+/** What she said this turn, so the claim check reads her own words and never the owner's. */
+const spoken = new Map<string, string>();
+export function noteSpoken(runId: string, text: string): void {
+  spoken.set(runId, `${spoken.get(runId) ?? ''} ${text}`.slice(-4000));
+}
+
+/** A turn the owner cut off is over: its words and its receipts never judge the next one. */
+export function clearOpenLedger(runId: string): void {
+  spoken.delete(runId);
+  opened.delete(runId);
+}
+
+/**
+ * One correction per completed response, and only when a claim is not backed by a receipt of that kind.
+ * Consuming the buffer is what holds it to one: a second call in the same turn sees nothing to read.
+ */
+export function openClaimCorrection(runId: string): { text: string; reason: 'no_receipt' | 'kind_mismatch' } | undefined {
+  const said = spoken.get(runId) ?? '';
+  const receipts = openedIn(runId);
+  spoken.delete(runId);
+  opened.delete(runId);
+  const claim = CLAIM.exec(said.toLowerCase());
+  if (!claim) return undefined;
+  const named = CLAIMED_KINDS.find(entry => entry.words.test(said.toLowerCase()))?.kind;
+  if (receipts.length === 0) {
+    return { reason: 'no_receipt', text: 'Correction: nothing opened just then, whatever I said. Tell him plainly that nothing is open, and offer to look it up again.' };
+  }
+  if (named !== undefined && !receipts.some(receipt => receipt.kind === named)) {
+    const actual = receipts.map(receipt => `${receipt.kind} item titled ${receipt.title}`).join(' and ');
+    return { reason: 'kind_mismatch', text: `Correction: I did not open the ${claimedNoun(named)}. What opened was ${actual}. Tell him plainly what opened, and that the ${claimedNoun(named)} he asked for is still closed.` };
+  }
+  return undefined;
+}
+
+function claimedNoun(kind: OpenKind): string {
+  return kind === 'docs' ? 'deck' : kind === 'gmail' ? 'email thread' : kind === 'calendar' ? 'calendar event' : kind === 'mattermost' ? 'channel' : kind === 'youtube' ? 'video' : kind;
+}
+
+/** One host target for a model-facing open tool: the action, the resolved target and its closed detail token. */export interface OpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
 export function openTarget(toolName: string, args: Record<string, string>): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' } {
   if (toolName === 'open_source') {
+    // Open2: only a handle whose open: line reached the model resolves; a minted one it never saw does not.
     const handle = resolveHandle(args['handle']!);
     if (!handle) return { code: 'not_found' };
     const destination = openDestination(handle.url);
     if (!destination) return { code: 'not_allowed' };
-    return { target: { action: 'open_url', target: destination.url, detail: destination.kind } };
+    return { target: { action: 'open_url', target: destination.url, detail: destination.kind, kind: destination.kind, title: handle.title } };
   }
   if (toolName === 'open_home') {
     const destination = HOME_APPS.includes(args['app'] as HomeApp) ? homeDestination(args['app'] as HomeApp) : undefined;
     if (!destination) return { code: 'not_allowed' };
-    return { target: { action: 'open_url', target: destination.url, detail: args['app']! } };
+    return { target: { action: 'open_url', target: destination.url, detail: args['app']!, kind: 'home', title: HOME_TITLES[args['app'] as HomeApp] } };
   }
-  if (toolName === 'open_file') return { target: { action: 'open_file', target: args['path']!, detail: receiptDetail('open_file', args['path']!) } };
-  if (toolName === 'open_app') return { target: { action: 'open_app', target: args['name']!, detail: 'app' } };
+  if (toolName === 'open_file') return { target: { action: 'open_file', target: args['path']!, detail: receiptDetail('open_file', args['path']!), kind: 'file', title: fileTitle(args['path']!) } };
+  if (toolName === 'open_app') return { target: { action: 'open_app', target: args['name']!, detail: 'app', kind: 'app', title: safeOpenTitle(args['name']!) } };
   return { code: 'not_allowed' };
 }
 

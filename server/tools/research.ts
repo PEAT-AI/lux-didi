@@ -2,6 +2,7 @@ import type { HostEvidenceRef } from './types.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
 import type { HistoryArguments } from '../domain/history-reader.js';
 import { calendarRange } from './calendar-window.js';
+import { exposeHandles } from './open-handles.js';
 import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
@@ -1761,6 +1762,17 @@ function itemLines(text: string): string[] {
   return text.split('\n').map(line => line.trim()).filter(line => line && !OMITTED_NOTE.test(line));
 }
 
+/** Open2: an `open:` line a shaper attached to its item stays with that item when the reply is rebuilt. */
+function withItemOpenLines(lines: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (const line of lines) {
+    const last = kept.at(-1);
+    if (line.startsWith('open: ') && last !== undefined && last.startsWith('- ')) kept[kept.length - 1] = `${last}\n${line}`;
+    else kept.push(line);
+  }
+  return kept;
+}
+
 /** A knowledge heading, shaped `### title (kind | date) [id N]` or raw markdown `## #N [type] title`. */
 function knowledgeHeadingOf(line: string): { id: string | undefined; title: string } {
   const id = line.match(/\[id (\d+)\]/)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/)?.[1];
@@ -1840,10 +1852,12 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
   const items: CalendarEvent[] = [];
   let current: CalendarEvent | undefined;
   let attendees: number | undefined;
+  let open: string | undefined;
   const flush = (): void => {
     if (current === undefined) return;
-    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees} attendees` : ''}` });
-    current = undefined; attendees = undefined;
+    // Open2: the item's own handle line stays with it, as a segment the day line can carry.
+    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees} attendees` : ''}${open !== undefined ? ` ; ${open}` : ''}` });
+    current = undefined; attendees = undefined; open = undefined;
   };
   for (const line of raw) {
     if (line.startsWith('- ')) {
@@ -1865,6 +1879,8 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
       current = { id, start, line: `${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}` };
     } else if (line.startsWith('attendees: ') && current !== undefined) {
       attendees = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
+    } else if (line.startsWith('open: ') && current !== undefined) {
+      open = line;
     }
   }
   flush();
@@ -2285,7 +2301,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       .map(group => {
         // N3: the primary-calendar answer says what it did not read, from the list it carried.
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
-        return { source: group.source, text: `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`, chars: group.lines.join('\n').length };
+        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`;
+        // Open2: a handle opens only once its line was in text the model was given, and this is that text.
+        exposeHandles(text);
+        return { source: group.source, text, chars: group.lines.join('\n').length };
       });
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
     // words, so the model never spends another call fetching what is already in hand.
@@ -2595,7 +2614,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       // A search that answered with text but no page envelope is still that search's answer: each tagged
       // line is one message, so the follow-up read and the reply carry it like any other page.
       if (!result.mailPage) {
-        for (const line of itemLines(result.text).filter(entry => entry.startsWith('- '))) {
+        for (const line of withItemOpenLines(itemLines(result.text)).filter(entry => entry.startsWith('- '))) {
           const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
           if (id && !read.messages.has(id)) read.messages.set(id, { id, threadId: '', internalDate: '', line, bodyTruncated: false });
         }

@@ -1180,3 +1180,13 @@ test('O-R2: the open paragraph asks for several sources in one research call wit
   assert.match(NAYA_OPEN_SURFACE, /instead of one call after another/);
   assert.equal(/https?:|\/\/|\.com/.test(NAYA_OPEN_SURFACE), false, 'the batching line carries no url');
 });
+
+test('OPEN2-7: the open paragraph says she opens only a handle she was shown and names what opened', async () => {
+  const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
+  assert.match(NAYA_OPEN_SURFACE, /Open only a handle that came back in a lookup result/);
+  assert.match(NAYA_OPEN_SURFACE, /one you were not shown does not exist/);
+  assert.match(NAYA_OPEN_SURFACE, /say what opened from that title/);
+  assert.match(NAYA_OPEN_SURFACE, /not the kind he asked for/);
+  assert.match(NAYA_OPEN_SURFACE, /instead of claiming success/);
+  assert.equal(/https?:|\/\/|\.com|\.google|\.ai/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
+});

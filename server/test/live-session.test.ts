@@ -5322,3 +5322,30 @@ test('#451: an opener research start before the owner speaks is answered at once
   await settleLiveTool(h, 'opener2', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] });
   assert.ok(h.calls.length > 0, 'after the owner speaks the lookup reaches its source');
 });
+
+test('OPEN2-5: an open claim the turn did not make gets one correction, never two', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-openclaim-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'open-claim');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ serverContent: { inputTranscription: { text: 'open the OCP alignment deck', finished: true } } });
+  await transcription(output, 'open the OCP alignment deck');
+  h.f.send({ serverContent: { outputTranscription: { text: "I found it, it's open now, the OCP alignment deck.", finished: true }, turnComplete: true } });
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('Correction:');
+  });
+  for (let attempt = 0; attempt < 40 && corrections().length === 0; attempt++) await tick();
+  assert.equal(corrections().length, 1, 'exactly one correction for the turn');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /nothing opened/);
+  // A second completed response with no new claim is never corrected again.
+  h.f.send({ serverContent: { outputTranscription: { text: 'Anything else?', finished: true }, turnComplete: true } });
+  for (let attempt = 0; attempt < 20; attempt++) await tick();
+  assert.equal(corrections().length, 1, 'the claim was corrected once for good');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; reason?: string });
+  const received = lines.filter(line => line.event === 'open_claim_corrected');
+  assert.deepEqual(received.map(line => line.reason), ['no_receipt']);
+  h.owner.revoke(session.liveSessionId);
+});

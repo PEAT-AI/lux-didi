@@ -5,7 +5,7 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -443,6 +443,7 @@ function journalKind(type: string): JournalKind | null { return (persistedKinds 
  * Counters only: live_turn_script reports buckets and code-point counts, never any spoken text.
  */
 function countTurnScript(handle: ActiveSession, text: string): void {
+  noteSpoken(handle.liveSessionId, text);
   for (const character of text) {
     if (/\s/u.test(character)) continue;
     handle.turnChars += 1;
@@ -462,6 +463,19 @@ function logTurnScript(handle: ActiveSession): void {
   const script = handle.turnLatin > 0 && handle.turnDevanagari > 0 ? 'mixed' : handle.turnDevanagari > 0 ? 'devanagari' : 'latin';
   hostLogEvent({ event: 'live_turn_script', liveSessionId: handle.liveSessionId, script, latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, afterTool: handle.turnAfterTool, interrupted: handle.turnInterrupted });
   resetTurnScript(handle);
+}
+
+/**
+ * Open2: one correction after a response completes when she claimed an open the turn did not make.
+ * The ledger consumes its own buffer, so a second call in the same turn has nothing to read, and the
+ * owner's own speech silences it.
+ */
+function correctOpenClaim(handle: ActiveSession): void {
+  if (handle.inputFinal === false || handle.muted || handle.turnChars === 0) return;
+  const correction = openClaimCorrection(handle.liveSessionId);
+  if (correction === undefined) return;
+  hostLogEvent({ event: 'open_claim_corrected', reason: correction.reason });
+  try { handle.session.sendText({ text: correction.text }); } catch { /* a closed transport settles on its own */ }
 }
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
@@ -2298,6 +2312,7 @@ export class LiveSessionOwner {
           this.#noteState(handle, 'interrupted');
           handle.turnInterrupted = true;
           logTurnScript(handle);
+          clearOpenLedger(handle.liveSessionId);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -2310,6 +2325,7 @@ export class LiveSessionOwner {
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           logTurnScript(handle);
+          correctOpenClaim(handle);
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
           // fact the timeline reads instead of inferring one from a missing receipt (D12-3).

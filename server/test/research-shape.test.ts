@@ -383,3 +383,18 @@ test('MED-1022: a chat date word compiles to the ISO operator the connector pars
   const brief = candidateSubs('brief', config);
   assert.equal(brief.find(call => call.name === 'mattermost_search')?.args['query'], 'After:2026-10-21');
 });
+
+test('OPEN2-2: a calendar item keeps its open: line in the reply the model is given', () => {
+  const text = '- 2026-10-16T09:00:00+05:30, Standup [id e1]\nopen: L1 = Calendar: Standup';
+  const block = shapeBlock('calendar_window', [sub('calendar_list_events', text)], 'Asia/Kolkata');
+  assert.equal(block.lines.length, 1, 'one day line carries the item and its handle');
+  assert.match(block.text, /open: L1 = Calendar: Standup/u, 'the handle line reaches the model');
+  assert.match(block.text, /Standup/u);
+});
+
+test('OPEN2-2: a mail item keeps its open: line in the reply the model is given', () => {
+  const text = '- Standup notes | from: Ana | date: 16 Oct [id m1]\nopen: L2 = Gmail: Standup notes';
+  const block = shapeBlock('mail_search', [sub('gmail_search_messages', text)], undefined);
+  assert.match(block.text, /open: L2 = Gmail: Standup notes/u, 'the reply keeps the mail item handle');
+  assert.match(block.text, /Standup notes/u);
+});

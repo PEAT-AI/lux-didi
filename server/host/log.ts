@@ -134,6 +134,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
   }
+  if (value.event === 'open_claim_corrected') {
+    // Open2: the correction is counted, never quoted: one closed reason, no words of hers.
+    if (Object.keys(value).sort().join(',') !== ['event', 'reason'].join(',')) return;
+    if (!['no_receipt', 'kind_mismatch'].includes(String(value.reason))) return;
+    return { event: 'open_claim_corrected', reason: value.reason };
+  }
   if (value.event === 'tool_redaction') {
     // The receipt names the tool and the count of secrets, never the value.
     if (Object.keys(value).sort().join(',') !== ['count', 'event', 'tool'].sort().join(',')) return;

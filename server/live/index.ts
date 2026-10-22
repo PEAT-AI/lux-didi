@@ -327,6 +327,8 @@ interface ActiveSession {
   outputJournalled: boolean;
   /** L19: this turn produced audible speech, which survives the trailing modelTurnStarted of the same batch. */
   spokenThisTurn: boolean;
+  /** R7: this call opened with the dropped-line opener, which the owner's first words may still cancel. */
+  dropOpener: boolean;
   /** L7: the muted time inside this turn, so `live_dead_air` measures the wait the owner actually heard. */
   mutedMs: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
@@ -1365,7 +1367,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, spokenThisTurn: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, spokenThisTurn: false, dropOpener: silentStart, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1813,6 +1815,9 @@ export class LiveSessionOwner {
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
+    // R7: the owner spoke before the dropped-line opener became audible, so it is cancelled and his own
+    // turn is answered; once the opener is speaking it finishes, exactly as before.
+    if (handle.dropOpener) { if (!handle.spokenThisTurn) handle.dropResponse = true; handle.dropOpener = false; }
     const connection = handle.connection;
     // #451 H12: a second owner utterance arrives before the provider's turnComplete, so the turn it
     // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.

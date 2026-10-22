@@ -2335,11 +2335,21 @@ test('L19: after a dead call the silent owner hears the drop line, and one who a
   assert.equal(settled, true, 'the dead call ended');
   // Branch 1: the owner has not spoken, so the opener names the drop and offers to continue.
   const silent = h.owner.create({ idempotencyKey: 'dead-line-silent', inputClass: 'ordinary' }, h.ctx);
-  h.owner.attach({ liveSessionId: silent.liveSessionId }, h.ctx);
+  const attachmentSilent = h.owner.attach({ liveSessionId: silent.liveSessionId }, h.ctx);
   await tick();
   const silentRequest = h.requests.at(-1)!;
   assert.equal(silentRequest.openingText, LIVE_DROPPED_LINE_MARK, 'the silent owner gets the drop line, never a repeat');
   assert.equal((silentRequest.history ?? []).at(-1)?.role, 'user', 'and the dead answer is closed as heard');
+  // R7: once the opener is audible, the owner's later words do not cancel it mid-line.
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachmentSilent.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.ok(played.length >= 1, 'the one-line opener is spoken');
+  h.f.send({ serverContent: { inputTranscription: { text: 'go on then', finished: true } } });
+  await tick();
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick(); await tick();
+  assert.ok(played.length >= 2, 'the spoken opener finishes rather than being cut off');
   h.owner.revoke(silent.liveSessionId);
 });
 
@@ -2375,6 +2385,42 @@ test('L14: a tag split across two deltas is stripped from the assembled seed, an
   const assembled = stripNonLexicalTags(rows.map(row => String(row['text'])).join(''));
   assert.equal(assembled.includes('[breath]'), false, 'the split tag never assembles into the text');
   assert.ok(assembled.includes('[10:30]') && assembled.includes('[DRAFT]'), 'other brackets are the owner\'s own');
+});
+
+test('R7: the owner who speaks before the dropped-line opener is heard is answered, never greeted', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'drop-opener-cancel');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the answer that never reached her', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-cancel-resumption' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
+  assert.equal(settled, true, 'the dead call ended');
+  const next = h.owner.create({ idempotencyKey: 'drop-opener-cancel-next', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await tick();
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  // The owner speaks before the opener has produced any audio.
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: true } } });
+  await tick(); await tick();
+  // The opener's late audio now belongs to a cancelled response: it is never heard.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick(); await tick();
+  assert.equal(played.length, 0, 'the cancelled opener never reaches the owner');
+  h.f.send({ serverContent: { turnComplete: true } });
+  await tick();
+  // His own turn is answered and plays.
+  for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.ok(played.length >= 1, 'the owner is answered');
+  const request = h.requests.at(-1)!;
+  assert.equal((request.history ?? []).at(-1)?.role, 'user', 'the dead answer is closed as heard, so nothing repeats');
+  h.owner.revoke(next.liveSessionId);
 });
 
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {

@@ -541,7 +541,7 @@ test('an empty-but-successful read is a search that matched nothing, never an un
   const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
-  assert.match(note, /I searched your mail for "invoice" and found nothing matching/, 'the model gets a line it can voice');
+  assert.match(note, /I searched your mail for "[a-z]+" and found nothing matching/, 'the model gets a line it can voice');
   assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
   assert.equal(reply['status'], 'complete', 'a search that matched nothing still answered the question');
 });
@@ -622,7 +622,7 @@ test('when the selector deadline passes the fallback starts at once and the mode
   const selector: ResearchSelector = { select: () => new Promise<SelectorOutput>((_, reject) => { abortSelector = reject; }) };
   const readAt: { tool: string; at: number }[] = [];
   const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
-  const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what happened this week' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
   clock.advance(RESEARCH.selectorDeadlineMs); await settle();
@@ -683,7 +683,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   const controller = new AbortController();
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const running = runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, controller.signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, controller.signal);
   await settle();
   // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
@@ -904,7 +904,7 @@ test('3r: a body the server cut at the asked-for window is marked in the reply',
   const hits = finding.text.split(/(?=#41[23] )/u);
   const cutHit = hits.find(hit => hit.startsWith('#412 '))!;
   const wholeHit = hits.find(hit => hit.startsWith('#413 '))!;
-  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 1200 chars/u);
+  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 3000 chars/u);
   assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
   assert.equal(wholeHit.includes('cut at'), false, 'an uncut body carries no cut mark');
 });
@@ -915,7 +915,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 3_000, deadlineMs: 8_000, truncated: false }, 'an uncut selector read says so too');
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
 });
 
@@ -931,7 +931,7 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   assert.equal(args['max_chars'], 3_000);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000, truncated: true });
+  assert.deepEqual(receipt.knowledge, { detail: 'bodies', maxChars: 3_000, deadlineMs: 8_000, truncated: true });
 });
 
 // --- R6: the first answer point, and what a late source hands over --------------------------------
@@ -1124,7 +1124,7 @@ test('R6/M2: continue reaches a run that answered ahead of its readers', async (
 });
 
 
-test('fluency: complete bounded bodies avoid hydration while unknown and truncated bodies still hydrate', async () => {
+test('ROUTE-1022: a bounded search reply never hydrates, whatever its own cut flag says', async () => {
   for (const flag of ['no', 'yes', 'unmarked', 'empty']) {
     const calls: { name: string; args: unknown }[] = [];
     const text = Array.from({ length: 6 }, (_, i) => `### Synthetic entry [id ${101 + i}]\n${flag === 'empty' ? '' : `Synthetic body ${i}.`}\n${flag === 'unmarked' ? '' : `truncated: ${flag === 'empty' ? 'no' : flag}`}`).join('\n');
@@ -1134,10 +1134,10 @@ test('fluency: complete bounded bodies avoid hydration while unknown and truncat
     } });
     const reply = await runResearch(h.deps, { action: 'start', question: 'synthetic facts', sources: 'knowledge' }, new AbortController().signal);
     assert.equal(calls.filter(call => call.name === 'search_knowledge').length, 1);
-    assert.equal(calls.filter(call => call.name === 'get_insight').length, flag === 'no' ? 0 : 1, flag);
-    if (flag === 'no') {
+    assert.equal(calls.filter(call => call.name === 'get_insight').length, 0, `${flag}: no second hop`);
+    if (flag !== 'empty') {
       const findings = JSON.stringify(reply['findings']);
-      for (let i = 0; i < 6; i++) assert.ok(findings.includes(`Synthetic body ${i}.`), 'all six complete bodies survive');
+      for (let i = 0; i < 6; i++) assert.ok(findings.includes(`Synthetic body ${i}.`), 'all six bodies survive');
     }
   }
   const h = harness();

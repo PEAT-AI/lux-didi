@@ -5,6 +5,7 @@ import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DE
 import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
+import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -21,6 +22,18 @@ function hostReceipts(t: TestContext): () => Record<string, unknown>[] {
   const detach = attachHostLogSink({ event: raw => { captured.push(raw as Record<string, unknown>); } });
   t.after(() => detach());
   return () => captured;
+}
+/** The mic payloads the adapter handed the socket, in send order, as the base64 it put on the wire. */
+function micAudio(socket: FakeSocket): string[] {
+  return socket.sent.flatMap(frame => {
+    const parsed = JSON.parse(frame) as { type?: string; audio?: string };
+    return parsed.type === 'session.input_audio.append' && parsed.audio ? [parsed.audio] : [];
+  });
+}
+/** The frame the adapter's upsampler produces for one host capture frame, from a stream built the same way. */
+function upsampled(frames: Uint8Array[]): string[] {
+  const upsampler = new Pcm16Upsampler();
+  return frames.map(pcm => Buffer.from(upsampler.process(pcm)).toString('base64'));
 }
 /** Wait for the outbound socket to hold this many frames. */
 async function tally(frames: { length: number }, count: number): Promise<void> {
@@ -1379,6 +1392,76 @@ describe('openai gpt-live turn states', () => {
     session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
     const kept = socket.micFrames().length;
     assert.ok(kept > 1, `a run of the kept frames goes out, got ${kept}`);
+  });
+
+  // Release 3: the shed protects the owner's speech. Silence goes first and one frame of every 200 ms of dropped
+  // silence stays queued as a heartbeat, so the provider's silence timing still advances while the words get out.
+  test('a backed-up uplink sheds silence first, keeps a heartbeat per 200 ms, and delivers every speech frame', async t => {
+    const receipts = hostReceipts(t);
+    const { socket, session } = await fakeReady(t);
+    const pushed: Uint8Array[] = [];
+    const push = (pcm: Uint8Array) => { pushed.push(pcm); session.sendAudio({ pcm, dataClass: 'ordinary' }); };
+    socket.bufferedAmount = 96 * 1024;
+    for (let index = 0; index < 36; index += 1) push(pcm16(320, 0));
+    for (let index = 0; index < 25; index += 1) push(pcm16(320, 8_000));
+    assert.deepEqual(socket.micFrames(), [], 'a backlogged uplink is handed no mic audio');
+    const shed = receipts().filter(record => record.event === 'uplink_shed');
+    assert.equal(shed.length, 1, 'the shed receipt is still bounded to one per window');
+    const record = shed[0]!;
+    assert.equal(Number(record.speechShedMs), 0, 'no speech went');
+    assert.equal(Number(record.speechShedBytes), 0, 'and no speech byte went');
+    assert.ok(Number(record.silenceShedMs) > 0, 'the dropped silence is counted on its own');
+    assert.ok(Number(record.silenceShedBytes) > 0, 'and its bytes are too');
+    assert.equal(Number(record.lostMs), Number(record.speechShedMs) + Number(record.silenceShedMs), 'lost is the two halves');
+    assert.ok(safeEvent(record), 'the host log whitelist accepts the split receipt');
+    socket.bufferedAmount = 0;
+    push(pcm16(320, 0));
+    const audio = micAudio(socket);
+    const expected = upsampled(pushed);
+    assert.deepEqual(audio.slice(0, 3), [expected[9], expected[19], expected[29]], 'one silence heartbeat per 200 ms');
+    assert.deepEqual(audio.slice(3, 28), expected.slice(36, 61), 'every loud frame reaches the model, in capture order');
+    assert.deepEqual(audio.slice(28), [expected[61]], 'and the frame that triggered the drain follows it');
+  });
+
+  test('a backed-up uplink keeps the one speech frame behind a silent backlog for the next drain', async t => {
+    const { socket, session } = await fakeReady(t);
+    const pushed: Uint8Array[] = [];
+    const push = (pcm: Uint8Array) => { pushed.push(pcm); session.sendAudio({ pcm, dataClass: 'ordinary' }); };
+    socket.bufferedAmount = 96 * 1024;
+    for (let index = 0; index < 36; index += 1) push(pcm16(320, 0));
+    const loud = pcm16(320, 8_000);
+    push(loud);
+    socket.bufferedAmount = 0;
+    const trigger = pcm16(320, 0);
+    push(trigger);
+    const expected = upsampled(pushed);
+    assert.deepEqual(micAudio(socket).slice(-2), [expected[36]!, expected[37]!], 'the loud frame survives with no frame dropped after it');
+  });
+
+  // Release 3: with nothing silent to drop, the oldest speech goes as one run and the newest 500 ms (25 frames)
+  // of a pinned uplink always stays, so the model hears the end of the sentence rather than one island of it.
+  test('forty speech frames under a pinned uplink keep the newest 500 ms as one consecutive run', async t => {
+    const receipts = hostReceipts(t);
+    const { socket, session } = await fakeReady(t);
+    const pushed: Uint8Array[] = [];
+    socket.bufferedAmount = 96 * 1024;
+    for (let index = 0; index < 40; index += 1) {
+      const pcm = pcm16(320, 4_000 + index * 700);
+      pushed.push(pcm);
+      session.sendAudio({ pcm, dataClass: 'ordinary' });
+    }
+    const record = receipts().filter(entry => entry.event === 'uplink_shed')[0]!;
+    const shedFrames = Number(record.speechShedMs) / 20;
+    assert.ok(shedFrames > 0, `the oldest speech run went, got ${String(record.speechShedMs)} ms`);
+    assert.ok(Number(record.speechShedBytes) > 0, 'and its bytes are counted as speech');
+    assert.equal(Number(record.silenceShedMs), 0, 'nothing silent was queued');
+    socket.bufferedAmount = 0;
+    pushed.push(pcm16(320, 0));
+    session.sendAudio({ pcm: pushed[40]!, dataClass: 'ordinary' });
+    const expected = upsampled(pushed);
+    const audio = micAudio(socket);
+    assert.deepEqual(audio.slice(0, -1), expected.slice(shedFrames, 40), 'the kept speech is consecutive and in capture order');
+    assert.ok(audio.length - 1 >= 25, `the newest 500 ms of speech is kept, got ${audio.length - 1} frames`);
   });
 
   // W3: the owner is told when the internet is the reason. Quality is derived from what the adapter already

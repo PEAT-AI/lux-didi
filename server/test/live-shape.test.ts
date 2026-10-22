@@ -413,7 +413,7 @@ test('R6: organizer renders, and a capped attendee list says and others', () => 
 
 // O-R1: the owner's 18:34 IST call asked lux-knowledge for six bodies and heard "1 of 1 shown" from a
 // 17 KB ranked reply, because the fallback cut the whole Markdown at the 1,500-character Gmail bound.
-function rankedHit(id, title, body) {
+function rankedHit(id: number, title: string, body: string): string {
   return [`**#${id}** [TECHNICAL_DECISION] ${title}`, body, '  Score: 1.00' + String(id).slice(-2), ''].join('\n');
 }
 function ranked(parts) {

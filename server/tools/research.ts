@@ -3163,6 +3163,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   run.direction = call.direction ?? run.direction;
   if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
+  first.snapshot = () => ({ run, configured, limit });
   // K8b: a continue on a run whose readers are still working waits for them, bounded by the first-answer cut.
   if (call.action !== 'start' && run.pending.size > 0) await waitForPending(run, deps, signal);
   const executeSource = deps.execute, emitProgress = deps.emit;
@@ -3239,7 +3240,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     }
     return results;
   } };
-  first.snapshot = () => ({ run, configured, limit });
 
   if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
   // RUN-R8 F2: L23 stops body-slice paging after a complete reply. A continue that brings a new direction or
@@ -3514,7 +3514,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
           const issued = served.filter(call => !run.calls.has(callSignature(call)));
-          if (issued.length === 0) return;
+          if (issued.length === 0) { cutTimer.cancel(); return; }
           for (const call of issued) run.calls.add(callSignature(call));
           const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
           const at = consumeKnowledge ? knowledgeStartedAt : now();

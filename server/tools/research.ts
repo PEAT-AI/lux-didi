@@ -2080,7 +2080,10 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
   if (!entry || !entry[1]) return undefined;
   const [key, body] = entry;
   if (body.evidence.expiresAt <= Date.now()) return { researchId: run.researchId, error: 'continuation_unavailable', findings: [], canContinue: false, note: CONTINUATION_UNAVAILABLE_NOTE };
-  const envelope = JSON.stringify(buildReply(run, 'answered', configured, false, Math.floor(limit / 4), undefined, true)).length;
+  // F7: the body is sized by the real serialized reply, escaping included, so a reply never outgrows its budget
+  // and a long body costs as few round trips as the budget allows.
+  const base = buildReply(run, 'answered', configured, false, limit, undefined, true);
+  const envelope = JSON.stringify(base).length;
   const width = Math.max(128, limit - envelope - 64);
   const cursor = run.bodyCursorRequested ?? bodyCursor(run, key, body.offset, width), page = run.bodyCursors.get(cursor)!;
   if (page.end < body.evidence.body.length) page.nextCursor ??= bodyCursor(run, key, page.end, width);
@@ -2088,7 +2091,6 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
     const next = [...run.bodies].find(([other, value]) => other !== key && value.offset < value.evidence.body.length);
     if (next) page.nextCursor ??= bodyCursor(run, next[0], next[1].offset, width);
   }
-  const base = buildReply(run, 'answered', configured, false, Math.floor(limit / 4), undefined, true);
   const otherPending = base['canContinue'] === true;
   if (!page.nextCursor && typeof base['nextCursor'] === 'string') page.nextCursor = base['nextCursor'];
   page.canContinue = Boolean(page.nextCursor) || otherPending;

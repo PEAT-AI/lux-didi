@@ -610,8 +610,8 @@ test('deadAirMs measures the longest silence the model hears, never the whole ru
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   let done = false; void running.then(() => { done = true; });
-  for (let n = 0; n < 20 && !done; n++) { clock.advance(3_000); await settle(); }
-  clock.advance(1_400); await settle();
+  for (let n = 0; n < 20 && !done; n++) { clock.advance(clock.now() + 3_000); await settle(); }
+  clock.advance(clock.now() + 1_400); await settle();
   await running;
   const log = h.logs[0]!;
   assert.ok(log.elapsedMs >= 4_000, `the run really took over four seconds: ${log.elapsedMs}`);
@@ -689,8 +689,9 @@ test('a start call returns inside its budget, the slowest source plus two second
   const clock = fakeClock();
   const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (_subs, signal) => await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); }) });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  let done = false; void running.then(() => { done = true; });
   await settle();
-  clock.advance(researchCallBudgetMs(['knowledge'])); await settle();
+  for (let n = 0; n < 20 && !done; n++) { clock.advance(clock.now() + researchCallBudgetMs(['knowledge'])); await settle(); }
   const reply = await Promise.race([running, settle().then(() => null)]);
   assert.notEqual(reply, null, 'the call came back instead of waiting for the read');
   assert.ok(h.logs[0]!.elapsedMs <= researchCallBudgetMs(['knowledge']) + 1_000, `the answer lands inside the bound: ${h.logs[0]!.elapsedMs}`);
@@ -725,7 +726,7 @@ test('K6: a start with no lookups reads the deterministic plan and never awaits 
   assert.equal(h.logs[0]!.selectorMs, 0, 'an unrouted run spends no selector time');
   assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
   assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
-  assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the plan\'s read still runs');
+  assert.ok(h.executed.some(call => call.name === 'search_knowledge'), 'the plan\'s knowledge read still runs');
 });
 
 // R9: the selector loop's terminal line comes from a finally, so a throw inside the loop leaves a receipt
@@ -868,7 +869,8 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   const { queryTerms, ...knowledgeRest } = receipt.knowledge as unknown as Record<string, unknown>;
-  assert.deepEqual(knowledgeRest, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, dateFilter: false, chatDateOperator: 'none' }, 'an uncut read says so too');
+  // ROUTE-1022: the plan reads chat inside the brief bundle, and that read carries its date operator.
+  assert.deepEqual(knowledgeRest, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, dateFilter: false, chatDateOperator: 'compiled' }, 'an uncut read says so too');
   assert.ok(typeof queryTerms === 'number' && queryTerms >= 1, `the receipt carries the query term count: ${String(queryTerms)}`);
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.

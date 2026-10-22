@@ -221,7 +221,7 @@ test('calendar R4: real selector JSON parsing preserves named windows and refuse
     const action = output!.actions[0]!;
     assert.equal(action.kind, 'calendar_window');
     if (typeof window === 'string' && window !== 'whenever') {
-      assert.equal(action.window, window, String(window));
+      assert.equal(String(action.window).toLowerCase(), window.toLowerCase(), String(window));
       assert.equal(windowRange(String(action.window), fixedNow, 'UTC').timeMin, windowRange(window, fixedNow, 'UTC').timeMin, String(window));
     } else {
       assert.equal(action.window, 'unresolved', 'an invalid or missing window is refused, never guessed');

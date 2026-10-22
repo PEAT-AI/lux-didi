@@ -278,6 +278,7 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
     const token = call.args['pageToken'];
     const page = typeof token === 'string' ? token : 'first';
     sent.push(page);
+    console.error('DEV exec', page);
     if (page === 'p2') return { key: call.key, name: call.name, ok: false, text: 'provider failure: http 429 rateLimitExceeded', originalCharacters: 0, omittedCharacters: 0, code: 'connector_error' };
     return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) };
   }));

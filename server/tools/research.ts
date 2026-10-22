@@ -751,8 +751,13 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
 }
 
 /** ROUTE-1022: the owner's own schedule, in the words a spoken question uses. One deterministic rule, no classifier. */
-/** F8: schedule vocabulary only. A time word alone (today, tomorrow, calls) is the product's daily language, not schedule intent. */
+/**
+ * F8: the forcing rule reads schedule vocabulary only. A time word alone (today, tomorrow, calls) is the
+ * product's daily language, so it never pulls the calendar into a question that did not ask for it.
+ */
 const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|itinerary|out of office)\b/u;
+/** The router's own calendar class: a time word is calendar intent here, where the plan is built from words. */
+const SCHEDULE_WORDS = new RegExp(`${OWNER_SCHEDULE.source}|\\b(today|tomorrow|next week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|calls?)\\b`, 'u');
 
 export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
@@ -767,7 +772,7 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
 
 /** The source a question is about, in the order the first answer waits for them. */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
-  { source: 'calendar', words: OWNER_SCHEDULE }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
+  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
 ];
 
 /**
@@ -3309,10 +3314,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           usedFallbackThisRound = true;
           const plan = routed ?? fallbackSelection(question || run.direction || '', configured, now());
           // F3: the unobvious question reads the cheap source first instead of fanning the whole brief out
-          // before anything is in hand; the rest of that plan waits for a round that has to run anyway.
-          selection = plan.actions.length === 1 && plan.actions[0]!.kind === 'brief'
+          // before anything is in hand. A brief is never run for a source that was already read.
+          const onlyBrief = plan.actions.length === 1 && plan.actions[0]!.kind === 'brief';
+          selection = onlyBrief && !run.readKinds.has('knowledge_search')
             ? { questionClass: plan.questionClass, actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question || run.direction || '', now()) }], pUseful: { knowledge_search: 0.4 } }
-            : plan;
+            : { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
           if (driver === undefined) driver = 'fallback';
         }
         else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }

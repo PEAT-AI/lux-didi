@@ -165,8 +165,10 @@ class ScriptedModel implements ModelPort {
 }
 
 function worker(store: Store, model: ModelPort, waits: number[]) {
-  return createSummarizer({ store, model, modelId: 'synthetic-text-model', assistantName: 'Naya', timeZone: 'UTC',
-    now: () => SUMMARY_NOW, log: () => {}, delay: ms => { waits.push(ms); return Promise.resolve(); } });
+  // The host always passes the route's permitted classes; without them the distiller fails closed and skips.
+  return createSummarizer({ store, model, modelId: 'synthetic-text-model', modelAllowedClasses: ['ordinary', 'private'],
+    assistantName: 'Naya', timeZone: 'UTC', now: () => SUMMARY_NOW, log: () => {},
+    delay: ms => { waits.push(ms); return Promise.resolve(); } });
 }
 
 function storedRow(store: Store, id: string) {

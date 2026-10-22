@@ -201,7 +201,8 @@ test('research_subcall matches results by position even when execute keys are co
   const reply = await runResearch(deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(subcalls[0]!['ok'], true, 'a composed execute key must still find its result');
   assert.ok((subcalls[0]!['items'] as number) >= 1);
-  assert.equal(subcalls[0]!['queryAuthor'], 'fallback');
+  // F5: the owner named the one source, so the receipt says the hint wrote the query.
+  assert.equal(subcalls[0]!['queryAuthor'], 'hint');
   const findings = reply['findings'] as { text: string }[];
   assert.match(findings[0]!.text, /^mail: 1 of 1 shown/);
 });

@@ -3331,15 +3331,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (remainingMs > 0) {
           knowledgeStartedAt = now();
           // K8: the read's own span is stamped when it settles, so the source log states the read and
-          // never the wait it spent in the selector's shadow.
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs)])).then((results: IntentSubResult[]) => {
+          // never the wait it spent before selection.
+          // F4: the prime read is bounded by its own source deadline on the run's clock, never by the
+          // answer point, so the first answer cannot cut a read that is still working.
+          const prefetchCut = new AbortController();
+          const prefetchTimer = schedule(() => prefetchCut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.min(RESEARCH.sourceDeadline.knowledge, remainingMs));
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then((results: IntentSubResult[]) => {
             knowledgeEndedAt = now();
             return results;
           }).catch((error: unknown) => {
             if (stepSinkFailed) throw error;
             knowledgeEndedAt = now();
             return [] as IntentSubResult[];
-          });
+          }).finally(() => prefetchTimer.cancel());
         }
       }
 

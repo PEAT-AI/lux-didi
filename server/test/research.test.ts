@@ -398,7 +398,7 @@ test('a calendar read is dispatched at once, with no selector round spending the
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
   assert.equal(dispatchedAt, 0, 'the read starts at once, never after a selector wait');
   assert.equal(h.logs[0]!.selectorMs, 0);
-  assert.equal(reply['status'], 'answered');
+  assert.equal(reply['status'], 'complete', 'the calendar answered, so the reply says complete');
 });
 
 test('the primary research source budget fits inside the unchanged start deadline', () => {
@@ -568,6 +568,8 @@ test('a long read still sends the model a progress line every three seconds, and
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const h = harness({ now: clock.now, schedule: clock.schedule, execute: async subs => { await gate; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
@@ -578,6 +580,7 @@ test('a long read still sends the model a progress line every three seconds, and
   assert.ok(stamps.includes(3_000) && stamps.includes(6_000), `the model hears from the run while it reads: ${stamps.join(',')}`);
   assert.ok(stamps.some(stamp => stamp <= 3_000), 'the first update lands within three seconds of the call');
   assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
+  if (reading !== undefined) await reading;
   assert.equal(clock.pending(), 0, 'the heartbeat is stopped when the run ends');
 });
 
@@ -606,8 +609,8 @@ test('deadAirMs measures the longest silence the model hears, never the whole ru
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
-  await settle();
-  clock.advance(3_000); await settle();
+  let done = false; void running.then(() => { done = true; });
+  for (let n = 0; n < 20 && !done; n++) { clock.advance(3_000); await settle(); }
   clock.advance(1_400); await settle();
   await running;
   const log = h.logs[0]!;
@@ -715,15 +718,14 @@ test('a cut source logs a disposition the host log admits and the whole run line
 // K6: the routed path is additive. Without lookups the selector still chooses, and the reply keeps
 // exactly the shape it had, with no per-source status block.
 test('K6: a start with no lookups reads the deterministic plan and never awaits a selector', async () => {
-  const selections: string[] = [];
   const h = harness({
   });
+  assert.equal('selector' in h.deps, false, 'F-B: the voice path carries no selector to wait for');
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  assert.equal(selections.length, 0, 'F-B: the voice path never waits for a selector round');
   assert.equal(h.logs[0]!.selectorMs, 0, 'an unrouted run spends no selector time');
   assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
   assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
-  assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
+  assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the plan\'s read still runs');
 });
 
 // R9: the selector loop's terminal line comes from a finally, so a throw inside the loop leaves a receipt

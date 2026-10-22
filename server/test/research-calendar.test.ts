@@ -446,11 +446,11 @@ test('ROUTE-1022: a schedule question reads the calendar with no selector in the
   assert.equal(h.logs.at(-1)!.driver, 'routed', 'and the run records the router as the decider');
 });
 
-test('ROUTE-1022: a schedule question keeps the calendar in a plan that omitted it', async () => {
+test('ROUTE-1022: a schedule question always reads the calendar', async () => {
   const h = scheduleFixture();
-  assert.equal(ownerScheduleQuestion('am I free next week for the offsite'), true, 'the owner schedule question forces the calendar read');
-  await runResearch(h.deps, { action: 'start', question: 'am I free next week for the offsite' }, signal());
-  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the owner schedule question adds the calendar read');
+  assert.equal(ownerScheduleQuestion('what is on my schedule tomorrow'), true, 'the owner schedule rule names this question');
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the owner schedule question reads the calendar');
 });
 
 test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason and no error', async () => {

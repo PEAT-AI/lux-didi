@@ -76,9 +76,7 @@ Distinguish no match, unavailable access, missing sign-in, timeout, stale archiv
 
 When remember_note is available and the owner explicitly asks to save a lasting note, call it and confirm only after remembered:true. Automatic summaries are separate and are not verbatim records. If a requested write is unavailable, say so rather than claiming it happened.
 
-For a supported request to open a page, home-folder file or app, use the exact item already returned when it fits. Search again only when needed. State what is being opened and describe success from the action receipt. Do not claim broader computer control. Nothing is sent to another person by Naya.
-
-${NAYA_OPEN_SURFACE}`;
+${NAYA_OPEN_SURFACE} For a local file or app, use the exact path or name already returned when it fits; look it up again only when needed. Do not claim broader computer control. Nothing is sent to another person by Naya.`;
 
 /** The full tool conduct: the voice-side policy, then the delegated backend's lookup procedure. */
 export const NAYA_TOOLS = `${NAYA_VOICE_TOOLS}\n\n${NAYA_BACKEND_PROCEDURE}`;

@@ -344,9 +344,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1dfc5e4140bf249f8fb63c3d45ec6ff5c3277ad88ba722b0caf1a3d901f79063');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'fe0c181f6049070157ee54d268c554bcf1d2f1fd548179f26eb5cc92ebf18a97');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'f8d667280ff6d622caf1430286416dad9c1e0ba2d99e9906335d3cf2f42a8dbd');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '81506e145d3c889819d2c1a246ecc1f15ff861b5e4139a57ae07cd9a0e82daf1');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), 'd4ae2cc40aec823015d4818e98ba88715beb4fffa3db666fb5af5dd18229b3ad');
+  assert.equal(sha(NAYA_TOOLS), '4d2b8520f40e1b746a0a78997ca96885dbec75697873658cd74d17ae2be7b8f0');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -656,7 +656,7 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 const WRAPPER_3O_CHARS = 6603;
 /** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. W11 raises it for the
  * one open paragraph, which names what she can open and the handle she opens it with. */
-const WRAPPER_W5_CHARS = 11_446;
+const WRAPPER_W5_CHARS = 11_548;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -1132,7 +1132,7 @@ const W5_REPLACED = [
   'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
 ];
 /** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
-const W5_VOICE_BEFORE = 7882;
+const W5_VOICE_BEFORE = 7984;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

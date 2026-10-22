@@ -288,6 +288,8 @@ test('ROUTE-1022: the brief plan token reaches the log only from its closed set'
   };
   assert.deepEqual(safeEvent({ ...run, plan: 'knowledge_only' }), { ...run, plan: 'knowledge_only' }, 'the run receipt names the plan');
   assert.equal(safeEvent({ ...run, plan: 'brief' }), undefined, 'and refuses a token outside it');
+});
+
 test('L2: a digest refresh receipt says which edge read it and how long, never a day', () => {
   const base = { event: 'calendar_digest_refreshed', reason: 'first_connect', ms: 2402 };
   assert.deepEqual(safeEvent(base), base, 'the first-connect read keeps its reason and its timing');

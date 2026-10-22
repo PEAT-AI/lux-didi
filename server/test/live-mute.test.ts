@@ -116,7 +116,7 @@ test('a mute keeps the provider session open, uploads nothing and suspends the w
   await flush();
   assert.equal(live.uplinkBytes(), before, 'a muted uplink forwards zero PCM frames');
 
-  for (let spent = 0; spent < 60; spent += 1_000) await live.advance(1_000);
+  for (let spent = 0; spent < 60_000; spent += 1_000) await live.advance(1_000);
   assert.deepEqual(phases(live), ['armed'], 'sixty muted seconds arm nothing new and never nudge');
   assert.equal(live.owner.get(live.liveSessionId).terminal, null, 'a muted session is not a stalled one');
   assert.equal(live.fake.sessionsOpened, 1, 'no recovery ran while muted');

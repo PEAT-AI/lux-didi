@@ -982,9 +982,9 @@ test('MED-1022: a run that compiles a chat date operator states it on the knowle
 // ROUTE-1022 K6: the instruction words of an inbox ask are not search terms, so the ask compiles to the
 // plain recent-inbox scan instead of searching Gmail for 'list' or 'anything'.
 test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox scan', () => {
-  assert.equal(compileMailQuery('show me anything in my email'), 'in:inbox newer_than:14d', 'instruction words are no terms');
-  assert.equal(compileMailQuery('List anything in my email'), 'in:inbox newer_than:14d', 'and the list verb is no term either');
-  assert.equal(compileMailQuery('find the agricon mail'), 'agricon', 'a real content term still searches');
+  assert.equal(compileMailQuery('show me anything in my email', undefined), 'in:inbox newer_than:14d', 'instruction words are no terms');
+  assert.equal(compileMailQuery('List anything in my email', undefined), 'in:inbox newer_than:14d', 'and the list verb is no term either');
+  assert.equal(compileMailQuery('find the agricon mail', undefined), 'agricon', 'a real content term still searches');
 });
 
 // MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed

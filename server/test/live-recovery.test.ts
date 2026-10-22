@@ -169,7 +169,7 @@ test('#525: a provider session that dies right after open costs three attempts a
   assert.deepEqual(recovery.map(entry => entry['code']), ['open_failed', 'open_failed', 'open_failed'], 'each dead socket is a failed attempt, never an opening');
   assert.deepEqual(recovery.map(entry => entry['attempt']), [1, 2, 3], 'and the count is consecutive');
   assert.ok(recovery.every(entry => typeof entry['liveSessionId'] === 'string' && entry['generation'] !== undefined), 'every line names the session and generation (#451)');
-  assert.lengthOf(h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened'), 0, 'a socket that never said ready is never logged as opened');
+  assert.equal(h.receipts.filter(entry => entry['event'] === 'live_recovery' && entry['code'] === 'opened').length, 0, 'a socket that never said ready is never logged as opened');
   assert.deepEqual(end.terminal, { state: 'failed', code: 'resume_failed' }, 'the call settles with a visible reason');
   assert.equal(end.terminalFrame, true, 'and the terminal frame reaches the client, so the orb leaves live');
 });

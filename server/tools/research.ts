@@ -1266,6 +1266,16 @@ const scheduleTimer: ResearchTimer = (callback, delayMs) => {
   return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
 };
 
+/**
+ * RUN-R7: a read's own deadline is cut on the run's clock, never on wall time, so a run settles inside its
+ * budget whatever the reads do. The caller releases the timer when the read it bounds settles.
+ */
+function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController();
+  const timer = schedule(() => controller.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.max(1, ms));
+  return { signal: controller.signal, done: () => { timer.cancel(); } };
+}
+
 export interface ResearchDeps {
   timeZone?: string;
   authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
@@ -2464,7 +2474,10 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
   const left = run.mailDeadlineAt - now();
   if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
-  const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(left, remainingMs)))]);
+  // RUN-R7: the mail deadline is cut on the run's clock, released when the collector ends.
+  const cut = cutAfter(Math.min(left, remainingMs), deps.schedule);
+  const signal = AbortSignal.any([parent, cut.signal]);
+  try {
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
@@ -2525,6 +2538,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     });
     if (run.cancelled) { invalidateEvidence(run); break; }
   }
+  } finally { cut.done(); }
   if (signal.aborted) run.cutShort.add('mail');
 }
 
@@ -2576,7 +2590,10 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     run.calendarScopeAttempted = true;
   }
   const sourceDeadlineAt = now() + Math.min(RESEARCH.sourceDeadline.calendar, remainingMs);
-  const signal = AbortSignal.any([parent, AbortSignal.timeout(Math.max(1, Math.min(RESEARCH.sourceDeadline.calendar, remainingMs)))]);
+  // RUN-R7: the calendar deadline is cut on the run's clock, released when the collector ends.
+  const cut = cutAfter(Math.min(RESEARCH.sourceDeadline.calendar, remainingMs), deps.schedule);
+  const signal = AbortSignal.any([parent, cut.signal]);
+  try {
   while (now() < sourceDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     // E8: a window this session already read inside the turn window costs no transport call.
     for (const [key, read] of run.calendar) {
@@ -2658,6 +2675,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     if (run.cancelled) { invalidateEvidence(run); break; }
     if (now() - run.startedAt >= run.deadlineMs) break;
   }
+  } finally { cut.done(); }
   if (signal.aborted) run.cutShort.add('calendar');
 }
 
@@ -2695,7 +2713,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       run.unavailableReasons.set('memory', 'history_reference_unavailable'); done.push(settle(plan, 'unavailable')); continue;
     }
     if (!evidenceAllowed(deps, run, context.signal)) { done.push(settle(plan, 'unavailable')); continue; }
-    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(RESEARCH.sourceDeadline.memory)]);
+    // RUN-R7: the memory read is cut on the run's clock, released when the read settles.
+    const cut = cutAfter(RESEARCH.sourceDeadline.memory, deps.schedule);
+    const signal = AbortSignal.any([context.signal, cut.signal]);
     try {
       run.ops++;
       const [result] = await deps.execute(plan.read.subs, signal);
@@ -2714,7 +2734,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
       done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: page });
-    } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); }
+    } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); } finally { cut.done(); }
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory' && !entry.read.unresolved);
   // N3: an unresolvable window reads nothing and says why, instead of spending the batch deadline.
@@ -2761,7 +2781,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   });
   const pending = cached.map((hit, index) => hit === undefined ? index : -1).filter(index => index >= 0);
   run.ops += Math.max(1, pending.length);
-  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(lookupBound(source, reads.length, remainingMs))]);
+  // RUN-R7: the lookup is cut on the run's clock, released when the read settles.
+  const cut = cutAfter(lookupBound(source, reads.length, remainingMs), deps.schedule);
+  const signal = AbortSignal.any([context.signal, cut.signal]);
   let results: IntentSubResult[];
   try {
     if (pending.length === 0) results = cached.map(hit => hit!);
@@ -2790,6 +2812,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
     done.push({ ...settle(plan, outcome, block.lines, block.total), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
   });
+  cut.done();
   return done;
 }
 
@@ -3155,7 +3178,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   deps = { ...deps, emit, execute: async (subs, sourceSignal) => {
     const mailOnly = subs.length > 0 && subs.every(sub => sub.name === INTERNAL.mailRead || sub.name === INTERNAL.mailList);
     if (mailOnly) run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, Math.max(1, run.deadlineMs - (now() - run.startedAt)));
-    const dispatchSignal = mailOnly ? AbortSignal.any([sourceSignal, AbortSignal.timeout(Math.max(1, (run.mailDeadlineAt ?? now()) - now()))]) : sourceSignal;
+    // RUN-R7: the mail read's own deadline is cut upstream on the run's clock, so no wall-clock timer rides here.
+    const dispatchSignal = sourceSignal;
     if (!current() || dispatchSignal.aborted) return subs.map(sub => ({ key: sub.key, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'round_cancelled' }));
     const at = now(), batch = ++invocation;
     const sources = [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
@@ -3434,7 +3458,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         if (remainingMs <= 0) { stopReason = 'deadline'; break; }
         // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on
         // the slowest connector. A continue call is an explicit follow-up and keeps the run deadline.
-        const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]);
+        // RUN-R7: the round is bounded by the batch deadline check and each read's own cut on the run's clock,
+        // never by a wall-clock timer that a fake clock cannot reach.
+        const roundSignal = signal;
         const latencies = new Map<CandidateKind, number>();
         const readStarted = new Set<CandidateKind>();
         const cutKinds = new Set<CandidateKind>();

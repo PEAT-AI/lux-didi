@@ -282,8 +282,10 @@ test('1015: an unconfigured connector is never cached, so a start asks again onc
     ? { state: 'present' as const, text: '10:00 standup', items: 1, fetchedAt: clock.now }
     : { state: 'unconfigured' as const, text: undefined, items: 0, fetchedAt: clock.now }),
     { now: () => clock.now, timeZone: 'Asia/Kolkata' });
-  assert.equal((await cache.forStart()).state, 'unconfigured', 'no grant, no digest');
+  assert.equal((await cache.refresh()).state, 'unconfigured', 'the background read says the connector is not configured');
+  assert.equal((await cache.forStart()).state, 'absent', 'an unconfigured read never answers a start, and never an empty day');
   granted = true;
+  await cache.refresh();
   assert.equal((await cache.forStart()).state, 'present', 'the next start reads the calendar the owner just granted');
 });
 

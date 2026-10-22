@@ -586,7 +586,7 @@ test('1022: the stdio connect budget is 12 s and the http one stays at 5 s', asy
   assert.equal(HTTP_CONNECT_TIMEOUT_MS, 5_000);
 });
 
-test('1022: a stdio connect slower than its budget times out, and the same start fits a longer one', async () => {
+test('1022: a stdio connect slower than its budget times out, and the same start fits a longer one', async t => {
   const child = generatedChild(t, `
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';

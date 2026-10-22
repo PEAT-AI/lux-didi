@@ -200,10 +200,12 @@ final class ConnectingRing {
     /// The `connecting_ring` record goes through the existing presence receipt path.
     var receipt: (([String: Any]) -> Void)?
 
-    init(now: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
+    init(output: ConnectingRingOutput? = nil,
+         now: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
          deferStart: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void = { body in
              Task { @MainActor in body() }
          }) {
+        self.output = output
         self.now = now
         self.deferStart = deferStart
     }

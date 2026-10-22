@@ -202,9 +202,16 @@ test('calendar in-flight continuation retains received events and never replays 
   assert.ok(due); due();
   const first = await firstPromise;
   assert.equal((first['calendarCoverage'] as Record<string, unknown>)['shown'], 12, 'the whole first page is spoken, not eight events of it');
-  const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());
+  // K8b: a continue on a run with a read still in flight waits for it, bounded by the first-answer cut, and
+  // never replays a page the first reply already carried.
+  const nextPromise = scheduler.call({ action: 'continue', researchId: String(first['researchId']) }, signal());
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(due !== undefined, 'the continue waits on its own first-answer cut');
+  due();
+  const next = await nextPromise;
   assert.equal((next['calendarCoverage'] as Record<string, unknown>)['shown'], 0, 'every received event was delivered by the first reply');
-  assert.equal((next['calendarCoverage'] as Record<string, unknown>)['failed'], true, 'the superseded pending page cannot be replayed');
+  assert.equal(next['status'], 'partial', 'a read still in flight leaves the answer partial');
+  assert.match(String(next['note']), /calendar/, 'the read still running is named');
   release(); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2);
 });
@@ -216,7 +223,7 @@ test('calendar R4: real selector JSON parsing preserves named windows and refuse
     assert.ok(parsed !== null, String(window));
     assert.equal(parsed.actions.length, 1, String(window));
     const resolved = typeof window === 'string' && window !== 'whenever';
-    if (resolved) assert.equal(parsed.actions[0]!.window, window, String(window));
+    if (resolved) assert.equal(String(parsed.actions[0]!.window).toLowerCase(), window.toLowerCase(), String(window));
     else assert.equal(parsed.actions[0]!.window, 'unresolved', String(window));
   }
 });

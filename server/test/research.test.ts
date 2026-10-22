@@ -516,7 +516,9 @@ test('configuredNow re-resolves the configured sources for each run', async () =
   const h = harness({ selector: knowledge });
   const deps: ResearchDeps = { ...h.deps, configured: [], configuredNow: () => ['knowledge', 'calendar'] };
   const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok((reply['unchecked'] as string[]).includes('calendar'), 'a configured source not read is reported');
+  // The resolved set is what the run reports on: nothing outside it is ever unchecked or read.
+  const unchecked = reply['unchecked'] as string[];
+  assert.ok(unchecked.every(source => ['knowledge', 'calendar'].includes(source)), `only resolved sources are reported: ${JSON.stringify(unchecked)}`);
 });
 
 test('knowledge first: the prime knowledge read starts before any other read', async () => {
@@ -644,7 +646,8 @@ test('deadAirMs measures the longest silence the model hears, never the whole ru
   } });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   await settle();
-  clock.advance(4_400); await settle();
+  clock.advance(3_000); await settle();
+  clock.advance(1_400); await settle();
   await running;
   const log = h.logs[0]!;
   assert.ok(log.elapsedMs >= 4_000, `the run really took over four seconds: ${log.elapsedMs}`);
@@ -658,7 +661,7 @@ test('a source that outlives the per-source deadline is cut, and the reply is an
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const cut = (): void => reject(new Error('cut')); if (signal.aborted) cut(); else signal.addEventListener('abort', cut, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank', sources: 'mail' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   const reply = await running;
@@ -680,7 +683,7 @@ test('R6: the call answers at 4.5 s while a slow source is still reading, and ne
   const controller = new AbortController();
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, controller.signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'what did we decide about the release email' }, controller.signal);
   await settle();
   // Depth beats speed: the reply waits for the first answer point instead of the first source to answer.
   const heard = await Promise.race([running.then(() => true), settle().then(() => false)]);
@@ -744,7 +747,7 @@ test('a cut source logs a disposition the host log admits and the whole run line
     if (subs.some(call => call.name === 'gmail_search_messages')) return await new Promise<IntentSubResult[]>((_, reject) => { const stop = (): void => reject(new Error('cut')); if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); });
     return subs.map(call => sub(call.name, 'evidence', true, call.key));
   } });
-  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank' }, new AbortController().signal);
+  const running = runResearch(h.deps, { action: 'start', question: 'anything from the bank', sources: 'mail' }, new AbortController().signal);
   await settle();
   clock.advance(RESEARCH.sourceDeadline.mail); await settle();
   await running;

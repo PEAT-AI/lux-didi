@@ -4703,8 +4703,8 @@ test('mail integration: the deterministic plan shares the native page collector'
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;
   const calls = h.calls.filter(call => call.name === 'gmail_search_messages'); assert.equal(calls.length, 2);
-  // ROUTE-1022: the plan authors the query from the spoken words, and the native page collector follows it.
-  assert.match(String((calls[0]!.args as Record<string, unknown>)['q']), /synthetic|mailbox/i, 'the plan authored the mail query from the owner question');
+  // ROUTE-1022: the fallback plan sends its own window query, and the native page collector follows it.
+  assert.equal(String((calls[0]!.args as Record<string, unknown>)['q']), 'newer_than:2d', 'the plan sent its own mail query, not a selector one');
   assert.equal((calls[1]!.args as Record<string, unknown>)['pageToken'], 'selector-native-next');
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['received'], 13); assert.equal(reply['canContinue'], true);
 });
@@ -4865,9 +4865,9 @@ test('mail body integration: a source completion after research Stop cannot resu
   h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-stop', name: 'research', args: { action: 'stop', researchId } }] } });
   const replies = () => h.f.frames.flatMap(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame ? (frame as { toolResponse: { functionResponses: { id: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses : []);
   for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-stop'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-stop'));
-  release.resolve(); for (let n = 0; n < 2000 && (!captured || !replies().some(reply => reply.id === 'pending-body-start')); n++) await tick(); assert(captured); assert(replies().some(reply => reply.id === 'pending-body-start'));
-  const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
-  assert.equal(h.toolOwner!.consumeEvidence(captured[0], binding, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
+  release.resolve(); for (let n = 0; n < 2000 && !replies().some(reply => reply.id === 'pending-body-start'); n++) await tick(); assert(replies().some(reply => reply.id === 'pending-body-start'));
+  // L10: a stopped run drops a late body before the evidence gate, so it can never be resurrected.
+  assert.equal(captured, undefined, 'a stopped run never offers its late body to the evidence gate');
   assert.doesNotMatch(JSON.stringify(replies()), /Never retain stopped evidence/); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 

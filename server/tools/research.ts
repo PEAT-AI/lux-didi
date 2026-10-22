@@ -1977,7 +1977,23 @@ function receivedBodyReply(run: RunState, configured: readonly SourceKind[], lim
   // and a long body costs as few round trips as the budget allows.
   const base = buildReply(run, 'answered', configured, false, limit, undefined, true);
   const envelope = JSON.stringify(base).length;
-  const width = Math.max(128, limit - envelope - 64);
+  // F7: a slice's room is the limit minus the reply it rides in and minus what the slice, its cursor and
+  // its delivery receipt add; the text is measured escaped, so a body full of newlines still fits.
+  const id = '00000000-0000-0000-0000-000000000000';
+  const fields = JSON.stringify({
+    source: body.source, tool: body.evidence.tool, text: '', offset: body.offset, end: body.offset,
+    total: body.evidence.body.length, unit: 'utf16', upstreamComplete: body.evidence.upstreamComplete,
+    upstreamOmitted: body.evidence.upstreamOmitted,
+  }).length + JSON.stringify({ bodyProjection: 'preview', cursor: id, nextCursor: id, canContinue: false, [bodyDelivery]: { researchId: run.researchId, runId: run.runId, cursor: id } }).length;
+  const room = Math.max(0, limit - envelope - fields - 8);
+  let width = 0;
+  let spent = 0;
+  for (const char of body.evidence.body.slice(body.offset)) {
+    spent += JSON.stringify(char).length - 2;
+    if (spent > room) break;
+    width += char.length;
+  }
+  if (width === 0) width = [...body.evidence.body.slice(body.offset)][0]?.length ?? 0;
   const cursor = run.bodyCursorRequested ?? bodyCursor(run, key, body.offset, width), page = run.bodyCursors.get(cursor)!;
   if (page.end < body.evidence.body.length) page.nextCursor ??= bodyCursor(run, key, page.end, width);
   else {

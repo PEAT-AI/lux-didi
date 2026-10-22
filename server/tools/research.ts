@@ -3038,11 +3038,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     return results;
   } };
   first.snapshot = () => ({ run, configured, limit });
-  // ROUTE-1022 (#526): the source classes this question is about, and the run's own budget as the
-  // latest moment the first answer may hold for them.
-  const required = new Set(requiredSources(question || run.direction || '').filter(source => configured.includes(source)));
-  if (required.size > 0) first.required = required;
-  first.releaseAt = () => started + answerMs;
 
   if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
   if (call.action === 'continue' && [...run.bodies.values()].some(body => body.offset < body.evidence.body.length) && call.lookups === undefined) return buildReply(run, 'partial', configured, false, limit);
@@ -3109,6 +3104,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const hint = hintedSources(call.sources, configured);
   let answerMs = researchCallBudgetMs(hint.length > 0 ? hint : []);
   let answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), answerMs) : { unref: () => {}, cancel: () => {} };
+  // ROUTE-1022 (#526): the source classes this question is about, and the run's own budget as the
+  // latest moment the first answer may hold for them. Both are read by the first answer point only,
+  // and both are set here so the budget is the one this run declared.
+  const required = new Set(requiredSources(question || run.direction || '').filter(source => configured.includes(source)));
+  if (required.size > 0) first.required = required;
+  first.releaseAt = () => started + answerMs;
   /**
    * P5-R1: the call budget is the slowest source this call reads plus the slack, capped. A batch that
    * carries a 12 s connector read may not be cut by a local read's smaller budget, and a batch of

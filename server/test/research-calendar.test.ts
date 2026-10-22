@@ -452,7 +452,7 @@ test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a sche
 test('ROUTE-1022: a schedule question reads the calendar even when the selector fails', async () => {
   const selector: ResearchSelector = { select: async () => { throw new Error('selector deadline'); } };
   const h = scheduleFixture({ selector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
-  await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'a selector timeout leaves the calendar in the plan');
   assert.equal(h.logs.at(-1)!.driver, 'routed', 'and the run records the router as the decider');
 });
@@ -468,7 +468,7 @@ test('ROUTE-1022: a schedule question keeps the calendar in a plan that omitted 
 
 test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason and no error', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'not_signed_in' }] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
   assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'a down endpoint is never dispatched to');
   assert.equal(h.logs.at(-1)!.sources.find(row => row.kind === 'calendar')?.reason, 'endpoint_unavailable', 'the reason names an endpoint outage');
   assert.equal('error' in reply, false, 'the run still answers');
@@ -478,7 +478,7 @@ test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason an
 // exactly like a dead endpoint in the run log.
 test('ROUTE-R2: an unpublished calendar grant is logged as not_granted, not as an outage', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'source_not_granted' }] });
-  await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
   const row = h.logs.at(-1)!.sources.find(entry => entry.kind === 'calendar');
   assert.deepEqual({ disposition: row?.disposition, reason: row?.reason }, { disposition: 'skipped', reason: 'not_granted' });
 });

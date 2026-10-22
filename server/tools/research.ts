@@ -63,8 +63,11 @@ export const RESEARCH = Object.freeze({
    */
   mailPageCap: 4,
   rateLimitRetryMs: 1_000,
-  /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
-  selectorDeadlineMs: 1_500,
+  /**
+   * ROUTE-1022 (#526): the router decides the unambiguous questions. F3: the selector is off the first-answer
+   * path, so its deadline is the latency it really has (3.6 to 5.9 s on build 35010057), not a cap on waiting.
+   */
+  selectorDeadlineMs: 6_000,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
@@ -753,8 +756,11 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
  * product's daily language, so it never pulls the calendar into a question that did not ask for it.
  */
 const OWNER_SCHEDULE = /\b(calendar|schedule|agenda|appointments?|meetings?|itinerary|out of office)\b/u;
-/** The router's own calendar class: a time word is calendar intent here, where the plan is built from words. */
-const SCHEDULE_WORDS = new RegExp(`${OWNER_SCHEDULE.source}|\\b(today|tomorrow|next week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|calls?)\\b`, 'u');
+/**
+ * F8: the router's calendar class is the same schedule vocabulary, plus the temporal phrases that are only
+ * ever a schedule. A bare today, tomorrow or "calls" is the product's daily language and routes nothing.
+ */
+const SCHEDULE_WORDS = new RegExp(`${OWNER_SCHEDULE.source}|\\b(next week|weekdays?|sunday|monday|tuesday|wednesday|thursday|friday|saturday|travel|trip|flight|itinerary|out of office)\\b`, 'u');
 
 export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
@@ -2425,7 +2431,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     let results: IntentSubResult[];
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.inflight = false; read.failed = true; } if (signal.aborted) run.cutShort.add('mail'); break; }
-    if (parent.aborted || run.cancelled || run.stopped) { invalidateEvidence(run); break; }
+    if (parent.aborted || run.cancelled || run.stopped) { for (const read of reads) read.inflight = false; invalidateEvidence(run); break; }
     if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
     // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
     // A native page that failed is terminal for its source, so only a first page is retried.
@@ -3165,6 +3171,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // #260: how this run chose its sources, recorded where the loop decides it. selector dominates a
   // later fallback; the fixed recipe and the single-source hint never override a selector decision.
   let driver: ResearchDriver | undefined;
+  /** F3: the selector runs beside the first answer, so its plan is used only when it is already in hand. */
+  let selectorOutput: SelectorOutput | null | undefined;
+  let selectorSettledMs = 0;
+  let selectorPending: Promise<SelectorOutput | null> | undefined;
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
   const deadlineAt = started + run.deadlineMs;
@@ -3290,14 +3300,29 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         selection = fallbackSelection(question || run.direction || '', configured, now());
         if (driver === undefined) driver = 'fallback';
       } else {
+        // F3: the selector never delays the first answer. It is started here, this round starts the keyword
+        // plan at once, and a plan already in hand is used from the next round on.
         const selStart = now();
-        let output: SelectorOutput | null = null;
-        try {
-          output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
-        } catch { output = null; }
-        selectorMs += now() - selStart;
-        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = routed ?? fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
-        else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
+        selectorPending ??= deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]))
+          .then(result => { selectorOutput = result; selectorSettledMs = now() - selStart; return result; })
+          .catch(() => { selectorOutput = null; selectorSettledMs = now() - selStart; return null; });
+        const output = round > 1 && selectorPending !== undefined ? (selectorOutput ?? null) : null;
+        if (output === null) {
+          fallbackUsed = true;
+          usedFallbackThisRound = true;
+          const plan = routed ?? fallbackSelection(question || run.direction || '', configured, now());
+          // F3: a plan that would fan the whole brief out starts with the cheap source instead, and a brief is
+          // never a second read of a source this run already paid for.
+          const onlyBrief = plan.actions.length === 1 && plan.actions[0]!.kind === 'brief';
+          selection = onlyBrief && !run.readKinds.has('knowledge_search')
+            ? { questionClass: plan.questionClass, actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question || run.direction || '', now()) }], pUseful: { knowledge_search: 0.4 } }
+            : { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
+          if (driver === undefined) driver = 'fallback';
+        } else {
+          selectorMs += selectorSettledMs;
+          if (driver === undefined) driver = 'selector';
+          if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output;
+        }
       }
 
       // A single-source hint must always run that source, even when the question carried no terms

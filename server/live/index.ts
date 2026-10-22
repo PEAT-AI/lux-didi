@@ -2304,12 +2304,7 @@ export class LiveSessionOwner {
         }
         // A held answer stays for the offer; the cancelled response stays cancelled until the next one starts.
         if (event.type === 'turnComplete' || event.type === 'interrupted') handle.mutedResponse = false;
-        if (event.type === 'turnComplete' || event.type === 'generationComplete') {
-          // L19 second clause: a reply that was spoken with no transcript row is receipted, never silent.
-          if (handle.firstAudioAt !== undefined && !handle.outputJournalled)
-            hostLogEvent({ event: 'live_reply_unjournalled', liveSessionId: handle.liveSessionId, generation: handle.generation });
-          if (event.type === 'turnComplete') handle.answerAt = undefined;
-        }
+        if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           // The previous response is over: only now may a new one play (LIVE2-R6 F1).
           handle.dropResponse = false; handle.outputJournalled = false;
@@ -2411,7 +2406,11 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { handle.speaking = false; this.#cancelSpeakingHold(handle); handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+        if (event.type === 'turnComplete') {
+          // L19 second clause: a reply that was spoken with no transcript row is receipted, never silent.
+          if (handle.firstAudioAt !== undefined && !handle.outputJournalled)
+            hostLogEvent({ event: 'live_reply_unjournalled', liveSessionId: handle.liveSessionId, generation: handle.generation });
+          handle.speaking = false; this.#cancelSpeakingHold(handle); handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
           // The answer is done, so the turn's step lines retire here: a later question that reads nothing
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];

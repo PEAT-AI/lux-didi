@@ -426,7 +426,8 @@ class Session implements LiveVoiceSession {
   /** One episode in which the newest mic frame is retained behind a full socket. Local progress only: neither a
    *  send callback nor bufferedAmount says the provider consumed the frame. */
   private uploadBlockedSince: number | undefined;
-  private uploadBufferedLow: number | undefined;
+  /** #451: the wall clock the handshake started at, so every step reports a monotonic offset. */
+  private handshakeStart = 0;
   private upstreamStallQueued = false;
   private sequence = 0;
   private secret = '';
@@ -565,12 +566,17 @@ class Session implements LiveVoiceSession {
   }
 
   private async connect(): Promise<void> {
+    this.handshakeStart = Date.now();
+    const step = (name: 'credential_resolved' | 'socket_open' | 'session_start_sent' | 'session_started'): void => {
+      hostLogEvent({ event: 'live_handshake', step: name, ms: Math.max(0, Date.now() - this.handshakeStart) });
+    };
     let key: string | undefined;
     try { if (!this.checkpoint()) return; key = await this.settings.resolve(this.settings.keyReference); }
     catch { if (this.checkpoint()) this.finish('credential_unavailable'); return; }
     if (!this.checkpoint()) return;
     if (typeof key !== 'string' || !key.trim() || key.length > 8192) { this.finish('credential_unavailable'); return; }
     this.secret = key;
+    step('credential_resolved');
     this.handshake = this.timer(this.settings.limits.handshakeMs, 'handshake_timeout');
     try {
       this.creatingSocket = true;
@@ -587,7 +593,7 @@ class Session implements LiveVoiceSession {
       socket.on('unexpected-response', this.onUnexpectedResponse);
       socket.on('pong', this.onPong);
       this.schedulePing(socket);
-      socket.once('open', () => { if (this.checkpoint()) this.write(this.start); });
+      socket.once('open', () => { if (this.checkpoint()) { step('socket_open'); this.write(this.start); step('session_start_sent'); } });
       if (!this.checkpoint()) this.shutdownSocket();
     } catch {
       this.creatingSocket = false;
@@ -646,12 +652,6 @@ class Session implements LiveVoiceSession {
   }
   private clearUploadBlock(): void {
     this.uploadBlockedSince = undefined;
-    this.uploadBufferedLow = undefined;
-  }
-  private outboundProgress(socket: WebSocket): void {
-    if (this.terminal || socket !== this.socket || this.uploadBlockedSince === undefined) return;
-    this.uploadBlockedSince = Date.now();
-    this.uploadBufferedLow = socket.bufferedAmount;
   }
   private queueUpstreamStall(socket: WebSocket, receipt: { silentMs: number } | { noProgressMs: number }): void {
     if (this.upstreamStallQueued) return;
@@ -669,16 +669,11 @@ class Session implements LiveVoiceSession {
       return;
     }
     // Shedding always retains the newest mic frame. Arm only while that demand is blocked at the high-water mark.
-    // A new low is net local drain across the episode. Comparing with the immediately prior sample would let
-    // queue oscillation refresh the deadline forever.
+    // #475: a new low is not progress. A slow drain above the low-water mark refreshes a per-sample deadline
+    // forever, which is why the 30 s window could never fire on the measured stall; only a buffer that drains
+    // out of the blocked band counts as progress, and that leaves this branch through clearUploadBlock.
     if (this.micPending.length && buffered >= UPLINK_SHED_BYTES) {
-      if (this.uploadBlockedSince === undefined) {
-        this.uploadBlockedSince = now;
-        this.uploadBufferedLow = buffered;
-      } else if (this.uploadBufferedLow !== undefined && buffered < this.uploadBufferedLow) {
-        this.uploadBlockedSince = now;
-        this.uploadBufferedLow = buffered;
-      }
+      if (this.uploadBlockedSince === undefined) this.uploadBlockedSince = now;
       const noProgressMs = now - this.uploadBlockedSince;
       if (noProgressMs >= this.settings.limits.upstreamStallMs) {
         this.queueUpstreamStall(socket, { noProgressMs });
@@ -727,6 +722,10 @@ class Session implements LiveVoiceSession {
       case 'response.event': return this.delegated(message);
       // 3r D4: the provider opening a delegation. Unread until now, so it landed in the unknown-frame counter.
       case 'session.delegation.created': return this.delegationCreated(message);
+      // #438: the provider acknowledges an append in the past tense; an unknown frame is a fact of its own and
+      // these are known, so they are classified instead of counted as one.
+      case 'session.thinking.appended': return this.appendAcknowledged('thinking');
+      case 'session.commentary.appended': return this.appendAcknowledged('commentary');
       case 'session.usage.updated': return this.touch();
       case 'session.closed': return this.sessionClosed(message);
       case 'error': return this.providerError(message);
@@ -743,6 +742,7 @@ class Session implements LiveVoiceSession {
     if (this.isReady || !object(message.session)) fail('protocol_error');
     this.clear(this.handshake);
     this.isReady = true;
+    hostLogEvent({ event: 'live_handshake', step: 'session_started', ms: Math.max(0, Date.now() - this.handshakeStart) });
     if (!this.checkpoint() || !this.emit({ type: 'ready' })) return;
     this.readiness.resolve();
     this.touch();
@@ -1295,7 +1295,6 @@ class Session implements LiveVoiceSession {
       if (!this.checkpoint()) return false;
       if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls++; this.diagnostic.localWriteCallbackPendingPCMBytes += pcmBytes; }
       socket.send(frame, error => {
-        if (!error) this.outboundProgress(socket);
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
@@ -1651,33 +1650,26 @@ class Session implements LiveVoiceSession {
 
   /** Speakable progress: the voice model paraphrases it aloud, so the owner hears that a lookup is still running.
    *  Documented shape (`session.commentary.append`, guides/live-delegation): plain-string `content` under 500
-   *  tokens. W4: the append names the delegation that is open right now, because the wire refuses an append whose
-   *  `delegation_id` is not the open one and that refusal can cost the answer. No open delegation, or more than
-   *  one so no single id can be vouched for, means nothing is written and the host is told. */
+   *  tokens. #516: the append names no delegation; every frame that carried a `delegation_id` was refused on it,
+   *  and the provider binds the append to the turn that is open when it arrives. */
   sendCommentary(input: { text: string }): boolean {
-    const delegationId = this.openDelegationId();
-    if (delegationId === undefined) return false;
-    return this.append('session.commentary.append', 'cmt', input, delegationId);
+    return this.append('session.commentary.append', 'cmt', input);
   }
 
-  /** W4: the one delegation open right now, which is the only id a commentary append may name. */
-  private openDelegationId(): string | undefined {
-    return this.delegations.size === 1 ? [...this.delegations.keys()][0] : undefined;
-  }
-
-  /** Silent context: the model may use it to answer a question about the lookup, and never speaks it on append. */
-  sendThinking(input: { text: string }): void {
-    this.append('session.thinking.append', 'thk', input);
-  }
-
-  private append(type: 'session.commentary.append' | 'session.thinking.append', kind: 'cmt' | 'thk', input: { text: string }, delegationId: string | null = null): boolean {
+  private append(type: 'session.commentary.append', kind: 'cmt', input: { text: string }): boolean {
     if (this.draining) return false;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     // The documented ceiling is 500 tokens per append; a short character bound keeps every line well under it.
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) { fail('invalid_request'); return false; }
-    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), delegation_id: delegationId, content: input.text }))) { fail(this.terminal!.code); return false; }
+    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), content: input.text }))) { fail(this.terminal!.code); return false; }
     return true;
+  }
+
+  /** #438: the provider acknowledges an append in the past tense. Both shapes are known frames, not unknowns. */
+  private appendAcknowledged(kind: 'thinking' | 'commentary'): void {
+    hostLogEvent({ event: 'gptlive_append_ack', kind });
+    this.touch();
   }
 
   endAudioStream(): void {

@@ -224,8 +224,6 @@ const DELEGATION_DEADLINE_MS = 25_000;
 /** R6 late findings: a source that settles this long after the first answer is still silent context for the
  *  model, but it is no longer spoken, because the owner has moved on. */
 const LATE_WINDOW_MS = 20_000;
-/** R6: the biggest late block one source may append, about 400 tokens, well under the 500 token ceiling. */
-const LATE_BLOCK_CHARS = 1_400;
 /** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
 const LATE_SPOKEN_CHARS = 280;
 
@@ -296,9 +294,11 @@ interface ActiveSession {
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
+  /** #451: when this connection generation's provider socket was opened, and when the provider said ready. */
+  openedAt?: number | undefined; readyAt?: number | undefined;
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; callDeadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
-  recoveries: number; lastHealthyAt?: number; lastRecoveryPath?: 'resume' | 'fresh_seeded';
+  recoveries: number; lastHealthyAt?: number | undefined; lastRecoveryPath?: 'resume' | 'fresh_seeded';
   /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
    *  own audible audio or an ended turn. Inaudible fill never clears it (D3, amendment C). */
   awaitingAnswer: boolean; answerAt: number | undefined;
@@ -1097,7 +1097,8 @@ export class LiveSessionOwner {
     if (state === from) return;
     if (handle) handle.liveState = state;
     this.#lastProjectedState = state;
-    hostLogEvent({ event: 'live_state', state, ...(from === undefined ? {} : { from }), cause, at: this.#now() });
+    hostLogEvent({ event: 'live_state', state, ...(from === undefined ? {} : { from }), cause, at: this.#now(),
+      ...(handle === undefined ? {} : { liveSessionId: handle.liveSessionId, generation: handle.generation }) });
   }
 
   /** The live state of an open session, the same derivation the web page reads. */
@@ -1290,9 +1291,12 @@ export class LiveSessionOwner {
     // O1b-A: the connection object exists before the handle, because the adapter is handed its receipt door at open
     // and the receipts it writes must name this connection's epoch from the first frame onward.
     const connection: ActiveSession['connection'] = { seq: 0, epoch: 'e0', turnId: undefined, turnIndex: 0 };
+    const openedAt = this.#now();
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
       session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits, trace: this.#tracePort(liveSessionId, connection) });
+      hostLogEvent({ event: 'live_provider_open', liveSessionId, generation: 0, instructionChars: request.system.text.length,
+        seedChars: (request.history ?? []).reduce((sum, turn) => sum + turn.text.length, 0), tools: request.tools?.length ?? 0 });
     } catch (error) {
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
@@ -1327,6 +1331,7 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
+    handle.openedAt = openedAt;
     this.#noteState(handle, 'created');
     void handle.done.promise.catch(() => {});
     // Two named deadlines: the provider session window continues an attended call in a fresh seeded window,
@@ -1882,9 +1887,12 @@ export class LiveSessionOwner {
    * history is the journal seed and whose opening input is the pickup line. Returns false only on a
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
-  #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null): boolean {
+  async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    // #527: a new socket is not the old socket's health. Clearing it here makes the three-strike ceiling
+    // count consecutive dead sessions instead of one healthy episode followed by endless retries.
+    handle.lastHealthyAt = undefined;
     this.#noteState(handle, 'rebuild');
     handle.lastRecoveryPath = path;
     this.#cancelSpeakingHold(handle);
@@ -1915,17 +1923,38 @@ export class LiveSessionOwner {
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
         trace: this.#tracePort(handle.liveSessionId, handle.connection),
       });
+      handle.openedAt = this.#now(); handle.readyAt = undefined;
+      hostLogEvent({ event: 'live_provider_open', liveSessionId: handle.liveSessionId, generation: handle.generation,
+        instructionChars: request.system.text.length, seedChars: seed.chars, tools: request.tools?.length ?? 0 });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
     } catch { return false; }
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
+    // #525: a recovery is opened only when the provider says the session is live. A socket that dies before
+    // its ready event is a failed attempt that pays its backoff, never an opening that re-enters the loop.
+    // A planned window switch is not a recovery, so it keeps the plain open and lets the ready event follow.
+    if (!awaitReady) return true;
+    const opened = await this.#awaitProviderReady(handle, handle.session);
+    if (!opened) return false;
+    handle.ready = true;
     return true;
+  }
+
+  /** The provider's own ready event, or false when this socket died, was refused, or the call settled first. */
+  async #awaitProviderReady(handle: ActiveSession, session: LiveVoiceSession): Promise<boolean> {
+    const aborted = new Promise<boolean>(resolve => { handle.abort.signal.addEventListener('abort', () => resolve(false), { once: true }); });
+    const ready = session.ready.then(() => true, () => false);
+    const done = session.done.then(() => false, () => false);
+    const verdict = await Promise.race([ready, done, aborted]);
+    if (!verdict) return false;
+    return !this.#settled(handle) && handle.session === session;
   }
 
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
   #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
-    hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars });
+    hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+      liveSessionId: handle.liveSessionId, generation: handle.generation });
   }
 
   /**
@@ -1935,7 +1964,10 @@ export class LiveSessionOwner {
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
     const now = this.#now();
+    // #527: the healthy-episode reset is judged once per drop, then the stamp is cleared, so a dead session
+    // that follows a healthy one starts its own count instead of inheriting the reset.
     if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) handle.recoveries = 0;
+    handle.lastHealthyAt = undefined;
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     const remaining = handle.deadlineAt - now, idle = handle.idleAt - now;
     const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - now);
@@ -1952,12 +1984,12 @@ export class LiveSessionOwner {
     const closeCode = outcome?.upstream?.closeCode ?? null;
     const reason = reasonOverride ?? outcome?.code ?? null;
     const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
-    let opened = this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
+    let opened = await this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
     if (!opened && path === 'resume') {
       this.#logRecovery(handle, 'resume', 'open_failed', closeCode, reason, seed);
       handle.recoveries += 1;
       if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
-      opened = this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, reason);
+      opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, reason);
     }
     if (opened) {
       // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
@@ -1965,10 +1997,12 @@ export class LiveSessionOwner {
       this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
       return true;
     }
-    handle.recoveries += 1;
+    // A call that ended while an attempt was waiting for its ready event owes no further attempt.
+    if (this.#settled(handle)) return false;
     this.#logRecovery(handle, path, 'open_failed', closeCode, reason, seed);
+    handle.recoveries += 1;
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
-    // A synchronous refusal (rare) retries after the next backoff rather than ending the call.
+    // A refusal pays its own backoff before the next attempt rather than ending the call.
     await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);
     if (this.#settled(handle)) return false;
     return this.#recoverFromDrop(handle, outcome, forceFresh, reasonOverride);
@@ -1989,7 +2023,7 @@ export class LiveSessionOwner {
     const window = Math.min(10_000, Math.max(1, remaining));
     const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
     handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded';
-    const opened = this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline');
+    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline', false);
     if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     this.#logRecovery(handle, 'fresh_seeded', 'session_deadline', null, 'session_timeout', seed);
     return true;
@@ -2205,7 +2239,11 @@ export class LiveSessionOwner {
           continue;
         }
         if (event.type === 'ready') {
-          handle.ready = true; handle.lastHealthyAt = this.#now();
+          handle.ready = true; handle.lastHealthyAt = this.#now(); handle.readyAt = this.#now();
+          // #451: the provider ack is the number every handshake report is measured against.
+          hostLogEvent({ event: 'live_provider_ready', liveSessionId: handle.liveSessionId, generation,
+            msSinceOpen: handle.openedAt === undefined ? 0 : Math.max(0, this.#now() - handle.openedAt), closeCode: null });
+          this.#noteState(handle, 'ready');
           if (handle.rebuilding) { handle.rebuilding = false; this.#noteState(handle, 'rebuild'); this.#continuity(handle, 'resumed'); continue; }
         }
         // Provider activity restarts the idle clock everywhere except under the owner's mute, which
@@ -2213,6 +2251,7 @@ export class LiveSessionOwner {
         if (!handle.muted && IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
+          hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length });
           handle.turnAfterTool = true;
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
@@ -2290,6 +2329,11 @@ export class LiveSessionOwner {
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
+            // #451: the first audible frame of a turn, measured from the provider open and its ready event.
+            const sinceOpen = handle.openedAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.openedAt);
+            const sinceReady = handle.readyAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.readyAt);
+            const answer = handle.researchAnsweredAt !== undefined;
+            hostLogEvent({ event: answer ? 'live_answer_audio' : 'live_first_audio', liveSessionId: handle.liveSessionId, generation, msSinceReady: sinceReady, msSinceOpen: sinceOpen });
             if (handle.inputFinalAt !== undefined) {
               hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt) });
               handle.inputFinalAt = undefined;
@@ -2448,6 +2492,18 @@ export class LiveSessionOwner {
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
   async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    // #451/RECON-RESEARCH Q6: a lookup started before the owner has spoken spends the greeting on a source
+    // nobody asked for, and the opener cancels its own six calls. The first start is answered at once, no
+    // source runs, and the model is told to ask again after the owner speaks.
+    if (handle.inputAt === undefined) {
+      hostLogEvent(refusedResearchRunLog());
+      const gated: JsonObject = { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input',
+        guidance: 'Nothing fetched yet. Do not retry before the owner speaks; ask this lookup again after their first turn.' };
+      return {
+        responses: event.calls.map(call => ({ id: call.id, name: call.name, response: gated })),
+        projections: event.calls.map(call => ({ name: call.name, status: 'error' as const, markdown: researchProjection(gated, 'error'), sources: [] })),
+      };
+    }
     const configured = this.#researchSources(handle);
     const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
@@ -2574,30 +2630,19 @@ export class LiveSessionOwner {
         if (this.#tools.owner.authorizeDelivery(handle.host, handle.researchLedger.evidenceBindings(event.researchId), [handle.inputClass], this.lookupAuthority(handle.host.runId), handle.abort.signal).state !== 'allowed') return drop('result_denied');
       } catch { return drop('result_denied'); }
     }
-    const think = handle.session.sendThinking;
-    // Gemini carries no thinking channel on this path, so the finding is dropped and the receipt says so.
-    if (think === undefined) return drop('no_thinking_channel');
-    const block = `Later findings from ${event.source} (${event.ms} ms): ${event.items.join('; ')}`.slice(0, LATE_BLOCK_CHARS);
-    try { think.call(handle.session, { text: block }); } catch { return drop('send_failed'); }
-    if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => block.includes(event.items[index] ?? '\u0000')));
+    // #516/#438: the provider has no silent append the live wire accepts (session.thinking.append is logged
+    // as an unknown frame and a commentary append is refused on delegation_id), so a late finding is either
+    // spoken once through the response channel or kept in the ledger for the next continuation. Never a
+    // provider frame the wire refuses.
+    const reason = this.#lateCommentaryReason(handle, event);
+    if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'ledger', reason });
+    const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
+    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'ledger', reason: 'send_failed' }); }
+    if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => line.includes(event.items[index] ?? '\u0000')));
     if (event.mailKeys) {
-      let end = `Later findings from ${event.source} (${event.ms} ms): `.length;
-      const keys: string[] = [];
-      for (const [index, item] of event.items.entries()) {
-        end += item.length;
-        if (end <= block.length && event.mailKeys[index]) keys.push(event.mailKeys[index]!);
-        end += 2;
-      }
+      const keys = event.items.flatMap((item, index) => (event.mailKeys![index] && line.includes(item) ? [event.mailKeys![index]!] : []));
       handle.researchLedger.deliveredMail({ researchId: event.researchId, runId: event.runId ?? -1, keys });
     }
-    hostLogEvent({ event: 'thinking_sent', chars: block.length });
-    const reason = this.#lateCommentaryReason(handle, event);
-    if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'thinking', reason });
-    // U4/R4(b): every commentary append the provider saw was refused on delegation_id, and a late finding rides
-    // that same door. Findings are the answer to a question already asked, not progress, so they travel on the
-    // normal response channel, which the provider accepts. No progress line is added anywhere.
-    const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
-    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'thinking', reason: 'send_failed' }); }
     handle.lateCommentaryFor = event.researchId;
     hostLogEvent({ event: 'late_findings_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
     hostLogEvent({ ...receipt, delivered: 'response', reason: 'quiet' });
@@ -2896,6 +2941,10 @@ export class LiveSessionOwner {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
+          // #451: the function_call_output write itself, measured from the frame that asked for it.
+          const askedAt = event.calls.map(call => handle.callStartedAt.get(call.id)).find(started => started !== undefined);
+          hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length,
+            msSinceArrived: askedAt === undefined ? 0 : Math.max(0, this.#now() - askedAt) });
           for (const entry of responses) if (entry.name === RESEARCH_TOOL_NAME) markCalendarReply(handle.researchLedger, entry.response);
           this.#armDeadAir(handle);
         }

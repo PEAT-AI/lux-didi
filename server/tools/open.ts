@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, beginHandleSession, endHandleSession, homeDestination, openDestination, resolveHandle, type HomeApp, type OpenKind } from './open-handles.js';
+import { HOME_APPS, beginHandleSession, endHandleSession, homeDestination, mattermostOrigin, openDestination, resolveHandle, type HomeApp, type OpenKind } from './open-handles.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
 export const OPEN_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'native-actions' } as const;
@@ -17,7 +17,7 @@ export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed', string> = {
   not_allowed: 'That link is not one I am allowed to open. Tell him plainly and offer the app home page instead.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
-export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string }
+export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string; origin?: string }
 export interface NativeActionResult { type: 'native_action_result'; id: string; ok: boolean; code: NativeActionCode }
 
 const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
@@ -193,7 +193,11 @@ export class NativeActionBus {
       const timer = setTimeout(() => { if (this.#pending.delete(id)) resolve('failed'); }, this.#timeoutMs);
       timer.unref?.();
       this.#pending.set(id, { runId, resolve, timer });
-      if (!send({ type: 'native_action', id, action, target })) { clearTimeout(timer); this.#pending.delete(id); resolve('failed'); }
+      // OPEN2-R1: a Mattermost frame names the one origin the host learned from a connector permalink, so
+      // the native side can pin it instead of trusting whatever host a destination happens to carry.
+      const origin = mattermostFrameOrigin(action, target);
+      const frame: NativeActionFrame = origin === undefined ? { type: 'native_action', id, action, target } : { type: 'native_action', id, action, target, origin };
+      if (!send(frame)) { clearTimeout(timer); this.#pending.delete(id); resolve('failed'); }
     });
   }
 
@@ -212,6 +216,13 @@ export class NativeActionBus {
     pending.resolve(code);
     return true;
   }
+}
+
+/** The Mattermost origin a frame carries, and only for a destination that is a Mattermost viewer link. */
+function mattermostFrameOrigin(action: NativeAction, target: string): string | undefined {
+  if (action !== 'open_url') return undefined;
+  const origin = mattermostOrigin();
+  return origin !== undefined && openDestination(target)?.kind === 'mattermost' ? origin : undefined;
 }
 
 /** One bus per host process: the socket layer binds the Live session, the model path dispatches. */

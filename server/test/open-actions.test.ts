@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
 import { NativeActionBus, OPEN_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, noteOpened, noteSpoken, openClaimCorrection, openParameters, openTarget, receiptDetail, validateOpen } from '../tools/open.js';
-import { beginHandleSession, endHandleSession, exposeHandles, openDestination, resolveHandle } from '../tools/open-handles.js';
+import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
 const RUN = 'live-open-1';
@@ -274,4 +274,32 @@ test('Open2-2: the mail page the reply reads carries its own handle on each mess
   exposeHandles(line);
   assert.equal(openTarget('open_source', { handle: /^open: (L\d+) =/m.exec(line)![1]! }).hasOwnProperty('target'), true);
   endHandleSession('live-open2-page');
+});
+
+test('OPEN2-R1: a Mattermost frame names the one origin the host learned, and no other frame does', async () => {
+  beginHandleSession('live-open2-origin');
+  noteMattermostOrigin('https://chat.example.invalid/team/pl/p1');
+  const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 1, content: 'thread at https://chat.example.invalid/team/pl/p1' }));
+  exposeHandles(shaped.text);
+  const handle = /^open: (L\d+) = Mattermost thread/m.exec(shaped.text)?.[1];
+  assert.ok(handle, 'the permalink in the note minted a mattermost handle');
+  const resolved = openTarget('open_source', { handle });
+  assert.ok('target' in resolved);
+  assert.equal(resolved.target.kind, 'mattermost');
+  const bus = new NativeActionBus(1000);
+  const frames: Record<string, unknown>[] = [];
+  const forget = bus.bind('live-open2-origin', frame => { frames.push(frame as unknown as Record<string, unknown>); return true; });
+  const pending = bus.dispatch('live-open2-origin', resolved.target.action, resolved.target.target);
+  assert.equal(frames.length, 1);
+  assert.deepEqual(Object.keys(frames[0]!).sort(), ['action', 'id', 'origin', 'target', 'type'], 'the mattermost frame carries its origin and nothing else');
+  assert.equal(frames[0]!['origin'], 'chat.example.invalid');
+  assert.equal(bus.settle('live-open2-origin', { type: 'native_action_result', id: frames[0]!['id'] as string, ok: true, code: 'opened' }), true);
+  assert.equal(await pending, 'opened');
+  frames.length = 0;
+  const home = bus.dispatch('live-open2-origin', 'open_url', 'https://mail.google.com/mail/u/0/');
+  assert.deepEqual(Object.keys(frames[0]!).sort(), ['action', 'id', 'target', 'type'], 'a non-mattermost frame never carries an origin');
+  bus.settle('live-open2-origin', { type: 'native_action_result', id: frames[0]!['id'] as string, ok: true, code: 'opened' });
+  await home;
+  forget();
+  endHandleSession('live-open2-origin');
 });

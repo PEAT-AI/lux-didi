@@ -159,6 +159,12 @@ function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: r
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
+/** L19: how long after a dead call the next one still opens by naming the drop. */
+const DEAD_LINE_WINDOW_MS = 10 * 60 * 1000;
+/** L19: the codes that mean the previous call was lost, not ended by the owner. */
+const DEAD_LINE_CODES: ReadonlySet<string> = new Set(['resume_failed', 'transport_error', 'provider_closed', 'network']);
+/** L19: what the seed hears after a dead call's last answer, so the new call never repeats it. */
+export const LIVE_DROPPED_LINE_MARK = 'The line dropped before that answer reached me, and I am back. Do not repeat that answer: say in one short sentence that the line dropped, then offer to continue.';
 // Release 3g-c recovery policy (R1-R1), time-budgeted (L18): stalls come in episodes, so the bound is the
 // episode's age, not a count: the call keeps reopening until RECOVERY_BUDGET_MS has passed since the
 // episode's first drop, and a session that stayed healthy for RECOVERY_HEALTHY_MS starts a fresh episode.
@@ -176,6 +182,8 @@ export const SEED_CHAR_LIMIT = 8_000;
 export const MUTE_WARM_MS = 180_000;
 /** After an unmute with an answer held, this much owner silence earns her one short offer of it. */
 export const MUTED_OFFER_SILENCE_MS = 2_000;
+/** L7: a response started under the mute that is older than this is stale at unmute; it is dropped, never played. */
+const MUTE_KEEP_ANSWER_MS = 5_000;
 /** How many silence windows a held answer is offered in: one, plus one retry after a skip. */
 const MUTED_OFFER_ATTEMPTS = 2;
 const MUTED_OFFER_TEXT = 'An answer to my earlier question arrived while I was muted. Tell me in one sentence.';
@@ -313,6 +321,10 @@ interface ActiveSession {
   muted: boolean; mutedAt: number | undefined; muteTimer?: ReturnType<JobTimer> | undefined;
   /** An answer that arrived while muted: its audio was dropped, never played later, and it is offered on unmute. */
   heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined; mutedOfferAttempts: number;
+  /** L7: a response that began under the mute is never played at unmute; its frames are dropped until the turn ends. */
+  dropResponse: boolean;
+  /** L7: the muted time inside this turn, so `live_dead_air` measures the wait the owner actually heard. */
+  mutedMs: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
@@ -1310,7 +1322,8 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const seed = this.#seedHistory(liveSessionId, inputClass);
+    const deadLine = this.#deadLineBefore(liveSessionId);
+    const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
     const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
@@ -1344,7 +1357,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, researchAllowed: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1480,6 +1493,11 @@ export class LiveSessionOwner {
     } else {
       handle.muteTimer?.cancel(); handle.muteTimer = undefined;
       this.#armIdle(handle, this.#profile.limits.idleMs);
+      // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
+      // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
+      handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
+      // The exception is a question answered in full and still fresh; if in doubt, the response is dropped.
+      handle.dropResponse = handle.heldAnswer || handle.speaking || (handle.thinking && handle.firstAudioAt !== undefined && now - handle.firstAudioAt >= MUTE_KEEP_ANSWER_MS);
       // The held answer offer owns the reply the mute deferred; only the next owner turn or provider
       // output arms the watchdog again, so an unmute can never nudge or reopen on the dropped debt.
       this.#armMutedOffer(handle);
@@ -1864,7 +1882,26 @@ export class LiveSessionOwner {
   }
 
   /** Seed for a new provider session: the conversation's recent exchanges, never half an exchange. */
-  #seedHistory(liveSessionId: string, inputClass: DataClass): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
+  /** L19: the previous call in this conversation ended in a drop inside the window, so its last answer was never heard. */
+  #deadLineBefore(liveSessionId: string): boolean {
+    const now = this.#now();
+    const conversationId = this.#conversationOf(liveSessionId);
+    return this.#store.transaction(tx => {
+      const row = tx.get(
+        `SELECT s.terminal_at AS at,s.terminal_outcome AS outcome FROM live_sessions s
+           JOIN live_session_conversations c ON c.live_session_id=s.live_session_id
+          WHERE c.conversation_id=? AND s.live_session_id<>? AND s.lifecycle='terminal' AND s.terminal_at IS NOT NULL
+          ORDER BY s.terminal_at DESC,s.rowid DESC LIMIT 1`, [conversationId, liveSessionId]);
+      if (!row || row['at'] === null || row['at'] === undefined) return false;
+      if (now - Number(row['at']) > DEAD_LINE_WINDOW_MS) return false;
+      try {
+        const outcome = JSON.parse(String(row['outcome'])) as { state?: unknown; code?: unknown };
+        return outcome.state === 'failed' && DEAD_LINE_CODES.has(String(outcome.code));
+      } catch { return false; }
+    });
+  }
+
+  #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
     const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
       "SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id JOIN live_session_conversations c ON c.live_session_id=s.live_session_id WHERE c.conversation_id=? AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id",
@@ -1902,6 +1939,8 @@ export class LiveSessionOwner {
       }
     }
     const kept = exchanges.flat().slice(-128).map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
+    // L19: the dead call's last answer was never heard, so the seed closes it as heard instead of leaving it open.
+    if (deadLine && kept.length > 0 && kept[kept.length - 1]!.role === 'model') kept.push({ role: 'user', text: LIVE_DROPPED_LINE_MARK, dataClass: inputClass });
     return { turns: kept, chars, condensed };
   }
 
@@ -2251,6 +2290,7 @@ export class LiveSessionOwner {
         if (audible || event.type === 'turnComplete') {
           this.#cancelTimers(handle);
         }
+        if (event.type === 'turnComplete' || event.type === 'interrupted') handle.dropResponse = false;
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           resetTurnScript(handle);
@@ -2368,6 +2408,8 @@ export class LiveSessionOwner {
             if (event.audible !== false) { handle.heldAnswer = true; handle.awaitingAnswer = false; }
             continue;
           }
+          // L7: a response that began under the mute is never played late; its frames are dropped until the turn ends.
+          if (handle.dropResponse) { if (event.audible !== false) handle.awaitingAnswer = false; continue; }
           // Only audible speech is SPEAKING (release 3p): the provider streams output frames non-stop, so a frame
           // is model output only when the adapter measured it above the audible threshold.
           if (event.audible === false) {
@@ -2385,7 +2427,7 @@ export class LiveSessionOwner {
             const answer = handle.researchAnsweredAt !== undefined;
             hostLogEvent({ event: answer ? 'live_answer_audio' : 'live_first_audio', liveSessionId: handle.liveSessionId, generation, msSinceReady: sinceReady, msSinceOpen: sinceOpen });
             if (handle.inputFinalAt !== undefined) {
-              hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt) });
+              hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs) });
               handle.inputFinalAt = undefined;
             }
           }
@@ -2403,7 +2445,7 @@ export class LiveSessionOwner {
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal) {
-            handle.inputFinalAt = handle.inputAt;
+            handle.inputFinalAt = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
             }
@@ -2476,7 +2518,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
-      handle.inputFinalAt = this.#now();
+      handle.inputFinalAt = this.#now(); handle.mutedMs = 0;
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));
     handle.inputFinalTimer.unref();

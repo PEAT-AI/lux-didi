@@ -564,12 +564,16 @@ for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_
   assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
 });
 
-test('a thrown MCP transport failure is logged without exception payload and remains unknown', async t => {
+test('a thrown MCP transport failure is logged without exception payload and reports the closed stage', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
-  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'timeout');
-  assert.deepEqual(events, [{ event: 'tool_failure', code: 'timeout', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'timeout' }]);
+  // ROUTE-R2: an unclassified dispatched failure takes the closed stage from the adapter's own
+  // classifier (failureStage, 994bb035d #211, documented in docs/mcp-adapter.md, pinned by
+  // server/test/mcp.test.ts) and dispatchedFailureCode (e27d3870). The exception's own code is never a
+  // log token, so the `timeout` this mock attaches stays inert and the stage is the protocol rejection.
+  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'sdk_protocol_rejected');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
 test('an oversize unknown outcome is logged as invalid_result, never a generic transport code', async t => {
@@ -706,7 +710,11 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
   assert.equal(event.tool, 'get_insight');
-  assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
+  // ROUTE-R2: get_insight serves ids, id and include_links only (server/connectors/index.ts,
+  // normalizeGetInsightArgs, X2 1373de8a), and its diagnostic field list was set with no limit by
+  // 31cc08d5. An argument the tool does not declare is reported as an unknown-typed field, which is the
+  // intended redaction: the name never reaches the log.
+  assert.deepEqual(event.fields, ['ids:array', 'unknown:number']);
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
 

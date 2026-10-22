@@ -159,12 +159,15 @@ function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: r
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
-// Release 3g-c recovery policy (R1-R1). Stalls come in episodes, so the bound is per episode: a session
-// that stayed healthy for RECOVERY_HEALTHY_MS resets the consecutive-failure count, and the call ends
-// only after RECOVERY_MAX_CONSECUTIVE failed recoveries in a row. Backoff between consecutive attempts.
-const RECOVERY_MAX_CONSECUTIVE = 3;
+// Release 3g-c recovery policy (R1-R1), time-budgeted (L18): stalls come in episodes, so the bound is the
+// episode's age, not a count: the call keeps reopening until RECOVERY_BUDGET_MS has passed since the
+// episode's first drop, and a session that stayed healthy for RECOVERY_HEALTHY_MS starts a fresh episode.
+// Backoff between attempts is 0, 2, 4, 8, then 8 s, and the call's own deadline and idle limits still bound it.
+const RECOVERY_BUDGET_MS = 60_000;
 const RECOVERY_HEALTHY_MS = 60_000;
-const RECOVERY_BACKOFF_MS = [0, 2_000, 5_000] as const;
+const RECOVERY_BACKOFF_MS = [0, 2_000, 4_000, 8_000] as const;
+/** The wait before attempt `index` (0-based): 0, 2, 4, 8, then 8 s. */
+function recoveryBackoffMs(index: number): number { return RECOVERY_BACKOFF_MS[Math.min(index, RECOVERY_BACKOFF_MS.length - 1)]!; }
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
 /** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
 type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
@@ -299,6 +302,10 @@ interface ActiveSession {
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; callDeadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   /** Consecutive failed recoveries in the current episode; reset after RECOVERY_HEALTHY_MS of health. */
   recoveries: number; lastHealthyAt?: number | undefined; lastRecoveryPath?: 'resume' | 'fresh_seeded';
+  /** The first drop of the current episode: the recovery time budget is measured from it. */
+  dropEpisodeAt?: number | undefined;
+  /** A recovery open that threw synchronously: a config or auth refusal, which ends the call at once. */
+  recoveryRefused?: boolean | undefined;
   /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
    *  own audible audio or an ended turn. Inaudible fill never clears it (D3, amendment C). */
   awaitingAnswer: boolean; answerAt: number | undefined;
@@ -434,6 +441,11 @@ function digestItems(digest: string | undefined): number {
 export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly ageAfterMs: number | null; readonly assembled: boolean;
   /** Which source the assembly came from: a start's own sections, this owner's sources, or nothing that fit. */
   readonly reason: 'sections' | 'sources' | 'too_large' | 'unconfigured' };
+
+/** L14: a breath is not a word. The provider's non-lexical tags never reach the journal or the script count;
+ *  a closed list only, so any other bracketed text is the owner's own and stays untouched. */
+const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
+export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ' ').replace(/\s+/gu, ' ').trim(); }
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
@@ -580,6 +592,16 @@ function dominantClause(text: string, words: ReadonlySet<string>): string {
 const contentWords = (text: string): string[] => tokens(text)
   .filter(word => word.length >= 3 && !MEMORY_STOP_WORDS.has(word) && !MEMORY_FRAMING_WORDS.has(word)
     && !MEMORY_AFFIRM.has(word) && !MEMORY_DENY.has(word));
+/** What she must say when a note did not reach memory: plain English, persona-independent, actionable. */
+const REFUSAL_GUIDANCE: Readonly<Record<string, string>> = {
+  already_remembered: 'That note is already saved, so nothing new was stored. Tell the owner it is already in memory.',
+  owner_text_mismatch: 'The note was not saved: it did not match what the owner said. Tell the owner the note was not saved and ask them to say it in one sentence.',
+  owner_transcript_not_final: 'The note was not saved: the end of what the owner said never arrived. Tell the owner the note was not saved and ask them to say it in one sentence.',
+  private_memory_unsupported: 'The note was not saved. Tell the owner the note was not saved and ask them to say it in one sentence, on its own, if they want it kept.',
+};
+const DEFAULT_REFUSAL_GUIDANCE = 'The note was not saved. Tell the owner the note was not saved and ask them to say it in one sentence.';
+/** A note keeping less than this share of the owner's ask is a fragment, and she says which fragment was kept. */
+const MEMORY_PARTIAL_RATIO = 0.2;
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
   // The note is the model's clean paraphrase; the owner's own words are only the support for it.
@@ -604,7 +626,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   // One ask: the narrowest span of ADJACENT turns, latest first, that carries the note's words.
   const wordSet = new Set(words);
   const turnTokens = turns.map(turn => new Set(tokens(turn.text)));
-  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; feels: 'affirm' | 'deny' | undefined } | undefined;
+  let ask: { turn: { seq: number; text: string }; ratio: number; supported: number; feels: 'affirm' | 'deny' | undefined; request: string } | undefined;
   for (let end = turns.length - 1; end >= 0 && !ask; end--) {
     for (let width = 1; width <= MEMORY_SPAN_TURNS && end - width + 1 >= 0; width++) {
       const first = end - width + 1;
@@ -614,6 +636,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
       const ratio = words.length ? supported.length / words.length : 0;
       if (ratio < MEMORY_SUPPORT_RATIO) continue;
       ask = { turn: turns[end]!, ratio, supported: supported.length,
+        request: turns.slice(first, end + 1).map(turn => turn.text).join(' '),
         feels: feel(dominantClause(turns.slice(first, end + 1).map(turn => turn.text).join(' '), wordSet)) };
       break;
     }
@@ -621,14 +644,17 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const receipt = (result: JsonObject, metrics = { ratio: windowRatio, supported: windowSupported.length }): JsonObject => {
     hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'),
       words: words.length, supported: metrics.supported, supportRatio: Math.round(metrics.ratio * 1000) / 1000, turns: turns.length });
-    return result;
+    // A refusal is never silent: the model is told what to say, so the owner hears that nothing was kept.
+    if (result.remembered === true) return result;
+    const code = String(result.code ?? '');
+    return { ...result, guidance: REFUSAL_GUIDANCE[code] ?? DEFAULT_REFUSAL_GUIDANCE };
   };
   const pointer = normalized(noteText);
   if (!pointer) return receipt({ remembered: false, code: 'owner_text_mismatch' });
   // A note copied word for word from one utterance names that utterance, whatever the span search found.
   for (let index = turns.length - 1; index >= 0; index--) {
     if (!normalized(turns[index]!.text).includes(pointer)) continue;
-    ask = { turn: turns[index]!, ratio: 1, supported: words.length, feels: feel(dominantClause(turns[index]!.text, wordSet)) };
+    ask = { turn: turns[index]!, ratio: 1, supported: words.length, request: turns[index]!.text, feels: feel(dominantClause(turns[index]!.text, wordSet)) };
     break;
   }
   if (!ask) {
@@ -656,6 +682,12 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
+  // A fragment kept is a partial memory, never a silent one: she says which words were saved.
+  const requestWords = contentWords(ask.request);
+  if (requestWords.length > 0 && words.length / requestWords.length < MEMORY_PARTIAL_RATIO) {
+    return receipt({ remembered: true, entryId: entry.id, status: 'partial',
+      guidance: `Only part of that was saved: "${noteText}". Tell the owner what was saved and ask for the rest in one sentence.` }, metrics);
+  }
   return receipt({ remembered: true, entryId: entry.id }, metrics);
 }
 
@@ -1242,6 +1274,11 @@ export class LiveSessionOwner {
     this.#expiryTimer = undefined;
     const handles = [...this.#active.values()];
     for (const handle of handles) {
+      // The app quit with the call still live: the session ends here, named apart from the Stop button.
+      if (!this.#settled(handle)) {
+        this.#settle(handle, { state: 'closed', code: 'app_quit' }, true, 'ended', null);
+        hostLogEvent({ event: 'session_end', reason: 'app_quit', msAfterStop: 0 });
+      }
       handle.consumer?.discard();
       handle.session.close();
     }
@@ -1893,6 +1930,7 @@ export class LiveSessionOwner {
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    handle.recoveryRefused = false;
     // #1022 F1: the scheduler this handle carried answered for the generation that just ended.
     handle.researchScheduler = undefined; handle.researchSchedulerGeneration = undefined;
     // #527: a new socket is not the old socket's health. Clearing it here makes the three-strike ceiling
@@ -1934,7 +1972,11 @@ export class LiveSessionOwner {
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
-    } catch { return false; }
+    } catch {
+      // A synchronous refusal is configuration, not transport: it ends the call instead of spending the budget.
+      handle.recoveryRefused = true;
+      return false;
+    }
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
     // #525: a recovery is opened only when the provider says the session is live. A socket that dies before
     // its ready event is a failed attempt that pays its backoff, never an opening that re-enters the loop.
@@ -1959,25 +2001,28 @@ export class LiveSessionOwner {
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
   #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+      msSinceDrop: handle.dropEpisodeAt === undefined ? 0 : Math.max(0, this.#now() - handle.dropEpisodeAt),
       liveSessionId: handle.liveSessionId, generation: handle.generation });
   }
 
   /**
    * Recover from a dropped connection (R1-R1): reuse the saved handle when it is reusable, else open a
-   * fresh seeded setup; a failed resume falls through to one fresh seeded attempt. Each socket open counts
-   * against the per-episode bound, backoff is 0/2/5 s, and the current session deadline does not move.
+   * fresh seeded setup; a failed resume falls through to one fresh seeded attempt. The bound is the
+   * episode's time budget, backoff is 0/2/4/8 s, and the current session deadline does not move.
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
     const now = this.#now();
     // #527: the healthy-episode reset is judged once per drop, then the stamp is cleared, so a dead session
-    // that follows a healthy one starts its own count instead of inheriting the reset.
-    if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) handle.recoveries = 0;
+    // that follows a healthy one starts its own episode instead of inheriting the reset.
+    if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) { handle.recoveries = 0; handle.dropEpisodeAt = undefined; }
     handle.lastHealthyAt = undefined;
-    if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    if (handle.dropEpisodeAt === undefined) handle.dropEpisodeAt = now;
+    // The episode's budget, not its attempt count: the network may come back well inside a minute.
+    if (now - handle.dropEpisodeAt >= RECOVERY_BUDGET_MS) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     const remaining = handle.deadlineAt - now, idle = handle.idleAt - now;
     const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - now);
     if (remaining <= 0 || idle <= 0 || window <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
-    const backoff = RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!;
+    const backoff = recoveryBackoffMs(handle.recoveries);
     if (backoff > 0) await this.#delay(backoff);
     if (this.#settled(handle)) return false;
     const failedResume = handle.lastRecoveryPath === 'resume';
@@ -1990,11 +2035,12 @@ export class LiveSessionOwner {
     const reason = reasonOverride ?? outcome?.code ?? null;
     const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
     let opened = await this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
+    if (!opened && handle.recoveryRefused) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     if (!opened && path === 'resume') {
       this.#logRecovery(handle, 'resume', 'open_failed', closeCode, reason, seed);
       handle.recoveries += 1;
-      if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
       opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, reason);
+      if (!opened && handle.recoveryRefused) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     }
     if (opened) {
       // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
@@ -2006,9 +2052,8 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return false;
     this.#logRecovery(handle, path, 'open_failed', closeCode, reason, seed);
     handle.recoveries += 1;
-    if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     // A refusal pays its own backoff before the next attempt rather than ending the call.
-    await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);
+    await this.#delay(recoveryBackoffMs(handle.recoveries));
     if (this.#settled(handle)) return false;
     return this.#recoverFromDrop(handle, outcome, forceFresh, reasonOverride);
   }
@@ -2027,7 +2072,7 @@ export class LiveSessionOwner {
     const remaining = Math.min(this.#profile.limits.sessionMs, callRemaining);
     const window = Math.min(10_000, Math.max(1, remaining));
     const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
-    handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded';
+    handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded'; handle.dropEpisodeAt = undefined;
     const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline', false);
     if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
     this.#logRecovery(handle, 'fresh_seeded', 'session_deadline', null, 'session_timeout', seed);
@@ -2347,7 +2392,7 @@ export class LiveSessionOwner {
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
-        if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
+        if (event.type === 'outputTranscription') countTurnScript(handle, stripNonLexicalTags(event.text));
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
@@ -2968,7 +3013,9 @@ export class LiveSessionOwner {
     this.#noteState(handle, 'tool');
   }
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
-    const text = 'text' in event ? event.text : null;
+    const raw = 'text' in event ? event.text : null;
+    const isTranscript = event.type === 'inputTranscription' || event.type === 'outputTranscription';
+    const text = raw !== null && isTranscript ? stripNonLexicalTags(raw) : raw;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
     const toolJSON = 'tool' in event ? JSON.stringify(event.tool) : null;

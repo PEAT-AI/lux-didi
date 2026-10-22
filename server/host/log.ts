@@ -377,11 +377,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
     if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
+    if (!isSafeCount(value.msSinceDrop)) return;
     if (!isSafeToken(value.code)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
@@ -486,7 +487,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'session_end') {
     // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
     if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
-    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed') return;
+    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed' && value.reason !== 'app_quit') return;
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }

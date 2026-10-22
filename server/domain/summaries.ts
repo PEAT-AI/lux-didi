@@ -159,34 +159,46 @@ export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
     deadHost: deadHostOutcome(row['outcome']) }));
 }
 
-export interface FailedSummaryCandidate { liveSessionId: string; endedAt: number | null }
+/** The failure classes a later host start may retry; a refusal, a denied route or unparsable output is sealed. */
+export const RETRYABLE_FAILURE_CODES = ['deadline', 'cancelled', 'network', 'credential_unavailable', 'provider', 'model_error'] as const;
+
+export interface FailedSummaryCandidate { liveSessionId: string; endedAt: number | null; retryCount: number }
 
 /**
- * Failed-deadline rows whose session journal still exists, newest first; the host-start requeue list.
- * A row whose journal was already pruned or deleted cannot be distilled again and is never returned.
+ * Failed rows a later host start may retry, newest first: only a transient failure class, and only where the
+ * session journal still exists. A row whose journal was pruned cannot be distilled again and is never returned.
  */
-export function failedDeadlineSessionsWithJournal(tx: Transaction, limit: number): FailedSummaryCandidate[] {
+export function failedRetryableSessionsWithJournal(tx: Transaction, limit: number): FailedSummaryCandidate[] {
   if (!hasTable(tx)) return [];
   return tx.all(
-    `SELECT c.live_session_id AS id, c.ended_at AS ended_at
+    `SELECT c.live_session_id AS id, c.ended_at AS ended_at, c.retry_count AS retry_count
        FROM conversation_summaries c
-      WHERE c.status = 'failed' AND c.error_code = 'deadline'
+      WHERE c.status = 'failed' AND c.error_code IN (${RETRYABLE_FAILURE_CODES.map(() => '?').join(',')})
         AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=c.live_session_id)
         AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)
       ORDER BY (c.ended_at IS NULL), c.ended_at DESC, c.rowid DESC
-      LIMIT ?`, [limit],
-  ).map(row => ({ liveSessionId: String(row['id']), endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']) }));
+      LIMIT ?`, [...RETRYABLE_FAILURE_CODES, limit],
+  ).map(row => ({ liveSessionId: String(row['id']), retryCount: Number(row['retry_count'] ?? 0),
+    endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']) }));
 }
 
-/** Total failed-deadline rows with a surviving journal, so the requeue can report what it left for later. */
-export function countFailedDeadlineSessionsWithJournal(tx: Transaction): number {
+/** Total retryable failed rows with a surviving journal, so a requeue can report what it left for later. */
+export function countFailedRetryableSessionsWithJournal(tx: Transaction): number {
   if (!hasTable(tx)) return 0;
   const row = tx.get(
     `SELECT COUNT(*) AS n FROM conversation_summaries c
-      WHERE c.status = 'failed' AND c.error_code = 'deadline'
+      WHERE c.status = 'failed' AND c.error_code IN (${RETRYABLE_FAILURE_CODES.map(() => '?').join(',')})
         AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=c.live_session_id)
-        AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)`);
+        AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)`, [...RETRYABLE_FAILURE_CODES]);
   return Number(row?.['n'] ?? 0);
+}
+
+/** Close a failed row that spent its retry budget or its age, so no later start retries it again. */
+export function closeFailedRetry(tx: Transaction, liveSessionId: string): boolean {
+  const row = tx.get("SELECT id FROM conversation_summaries WHERE live_session_id=? AND status='failed'", [liveSessionId]);
+  if (!row) return false;
+  tx.run("UPDATE conversation_summaries SET error_code='retry_exhausted' WHERE live_session_id=? AND status='failed'", [liveSessionId]);
+  return true;
 }
 
 /** Remove a failed row so distillation may run once more for its session; refuses any non-failed row. */

@@ -40,7 +40,6 @@ interface Harness {
   subcalls: ResearchSubcallLog[];
   executed: string[];
   progress: ResearchProgress[];
-  selectorCalls: () => number;
 }
 
 function harness(opts: {
@@ -49,7 +48,6 @@ function harness(opts: {
   execute?: ResearchDeps['execute'];
   memory?: (query: string) => { lines: string[]; text: string; total: number };
   schedule?: ResearchDeps['schedule'];
-  selected?: () => void;
 } = {}): Harness {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
@@ -57,7 +55,6 @@ function harness(opts: {
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
   const progress: ResearchProgress[] = [];
-  let selectorCalls = 0;
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
@@ -71,8 +68,6 @@ function harness(opts: {
     logRouted: event => routed.push(event),
     logSource: event => sources.push(event),
     logSubcall: event => { subcalls.push(event); },
-    // A selector that answers, so "it was not called" is a real observation rather than a refusal.
-    selector: { select: async () => { selectorCalls += 1; opts.selected?.(); return { questionClass: 'cross_source' as const, actions: [], pUseful: {} }; } },
     ledger: new ResearchLedger(),
   };
   const execute = deps.execute;
@@ -84,7 +79,7 @@ function harness(opts: {
         ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
     });
   };
-  return { deps, routed, sources, logs, subcalls, executed, progress, selectorCalls: () => selectorCalls };
+  return { deps, routed, sources, logs, subcalls, executed, progress };
 }
 
 test('a routed start skips the selector and reads every named layer at once', async () => {
@@ -108,7 +103,7 @@ test('a routed start skips the selector and reads every named layer at once', as
     }, new AbortController().signal),
     new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('lookups did not overlap')), 1_000).unref(); }),
   ]);
-  assert.equal(h.selectorCalls(), 0, 'the selector is never called on a routed start');
+  assert.equal('selector' in h.deps, false, 'no selector rides the path a routed start takes');
   assert.deepEqual(entered, ['search_knowledge', 'gmail_search_messages'], 'both lookups were dispatched before either was awaited');
   assert.equal(reply['status'], 'complete');
   assert.deepEqual(reply['sources'], { knowledge: 'ok', mail: 'ok' }, 'one combined reply with per-source status');
@@ -261,9 +256,9 @@ test('both provider declarations carry lookups, and the Gemini dialect flattens 
 test('an unrouted start reads the deterministic plan and never touches memory', async () => {
   const h = harness({ memory: () => { throw Error('memory must not be read'); } });
   await runResearch(h.deps, { action: 'start', question: 'where does the project stand', lookups: [] }, new AbortController().signal);
-  assert.equal(h.selectorCalls(), 0, 'F-B: no lookups never means a selector round');
+  assert.equal('selector' in h.deps, false, 'F-B: no lookups never means a selector round');
   assert.ok(h.executed.includes('search_knowledge'), 'the knowledge prime read is dispatched, exactly as before');
-  assert.equal(h.selectorCalls(), 0, 'F-B: the plan never comes from a selector');
+  assert.equal('selector' in h.deps, false, 'F-B: the plan never comes from a selector');
   assert.deepEqual(h.routed, [], 'no routed receipt without lookups');
 });
 

@@ -286,6 +286,7 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const messages = Array.isArray(data['messages']) ? data['messages'] : [];
+  const sources: ShapedSource[] = [];
   const normalized: MailMessage[] = [];
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
@@ -295,6 +296,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
     const named = header(entry, 'Subject');
     const url = inboxUrl(entry['id']);
+    if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
     // Open2: the handle line rides its own item, so a reply rebuilt from `- ` lines keeps it there.
     const openLine = url ? mintOpenLine({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' }) : undefined;
     const idValue = str(entry['id']);
@@ -317,7 +319,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const note = data['nextPageToken'] ? '\n[upstream continuation available]' : data['sourceIncomplete'] === true ? '\n[upstream coverage incomplete; no continuation token received]' : '';
   const nextPageToken = str(data['nextPageToken']);
   const invalid = messages.length - normalized.length;
-  return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length }),
+  return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length, sources }),
     mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}) } };
 }
 
@@ -336,6 +338,7 @@ export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult 
 
 export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
   const events = Array.isArray(data['events']) ? data['events'] : [];
+  const sources: ShapedSource[] = [];
   const normalized: CalendarEvent[] = [];
   const blocks = events.filter(isRecord).map(entry => {
     const start = isRecord(entry['start']) ? field(entry['start'], 'dateTime', 'date') : str(entry['start']);
@@ -357,6 +360,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
     if (description) lines.push(`  ${description}`);
     const link = field(entry, 'htmlLink');
+    if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
     if (openLine) lines.splice(1, 0, openLine);
     const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
@@ -371,7 +375,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
   const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
   const nextPageToken = str(data['nextPageToken']);
-  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || data['sourceIncomplete'] === true || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length }),
+  return { ...capped({ text, partial: body.omitted > 0 || unread > 0 || Boolean(nextPageToken) || data['sourceIncomplete'] === true || normalized.some(event => event.bodyTruncated), originalCharacters: blocks.join('\n').length, omittedCharacters: blocks.slice(CALENDAR_EVENTS).join('\n').length, sources }),
     calendarPage: { ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), events: normalized, received: normalized.length, localOmitted: Math.max(0, normalized.length - CALENDAR_EVENTS), unread, ...(nextPageToken ? { nextPageToken } : {}) } };
 }
 

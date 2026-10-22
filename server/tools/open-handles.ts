@@ -83,12 +83,12 @@ let minted = 0;
 /** One registry per Live session: a new session drops every handle the last one minted. */
 export function beginHandleSession(runId: string): void {
   if (session === runId) return;
-  handles.clear(); exposed.clear(); minted = 0; session = runId;
+  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = runId;
 }
 
 export function endHandleSession(runId: string): void {
   if (session !== runId) return;
-  handles.clear(); exposed.clear(); minted = 0; session = undefined;
+  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = undefined;
 }
 
 /** A handle resolves only when its line was in the text the model was actually given. */
@@ -105,12 +105,17 @@ export function exposeHandles(text: string): void {
 }
 
 /** A line shaped like a handle line, which only the host writes; tool text carrying one is stripped. */
-const OPEN_LINE = /^\s*open: L[0-9]{1,4}(?:\s*=|[\s]|$)/;
+const OPEN_LINE = /^\s*open: L[0-9]{1,4}(?:\s*=|\s|$)/;
+/** The exact handle lines this session minted, so a lookalike inside a body is never taken for one. */
+const mintedLines = new Set<string>();
 
-/** Open2: a mail body or note cannot smuggle a handle line into the model text before minting runs. */
+/**
+ * Open2: a mail body, note or chat post cannot smuggle a handle line into the model text. Only a line
+ * the host itself minted survives, and this runs before any minting this result still owes.
+ */
 export function stripOpenLines(text: string): string {
   if (!text.includes('open: L')) return text;
-  return text.split('\n').filter(line => !OPEN_LINE.test(line)).join('\n');
+  return text.split('\n').filter(line => !OPEN_LINE.test(line) || mintedLines.has(line.trim())).join('\n');
 }
 
 function safeTitle(title: string): string {
@@ -147,7 +152,9 @@ export function mintOpenLine(source: SourceLink): string | undefined {
   const handle = `L${++minted}`;
   const title = safeTitle(source.title);
   handles.set(handle, { handle, url: destination.url, kind: destination.kind, provenance, title });
-  return `open: ${handle} = ${title}${provenance === 'knowledge_body' ? ' (from knowledge note)' : ''}`;
+  const line = `open: ${handle} = ${title}${provenance === 'knowledge_body' ? ' (from knowledge note)' : ''}`;
+  mintedLines.add(line);
+  return line;
 }
 
 export function withOpenHandles<T extends { text: string; sources?: readonly SourceLink[] }>(result: T): T {

@@ -2230,7 +2230,7 @@ test('three consecutive failed recoveries end the call, each with its own new so
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
 });
 
-test('#527: a healthy minute between drops resets the consecutive-failure count', async t => {
+test('#527: sockets that die before ready end the call at the ceiling instead of storming', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-reset-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -2239,23 +2239,21 @@ test('#527: a healthy minute between drops resets the consecutive-failure count'
   const { session, attachment } = await attached(h, 'recovery-reset');
   h.f.send({ serverContent: { inputTranscription: { text: 'first turn', finished: true } } });
   await settlePort();
-  // Two sockets die before their ready event: each is a failed attempt, and each pays its own backoff.
+  const first = h.f.connections;
   h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 2);
-  h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
-  // The third socket becomes live and stays healthy for a minute.
-  h.f.send({ setupComplete: {} });
-  await advanceUntil(h.advance, scheduler, () => h.owner.current().state === 'listening');
-  scheduler.now += 55_000;
-  h.f.remoteClose('', 1011);
-  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
+  // Every new socket dies before its ready event: each is one failed attempt that pays its own backoff.
+  for (const expected of [2, 3, 4]) {
+    await advanceUntil(h.advance, scheduler, () => h.f.connections >= expected);
+    h.f.remoteClose('', 1011);
+  }
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' }, 'the ceiling ends the call');
+  assert.equal(h.f.connections, 4, 'one socket and three attempts, never an endless round');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attempt?: number; code?: string });
   const recoveries = lines.filter(line => line.event === 'live_recovery');
-  assert.deepEqual(recoveries.map(line => line.code), ['open_failed', 'open_failed', 'open_failed'], 'every dead socket is a failed attempt');
-  assert.equal(recoveries.at(-1)!.attempt, 1, 'the healthy minute reset the consecutive-failure count');
+  assert.deepEqual(recoveries.map(line => line.code), ['open_failed', 'open_failed', 'open_failed'], 'a socket that never said ready is a failed attempt, never an opening');
+  assert.deepEqual(recoveries.map(line => line.attempt), [1, 2, 3], 'and the count is consecutive');
   h.owner.revoke(session.liveSessionId);
-  await attachment.done;
+  void first;
 });
 
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {
@@ -4990,6 +4988,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
       : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
   });
   const { session } = await openPort(h, `progress-pages-${source}`);
+  await ownerInput(fake);
   const args = { action: 'start', question: 'Synthetic pages', lookups: [{ source, query: source === 'calendar' ? 'week' : 'subject:synthetic' }] };
   fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();

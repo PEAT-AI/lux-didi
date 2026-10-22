@@ -7,8 +7,8 @@ import Foundation
     static func main() async {
         do {
             try await MainActor.run { try run() }
-            print("PASS mute race: held mute, stale ended and ready fenced, current failure visible, "
-                + "ten taps keep the parity")
+            print("PASS mute race: warm mute held open, resume without a reconnect, muted cold after the "
+                + "session ends, stale callbacks fenced, current failure visible, ten taps keep the parity")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -65,6 +65,13 @@ import Foundation
             pending.append(Event(time: time, generation: generation, kind: kind, order: order))
             order += 1
         }
+        /// The host ends the open session itself, the way a 180 s mute expiry or a provider drop does:
+        /// one ended callback, delivered late like every other.
+        func endSession() {
+            guard openGeneration != 0 else { return }
+            queue(.ended, generation: openGeneration, at: now + randomDelay())
+            openGeneration = 0
+        }
         func failNextSession() {
             guard !opens.isEmpty else { return }
             pending.removeAll { $0.kind == .ready }
@@ -96,7 +103,7 @@ import Foundation
         let host = Host()
         let presence = host.presence
 
-        // Acceptance 1: live, tap, and the mute holds for hours on the same conversation.
+        // Acceptance 1: live, tap, and the mute holds the same session warm for the whole window.
         presence.tap(.hotkey)
         try require(presence.state == .connecting, "a cold tap opens a session")
         host.settle()
@@ -104,55 +111,68 @@ import Foundation
         let conversation = host.conversationId
         try require(host.opens.count == 1 && host.opens[0].conversationId == conversation,
             "the first session opens on the app's conversation")
-        host.opens.removeAll(); host.closes = 0; host.fences.removeAll()
+        let warmGeneration = presence.generation
+        host.opens.removeAll(); host.closes = 0; host.fences.removeAll(); host.inputs.removeAll()
         presence.tap(.hotkey)
         try require(presence.state == .hotMuted && presence.mutedHeld, "a tap from live holds the mute")
-        try require(host.closes == 1, "the mute ends the provider session")
+        try require(host.closes == 0, "the mute keeps the provider session open, got \(host.closes) closes")
         try require(host.fences == [true], "the mute closes the audio fence, got \(host.fences)")
-        try require(host.inputs.last == true, "the provider input is muted at the same instant")
+        try require(host.inputs == [true], "the provider input is muted at the same instant, got \(host.inputs)")
         try require(host.opens.isEmpty, "the mute opens nothing")
         host.settle()
-        try require(presence.state == .hotMuted && presence.mutedHeld,
-            "the closed session's end never demotes the held mute")
-        host.advance(to: host.now + 3 * 3600)
-        try require(presence.state == .hotMuted, "three hours later the mute is still held, with no session")
+        try require(presence.state == .hotMuted && presence.mutedHeld && presence.mutedWarm,
+            "the kept session's own callbacks never demote the warm mute")
+        host.advance(to: host.now + 60)
+        try require(presence.state == .hotMuted && host.closes == 0,
+            "a minute muted changes nothing and closes nothing")
+        // The unmute inside the window: live again on the same session, no provider call at all.
+        host.fences.removeAll(); host.inputs.removeAll()
         presence.tap(.hotkey)
-        try require(presence.state == .connecting, "a tap in MUTED goes to connecting")
+        try require(presence.state == .live && presence.generation == warmGeneration,
+            "an unmute inside the window is live on the same session and generation")
+        try require(host.opens.isEmpty, "the resume opens no provider session, got \(host.opens.count)")
+        try require(host.fences == [false] && host.inputs == [false],
+            "the resume opens the fence and lifts the provider input mute, got \(host.fences) \(host.inputs)")
+        try require(!presence.mutedWarm, "a resumed session is no longer on the held mute")
+
+        // Acceptance 2: the host expires the mute at 180 s. The session ends, the mute stays held and
+        // cold, and the next tap opens exactly one new session on the same conversation.
+        presence.tap(.hotkey)
+        try require(presence.state == .hotMuted && presence.mutedWarm, "the tap mutes warm again")
+        host.endSession()
+        host.settle()
+        try require(presence.state == .hotMuted && presence.mutedHeld && !presence.mutedWarm,
+            "the ended session leaves a held, cold mute")
+        try require(presence.posture.muted, "a muted-cold owner still sees the purple mute")
+        host.opens.removeAll()
+        presence.tap(.hotkey)
+        try require(presence.state == .connecting, "a tap in a muted-cold state connects")
         try require(host.opens.count == 1 && host.opens[0].conversationId == conversation,
-            "the unmute opens exactly one session on the same conversation, got \(host.opens)")
+            "the reconnect opens exactly one session on the same conversation, got \(host.opens)")
         host.settle()
-        try require(presence.state == .live && host.fences.last == false,
-            "the new session's readiness opens the orb and the mic")
+        try require(presence.state == .live, "the new session's readiness makes her live")
 
-        // Acceptance 2: the old generation's end lands twice, synchronously and 50 ms later.
-        host.opens.removeAll(); host.fences.removeAll(); host.minimumDelay = 0.2
+        // Acceptance 6: a stale ready or ended from an earlier generation changes nothing.
+        host.minimumDelay = 0.2
+        let stale = presence.generation
         presence.tap(.hotkey)
         try require(presence.state == .hotMuted, "the tap mutes")
-        presence.tap(.hotkey)
-        try require(presence.state == .connecting, "the next tap reconnects")
         host.advance(to: host.now + 0.06)
-        try require(presence.state == .connecting,
-            "both ends of the old generation are ignored while the new one connects")
-        host.settle()
-        try require(presence.state == .live, "the new generation's readiness makes her live")
         host.minimumDelay = 0
+        try require(presence.state == .hotMuted,
+            "the earlier generation's callbacks never move the held mute")
 
-        // Acceptance 3: a stale ready after a new mute never opens live.
-        let staleReady = presence.generation
-        presence.tap(.hotkey)
-        try require(presence.state == .hotMuted, "the tap mutes")
-        presence.ready(staleReady)
-        try require(presence.state == .hotMuted, "a ready from the generation the owner left opens nothing")
-
-        // Acceptance 4: a current-generation failure fails visible, on the same held conversation.
+        // A genuine failure of the session that opens from a muted tap still goes cold and says so.
+        host.endSession()
         presence.tap(.hotkey)
         try require(presence.state == .connecting, "the tap reconnects")
         host.failNextSession()
         host.settle()
         try require(presence.state == .cold && presence.failed, "a genuine failure goes cold and says so")
         try require(host.receipts.last?["trigger"] as? String == "error", "the failure receipt names the error")
+        try require(stale != 0, "the fenced generation is real")
 
-        // Acceptance 5: ten alternating taps, each with its own delay, keep the tap parity.
+        // Acceptance 5: ten alternating taps, each with its own delay, end on the parity state with one session.
         let ten = Host()
         let machine = ten.presence
         machine.tap(.hotkey)
@@ -167,8 +187,8 @@ import Foundation
         ten.settle()
         try require(!seen.contains(.cold), "no tap in the run leaves her cold, saw \(seen)")
         try require(machine.state == .live, "ten taps end live, the parity of the last one")
-        try require(ten.opens.count == 6, "one open for the start and one per even tap, got \(ten.opens.count)")
-        try require(ten.closes == 5, "one close per odd tap, got \(ten.closes)")
+        try require(ten.opens.count == 1, "one open for the start and none for any warm tap, got \(ten.opens.count)")
+        try require(ten.closes == 0, "no warm tap closes a session, got \(ten.closes)")
     }
 
     static func require(_ value: Bool, _ message: String) throws {

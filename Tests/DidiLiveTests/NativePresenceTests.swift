@@ -1,6 +1,6 @@
 import Foundation
 
-/// Presence model, council 2026-10-17 and the held mute of 2026-10-22: the state machine
+/// Presence model, council 2026-10-17 and the warm mute of 2026-10-22: the state machine
 /// behind Right Command, the orb click and the app's mic control. Injected effects only, so
 /// every transition is replayed here with no socket, no engine, no panel and no waiting.
 @main struct NativePresenceTests {
@@ -8,7 +8,7 @@ import Foundation
         do {
             try await MainActor.run { try run() }
             print("PASS native presence: every transition, cancel while connecting, the held mute, "
-                + "the generation fence, sleep teardown, no capture before ready, receipts")
+                + "the generation fence, warm mute and resume, muted cold, sleep teardown, no capture before ready, receipts")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -57,27 +57,52 @@ import Foundation
         presence.ready(presence.generation &- 1)
         try require(presence.state == .live && record.muted == [false], "a stale ready changes nothing")
 
-        // LIVE -> MUTED: fence first, then the queued speech, the provider, and the session.
+        // LIVE -> MUTED: fence first, then the queued speech and the provider input, and the session stays.
         record.calls.removeAll()
+        let warmGeneration = presence.generation
         presence.tap(.hotkey)
         try require(presence.state == .hotMuted && presence.mutedHeld, "a second tap mutes")
-        try require(record.calls == ["fence", "cancelPlayback", "inputMute:true", "close"],
-            "the fence closes first and the session ends with the mute, got \(record.calls)")
+        try require(record.calls == ["fence", "cancelPlayback", "inputMute:true"],
+            "the fence closes first and the session is kept warm, got \(record.calls)")
         try require(record.muted == [false, true], "muting closes the fence")
+        try require(presence.generation == warmGeneration && presence.mutedWarm,
+            "a warm mute holds the generation and the session")
 
-        // The closed session's own end is stale: it never demotes the held mute.
-        presence.sessionEnded(presence.generation &- 1)
+        // The end of a session the owner already left is stale: it never demotes the held mute.
+        presence.sessionEnded(warmGeneration &- 1)
         try require(presence.state == .hotMuted && presence.mutedHeld,
             "the session's end after a mute keeps the owner on MUTED")
 
-        // MUTED -> CONNECTING: the next tap opens a new session, it never restores one that ended.
+        // MUTED -> LIVE without connecting: the same session and generation listen again.
         record.calls.removeAll()
         let before = record.opened.count
+        presence.tap(.click)
+        try require(presence.state == .live && !record.calls.contains("open"),
+            "an unmute inside the window resumes the same session, got \(record.calls)")
+        try require(record.calls == ["fence", "inputMute:false"],
+            "the resume opens the fence and lifts the provider input mute, got \(record.calls)")
+        try require(record.muted.last == false && record.opened.count == before,
+            "the mic opens again on the session that was kept")
+        try require(presence.generation == warmGeneration, "the resume keeps the generation")
+
+        // A second warm round trip, then the session dies while muted: muted cold, never an error.
+        presence.tap(.hotkey)
+        try require(presence.state == .hotMuted && presence.mutedWarm, "the third tap mutes warm again")
+        record.calls.removeAll()
+        presence.sessionEnded(presence.generation)
+        try require(presence.state == .hotMuted && presence.mutedHeld && !presence.mutedWarm,
+            "the session's own end while muted leaves the owner on a held, cold mute")
+        try require(!presence.failed && record.calls.isEmpty,
+            "a muted-cold session closes nothing and shows no error, got \(record.calls)")
+
+        // MUTED-COLD -> CONNECTING: the next tap opens a new session, it never restores one that ended.
+        record.calls.removeAll()
+        let beforeCold = record.opened.count
         presence.tap(.click)
         try require(presence.state == .connecting, "a tap in MUTED opens a new session")
         try require(!presence.mutedHeld && record.calls == ["open"],
             "the muted tap opens a session and touches no fence yet, got \(record.calls)")
-        try require(record.opened.count == before + 1 && record.opened.last == presence.generation,
+        try require(record.opened.count == beforeCold + 1 && record.opened.last == presence.generation,
             "the new session opens under the new generation")
         presence.ready(presence.generation)
         try require(presence.state == .live && record.muted.last == false, "readiness opens the mic again")

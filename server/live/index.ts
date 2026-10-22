@@ -1910,10 +1910,12 @@ export class LiveSessionOwner {
       this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
       return true;
     }
+    // A call that ended while an attempt was waiting for its ready event owes no further attempt.
+    if (this.#settled(handle)) return false;
     handle.recoveries += 1;
     this.#logRecovery(handle, path, 'open_failed', closeCode, reason, seed);
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
-    // A synchronous refusal (rare) retries after the next backoff rather than ending the call.
+    // A refusal pays its own backoff before the next attempt rather than ending the call.
     await this.#delay(RECOVERY_BACKOFF_MS[Math.min(handle.recoveries, RECOVERY_BACKOFF_MS.length - 1)]!);
     if (this.#settled(handle)) return false;
     return this.#recoverFromDrop(handle, outcome, forceFresh, reasonOverride);

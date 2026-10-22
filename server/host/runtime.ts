@@ -471,7 +471,7 @@ export async function startHost(config: HostConfig) {
     const digestNow = config.now ?? Date.now;
     const calendarDigest = new CalendarDigestCache(
       async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: digestTimeZone }),
-      { now: digestNow, timeZone: digestTimeZone });
+      { now: digestNow, timeZone: digestTimeZone, log: event => log.event(event) });
     const digestRefreshLog: CalendarDigestRefreshLog = event => log.event(event);
     refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), now: digestNow, log: digestRefreshLog });
     refreshCalendarFirstConnect = bindCalendarFirstConnect({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), startedAt: hostStartedAt, now: digestNow, log: digestRefreshLog });

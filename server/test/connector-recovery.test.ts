@@ -13,6 +13,8 @@ import { toolsMigrations } from '../tools/index.js';
 import { composeMcpRuntime, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
 import { connectionReasonCode } from '../http/server.js';
 import { bindCalendarFirstConnect, bindCalendarRecovery } from '../host/runtime.js';
+import { CalendarDigestCache } from '../live/warm-context.js';
+import { safeEvent } from '../host/log.js';
 import { proveIdentity, type IdentitySource } from '../connectors/identity.js';
 import { mongooseCredentialAtStart } from '../connectors/mongoose.js';
 import type { ConnectorResult } from '../connectors/index.js';
@@ -495,4 +497,33 @@ test('L2: a recovered calendar connector reports the refresh it owed, with its o
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(logged, [{ event: 'calendar_digest_refreshed', reason: 'recovered', ms: 240 }],
     'the recovered read names its edge and how long it took');
+});
+
+test('L2: the background owner reports its start read and its timer read, and a joined read only once', async () => {
+  const receipts: Array<{ event: string; reason?: string; ms?: number }> = [];
+  let clock = 50_000;
+  let reads = 0;
+  const cache = new CalendarDigestCache(
+    async () => { reads += 1; clock += 300; return { state: 'present', text: 'one line', items: 1, fetchedAt: clock }; },
+    { now: () => clock, timeZone: 'UTC', intervalMs: 60_000, log: event => { receipts.push(event); } });
+  cache.begin();
+  // The interval is armed but never fires inside this test: the timer edge is driven directly below.
+  await cache.refresh('timer');
+  cache.stop();
+  assert.equal(reads, 2, 'one read at begin and one asked for by the timer');
+  assert.deepEqual(receipts, [
+    { event: 'calendar_digest_refreshed', reason: 'start', ms: 300 },
+    { event: 'calendar_digest_refreshed', reason: 'timer', ms: 300 },
+  ], 'each edge names itself, with the read it paid for');
+  assert.equal(safeEvent(receipts[0])?.reason, 'start', 'the receipt passes the closed allowlist');
+  assert.equal(safeEvent(receipts[1])?.reason, 'timer');
+
+  const joined: Array<{ event: string; reason?: string; ms?: number }> = [];
+  const solo = new CalendarDigestCache(
+    async () => { await new Promise(resolve => setImmediate(resolve)); return { state: 'present', text: 'one line', items: 1, fetchedAt: 1 }; },
+    { now: () => 1, timeZone: 'UTC', log: event => { joined.push(event); } });
+  const firstRead = solo.refresh('start');
+  const secondRead = solo.refresh('timer');
+  await Promise.all([firstRead, secondRead]);
+  assert.deepEqual(joined.map(event => event.reason), ['start'], 'a read a caller joined is reported by the edge that started it');
 });

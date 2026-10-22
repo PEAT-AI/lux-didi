@@ -303,7 +303,7 @@ function oauthRecordAt(configDir: string, base: string): void {
   writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
     schemaVersion: 2, base, clientId: 'client', redirectPort: 45871,
     account: ACCOUNT, accessToken: 'current-access', refreshToken: 'refresh-token-1',
-    expiresAt: 0, consentStartedAt: Date.now(),
+    expiresAt: 1, consentStartedAt: Date.now(),
   }), { mode: 0o600 });
 }
 
@@ -363,7 +363,7 @@ test('1022: a recovery round that never succeeds says so once, with the reason',
     recoveryDelaysMs: FAST, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
   t.after(() => { void runtime.close(); });
   assert.equal(runtime.status().endpoints[0]!.retrying, true);
-  await until(() => runtime.status().endpoints[0]!.retrying === false);
+  await until(() => lifecycle.some(entry => entry.event === 'connector_recovery_exhausted'), 4000);
   const exhausted = lifecycle.filter(entry => entry.event === 'connector_recovery_exhausted');
   assert.equal(exhausted.length, 1, 'one line when the bounded round is spent');
   assert.equal(exhausted[0]!.endpointId, 'mongoose');
@@ -404,7 +404,7 @@ test('1022: a stdio helper that pins a refused identity is replaced before the r
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
     schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT,
     endpoints: [{ id: 'gmail', transport: 'stdio', command: process.execPath, args: [helper, marker, ACCOUNT],
-      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin' },
+      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
       connector: 'google', account: 'local', resource: 'google-gmail', credentialRef: null,
       enabled: true, allowEgress: true, unknownClass: 'private' }],
   }), { mode: 0o600 });

@@ -173,6 +173,8 @@ export const SEED_CHAR_LIMIT = 8_000;
 export const MUTE_WARM_MS = 180_000;
 /** After an unmute with an answer held, this much owner silence earns her one short offer of it. */
 export const MUTED_OFFER_SILENCE_MS = 2_000;
+/** How many silence windows a held answer is offered in: one, plus one retry after a skip. */
+const MUTED_OFFER_ATTEMPTS = 2;
 const MUTED_OFFER_TEXT = 'An answer to my earlier question arrived while I was muted. Tell me in one sentence.';
 /** After a tool response, this much dead air with no model output earns one neutral continuation input. */
 const DEAD_AIR_NUDGE_MS = 8_000;
@@ -305,7 +307,7 @@ interface ActiveSession {
   /** The answer debt the mute suspended, so the unmute resumes exactly the watchdog the owner left. */
   mutedWatchdog: boolean;
   /** An answer that arrived while muted: its audio was dropped, never played later, and it is offered on unmute. */
-  heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined;
+  heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined; mutedOfferAttempts: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
@@ -1299,7 +1301,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, mutedWatchdog: false, heldAnswer: false,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, mutedWatchdog: false, heldAnswer: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1447,16 +1449,35 @@ export class LiveSessionOwner {
    */
   #armMutedOffer(handle: ActiveSession): void {
     if (!handle.heldAnswer) return;
-    handle.heldAnswer = false;
+    handle.mutedOfferAttempts = 0;
+    this.#scheduleMutedOffer(handle);
+  }
+
+  /** One offer window. The held answer goes out only into owner silence, and a window it misses is
+   *  receipted and retried once, so a held answer is never dropped without a record of why. */
+  #scheduleMutedOffer(handle: ActiveSession): void {
     const since = this.#now();
     handle.mutedOfferTimer?.cancel();
     handle.mutedOfferTimer = this.#schedule(() => {
       handle.mutedOfferTimer = undefined;
-      if (this.#settled(handle) || handle.muted) return;
-      if (handle.inputAt !== undefined && handle.inputAt >= since) return;
-      try { handle.session.sendText({ text: MUTED_OFFER_TEXT }); } catch { /* a closed transport owes no offer */ }
+      if (this.#settled(handle) || handle.muted || !handle.heldAnswer) return;
+      const ownerSpoke = handle.inputAt !== undefined && handle.inputAt >= since;
+      if (ownerSpoke) { this.#mutedOfferSkipped(handle, 'owner_spoke'); return; }
+      try { handle.session.sendText({ text: MUTED_OFFER_TEXT }); handle.heldAnswer = false; }
+      catch { this.#mutedOfferSkipped(handle, 'send_failed'); }
     }, MUTED_OFFER_SILENCE_MS);
     handle.mutedOfferTimer.unref?.();
+  }
+
+  /** The skip is a receipt and a retry: the answer stays held, so a later window or a later unmute
+   *  still carries it, and the log names the reason this window could not. */
+  #mutedOfferSkipped(handle: ActiveSession, reason: 'owner_spoke' | 'send_failed'): void {
+    const now = this.#now();
+    hostLogEvent({ event: 'live_mute', liveSessionId: handle.liveSessionId, generation: handle.generation,
+      muted: handle.muted, warm: !this.#settled(handle), msSinceMute: Math.max(0, now - (handle.mutedAt ?? now)),
+      offer: 'offer_skipped', reason });
+    handle.mutedOfferAttempts += 1;
+    if (handle.mutedOfferAttempts < MUTED_OFFER_ATTEMPTS) this.#scheduleMutedOffer(handle);
   }
 
   #armIdle(handle: ActiveSession, remainingMs: number): void {
@@ -1985,7 +2006,8 @@ export class LiveSessionOwner {
     handle.session.sendText({ text });
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    // Same rule as provider activity: the owner's mute suspends the idle clock until the unmute.
+    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs);
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
     this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });

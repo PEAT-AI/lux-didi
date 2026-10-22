@@ -2266,6 +2266,9 @@ test('L7: a response that began under the mute is dropped at unmute, and the mut
   h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
   await tick(); await tick();
   assert.equal(played.length, 0, 'a stale answer is never played at unmute');
+  // The dropped response ends before the next turn begins.
+  h.f.send({ serverContent: { turnComplete: {} } });
+  await tick();
   // A fresh answer after the unmute is played, and the muted 25 s is not counted as dead air.
   h.f.send({ serverContent: { inputTranscription: { text: 'what now', finished: true } } });
   h.f.send({ serverContent: { turnComplete: {} } });

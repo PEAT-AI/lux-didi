@@ -1502,8 +1502,8 @@ export class LiveSessionOwner {
       // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
       // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
       handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
-      // Only a response still in flight that began under the mute is stale; if in doubt, it is dropped.
-      handle.dropResponse = (handle.speaking || handle.thinking) && handle.mutedResponse;
+      // A response whose first audio arrived under the mute is cancelled at once; if in doubt, it is dropped.
+      handle.dropResponse = handle.mutedResponse;
       // The held answer offer owns the reply the mute deferred; only the next owner turn or provider
       // output arms the watchdog again, so an unmute can never nudge or reopen on the dropped debt.
       this.#armMutedOffer(handle);
@@ -2304,11 +2304,11 @@ export class LiveSessionOwner {
         }
         // A held answer stays for the offer; the cancelled response stays cancelled until the next one starts.
         if (event.type === 'turnComplete' || event.type === 'interrupted') handle.mutedResponse = false;
-        if (event.type === 'turnComplete') {
-          handle.answerAt = undefined;
+        if (event.type === 'turnComplete' || event.type === 'generationComplete') {
           // L19 second clause: a reply that was spoken with no transcript row is receipted, never silent.
           if (handle.firstAudioAt !== undefined && !handle.outputJournalled)
             hostLogEvent({ event: 'live_reply_unjournalled', liveSessionId: handle.liveSessionId, generation: handle.generation });
+          if (event.type === 'turnComplete') handle.answerAt = undefined;
         }
         if (event.type === 'modelTurnStarted') {
           // The previous response is over: only now may a new one play (LIVE2-R6 F1).

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
-import { recordHistorySession } from '../domain/history-lifecycle.js';
+import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import {
   SUMMARY_BOOT_REQUEUE_DELAY_MS, SUMMARY_HOST_START_LIMIT, SUMMARY_MAX_RETRIES, SUMMARY_RETRY_BACKOFF_MS,
@@ -218,7 +218,8 @@ test('a pending row left by a host that exited is requeued at the next start', a
   try {
     seedConversation(h.store, 's-pending-crash');
     // The production writer: the row a host that exits mid-summary leaves behind.
-    h.store.transaction(tx => summaries.markSummaryPending(tx, 's-pending-crash', SUMMARY_NOW, { dataClass: 'ordinary', sourceRevision: 1 }));
+    const source = h.store.transaction(tx => historySessionEvidence(tx, 's-pending-crash'))!;
+    h.store.transaction(tx => summaries.markSummaryPending(tx, 's-pending-crash', SUMMARY_NOW, { dataClass: source.dataClass, sourceRevision: source.revision }));
     const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "late"}')]);
     const waits: number[] = [];
     await worker(h.store, model, waits).requeueFailed();

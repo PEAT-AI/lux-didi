@@ -327,6 +327,8 @@ interface ActiveSession {
   connectorRecovery?: Promise<void> | undefined;
   researchLedger: ResearchLedger;
   researchScheduler?: ResearchScheduler | undefined;
+  /** #1022 F1: the latest research batch's delivery gate answer. The scheduler reads it, never a captured copy. */
+  researchAllowed: boolean;
   /** #1022 F1: the generation `researchScheduler` was built for. A rebuild makes a fresh one. */
   researchSchedulerGeneration?: number | undefined;
   registry: readonly ToolDefinition[];
@@ -1305,7 +1307,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -2495,6 +2497,9 @@ export class LiveSessionOwner {
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
   async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    // #1022 F1: the gate answer belongs to the handle, so a batch never inherits a refused one from the batch
+    // that built this session's scheduler.
+    handle.researchAllowed = allowed;
     // #451/RECON-RESEARCH Q6: a lookup started before the owner has spoken spends the greeting on a source
     // nobody asked for, and the opener cancels its own six calls. The first start is answered at once, no
     // source runs, and the model is told to ask again after the owner speaks.
@@ -2508,7 +2513,8 @@ export class LiveSessionOwner {
       };
     }
     const configured = this.#researchSources(handle);
-    const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
+    const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) =>
+      handle.researchAllowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
       // Q1-R3(d): a research run issues several execute batches (search, then hydrate/open/thread, then a
       // retry). They shared handle.toolStep, so executionId (`runId:step:index`) collided and the journal

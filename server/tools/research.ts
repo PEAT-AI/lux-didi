@@ -63,11 +63,8 @@ export const RESEARCH = Object.freeze({
    */
   mailPageCap: 4,
   rateLimitRetryMs: 1_000,
-  /**
-   * ROUTE-1022 (#526): the router decides the unambiguous questions. F3: the selector is off the first-answer
-   * path, so its deadline is the latency it really has (3.6 to 5.9 s on build 35010057), not a cap on waiting.
-   */
-  selectorDeadlineMs: 6_000,
+  /** ROUTE-1022 (#526): the router decides the unambiguous questions, so the selector is a short second opinion. */
+  selectorDeadlineMs: 1_500,
   /** Dead air: the longest the model may wait without a progress line, whatever the run is doing. */
   progressEveryMs: 3_000,
   /**
@@ -3171,10 +3168,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // #260: how this run chose its sources, recorded where the loop decides it. selector dominates a
   // later fallback; the fixed recipe and the single-source hint never override a selector decision.
   let driver: ResearchDriver | undefined;
-  /** F3: the selector runs beside the first answer, so its plan is used only when it is already in hand. */
-  let selectorOutput: SelectorOutput | null | undefined;
-  let selectorSettledMs = 0;
-  let selectorPending: Promise<SelectorOutput | null> | undefined;
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
   const deadlineAt = started + run.deadlineMs;
@@ -3300,30 +3293,14 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         selection = fallbackSelection(question || run.direction || '', configured, now());
         if (driver === undefined) driver = 'fallback';
       } else {
-        // F3: the selector never delays the first answer. It is started here, this round starts the keyword
-        // plan at once, and a plan already in hand is used from the next round on.
         const selStart = now();
-        selectorPending ??= deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]))
-          .then(result => { selectorOutput = result; selectorSettledMs = now() - selStart; return result; })
-          .catch(() => { selectorOutput = null; selectorSettledMs = now() - selStart; return null; });
-        const output = round > 1 && selectorPending !== undefined ? (selectorOutput ?? null) : null;
-        if (output === null) {
-          fallbackUsed = true;
-          usedFallbackThisRound = true;
-          const plan = routed ?? fallbackSelection(question || run.direction || '', configured, now());
-          // F3: a plan that would fan the whole brief out starts with the cheap source instead, and a brief is
-          // never a second read of a source this run already paid for.
-          const brief = plan.actions.some(action => action.kind === 'brief');
-          const quiet = { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
-          // F3: a question with no matched words keeps the brief fan-out of its first round, where it is the
-          // only plan there is. From the second round on a brief would only re-read what is already in hand.
-          selection = brief && (round === 1 || !run.readKinds.has('knowledge_search')) ? plan : quiet;
-          if (driver === undefined) driver = 'fallback';
-        } else {
-          selectorMs += selectorSettledMs;
-          if (driver === undefined) driver = 'selector';
-          if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output;
-        }
+        let output: SelectorOutput | null = null;
+        try {
+          output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].flatMap(entry => entry.kind === 'memory_search' ? [] : [{ kind: entry.kind, summary: entry.summary }]), candidates: candidatesForSelector }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
+        } catch { output = null; }
+        selectorMs += now() - selStart;
+        if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = routed ?? fallbackSelection(question || run.direction || '', configured, now()); if (driver === undefined) driver = 'fallback'; }
+        else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
       }
 
       // A single-source hint must always run that source, even when the question carried no terms

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -211,20 +211,22 @@ test('calendar in-flight continuation retains received events and never replays 
 
 test('calendar R4: real selector JSON parsing preserves named windows and refuses invalid or missing windows', async () => {
   for (const window of ['Wednesday this week', 'next Wednesday', 'this week', 'whenever', 42, undefined]) {
-    const selector = createGeminiSelector({ generate: async () => ({
+    const h = fixture([event(21), event(28)]);
+    h.deps.timeZone = 'UTC';
+    // W2: one configured source has nothing to select, so a selector round needs a second source.
+    h.deps.configured = ['calendar', 'mail'];
+    h.deps.selector = createGeminiSelector({ generate: async () => ({
       status: 'complete', text: JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 1 } }),
       providerContent: { role: 'model', parts: [] }, reason: 'synthetic', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null },
     }) });
-    // F3: the selector's plan no longer decides a first answer, so its parse is asserted where it is read.
-    const output = await selector.select({ question: 'Synthetic named window', questionClass: 'cross_source', direction: undefined, configured: ['calendar', 'mail'], completed: [], candidates: ['calendar_window', 'mail_search'] }, signal());
-    assert.notEqual(output, null, 'the selector answered');
-    const action = output!.actions[0]!;
-    assert.equal(action.kind, 'calendar_window');
-    if (typeof window === 'string') {
-      assert.equal(String(action.window).toLowerCase(), window.toLowerCase(), String(window));
-      if (window !== 'whenever') assert.equal(windowRange(String(action.window), fixedNow, 'UTC').timeMin, windowRange(window, fixedNow, 'UTC').timeMin, String(window));
+    const reply = await runResearch(h.deps, { action: 'start', question: 'Synthetic named window' }, signal());
+    const calls = h.calls.filter(call => call['name'] === 'calendar_list_events');
+    if (typeof window === 'string' && window !== 'whenever') {
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]!['timeMin'], windowRange(window, fixedNow, 'UTC').timeMin, String(window));
     } else {
-      assert.equal(action.window, 'unresolved', 'a missing window is refused, never guessed');
+      assert.equal(calls.length, 0, String(window));
+      assert.match(String(reply['note']), /could not resolve/);
     }
   }
 });
@@ -502,4 +504,17 @@ test('ROUTE-1022: a general question about the week does not force a calendar re
   await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
   // F8: bare "week" is the product's daily language, so the forcing rule stays with the questions the defect named.
   assert.equal(ownerScheduleQuestion('what did the team say this week'), false);
+});
+
+// --- F7: a calendar list with a further page says nothing about the window that was asked for ---
+
+test('F7: a partially read calendar list never takes the completion line from a complete reply', async () => {
+  const h = fixture([event(19)]);
+  h.deps.execute = async subs => subs.map(call => call.name === 'calendar_list_calendars'
+    ? { key: call.key, name: call.name, ok: true, text: '- Work [work@example.com]\n- Home [home@example.com]', originalCharacters: 40, omittedCharacters: 0, calendarScope: { received: 20, partial: true } }
+    : { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19)] }) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, signal());
+  assert.equal(reply['calendarCoverage'] !== undefined, true, 'the calendar was read');
+  assert.equal((reply['calendarCoverage'] as Record<string, unknown>)['calendarListComplete'], false, 'the list really is partial');
+  assert.equal(reply['note'], RESEARCH.completeNote, 'and the completion line is still there, never displaced by the list flag');
 });

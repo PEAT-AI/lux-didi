@@ -310,3 +310,17 @@ test('F2: a rate limit on the first page leaves a closed failure and a plain cov
   assert.equal(receipt.outcome, 'failed');
   assert.match(String(reply['note']), /mail search stopped before the end/u, 'the reply says the mailbox was not read');
 });
+
+// --- F9: a refusal names what to change -------------------------------------
+
+test('F9: each refusal code names the fix, and the generic line stays the fallback', async () => {
+  const { researchRepair } = await import('../tools/research.js');
+  const length = researchRepair('lookup_query_length');
+  assert.match(String(length['guidance']), /keep it under \d+ characters/u, 'the length refusal names the limit');
+  assert.match(String(length['guidance']), /shorten/u, 'and says what to do');
+  const mail = researchRepair('lookup_mail');
+  assert.match(String(mail['guidance']), /\{"source":"mail","mail":\{"q"/u, 'the mail refusal names the accepted search shape');
+  assert.match(String(mail['guidance']), /maxResults/u);
+  assert.match(String(mail['guidance']), /no query beside|carries no query/u, 'and the shape it must not use');
+  assert.match(String(researchRepair('root_type')['guidance']), /No lookup started/u, 'an unmapped reason keeps the generic line');
+});

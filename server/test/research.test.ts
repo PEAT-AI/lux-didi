@@ -1423,8 +1423,8 @@ test('ROUTE-1022: a second start for the same owner question attaches instead of
 });
 
 test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one names what is still reading', async () => {
-  const complete = harness({ selector: knowledge });
-  const done = await runResearch(complete.deps, { action: 'start', question: 'q' }, new AbortController().signal);
+  const complete = harness({ selector: knowledge, executeText: '### Release 3p scope [id 7]\nThe part that fits.' });
+  const done = await runResearch(complete.deps, { action: 'start', question: 'what is the release scope' }, new AbortController().signal);
   assert.equal(done['status'], 'complete');
   assert.equal(done['canContinue'], false);
   assert.equal(done['note'], RESEARCH.completeNote);

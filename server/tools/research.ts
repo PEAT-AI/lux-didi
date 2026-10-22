@@ -3313,10 +3313,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const plan = routed ?? fallbackSelection(question || run.direction || '', configured, now());
           // F3: a plan that would fan the whole brief out starts with the cheap source instead, and a brief is
           // never a second read of a source this run already paid for.
-          const onlyBrief = plan.actions.length === 1 && plan.actions[0]!.kind === 'brief';
-          selection = onlyBrief && !run.readKinds.has('knowledge_search')
-            ? { questionClass: plan.questionClass, actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question || run.direction || '', now()) }], pUseful: { knowledge_search: 0.4 } }
-            : { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
+          const brief = plan.actions.some(action => action.kind === 'brief');
+          const quiet = { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
+          // F3: a question with no matched words keeps the brief fan-out of its first round, where it is the
+          // only plan there is. From the second round on a brief would only re-read what is already in hand.
+          selection = brief && (round === 1 || !run.readKinds.has('knowledge_search')) ? plan : quiet;
           if (driver === undefined) driver = 'fallback';
         } else {
           selectorMs += selectorSettledMs;

@@ -968,6 +968,17 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' });
 });
 
+// MED-1022: the chat date operator token must still be seen as 'compiled' on a run that really compiles
+// one (ROUTE-1022 K5: a question names chat to be read), so the token is never merely the 'none' default.
+test('MED-1022: a run that compiles a chat date operator states it on the knowledge receipt', async () => {
+  const h = harness({ executeText: '### Release 3p scope (decision) [id 412]\nThe part that fits.' });
+  const receipts: ResearchSourceLog[] = [];
+  const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
+  await runResearch(deps, { action: 'start', question: 'what did the team say in chat yesterday' }, new AbortController().signal);
+  const receipt = receipts.find(entry => entry.source === 'knowledge')!;
+  assert.equal(receipt.knowledge?.chatDateOperator, 'compiled', 'the receipt carries the operator the run compiled');
+});
+
 // MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed
 // field list, so the voice fields and the day bounds must be listed or the trace keeps a hash only.
 test('MED-1022: a voice search with a day filter keeps its arguments through the diagnostic projection', () => {

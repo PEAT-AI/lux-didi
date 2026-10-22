@@ -691,6 +691,9 @@ struct NativeLiveInterruptionSample: Sendable {
         journal?.record(NativeAudioEvent(name: name, fields: fields))
     }
 
+    /// Test seam: close the open played window now, so the window arithmetic is provable without a
+    /// five second wait. Production closes it from its own timer only.
+    func flushPlaybackLevelForTesting() { flushPlaybackLevel() }
     /// L12b: one `playback_level` receipt per window of audio Naya actually played, off the audio path.
     /// A window with no frames has no level, so it leaves no line rather than a floor of silence.
     private func flushPlaybackLevel() {
@@ -849,7 +852,7 @@ struct NativeLiveInterruptionSample: Sendable {
     /// refuses, so a quiet call leaves a receipt instead of a guess about what it inherited.
     static func defaultOutputLevel() -> (volume: String, mute: String) {
         let device = defaultDeviceID(input: false)
-        guard device != kAudioObjectUnknown else { return ("unknown", "unknown") }
+        guard device != kAudioObjectUnknown else { return outputLevelText(volume: nil, mute: nil) }
         let virtualMain = outputScalar(device, kAudioHardwareServiceDeviceProperty_VirtualMainVolume)
         let main = outputScalar(device, kAudioDevicePropertyVolumeScalar)
         let channels = [outputScalar(device, kAudioDevicePropertyVolumeScalar, element: 1),
@@ -857,8 +860,13 @@ struct NativeLiveInterruptionSample: Sendable {
         let volume = virtualMain ?? main ?? (channels.isEmpty ? nil : channels.reduce(0, +) / Float(channels.count))
         let mute = outputFlag(device, kAudioDevicePropertyMute)
             ?? outputFlag(device, kAudioDevicePropertyMute, element: 1)
-        return (volume.map { String(format: "%.2f", min(1, max(0, $0))) } ?? "unknown",
-                mute.map { $0 == 0 ? "false" : "true" } ?? "unknown")
+        return outputLevelText(volume: volume, mute: mute)
+    }
+    /// The closed text of one output reading: a scalar inside 0...1 to two decimals and a boolean mute,
+    /// and `unknown` for whichever getter refused, so a missing reading is never a zero and never a crash.
+    static func outputLevelText(volume: Float?, mute: UInt32?) -> (volume: String, mute: String) {
+        (volume.map { String(format: "%.2f", min(1, max(0, $0))) } ?? "unknown",
+         mute.map { $0 == 0 ? "false" : "true" } ?? "unknown")
     }
     private static func outputScalar(_ device: AudioDeviceID, _ selector: AudioObjectPropertySelector,
                                      element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> Float? {

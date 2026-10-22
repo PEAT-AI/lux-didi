@@ -674,11 +674,14 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
     const flags: string[] = [];
     if (/\bimportant\b/.test(text)) flags.push('is:important');
     if (/\bunread\b/.test(text)) flags.push('is:unread');
+    // INTEG-R2: the instruction words of the ask ('list', 'show', 'anything') are no Gmail terms, so a
+    // bare inbox ask is the same recent-inbox scan the compiler builds: in:inbox, 14 days, its flags.
+    const mailKeywords = keywords.filter(word => !MAIL_FILLER.has(word));
     const window = /\btoday\b/.test(text) ? 'newer_than:1d'
       : /\b(this week|week)\b/.test(text) ? 'newer_than:7d'
       : /\byesterday\b/.test(text) ? 'newer_than:2d'
-      : terms ? 'newer_than:14d' : 'newer_than:2d';
-    return { query: ['in:inbox', window, ...flags, ...keywords].join(' ') };
+      : 'newer_than:14d';
+    return { query: ['in:inbox', window, ...flags, ...mailKeywords].join(' ') };
   }
   if (kind === 'chat_search') return { query: `after:yesterday${terms ? ` ${terms}` : ''}` };
   if (kind === 'calendar_window') {

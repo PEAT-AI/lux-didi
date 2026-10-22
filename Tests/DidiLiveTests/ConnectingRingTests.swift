@@ -9,7 +9,7 @@ import Foundation
         do {
             try run()
             try await MainActor.run { try runWiring() }
-            print("PASS connecting ring: E5/A5 pair, 1.8 s repeat, stale start dropped, no ring for muted to live, connected chime after the ramp")
+            print("PASS connecting ring: E5/A5 pair, 1.8 s repeat, stale start dropped, no ring for muted to live, connected chime after the ramp, engine released when it ends")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)

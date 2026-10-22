@@ -77,6 +77,8 @@ enum ConnectingChimeTone {
     static var fadeFrames: Int { Int(sampleRate * Double(fadeMs) / 1000) }
     static var secondOnset: Int { noteFrames + gapFrames }
     static var totalFrames: Int { secondOnset + noteFrames }
+    /// The chime's own length: two tones and the gap between them.
+    static var lengthMs: Int { Int(Double(totalFrames) / sampleRate * 1000) }
 
     static func samples() -> [Float] {
         var out = [Float](repeating: 0, count: totalFrames)
@@ -187,6 +189,9 @@ protocol ConnectingRingOutput: AnyObject {
     func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool
     /// The connected chime: one shot on the same player, after the ring's ramp.
     func playChime(_ buffer: AVAudioPCMBuffer) -> Bool
+    /// Stops the player and the engine: the same pair the ramp-down ends with, so Didi never holds
+    /// the output device between calls.
+    func stopOutput()
     /// A ramp then a stop; `after` runs once the player is silent, so a chime never plays over the ring.
     func rampDown(overMs: Int, after: (@MainActor () -> Void)?)
 }
@@ -219,6 +224,11 @@ final class ConnectingRingPlayer: ConnectingRingOutput {
         player.scheduleBuffer(buffer, at: nil, options: loops ? .loops : [], completionHandler: nil)
         player.play()
         return true
+    }
+
+    func stopOutput() {
+        player.stop()
+        engine.stop()
     }
 
     /// A 30 ms fade then a stop; a second stop cancels the first, and `after` runs only once the
@@ -254,11 +264,17 @@ final class ConnectingRing {
     private var output: ConnectingRingOutput?
     private var startedAt = 0
     private var ringPlayed = false
+    /// Bumped on every play, so a chime's stop can never land on a later sound.
+    private var playToken: UInt64 = 0
+    /// Whether the ring's player and engine are running right now.
+    private var outputRunning = false
 
     private let now: @MainActor () -> Int
     /// One main-actor turn between the ask and the play, so a stop that lands in the same turn
     /// reaches the director before the player ever starts.
     private let deferStart: @MainActor (@escaping @MainActor () -> Void) -> Void
+    /// A bounded wait, so the chime's stop lands after the chime even without a player callback.
+    private let after: @MainActor (Int, @escaping @MainActor () -> Void) -> Void
 
     /// The `connecting_ring` record goes through the existing presence receipt path.
     var receipt: (([String: Any]) -> Void)?
@@ -267,10 +283,17 @@ final class ConnectingRing {
          now: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
          deferStart: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void = { body in
              Task { @MainActor in body() }
+         },
+         after: @escaping @MainActor (Int, @escaping @MainActor () -> Void) -> Void = { ms, body in
+             Task { @MainActor in
+                 try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+                 body()
+             }
          }) {
         self.output = output
         self.now = now
         self.deferStart = deferStart
+        self.after = after
     }
 
     func presenceChanged(_ next: PresenceState, failed: Bool) {
@@ -279,21 +302,39 @@ final class ConnectingRing {
         case .beginStart(let token):
             startedAt = at
             ringPlayed = false
+            playToken &+= 1
             let output = ringOutput()
             deferStart { [weak self] in
                 guard let self else { return }
                 guard self.director.commitStart(token) == .play,
                       let buffer = ConnectingRingTone.buffer() else { return }
-                self.ringPlayed = output.playLoop(buffer)
+                let played = output.playLoop(buffer)
+                self.ringPlayed = played
+                self.outputRunning = played
             }
         case .rampDown(let reason, let ms):
             let output = ringOutput()
             // The chime follows the ring only on the move to live: never on a warm unmute, never
             // on a failure. It plays after the ramp, on the ring's own player.
             let chimeBuffer = reason == PresenceState.live.rawValue ? ConnectingChimeTone.buffer() : nil
+            playToken &+= 1
             output.rampDown(overMs: ConnectingRingTone.stopRampMs) { [weak self, output] in
                 guard let self else { return }
+                // The ramp ended with the player and the engine stopped, exactly like the no-chime path.
+                outputRunning = false
                 let chime = chimeBuffer.map { output.playChime($0) } ?? false
+                if chime {
+                    outputRunning = true
+                    playToken &+= 1
+                    let token = playToken
+                    // The chime's length plus its fade: the moment it is over, the player and the
+                    // engine are stopped, so a stale stop can never cut a later sound.
+                    after(ConnectingChimeTone.lengthMs + ConnectingChimeTone.fadeMs) { [weak self] in
+                        guard let self, token == playToken, outputRunning else { return }
+                        outputRunning = false
+                        output.stopOutput()
+                    }
+                }
                 receipt?(ConnectingRingRecord(startedAt: startedAt, stoppedAt: startedAt + ms,
                                               reason: reason, played: ringPlayed, chime: chime).fields)
             }

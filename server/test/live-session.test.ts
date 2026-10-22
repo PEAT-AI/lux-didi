@@ -5492,3 +5492,52 @@ test('R7: the owner\'s final turn frees the answer after a cancelled opener', as
   for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
   assert.ok(played.length >= 1, 'his answer is audible, never silenced by an earlier cancel');
 });
+
+test('R9: a cancelled dropped-line opener never plays, its late frames stay dropped, and the owner is answered', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const next = h.owner.create({ idempotencyKey: 'r9-next', inputClass: 'ordinary' }, h.ctx);
+  const deadAt = scheduler.now - 120_000;
+  const conversationId = h.store.transaction(tx => String(tx.get('SELECT conversation_id FROM live_conversations WHERE owner_assistant_id=?', [h.store.assistantId])!['conversation_id']));
+  h.store.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+        client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+        journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, memory_provenance)
+      VALUES (?,?,?,?,?,?,?,?,?,'terminal',0,0,2,120,1,'ended',?,?,?,?,NULL)`,
+      ['r9-dead-session', h.store.assistantId, h.store.authorityEpoch, 'key-r9-dead', 'fp-r9-dead', 'client', 'audit', 'profile', 'prompt',
+        JSON.stringify({ state: 'failed', code: 'resume_failed' }), deadAt, deadAt, deadAt]);
+    tx.run('INSERT INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', ['r9-dead-session', conversationId]);
+    tx.run("INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,payload_bytes,arrived_at) VALUES(?,?,?,?,1,?,?)",
+      ['r9-dead-session', 1, 'outputTranscription', 'the last answer of the dead call', 60, deadAt]);
+  });
+  const attachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  await h.f.frame(2);
+  const request = h.requests.at(-1)!;
+  assert.equal(request.openingText, LIVE_DROPPED_LINE_MARK, 'the new call opens with the dropped-line marker');
+  assert.equal((request.history ?? []).at(-1)?.role, 'user', 'the dead answer is closed as heard');
+  assert.ok((request.history ?? []).some(turn => turn.text.includes('the last answer of the dead call')), 'and it is still history');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  // The owner speaks before any opener audio.
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: false } } });
+  await tick(); await tick();
+  for (let i = 0; i < 5; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.equal(played.length, 0, 'zero opener audio frames reach the device');
+  // The provider ends the cancelled opener; the owner's turn is final; then the answer.
+  h.f.send({ serverContent: { interrupted: true } });
+  await tick();
+  h.f.send({ serverContent: { inputTranscription: { text: 'tell me about the folder', finished: true } } });
+  await tick();
+  for (let i = 0; i < 40 && played.length === 0; i++) { h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } }); await tick(); }
+  assert.ok(played.length >= 1, 'the answer frames reach the device');
+  h.f.send({ serverContent: { outputTranscription: { text: 'here is the folder answer', finished: true } } });
+  await tick(); await tick();
+  const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [next.liveSessionId]));
+  const said = rows.map(row => String(row['text'])).join(' ');
+  assert.equal(said.includes('the last answer of the dead call'), false, 'the answer never repeats the dead call');
+  assert.ok(said.includes('here is the folder answer'), 'and it answers the owner');
+  h.owner.revoke(next.liveSessionId);
+});

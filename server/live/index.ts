@@ -2290,7 +2290,8 @@ export class LiveSessionOwner {
         if (audible || event.type === 'turnComplete') {
           this.#cancelTimers(handle);
         }
-        if (event.type === 'turnComplete' || event.type === 'interrupted') handle.dropResponse = false;
+        // A response that ended leaves nothing held and nothing dropped: the next turn is the owner's again.
+        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.dropResponse = false; handle.heldAnswer = false; }
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           resetTurnScript(handle);

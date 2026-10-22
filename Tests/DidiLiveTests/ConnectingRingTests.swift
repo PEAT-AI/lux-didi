@@ -5,9 +5,10 @@ import Foundation
 /// start a stop outruns, and a warm unmute that plays nothing are all asserted with no engine,
 /// no microphone and no audio device.
 @main struct ConnectingRingTests {
-    static func main() {
+    static func main() async {
         do {
             try run()
+            try await MainActor.run { try runWiring() }
             print("PASS connecting ring: E5/A5 pair, 1.8 s repeat, stale start dropped, no ring for muted to live")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
@@ -95,6 +96,89 @@ import Foundation
         try require(record.fields["stopped_at"] as? Int == 1_700_000_004_000,
             "the record carries the stop")
     }
+
+    /// The same presence transitions through the real entry point, with a fake clock and a fake
+    /// output, so the play, the ramp and the record are pinned and not just the director's return.
+    @MainActor static func runWiring() throws {
+        // Example 1: connecting for 4.0 s then live plays once, ramps once over 30 ms, and leaves
+        // one record with 4000 ms.
+        let clock = TestClock()
+        let output = RecordingRingOutput()
+        var records: [[String: Any]] = []
+        let ring = ConnectingRing(output: output, now: { clock.ms }, deferStart: { body in body() })
+        ring.receipt = { records.append($0) }
+        ring.presenceChanged(.connecting, failed: false)
+        try require(output.plays == 1, "connecting starts the loop once, got \(output.plays)")
+        clock.ms = 4000
+        ring.presenceChanged(.live, failed: false)
+        try require(output.ramps == [ConnectingRingTone.stopRampMs],
+            "live ramps the ring out over 30 ms, got \(output.ramps)")
+        try require(records.count == 1, "one ring leaves one record, got \(records.count)")
+        try require(records[0]["event"] as? String == "connecting_ring", "the record names itself")
+        try require(records[0]["ms"] as? Int == 4000,
+            "the record counts 4000 ms, got \(String(describing: records[0]["ms"]))")
+        try require(records[0]["reason"] as? String == "live", "the record names live")
+        try require(records[0]["started_at"] as? Int == 0 && records[0]["stopped_at"] as? Int == 4000,
+            "the record carries the start and the stop")
+
+        // Example 2: connecting then failure to cold ramps out with reason failed.
+        let failedClock = TestClock()
+        let failedOutput = RecordingRingOutput()
+        var failedRecords: [[String: Any]] = []
+        let failedRing = ConnectingRing(output: failedOutput, now: { failedClock.ms },
+                                        deferStart: { body in body() })
+        failedRing.receipt = { failedRecords.append($0) }
+        failedRing.presenceChanged(.connecting, failed: false)
+        failedClock.ms = 900
+        failedRing.presenceChanged(.cold, failed: true)
+        try require(failedOutput.ramps == [ConnectingRingTone.stopRampMs],
+            "the failed connect ramps the ring out")
+        try require(failedRecords.first?["reason"] as? String == "failed",
+            "the record names the failure, got \(String(describing: failedRecords.first?["reason"]))")
+        try require(failedRecords.first?["ms"] as? Int == 900, "the failed ring is 900 ms")
+
+        // Example 3: a stop that lands while the start is still preparing never reaches the output.
+        let staleClock = TestClock()
+        let staleOutput = RecordingRingOutput()
+        var held: (@MainActor () -> Void)?
+        var staleRecords: [[String: Any]] = []
+        let staleRing = ConnectingRing(output: staleOutput, now: { staleClock.ms },
+                                       deferStart: { body in held = body })
+        staleRing.receipt = { staleRecords.append($0) }
+        staleRing.presenceChanged(.connecting, failed: false)
+        staleClock.ms = 40
+        staleRing.presenceChanged(.live, failed: false)
+        held?()
+        try require(staleOutput.plays == 0, "a start that a stop outran never reaches the output")
+        try require(staleOutput.ramps.isEmpty, "nothing was audible, so nothing ramps")
+        try require(staleRecords.isEmpty, "a ring that never played leaves no record")
+
+        // Example 4: muted to live never starts the ring and leaves no record.
+        let warmClock = TestClock()
+        let warmOutput = RecordingRingOutput()
+        var warmRecords: [[String: Any]] = []
+        let warmRing = ConnectingRing(output: warmOutput, now: { warmClock.ms },
+                                      deferStart: { body in body() })
+        warmRing.receipt = { warmRecords.append($0) }
+        warmRing.presenceChanged(.hotMuted, failed: false)
+        warmClock.ms = 100
+        warmRing.presenceChanged(.live, failed: false)
+        try require(warmOutput.plays == 0 && warmOutput.ramps.isEmpty, "a warm unmute plays nothing")
+        try require(warmRecords.isEmpty, "a warm unmute leaves no record")
+    }
+
+    /// Stands in for the ring's own player, so no engine and no audio device is started.
+    @MainActor final class RecordingRingOutput: ConnectingRingOutput {
+        private(set) var plays = 0
+        private(set) var ramps: [Int] = []
+        func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool {
+            plays += 1
+            return true
+        }
+        func rampDown(overMs ms: Int) { ramps.append(ms) }
+    }
+
+    @MainActor final class TestClock { var ms = 0 }
 
     /// Positive-going zero crossings over the middle 100 ms of a note, which is its pitch.
     static func pitch(_ samples: [Float], onset: Int) -> Double {

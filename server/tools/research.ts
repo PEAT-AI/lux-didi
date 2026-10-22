@@ -3516,7 +3516,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const chosen = [...new Set(selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind)))];
       // Outcome 5: the pre-started knowledge read is included even when the selector did not pick it,
       // so the prime source is always read once and its findings can rank first.
-      if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
+      if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && !chosen.includes('brief') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
       perRound.push({ candidates: offerable.map(kind => ({ kind, pUseful: selection.pUseful[kind] ?? 0 })), chosen: [...chosen] });
 
       if (chosen.length === 0) { stopReason = selection.actions.some(a => a.kind === 'stop_insufficient') ? 'insufficient' : 'answered'; run.rounds = round; break; }
@@ -3613,6 +3613,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const calendarCalls = issued.filter(call => call.name === INTERNAL.calendarList);
           const mailCalls = issued.filter(call => call.name === INTERNAL.mailList);
           const ordinaryCalls = issued.filter(call => call.name !== INTERNAL.calendarList && call.name !== INTERNAL.mailList && call.name !== WEB_SEARCH_ACTION);
+          // RUN-R2: the pre-started knowledge read is the round's knowledge read, whatever kind the plan
+          // filed it under, so a knowledge question stays exactly one search call.
+          const prefetchedKnowledge = knowledgePromise !== undefined && !knowledgeConsumed && !consumeKnowledge && ordinaryCalls.some(call => call.name === INTERNAL.knowledgeSearch);
+          const dispatched = prefetchedKnowledge ? ordinaryCalls.filter(call => call.name !== INTERNAL.knowledgeSearch) : ordinaryCalls;
           const webCalls = issued.filter(call => call.name === WEB_SEARCH_ACTION);
           const webResults = async (): Promise<IntentSubResult[]> => {
             if (webCalls.length === 0 || deps.web === undefined) return [];
@@ -3656,10 +3660,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           let results: IntentSubResult[];
           if (consumeKnowledge) results = [...(knowledgeConsumed = true, await knowledgePromise!), ...await webResults()];
           else {
-            const [ordinary, calendar, mail, web] = await Promise.all([ordinaryCalls.length ? executeWithRetry(ordinaryCalls) : Promise.resolve([]), calendarResults(), mailResults(), webResults()]);
+            const [ordinary, calendar, mail, web] = await Promise.all([dispatched.length ? executeWithRetry(dispatched) : Promise.resolve([]), calendarResults(), mailResults(), webResults()]);
             const byKey = new Map([...ordinary, ...calendar, ...mail, ...web].map(result => [result.key, result]));
             // Production execute keys include the host call id, so preserve source positions for ordinary results.
-            ordinaryCalls.forEach((call, n) => { if (ordinary[n]) byKey.set(call.key, ordinary[n]!); });
+            dispatched.forEach((call, n) => { if (ordinary[n]) byKey.set(call.key, ordinary[n]!); });
+            if (prefetchedKnowledge) {
+              const prefetched = await knowledgePromise!;
+              knowledgeConsumed = true;
+              for (const call of ordinaryCalls) if (call.name === INTERNAL.knowledgeSearch) byKey.set(call.key, prefetched.find(result => result.key === call.key) ?? prefetched[0]!);
+            }
             results = issued.map(call => byKey.get(call.key)).filter((result): result is IntentSubResult => result !== undefined);
           }
           // R6: a source with real text is its own credit; the rest of the round still finishes.

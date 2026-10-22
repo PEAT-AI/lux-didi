@@ -208,13 +208,15 @@ if presenceTapped { wiredSingleKey.onTap?() }
 expect(presence.state == .connecting, "the installed Right Command binding opens the presence session")
 expect(presenceSurfaces.last == .connecting, "the tap renders the presence surface")
 wiredSingleKey.onTap?()
-expect(presence.state == .cold, "a second tap while connecting returns to cold")
+expect(presence.state == .hotMuted, "a second tap while connecting mutes instead of leaving her half-open")
+wiredSingleKey.onTap?()
+expect(presence.state == .connecting, "a tap in MUTED opens the session again")
 var rightOptionTap = RightCommandTapDetector()
 expect(rightOptionTap.handle(.otherModifiers(held: true), at: 210) == [], "a Right Option press is never a tap")
 expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == [], "a key pressed under Right Option is a chord")
 
 // Q2 (owner order 2026-10-18): the whole key, through the shipped binding, with a fake
-// clock and a fake hold timer. A tap starts when idle and STOPS when live or muted
+// clock and a fake hold timer. A tap starts when idle, mutes when live, and unmutes when muted
 // through the Stop path; a press held to the threshold is push-to-talk.
 @MainActor final class HotkeyKey {
     var opened = 0
@@ -225,8 +227,8 @@ expect(rightOptionTap.handle(.otherKeyDown, at: 210.05) == [], "a key pressed un
     var clock: TimeInterval = 700
     var holdDelay: TimeInterval?
     var holdTimer: (() -> Void)?
-    lazy var presence = NativePresence(now: { self.clock }, effects: PresenceEffects(
-        openSession: { self.opened += 1 },
+    lazy var presence = NativePresence(effects: PresenceEffects(
+        openSession: { _ in self.opened += 1 },
         cancelConnecting: { self.cancelled += 1 },
         closeSession: { self.closed += 1 },
         setCaptureMuted: { self.fences.append($0) }))
@@ -254,7 +256,7 @@ hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
 expect(hotkey.presence.state == .connecting && hotkey.opened == 1, "an idle Right Command tap starts a session")
 expect(hotkey.lastAction() == "start" && hotkey.lastReason() == "connecting", "the idle tap logs single_key_tap start")
-hotkey.presence.ready()
+hotkey.presence.ready(hotkey.presence.generation)
 expect(hotkey.presence.state == .live && hotkey.fences.last == false, "readiness opens the mic")
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
@@ -263,15 +265,19 @@ expect(hotkey.presence.state == .hotMuted && hotkey.closed == 1,
     "a live tap mutes her and ends the provider session at once (R4)")
 expect(hotkey.presence.posture.muted, "the mute is on the surface the orb reads, so it can go purple")
 expect(hotkey.fences.last == true, "the mute closes Naya's own capture fence")
-expect(hotkey.presence.dropDeadline == hotkey.clock + NativePresence.hotMutedGrace,
-    "the mute still carries the five minute deadline, which only ends a session left open")
+expect(hotkey.presence.mutedHeld && hotkey.presence.posture.muted,
+    "the mute holds with no deadline of its own, so it lasts as long as the owner waits")
 expect(hotkey.lastAction() == "mute" && hotkey.lastReason() == "hotMuted", "the live tap logs single_key_tap mute")
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
 hotkey.release(at: hotkey.clock + 0.1)
+expect(hotkey.presence.state == .connecting && hotkey.opened == 2,
+    "a second tap opens a new session, because the mute already ended the old one")
+expect(hotkey.lastAction() == "unmute" && hotkey.lastReason() == "connecting",
+    "the muted tap logs single_key_tap unmute")
+hotkey.presence.ready(hotkey.presence.generation)
 expect(hotkey.presence.state == .live && hotkey.fences.last == false && !hotkey.presence.posture.muted,
-    "a second tap lets her listen again, with the fence open")
-expect(hotkey.lastAction() == "unmute" && hotkey.lastReason() == "live", "the muted tap logs single_key_tap unmute")
+    "readiness opens the mic again, with the fence open")
 
 // Acceptance 2: muted for six minutes. The session goes at the mute, the owner still sees
 // MUTED (purple) the whole time, and the next tap reconnects and opens the mic.
@@ -287,13 +293,13 @@ let openedDuringMute = hotkey.opened
 hotkey.presence.wake()
 expect(hotkey.opened == openedDuringMute,
     "a wake while muted asks for no session, so no held speech can be spoken")
-hotkey.presence.sessionEnded()
-hotkey.clock += NativePresence.hotMutedGrace + 60
-hotkey.presence.tick()
+let mutedSession = hotkey.presence.generation &- 1
+hotkey.presence.sessionEnded(mutedSession)
+hotkey.clock += 6 * 60
 expect(hotkey.opened == openedDuringMute && hotkey.presence.posture.muted,
     "six minutes muted open nothing by themselves, they only keep her purple")
-expect(hotkey.presence.state == .cold && hotkey.presence.posture.muted,
-    "the session's end after a mute keeps the owner on MUTED, never the grey cold orb")
+expect(hotkey.presence.state == .hotMuted && hotkey.presence.posture.muted,
+    "the ended session is the generation the mute left, so MUTED holds instead of going cold")
 var openedBeforeLateTap = hotkey.opened
 hotkey.clock += 1
 hotkey.press(at: hotkey.clock)
@@ -302,7 +308,7 @@ expect(hotkey.presence.state == .connecting && hotkey.opened == openedBeforeLate
     "the tapping owner reconnects her instead of starting a quiet session")
 expect(hotkey.presence.state == .connecting && !hotkey.presence.posture.muted,
     "the reconnect shows the existing connecting look until the new session is ready (R4)")
-hotkey.presence.ready()
+hotkey.presence.ready(hotkey.presence.generation)
 expect(hotkey.presence.state == .live && !hotkey.presence.posture.muted && hotkey.fences.last == false,
     "and readiness opens the mic, so she hears the owner again")
 // The explicit Stop, and sleep, are the two things that end a mute.
@@ -313,7 +319,7 @@ hotkey.presence.stop(.app)
 expect(hotkey.presence.state == .cold && !hotkey.presence.posture.muted,
     "an explicit stop ends the mute, so the orb is grey again")
 hotkey.presence.tap(.hotkey)
-hotkey.presence.ready()
+hotkey.presence.ready(hotkey.presence.generation)
 hotkey.presence.tap(.hotkey)
 expect(hotkey.presence.posture.muted, "a mute is on before the sleep")
 hotkey.presence.sleep()
@@ -420,7 +426,7 @@ expect(trustedState["listenEvent"] as? Bool == true && trustedState["accessibili
 expect(SingleKeyTrigger.stateReceipt(enabled: true, grants: .init(listenEvent: false, accessibility: true),
     tapCreated: true, signing: "identity")["trusted"] as? Bool == true,
     "either grant is enough for a listen-only tap")
-var presenceAfterTap: [PresenceState] = [.connecting, .hotMuted, .hotMuted]
+var presenceAfterTap: [PresenceState] = [.connecting, .hotMuted, .connecting]
 var singleKeyPresence = PresenceState.cold
 trustedKey.presenceState = { singleKeyPresence }
 trustedKey.onTap = { singleKeyPresence = presenceAfterTap.removeFirst() }
@@ -435,8 +441,9 @@ expect(singleKeyReceipts.count == 2 && singleKeyReceipts[1]["action"] as? String
     && singleKeyReceipts[1]["reason"] as? String == "hotMuted", "a tap that mutes her logs single_key_tap mute")
 trustedKey.receive(.rightCommandDown, at: 320)
 trustedKey.receive(.rightCommandUp, at: 320.1)
-expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "ignored"
-    && singleKeyReceipts[2]["reason"] as? String == "hotMuted", "a tap the machine does not move is logged as ignored with the state it stayed in")
+expect(singleKeyReceipts.count == 3 && singleKeyReceipts[2]["action"] as? String == "unmute"
+    && singleKeyReceipts[2]["reason"] as? String == "connecting",
+    "a tap that unmutes her logs single_key_tap unmute, never ignored and never start")
 trustedKey.receive(.rightCommandDown, at: 330)
 trustedKey.receive(.rightCommandUp, at: 331)
 expect(singleKeyReceipts.count == 5 && singleKeyReceipts[3]["action"] as? String == "ignored"
@@ -444,9 +451,10 @@ expect(singleKeyReceipts.count == 5 && singleKeyReceipts[3]["action"] as? String
     "a press held past the threshold logs ignored receipts, because a held key does nothing")
 expect(SingleKeyTapOutcome(from: .live, to: .live).action == .ignored && SingleKeyTapOutcome(from: .live, to: .live).reason == "live",
     "a tap the machine does not move is a receipt naming the state, proven directly")
-expect(SingleKeyTapOutcome(from: .hotMuted, to: .live).action == .unmute
+expect(SingleKeyTapOutcome(from: .hotMuted, to: .connecting).action == .unmute
+    && SingleKeyTapOutcome(from: .live, to: .hotMuted).action == .mute
     && SingleKeyTapOutcome(from: .connecting, to: .cold).action == .stop,
-    "a move out of a mute is an unmute, a move to cold stops")
+    "a move out of a mute is an unmute, a mute is a mute, a move to cold stops")
 expect(SingleKeyTrigger.signing == "adhoc" || SingleKeyTrigger.signing == "identity" || SingleKeyTrigger.signing == "unknown",
     "the signing fact is one of the three the receipt knows")
 // The signing label is pure over the code-signature flags, so it is testable with
@@ -1081,11 +1089,11 @@ let wakingPresence = NativePresence(effects: PresenceEffects(
 wakingPresence.wake()
 expect(wakeCounter.calls == 1, "a wake while cold prewarms the warm context once")
 wakingPresence.tap(.app)
-wakingPresence.ready()
+wakingPresence.ready(wakingPresence.generation)
 expect(wakingPresence.state == .live, "the machine reaches live through the shipped transitions")
 wakingPresence.wake()
 expect(wakeCounter.calls == 1, "a wake while live prewarms nothing")
 wakingPresence.mute(.app)
-expect(wakingPresence.state == .hotMuted, "the mute enters the hot-muted grace")
+expect(wakingPresence.state == .hotMuted, "the mute enters MUTED")
 wakingPresence.wake()
-expect(wakeCounter.calls == 2, "a wake inside the hot-muted grace prewarms once more")
+expect(wakeCounter.calls == 2, "a wake inside MUTED prewarms once more")

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, ResearchScheduler, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo } from '../tools/research.js';
+import { ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -407,4 +407,100 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
   const next = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the kept window is reused, never fetched again');
   assert.match(JSON.stringify(next['findings']), /Day 21 item 0/u);
+});
+
+// ROUTE-1022 (D2): gmail and the calendar are two endpoints on one connector. A gmail endpoint that
+// failed its identity proof marked the calendar unreachable too, so every calendar read was skipped.
+function scheduleFixture(opts: { unavailable?: readonly { source: SourceKind; reason: string }[]; selector?: ResearchSelector } = {}) {
+  const calls: { name: string; args: Record<string, unknown> }[] = [];
+  const logs: ResearchRunLog[] = [];
+  const deps: ResearchDeps = {
+    now: () => fixedNow, configured: ['calendar', 'mail'], ledger: new ResearchLedger(), timeZone: 'UTC',
+    ...(opts.selector === undefined ? {} : { selector: opts.selector }),
+    ...(opts.unavailable === undefined ? {} : { unavailableNow: () => opts.unavailable! }),
+    emit() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {}, log: entry => logs.push(entry),
+    execute: async subs => subs.map(call => {
+      calls.push({ name: call.name, args: { ...call.args } });
+      if (call.name === 'calendar_list_calendars') return { key: call.key, name: call.name, ok: true, text: '- Main [primary]', originalCharacters: 16, omittedCharacters: 0 } as IntentSubResult;
+      if (call.name === 'calendar_list_events') return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [{ id: 'e1', start: '2026-10-20T10:00:00Z', summary: 'Call with Priya' }] }) } as IntentSubResult;
+      return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 } as IntentSubResult;
+    }),
+  };
+  return { deps, calls, logs };
+}
+
+const scheduleSelector: ResearchSelector = {
+  select: async () => ({
+    questionClass: 'cross_source',
+    actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:1d' }, { kind: 'calendar_window', window: 'tomorrow' }],
+    pUseful: { mail_search: 0.4, calendar_window: 0.5 },
+  }),
+};
+
+test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a schedule question', async () => {
+  const h = scheduleFixture({ selector: scheduleSelector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the calendar endpoint connected, so its read runs');
+  assert.equal(h.calls.some(call => call.name === 'gmail_search_messages'), false, 'the mail endpoint is never dispatched to');
+  const rows = h.logs.at(-1)!.sources;
+  assert.equal(rows.find(row => row.kind === 'calendar')?.disposition, 'completed', 'the calendar read is logged as served');
+  assert.deepEqual({ disposition: rows.find(row => row.kind === 'mail')?.disposition, reason: rows.find(row => row.kind === 'mail')?.reason },
+    { disposition: 'skipped', reason: 'endpoint_unavailable' }, 'and mail is skipped for the endpoint reason, not silently');
+  assert.equal('error' in reply, false);
+});
+
+test('ROUTE-1022: the selector fallback path still reads the calendar on a schedule question', async () => {
+  const selector: ResearchSelector = { select: async () => { throw new Error('selector deadline'); } };
+  const h = scheduleFixture({ selector, unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
+  await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'a selector timeout leaves the calendar in the fallback plan');
+  assert.equal(h.logs.at(-1)!.fallbackUsed, true, 'and the run records that it fell back');
+});
+
+test('ROUTE-1022: a schedule question keeps the calendar in a plan that omitted it', async () => {
+  const mailOnly: ResearchSelector = {
+    select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:7d' }], pUseful: { mail_search: 0.5 } }),
+  };
+  const h = scheduleFixture({ selector: mailOnly });
+  await runResearch(h.deps, { action: 'start', question: 'am I free next week for the offsite' }, signal());
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the owner schedule question adds the calendar read');
+});
+
+test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason and no error', async () => {
+  const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'not_signed_in' }] });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'a down endpoint is never dispatched to');
+  assert.equal(h.logs.at(-1)!.sources.find(row => row.kind === 'calendar')?.reason, 'endpoint_unavailable', 'the reason names an endpoint outage');
+  assert.equal('error' in reply, false, 'the run still answers');
+});
+
+// ROUTE-R2: a grant gap and an outage both read `skipped` before, so a missing read grant looked
+// exactly like a dead endpoint in the run log.
+test('ROUTE-R2: an unpublished calendar grant is logged as not_granted, not as an outage', async () => {
+  const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'source_not_granted' }] });
+  await runResearch(h.deps, { action: 'start', question: 'what calls do I have tomorrow' }, signal());
+  const row = h.logs.at(-1)!.sources.find(entry => entry.kind === 'calendar');
+  assert.deepEqual({ disposition: row?.disposition, reason: row?.reason }, { disposition: 'skipped', reason: 'not_granted' });
+});
+
+// ROUTE-1022: the host registry keys the two Google endpoints `gmail` and `calendar`, both with
+// connector `google`. Availability must follow the endpoint id, never the connector.
+test('ROUTE-1022: end-to-end availability follows the endpoint id, not the shared connector', () => {
+  assert.deepEqual(configuredSourcesForEndpoints([
+    { id: 'calendar', connector: 'google', state: 'connected' },
+    { id: 'gmail', connector: 'google', state: 'error', reasonCode: 'identity_unverified' },
+  ]), [{ source: 'mail', reason: 'identity_unverified' }], 'a failed gmail proof names mail alone');
+  assert.deepEqual(configuredSourcesForEndpoints([
+    { id: 'gmail', connector: 'google', state: 'connected' },
+    { id: 'calendar', connector: 'google', state: 'error', reasonCode: 'not_signed_in' },
+  ]), [{ source: 'calendar', reason: 'not_signed_in' }], 'and a calendar failure never speaks for mail');
+});
+
+test('ROUTE-1022: a general question about the week does not force a calendar read', async () => {
+  const mailOnly: ResearchSelector = {
+    select: async () => ({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:7d' }], pUseful: { mail_search: 0.5 } }),
+  };
+  const h = scheduleFixture({ selector: mailOnly });
+  await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
+  assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'the schedule rule stays with the questions the defect named');
 });

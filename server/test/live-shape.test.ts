@@ -350,9 +350,16 @@ test('an unrecognised Mattermost shape fails loud: raw text plus the shape marke
 });
 
 test('noEmptyResult turns an empty completed projection into an explicit note', () => {
-  assert.equal(noEmptyResult(''), 'No results.');
-  assert.equal(noEmptyResult('  \n '), 'No results.');
-  assert.equal(noEmptyResult('kept'), 'kept');
+  // VOICE-R2: the note names the source and the query, tells the model to speak it in its own words and only
+  // when the owner asked about that source, and never returns the bare canned "No results."
+  const note = noEmptyResult('', 'search_mail', 'budget from Ana');
+  assert.match(note, /search_mail/, 'the note names the source');
+  assert.match(note, /budget from Ana/, 'the note names the query');
+  assert.match(note, /in your own words/, 'the model is told to phrase it itself');
+  assert.match(note, /only if the owner asked/, 'an unasked empty read stays unspoken');
+  assert.equal(note.includes('No results.'), false, 'the canned empty line is gone');
+  assert.equal(noEmptyResult('  \n ', 'search_mail').includes('for "'), false, 'no empty query is quoted');
+  assert.equal(noEmptyResult('kept'), 'kept', 'a non-empty projection is untouched');
 });
 
 test('mattermost whoami (username/email record) reports the operator name', () => {

@@ -173,15 +173,15 @@ struct SingleKeyTapOutcome: Equatable {
     let action: SingleKeyTapAction
     let reason: String
 
-    /// One bare tap starts her from cold, mutes her from live and lets her listen again
-    /// from muted; a tap she did not move is ignored and names the state it stayed in.
+    /// One bare tap starts her from cold, mutes her everywhere else and lets her listen
+    /// again from muted; a tap she did not move is ignored and names the state it stayed in.
     init(from before: PresenceState, to after: PresenceState) {
         reason = after.rawValue
         switch (before, after) {
         case _ where before == after: action = .ignored
-        case (_, .cold): action = .stop
         case (_, .hotMuted): action = .mute
         case (.hotMuted, _): action = .unmute
+        case (_, .cold): action = .stop
         default: action = .start
         }
     }

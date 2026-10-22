@@ -320,7 +320,13 @@ test('the research outcome sentence distinguishes nothing matched from a read cu
 
 test('PV1: the persona base scopes the spoken cue to an actual lookup and the procedure carries batching', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  assert.ok(instruction.includes('Before an actual lookup, say at most five words about what you are checking, then call the tool.'), 'the spoken cue is scoped to a real lookup');
+  // VOICE-R1: waiting behaviour is one persona rule, and no section tells the model to speak before every lookup.
+  assert.equal(NAYA_VOICE_TOOLS.split("Silence while you look something up is fine.").length - 1, 1, 'the silence rule is stated once');
+  assert.ok(NAYA_VOICE_TOOLS.includes("Do not announce routine lookups or fill the wait with status updates."), 'routine lookups are not announced');
+  assert.ok(NAYA_VOICE_TOOLS.includes("you may say once, in your own words, that you need a moment and roughly how long"), 'a long lookup keeps the one optional moment line');
+  for (const banned of ['never go silent', 'say one short line', 'Nothing has been sent or booked', 'Before an actual lookup']) {
+    assert.equal((NAYA_LIVE_BASE + NAYA_VOICE_TOOLS + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
+  }
   // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
   assert.ok(instruction.includes('When the answer is already in these instructions, answer from it without a lookup.'), 'the no-lookup answer rule sits beside the cue');
   assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
@@ -333,7 +339,7 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
   for (const retired of ['three to five word', 'never announce progress', 'One moment', 'or call it at once', 'at most six words', 'Before any tool call']) {
     assert.equal(instruction.includes(retired), false, `retired cue rule: ${retired}`);
   }
-  assert.equal(instruction.split('what you are checking').length - 1, 1, 'the cue surface is stated once');
+  assert.equal((NAYA_VOICE_TOOLS + instruction).split('never use a stock waiting line').length - 1, 1, 'the waiting rule is stated once');
   assert.ok(NAYA_VOICE_TOOLS.includes('State what is being opened and describe success from the action receipt.'), 'the voice prompt keeps the spoken open rule');
 });
 

@@ -523,10 +523,10 @@ test('Mongoose literal projection: local coverage clipping remains bounded and c
 // uses. A mongoose endpoint with no stored credential is not signed in yet: the start says so once and
 // opens nothing, and the next connect after a login probes it for real.
 test('a mongoose endpoint with no stored credential is not probed at start', () => {
-  assert.equal(mongooseCredentialAtStart('mongoose', false), 'not_signed_in');
-  assert.equal(mongooseCredentialAtStart('mongoose', true), 'probe');
-  assert.equal(mongooseCredentialAtStart('google', false), 'probe', 'a read connector still reports its missing credential');
-  assert.equal(mongooseCredentialAtStart('mattermost', false), 'probe');
+  assert.equal(mongooseCredentialAtStart('mongoose', { hasRefreshMaterial: false, consentExpired: false }), 'not_signed_in');
+  assert.equal(mongooseCredentialAtStart('mongoose', { hasRefreshMaterial: true, consentExpired: false }), 'probe');
+  assert.equal(mongooseCredentialAtStart('google', { hasRefreshMaterial: false, consentExpired: false }), 'probe', 'a read connector still reports its missing credential');
+  assert.equal(mongooseCredentialAtStart('mattermost', { hasRefreshMaterial: false, consentExpired: true }), 'probe');
 });
 
 

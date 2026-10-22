@@ -445,9 +445,14 @@ function postTime(post: Record<string, unknown>): number {
 export type MattermostShape =
   | 'whoami' | 'channels' | 'posts_array' | 'posts_map' | 'items' | 'results' | 'thread' | 'empty' | 'text' | 'unrecognised';
 
-/** A completed projection that shaped to nothing becomes an explicit note, never an empty string. */
-export function noEmptyResult(text: string): string {
-  return text.trim() === '' ? 'No results.' : text;
+/** A completed projection that shaped to nothing becomes an explicit note, never an empty string.
+ *  VOICE-R2: the note names the source and the query so an empty read is never voiced as a canned
+ *  "no results", and it tells the model to mention it only when the owner asked about that source. */
+export function noEmptyResult(text: string, source?: string, query?: string): string {
+  if (text.trim() !== '') return text;
+  const asked = query !== undefined && query.trim() !== '' ? ` for "${query.trim()}"` : '';
+  const named = source === undefined ? 'The source lookup' : `The ${source} lookup`;
+  return `${named}${asked} came back empty. Say so in your own words only if the owner asked about that source; never announce an empty result unasked.`;
 }
 
 function emptyMattermostNote(tool: string): string {

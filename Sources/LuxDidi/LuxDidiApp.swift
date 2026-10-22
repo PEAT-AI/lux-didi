@@ -561,7 +561,7 @@ struct RootView: View {
     /// coordinator's mute fence, the device's playback cancel and the provider's
     /// input mute are effects of the same transitions.
     private lazy var presence = NativePresence(effects: PresenceEffects(
-        openSession: { [weak self] in self?.openPresenceSession() },
+        openSession: { [weak self] generation in self?.openPresenceSession(generation) },
         cancelConnecting: { [weak self] in self?.model.stopLive(trigger: .button) },
         closeSession: { [weak self] in self?.model.stopLive(trigger: .button) },
         setCaptureMuted: { [weak self] muted in self?.model.setPresenceCaptureMuted(muted) },
@@ -570,7 +570,9 @@ struct RootView: View {
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
         prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
     private var presencePickupJobID: String?
-    private var presenceGraceTimer: Timer?
+    /// The presence generation the conversation now on the wire was opened under, so a
+    /// callback from any other conversation is stale by construction.
+    private var liveGeneration: UInt64 = 0
     private var presenceMenuItem: NSMenuItem?
     /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
     /// off until the grant is present, and the settings view reads the state that
@@ -731,15 +733,16 @@ struct RootView: View {
         menu.addItem(withTitle: "Naya pill ⌃ ⌥ Space: " + liveShortcuts.pillStatus, action: nil, keyEquivalent: "")
         liveObservation = model.$live.sink { [weak self] conversation in
             guard let self else { return }
+            let generation = self.liveGeneration
             liveStateObservation = conversation?.$state.sink { [weak self] state in
                 guard let self else { return }
                 updateLiveStatus(state: state)
                 model.publishBridgeLive()
-                presenceTransitioned(state)
+                presenceTransitioned(state, generation: generation)
             }
             updateLiveStatus(state: conversation?.state ?? .idle)
             model.publishBridgeLive()
-            presenceTransitioned(conversation?.state ?? .idle)
+            presenceTransitioned(conversation?.state ?? .idle, generation: generation)
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -1067,17 +1070,6 @@ struct RootView: View {
         miniPanel?.alphaValue = 1
         miniPanel?.applyMuted(presence.mutedHeld)
         pushPresenceState()
-        schedulePresenceGrace()
-    }
-    /// One timer, taken from the machine's own monotonic deadline: the five minute
-    /// hot-muted drop, and nothing else. A state without a deadline cancels it.
-    private func schedulePresenceGrace() {
-        presenceGraceTimer?.invalidate(); presenceGraceTimer = nil
-        guard let deadline = presence.dropDeadline else { return }
-        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
-        presenceGraceTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.presence.tick() }
-        }
     }
     @objc func toggleAlwaysShowNaya() {
         if !presence.alwaysShow { coordinator.allowPresenceReveal() }
@@ -1097,24 +1089,25 @@ struct RootView: View {
 
     private func startPresence(pickupJobID: String? = nil) {
         coordinator.allowPresenceReveal()
-        if model.live == nil { presence.sessionEnded() }
+        if model.live == nil { presence.sessionEnded(presence.generation) }
         presencePickupJobID = pickupJobID
         presence.start(.app)
     }
 
-    private func openPresenceSession() {
+    private func openPresenceSession(_ generation: UInt64) {
         let job = presencePickupJobID
         presencePickupJobID = nil
-        if !model.startLive(pickupJobID: job) { presence.fail() }
+        liveGeneration = generation
+        if !model.startLive(pickupJobID: job) { presence.fail(generation) }
     }
 
-    private func presenceTransitioned(_ state: NativeLiveConversation.State) {
+    private func presenceTransitioned(_ state: NativeLiveConversation.State, generation: UInt64) {
         switch state {
-        case .listening: presence.ready()
+        case .listening: presence.ready(generation)
         case .speaking:
-            presence.ready()
-        case .failed: presence.fail()
-        case .ended: presence.sessionEnded()
+            presence.ready(generation)
+        case .failed: presence.fail(generation)
+        case .ended: presence.sessionEnded(generation)
         case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }

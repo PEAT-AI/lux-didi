@@ -304,8 +304,6 @@ interface ActiveSession {
   awaitingAnswer: boolean; answerAt: number | undefined;
   /** The owner muted: the provider stays open on the host's cost cap, no audio goes up or comes down. */
   muted: boolean; mutedAt: number | undefined; muteTimer?: ReturnType<JobTimer> | undefined;
-  /** The answer debt the mute suspended, so the unmute resumes exactly the watchdog the owner left. */
-  mutedWatchdog: boolean;
   /** An answer that arrived while muted: its audio was dropped, never played later, and it is offered on unmute. */
   heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined; mutedOfferAttempts: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
@@ -328,7 +326,11 @@ interface ActiveSession {
   toolCache: LiveToolCache;
   connectorRecovery?: Promise<void> | undefined;
   researchLedger: ResearchLedger;
-  researchScheduler?: ResearchScheduler;
+  researchScheduler?: ResearchScheduler | undefined;
+  /** #1022 F1: the latest research batch's delivery gate answer. The scheduler reads it, never a captured copy. */
+  researchAllowed: boolean;
+  /** #1022 F1: the generation `researchScheduler` was built for. A rebuild makes a fresh one. */
+  researchSchedulerGeneration?: number | undefined;
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
@@ -1305,7 +1307,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, mutedWatchdog: false, heldAnswer: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1426,7 +1428,7 @@ export class LiveSessionOwner {
     handle.muted = muted;
     if (muted) {
       handle.mutedAt = now;
-      handle.mutedWatchdog = handle.watchdogPhase !== undefined;
+      // A mute drops the answer debt: the clock and the phase go with it, and the unmute starts no new one.
       this.#cancelWatchdog(handle);
       handle.idleTimer?.cancel(); handle.idleTimer = undefined;
       handle.muteTimer?.cancel();
@@ -1441,7 +1443,8 @@ export class LiveSessionOwner {
     } else {
       handle.muteTimer?.cancel(); handle.muteTimer = undefined;
       this.#armIdle(handle, this.#profile.limits.idleMs);
-      if (handle.mutedWatchdog) { handle.mutedWatchdog = false; this.#armWatchdog(handle); }
+      // The held answer offer owns the reply the mute deferred; only the next owner turn or provider
+      // output arms the watchdog again, so an unmute can never nudge or reopen on the dropped debt.
       this.#armMutedOffer(handle);
     }
     hostLogEvent({ event: 'live_mute', liveSessionId: handle.liveSessionId, generation: handle.generation,
@@ -1890,6 +1893,8 @@ export class LiveSessionOwner {
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    // #1022 F1: the scheduler this handle carried answered for the generation that just ended.
+    handle.researchScheduler = undefined; handle.researchSchedulerGeneration = undefined;
     // #527: a new socket is not the old socket's health. Clearing it here makes the three-strike ceiling
     // count consecutive dead sessions instead of one healthy episode followed by endless retries.
     handle.lastHealthyAt = undefined;
@@ -2492,6 +2497,9 @@ export class LiveSessionOwner {
 
   /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
   async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    // #1022 F1: the gate answer belongs to the handle, so a batch never inherits a refused one from the batch
+    // that built this session's scheduler.
+    handle.researchAllowed = allowed;
     // #451/RECON-RESEARCH Q6: a lookup started before the owner has spoken spends the greeting on a source
     // nobody asked for, and the opener cancels its own six calls. The first start is answered at once, no
     // source runs, and the model is told to ask again after the owner speaks.
@@ -2505,7 +2513,8 @@ export class LiveSessionOwner {
       };
     }
     const configured = this.#researchSources(handle);
-    const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
+    const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) =>
+      handle.researchAllowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
       // Q1-R3(d): a research run issues several execute batches (search, then hydrate/open/thread, then a
       // retry). They shared handle.toolStep, so executionId (`runId:step:index`) collided and the journal
@@ -2544,6 +2553,8 @@ export class LiveSessionOwner {
           ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
+    // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
+    if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), timeZone: this.#timeZone,
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
@@ -2577,6 +2588,7 @@ export class LiveSessionOwner {
       // R6: a source that settles after the first answer. The host owns the block and the delivery rule.
       late: event => this.#lateFindings(handle, generation, event),
     });
+    handle.researchSchedulerGeneration = handle.generation;
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
@@ -2694,6 +2706,8 @@ export class LiveSessionOwner {
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
+    // #1022 F5/F3: the per-turn latency loops delete this clock, so the arrival time is read once, here.
+    const arrivedAt = new Map(event.calls.flatMap(call => { const at = handle.callStartedAt.get(call.id); return at === undefined ? [] : [[call.id, at] as const]; }));
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
@@ -2723,7 +2737,7 @@ export class LiveSessionOwner {
         responses = outcome.responses;
         projections = outcome.projections;
         const latency: { tool: string; ms: number }[] = [];
-        for (const call of event.calls) { const started = handle.callStartedAt.get(call.id); if (started !== undefined) latency.push({ tool: call.name, ms: Math.max(0, this.#now() - started) }); handle.callStartedAt.delete(call.id); }
+        for (const call of event.calls) { const started = arrivedAt.get(call.id); if (started !== undefined) latency.push({ tool: call.name, ms: Math.max(0, this.#now() - started) }); handle.callStartedAt.delete(call.id); }
         hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: event.calls.length, toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
       } else {
       // One model call fans out to one or more internal reads; a plain call maps to itself. An intent
@@ -2853,7 +2867,7 @@ export class LiveSessionOwner {
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];
       for (const unit of pending) {
-        const started = handle.callStartedAt.get(unit.call.id);
+        const started = arrivedAt.get(unit.call.id);
         if (started !== undefined) latency.push({ tool: unit.call.name, ms: Math.max(0, this.#now() - started) });
         handle.callStartedAt.delete(unit.call.id);
       }
@@ -2914,7 +2928,7 @@ export class LiveSessionOwner {
       this.#callResult(handle, id, responses[index]?.response, projection.markdown);
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
-      const started = handle.callStartedAt.get(call.id);
+      const started = arrivedAt.get(call.id);
       // The count the source's own shape carried, never `sources.length`: those are citations, and a
       // capped source undercounted against them (review finding F5). A shape with no item count stays
       // uncounted rather than guessed, and the line reads "<source> answered".
@@ -2942,7 +2956,7 @@ export class LiveSessionOwner {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
           // #451: the function_call_output write itself, measured from the frame that asked for it.
-          const askedAt = event.calls.map(call => handle.callStartedAt.get(call.id)).find(started => started !== undefined);
+          const askedAt = event.calls.map(call => arrivedAt.get(call.id)).find(started => started !== undefined);
           hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length,
             msSinceArrived: askedAt === undefined ? 0 : Math.max(0, this.#now() - askedAt) });
           for (const entry of responses) if (entry.name === RESEARCH_TOOL_NAME) markCalendarReply(handle.researchLedger, entry.response);

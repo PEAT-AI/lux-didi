@@ -1,15 +1,24 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import type { LiveToolsComposition } from '../live/types.js';
+import { liveProfileIdentity } from '../live/config.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { parseSelector, type ResearchSelector } from '../tools/research.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import type { LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
 
 const NOW = 1_700_000_000_000;
 const MODEL = 'models/live-recovery-test';
@@ -44,6 +53,7 @@ interface DrivenSession {
 function drivenPort() {
   const sessions: DrivenSession[] = [];
   const openedAt: number[] = [];
+  const toolResponses: LiveToolResponse[][] = [];
   let events: ((event: LiveVoiceEvent) => void) = () => {};
   let sequence = 0;
   const port = {
@@ -74,7 +84,8 @@ function drivenPort() {
       };
       const session: LiveVoiceSession = {
         ready, done, events: iterator,
-        sendAudio(): void {}, sendText(): void {}, sendToolResponse(): void {}, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
+        sendToolResponse(input): void { toolResponses.push([...input.responses]); },
         close(): void { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); },
       };
       control.signal.addEventListener('abort', () => { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); }, { once: true });
@@ -86,18 +97,79 @@ function drivenPort() {
       return session;
     },
   } as unknown as LiveVoicePort;
-  return { port, sessions, openedAt };
+  return { port, sessions, openedAt, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }) };
 }
+
+/** A selector that plans one knowledge read and then stops, so the dispatch under test is the one the host makes. */
+const SELECTOR: ResearchSelector = { async select(input) {
+  return parseSelector(JSON.stringify({ questionClass: 'quick_fact', pUseful: { knowledge_search: 0.99 },
+    actions: input.completed.some(entry => entry.kind === 'knowledge_search') ? [] : [{ kind: 'knowledge_search', query: 'synthetic plan' }] }));
+} };
+
+/** Every `tools/call` the fake knowledge connector answered, in order. */
+type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | undefined }[]; hold(): void; release(): void;
+  /** The run's acceptance the delivery gate reads: `false` refuses the gate for the batches inside the window. */
+  authority(up: boolean): void };
+
+/** One fake knowledge connector, its tool call counted: a dispatch the test can see, never a real endpoint. */
+async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<typeof validateLiveProfile>): Promise<{ tools: LiveToolsComposition; hook: ConnectorHook }> {
+  const schemas = [{ name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } }];
+  const calls: ConnectorHook['calls'] = [];
+  let authorityUp = true;
+  let held: Promise<void> | undefined;
+  let release: (() => void) | undefined;
+  const registry = new McpRegistry();
+  const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
+  registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
+  const sdk = new Server({ name: 'live-recovery-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(schemas) }) as never);
+  sdk.setRequestHandler('tools/call', async request => {
+    calls.push({ name: request.params.name, args: request.params.arguments });
+    if (held !== undefined) await held;
+    return { content: [{ type: 'text', text: 'synthetic knowledge answer' }] };
+  });
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    if (request.method === 'GET') return new Response(null, { status: 405 });
+    return transport.handleRequest(request);
+  });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
+    resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 5_000 } });
+  const toolOwner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
+    lookupAuthority: async runId => authorityUp ? ownerRef?.lookupAuthority(runId) ?? ownerRef?.lookupJobAuthority(runId) ?? null : null });
+  toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge'], schemaDigest: canonicalToolDigest(schemas),
+    sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 8, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+  assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+  toolOwner.projectConnection('lux');
+  t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
+  return { tools: { owner: toolOwner, connectionIds: () => ['lux'] },
+    hook: { calls, hold: () => { held = new Promise<void>(resolve => { release = resolve; }); },
+      release: () => { held = undefined; release?.(); release = undefined; }, authority: up => { authorityUp = up; } } };
+}
+
+let ownerRef: LiveSessionOwner | undefined;
 
 interface Harness {
   owner: LiveSessionOwner; store: Store; port: ReturnType<typeof drivenPort>; clock: DeadlineClock; ctx: LiveContext;
   receipts: Record<string, unknown>[];
   advance(ms: number): Promise<void>;
+  /** Every `tools/call` the fake knowledge connector answered, in order. */
+  connectorCalls: { name: string; args: Record<string, unknown> | undefined }[];
+  /** Held while set: the fake connector's next answer waits for `releaseTool`. */
+  holdTool(): void;
+  releaseTool(): void;
+  /** Withhold or restore the run acceptance the delivery gate reads, for one batch window. */
+  authority(up: boolean): void;
 }
 
-function harness(t: TestContext): Harness {
+async function harness(t: TestContext): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-recovery-'));
-  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
+  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
   const clock = new DeadlineClock();
   const port = drivenPort();
@@ -109,9 +181,13 @@ function harness(t: TestContext): Harness {
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
-  const owner = createLiveSessionOwner({ store, voice: port.port, profile, now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
-  t.after(() => { sink(); rmSync(dir, { recursive: true, force: true }); });
-  return { owner, store, port, clock, ctx, receipts, advance: async ms => { clock.now += ms; clock.runDue(); await flush(); } };
+  const { tools, hook } = await toolsFixture(t, store, profile);
+  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools, research: SELECTOR,
+    now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
+  ownerRef = owner;
+  t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });
+  return { owner, store, port, clock, ctx, receipts, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release, authority: hook.authority,
+    advance: async ms => { clock.now += ms; clock.runDue(); await flush(); } };
 }
 
 /** The provider session at \`index\`, waiting out its backoff when the host has not opened it yet. */
@@ -139,7 +215,7 @@ async function ended(t: TestContext, attachment: { done: Promise<{ terminal: unk
 }
 
 test('#525: a provider session that dies right after open costs three attempts after their backoff, then settles', async t => {
-  const h = harness(t);
+  const h = await harness(t);
   const created = h.owner.create({ idempotencyKey: 'death-loop', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
   // The attach is ready only once the provider says ready, so the opening socket goes live first.
@@ -176,7 +252,7 @@ test('#525: a provider session that dies right after open costs three attempts a
 });
 
 test('#527: the three-strike ceiling still fires after a long healthy stretch', async t => {
-  const h = harness(t);
+  const h = await harness(t);
   const created = h.owner.create({ idempotencyKey: 'healthy-then-dead', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
   // The attach is ready only once the provider says ready, so the opening socket goes live first.
@@ -197,4 +273,108 @@ test('#527: the three-strike ceiling still fires after a long healthy stretch', 
   const end = await ended(t, attachment as never);
   assert.equal(h.port.sessions.length, 4, 'the ceiling counts the dead sessions, it does not reset per attempt');
   assert.deepEqual(end.terminal, { state: 'failed', code: 'resume_failed' }, 'a healthy episode does not buy an endless retry loop');
+});
+
+/** Wait until the host has answered the model this many times. */
+async function answered(h: Harness, count: number): Promise<void> {
+  for (let i = 0; i < 2000 && h.port.toolResponses.length < count; i++) await flush();
+  assert.equal(h.port.toolResponses.length, count, 'the host answered the model');
+}
+
+/** The owner's first turn, which is what allows a lookup at all. */
+async function ownerSpoke(h: Harness, text = 'what do we know about the plan'): Promise<void> {
+  h.port.emit({ type: 'inputTranscription', text, finished: true, sequence: 0 } as LiveVoiceEvent);
+  await flush();
+}
+
+/** One lookup question per call, so a repeat never hits the session's answer cache instead of the loop. */
+const research = (id: string, question = 'what do we know about the plan'): LiveVoiceEvent => ({
+  type: 'toolCall', calls: [{ id, name: 'research', args: { action: 'start', question } }], sequence: 0,
+}) as LiveVoiceEvent;
+
+test('F1: a research call after a rebuild reaches the connector instead of being denied', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'research-rebuild', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  await ownerSpoke(h);
+  // One lookup runs on generation 0, which is where the session's research scheduler is built.
+  h.port.emit(research('r0'));
+  await answered(h, 1);
+  // The socket dies and the host rebuilds it: the session is now generation 1.
+  first.die();
+  await flush();
+  const second = (await sessionAt(h, 1))!;
+  second.live();
+  await flush();
+  await ownerSpoke(h, 'what do we know about the budget');
+  h.port.emit(research('r1', 'what do we know about the budget'));
+  await answered(h, 2);
+  const reply = h.port.toolResponses[1]![0]!;
+  const seen = JSON.stringify({ reply: reply.response, connectorCalls: h.connectorCalls, receipts: h.receipts.filter(entry => String(entry['event']).startsWith('research')).slice(-6) });
+  assert.notEqual(reply.response['error'], 'tool_result_denied', `the rebuilt session runs its lookup: ${seen}`);
+  assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 2, `both lookups dispatched to the connector: ${seen}`);
+});
+
+test('F1: a lookup refused before the owner spoke never poisons the session', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'research-opener', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  h.port.emit(research('r0'));
+  await answered(h, 1);
+  assert.equal(h.port.toolResponses[0]![0]!.response['error'], 'opener_not_fetched', 'the opener lookup is refused, never dispatched');
+  assert.equal(h.connectorCalls.length, 0, 'the refused opener reached no connector');
+  await ownerSpoke(h, 'what do we know about the budget');
+  h.port.emit(research('r1', 'what do we know about the budget'));
+  await answered(h, 2);
+  const reply = h.port.toolResponses[1]![0]!;
+  const seen = JSON.stringify({ reply: reply.response, connectorCalls: h.connectorCalls, receipts: h.receipts.filter(entry => String(entry['event']).startsWith('research')).slice(-6) });
+  assert.notEqual(reply.response['error'], 'tool_result_denied', `the next lookup runs on the same session: ${seen}`);
+  assert.ok(h.connectorCalls.some(call => call.name === 'search_knowledge'), `the second lookup dispatched to the connector: ${seen}`);
+});
+
+test('F5/F3: tool_output_sent measures the span from the frame that asked for it', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'tool-latency', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  h.holdTool();
+  h.port.emit({ type: 'toolCall', calls: [{ id: 'k1', name: 'search_knowledge', args: { query: 'plan', limit: 3 } }], sequence: 0 } as LiveVoiceEvent);
+  await flush();
+  await h.advance(1_200);
+  h.releaseTool();
+  await answered(h, 1);
+  const receipt = h.receipts.find(entry => entry['event'] === 'tool_output_sent');
+  assert.ok(receipt, 'the output write was receipted');
+  assert.equal(receipt['msSinceArrived'], 1_200, 'the span is measured from the call that arrived, not from a lost clock');
+});
+
+test('F1: a lookup the gate denied never withholds the next allowed one', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'research-gate', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  await ownerSpoke(h);
+  // The delivery gate refuses every dispatch of this batch: the run answers with nothing fetched.
+  h.authority(false);
+  h.port.emit(research('r0'));
+  await answered(h, 1);
+  assert.equal(h.connectorCalls.length, 0, 'the refused batch reached no connector');
+  // The gate is healthy again, and the owner asks something new: this lookup must be able to dispatch.
+  h.authority(true);
+  await ownerSpoke(h, 'what do we know about the budget');
+  h.port.emit(research('r1', 'what do we know about the budget'));
+  await answered(h, 2);
+  assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 1,
+    'the allowed lookup dispatched even though the batch that built the scheduler was denied');
 });

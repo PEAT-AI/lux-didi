@@ -2269,19 +2269,27 @@ test('L7: a response that began under the mute is dropped at unmute, and the mut
   // The dropped response ends before the next turn begins.
   h.f.send({ serverContent: { turnComplete: {} } });
   await tick();
-  // A fresh answer after the unmute is played, and the muted 25 s is not counted as dead air.
+  void session;
+});
+
+test('L7: the muted time is excluded from live_dead_air', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { attachment } = await attached(h, 'mute-dead-air');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  // The owner's turn ends, then she is muted for 25 s before the answer becomes audible.
   h.f.send({ serverContent: { inputTranscription: { text: 'what now', finished: true } } });
-  h.f.send({ serverContent: { turnComplete: {} } });
   await tick();
   attachment.setInputMuted(true);
   h.advance(25_000); scheduler.runDue();
   attachment.setInputMuted(false);
   h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
-  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air'); i++) { await tick(); }
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number'); i++) await tick();
   const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
   assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
-  assert.ok(Number(deadAir!['deadAirMs']) < 5_000, `the 25 s mute is excluded, got ${deadAir!['deadAirMs']}`);
-  void session;
+  assert.ok(Number(deadAir!['deadAirMs']) < 5_000, `the 25 s mute is not dead air the owner heard, got ${deadAir!['deadAirMs']}`);
 });
 
 test('L19: a call seeded after a dead one marks its last answer heard and never repeats it', async t => {

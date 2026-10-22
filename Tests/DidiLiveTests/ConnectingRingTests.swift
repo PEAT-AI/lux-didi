@@ -80,10 +80,16 @@ import Foundation
         let tail = samples[(ConnectingRingTone.secondOnset + ConnectingRingTone.noteFrames)...]
         try require((tail.map { abs($0) }.max() ?? 0) < 0.0001, "the rest of the loop is silent")
 
+        // The exact constants, so the numbers are pinned even if a buffer gained tolerance.
+        try require(ConnectingRingTone.firstTone == 659.25, "the first note is exactly E5 659.25 Hz")
+        try require(ConnectingRingTone.secondTone == 880, "the second note is exactly A5 880 Hz")
+        try require(ConnectingRingTone.triangleMix == 0.10, "the triangle mixes in at 10 percent")
+        try require(ConnectingRingTone.stopRampMs == 30, "the stop ramps down over 30 ms")
+
         let first = pitch(samples, onset: 0)
-        try require(abs(first - 659.25) < 12, "the first note is E5 659.25 Hz, got \(first)")
+        try require(abs(first - 659.25) < 0.5, "the first note is E5 659.25 Hz, got \(first)")
         let second = pitch(samples, onset: ConnectingRingTone.secondOnset)
-        try require(abs(second - 880) < 12, "the second note is A5 880 Hz, got \(second)")
+        try require(abs(second - 880) < 0.5, "the second note is A5 880 Hz, got \(second)")
 
         // The one native record per ring.
         let record = ConnectingRingRecord(startedAt: 1_700_000_000_000,
@@ -180,17 +186,26 @@ import Foundation
 
     @MainActor final class TestClock { var ms = 0 }
 
-    /// Positive-going zero crossings over the middle 100 ms of a note, which is its pitch.
+    /// The note's pitch from its first and last positive zero crossing, each time interpolated
+    /// between the two samples that bracket it, so the estimate is not quantized to 10 Hz.
     static func pitch(_ samples: [Float], onset: Int) -> Double {
-        let start = onset + ConnectingRingTone.noteFrames / 4
-        let frames = ConnectingRingTone.noteFrames / 2
+        let end = onset + ConnectingRingTone.noteFrames
         var crossings = 0
-        var previous = samples[start]
-        for index in (start + 1)..<(start + frames) {
-            if previous <= 0, samples[index] > 0 { crossings += 1 }
-            previous = samples[index]
+        var first = 0.0
+        var last = 0.0
+        var previous = samples[onset]
+        for index in (onset + 1)..<end {
+            let current = samples[index]
+            if previous <= 0, current > 0 {
+                let at = Double(index - 1) + Double(-previous) / Double(current - previous)
+                crossings += 1
+                if crossings == 1 { first = at }
+                last = at
+            }
+            previous = current
         }
-        return Double(crossings) / (Double(frames) / ConnectingRingTone.sampleRate)
+        guard crossings > 1, last > first else { return 0 }
+        return Double(crossings - 1) / ((last - first) / ConnectingRingTone.sampleRate)
     }
 
     static func require(_ value: Bool, _ message: String) throws {

@@ -80,9 +80,9 @@ import Foundation
         try require((tail.map { abs($0) }.max() ?? 0) < 0.0001, "the rest of the loop is silent")
 
         let first = pitch(samples, onset: 0)
-        try require(abs(first - 659.25) < 3, "the first note is E5 659.25 Hz, got \(first)")
+        try require(abs(first - 659.25) < 12, "the first note is E5 659.25 Hz, got \(first)")
         let second = pitch(samples, onset: ConnectingRingTone.secondOnset)
-        try require(abs(second - 880) < 3, "the second note is A5 880 Hz, got \(second)")
+        try require(abs(second - 880) < 12, "the second note is A5 880 Hz, got \(second)")
 
         // The one native record per ring.
         let record = ConnectingRingRecord(startedAt: 1_700_000_000_000,

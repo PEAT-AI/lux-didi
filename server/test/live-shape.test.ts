@@ -79,14 +79,15 @@ test('gmail read decodes entities in the header and the plain-text body to text'
 test('gmail read omits an absent sender and date instead of printing the word unknown', () => {
   const shaped = shapeGmailRead({ headers: { Subject: 'Only a subject' }, body: 'hello' });
   assert.equal(shaped.text.includes('unknown'), false);
-  assert.match(shaped.text, /^subject: Only a subject\n\nhello$/);
+  // The read ends with the source's own body-coverage status, which is not a missing field.
+  assert.match(shaped.text, /^subject: Only a subject\n\nhello\n\[Source inline body completeness is unverified\.\]$/);
 });
 
 test('gmail read reports a body cut as final, never mid-sentence and never promising a re-read', () => {
   const body = 'First sentence. Second sentence. Third sentence. '.repeat(600);
   const shaped = shapeGmailRead({ headers: HEADERS, body });
   assert.equal(shaped.partial, true);
-  assert.match(shaped.text, /\[omitted: \d+ characters of body; final/);
+  assert.match(shaped.text, /\[omitted: \d+ received characters of body omitted from this display\]/);
   assert.equal(shaped.text.includes('ask for more'), false);
   assert.match(shaped.text.split('\n\n[omitted:')[0]!.trimEnd(), /[.?!]$/);
 });
@@ -94,7 +95,7 @@ test('gmail read reports a body cut as final, never mid-sentence and never promi
 test('gmail list keeps sender, date, snippet, unread flag and thread size for every message', () => {
   const shaped = shapeGmailList({ messages: [
     { headers: { Subject: 'One', From: 'A <a@example.invalid>', Date: 'Mon' }, snippet: 'hello there', labelIds: ['UNREAD'], threadSize: 3 },
-    { headers: { Subject: 'Two', From: 'B <b@example.invalid>', Date: 'Tue' } },
+    { id: 'm2', headers: { Subject: 'Two', From: 'B <b@example.invalid>', Date: 'Tue' } },
   ] });
   assert.match(shaped.text, /- One \| from: A \| date: Mon \[unread\] \(thread 3\) \| hello there/);
   assert.match(shaped.text, /- Two \| from: B \| date: Tue/);
@@ -213,7 +214,7 @@ test('lux search keeps title, type, date, id and a substantial excerpt, and name
   assert.equal(shaped.text.includes('Insight 21'), false);
 });
 
-test('lux get_insight returns the full body, so the search excerpt follow-up is honest', () => {
+test('lux get_insight returns the full body, and the search excerpt names research for the rest', () => {
   const content = 'Sentence one. '.repeat(400); // ~5600 chars, over the 1200 excerpt bound but under the body bound
   const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 7, insight_title: 'Deep body', content }));
   assert.equal(shaped.partial, false);
@@ -221,7 +222,8 @@ test('lux get_insight returns the full body, so the search excerpt follow-up is 
   assert.equal(shaped.text.includes(content), true, 'the whole insight body must reach the model');
   const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 7, insight_title: 'Deep body', content }] }));
   assert.equal(excerpt.partial, true);
-  assert.match(excerpt.text, /call get_insight with ids=\[7\]/);
+  // ROUTE-1022 K15: the live session reaches a stored note through research, never get_insight.
+  assert.match(excerpt.text, /ask research with ids=\[7\] for the whole note/);
 });
 
 test('plain non-JSON knowledge payloads pass through untouched', () => {
@@ -461,7 +463,7 @@ test('O-R1: more hits than the total bound allows never drop silently', () => {
   const text = ranked(Array.from({ length: 12 }, (_, index) => rankedHit(91200 + index, `Insight ${index}`, body)));
   const shaped = shapeLuxKnowledge('search_knowledge', text);
   assert.match(shaped.text, /\[showing \d+ of 12 hits; ask a narrower question or a higher limit for the rest\]/);
-  assert.ok(shaped.text.length <= 4300, `the trimmed text stays near its bound (${shaped.text.length})`);
+  assert.ok(shaped.text.length <= KNOWLEDGE_RANKED_TOTAL_CHARS + 200, `the trimmed text stays near its bound (${shaped.text.length})`);
   assert.equal(shaped.partial, true, 'a trimmed read is partial');
 });
 

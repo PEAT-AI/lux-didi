@@ -122,7 +122,7 @@ export function openClaimCorrection(runId: string): { text: string; reason: 'no_
   opened.delete(runId);
   const claim = CLAIM.exec(said.toLowerCase());
   if (!claim) return undefined;
-  const named = CLAIMED_KINDS.find(entry => entry.words.test(said.toLowerCase()))?.kind;
+  const named = CLAIMED_KINDS.find(entry => entry.words.test(claimSentence(said.toLowerCase(), claim.index)))?.kind;
   if (receipts.length === 0) {
     return { reason: 'no_receipt', text: 'Correction: nothing opened just then, whatever I said. Tell him plainly that nothing is open, and offer to look it up again.' };
   }
@@ -131,6 +131,13 @@ export function openClaimCorrection(runId: string): { text: string; reason: 'no_
     return { reason: 'kind_mismatch', text: `Correction: I did not open the ${claimedNoun(named)}. What opened was ${actual}. Tell him plainly what opened, and that the ${claimedNoun(named)} he asked for is still closed.` };
   }
   return undefined;
+}
+
+/** OPEN2-R4: the sentence the claim phrase sits in, so a later sentence never supplies the kind. */
+function claimSentence(text: string, at: number): string {
+  const start = Math.max(0, ...['.', '!', '?', '\n'].map(mark => text.lastIndexOf(mark, at - 1) + 1));
+  const ends = ['.', '!', '?', '\n'].map(mark => text.indexOf(mark, at)).filter(index => index >= 0);
+  return ends.length === 0 ? text.slice(start) : text.slice(start, Math.min(...ends));
 }
 
 function claimedNoun(kind: OpenKind): string {

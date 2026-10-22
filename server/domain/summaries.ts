@@ -145,7 +145,9 @@ export function updateSummary(
 }
 
 export function listSummaries(tx: Transaction): SummaryRecord[] {
-  return tx.all('SELECT * FROM conversation_summaries ORDER BY created_at DESC, rowid DESC').map(toRecord);
+  // An in-flight row is not an outcome: no reader may present it as a failed summary (LIVE2-R1).
+  return tx.all('SELECT * FROM conversation_summaries ORDER BY created_at DESC, rowid DESC').map(toRecord)
+    .filter(record => !(record.status === 'failed' && record.errorCode === PENDING_SUMMARY_ERROR_CODE));
 }
 
 /** Ended sessions the reconciler may still distil, oldest first: no row, or a row skipped only for a missing text model. */

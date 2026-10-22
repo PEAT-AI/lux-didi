@@ -51,7 +51,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -2226,6 +2226,86 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   assert.equal(lines.filter(line => line.event === 'live_dead_air_nudge').length, 1);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
+});
+
+test('L14: non-lexical transcript tags never reach the journal, and other brackets are the owner\'s own', async t => {
+  // The closed list, terminated or not, is a breath and never a word; anything else in brackets stays.
+  assert.equal(stripNonLexicalTags('so [inhale'), 'so ');
+  assert.equal(stripNonLexicalTags('a [breath] b [sigh] c'), 'a  b  c');
+  assert.equal(stripNonLexicalTags('keep [the folder] and [2] as they are'), 'keep [the folder] and [2] as they are');
+  const h = await harness(t);
+  const { session } = await attached(h, 'tags');
+  h.f.send({ serverContent: { inputTranscription: { text: 'the plan holds [inhale' } } });
+  h.f.send({ serverContent: { inputTranscription: { text: ' and the folder [breath] stays', finished: true } } });
+  h.f.send({ serverContent: { outputTranscription: { text: 'all set [sigh] here', finished: true } } });
+  await drain(h, session.liveSessionId, 4);
+  const rows = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription') ORDER BY journal_id", [session.liveSessionId]));
+  const input = rows.filter(row => row['kind'] === 'inputTranscription').map(row => String(row['text'])).join('');
+  const output = rows.filter(row => row['kind'] === 'outputTranscription').map(row => String(row['text'])).join('');
+  assert.equal(/\[(?:inhale|breath|sigh)/i.test(input), false, 'no tag survives in what the owner said');
+  assert.equal(/\[(?:inhale|breath|sigh)/i.test(output), false, 'and none in what she said');
+  assert.ok(input.includes('the plan holds') && input.includes('and the folder'), 'the words are still there');
+});
+
+test('L7: a response that began under the mute is dropped at unmute, and the muted time is not dead air', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'mute-stale');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  attachment.setInputMuted(true);
+  // The answer starts under the mute: its frame is dropped and the answer is held.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick(); await tick();
+  h.advance(25_000); scheduler.runDue();
+  attachment.setInputMuted(false);
+  // The same response streams on after the unmute: not one frame of it is played.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  await tick(); await tick();
+  assert.equal(played.length, 0, 'a stale answer is never played at unmute');
+  // A fresh answer after the unmute is played, and the muted 25 s is not counted as dead air.
+  h.f.send({ serverContent: { inputTranscription: { text: 'what now', finished: true } } });
+  h.f.send({ serverContent: { turnComplete: {} } });
+  await tick();
+  attachment.setInputMuted(true);
+  h.advance(25_000); scheduler.runDue();
+  attachment.setInputMuted(false);
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air'); i++) { await tick(); }
+  const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
+  assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
+  assert.ok(Number(deadAir!['deadAirMs']) < 5_000, `the 25 s mute is excluded, got ${deadAir!['deadAirMs']}`);
+  void session;
+});
+
+test('L19: a call seeded after a dead one marks its last answer heard and never repeats it', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session } = await attached(h, 'dead-line-seed');
+  h.f.send({ serverContent: { outputTranscription: { text: 'the answer that never reached her', finished: true } } });
+  await drain(h, session.liveSessionId, 2);
+  // The call is lost to a refused recovery and settles resume_failed.
+  h.f.refuseUpgrades(401);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-seed-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  let settled = false;
+  for (let i = 0; i < 90 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
+  assert.equal(settled, true, 'the dead call ended');
+  // The next call in the same conversation seeds that history.
+  const next = h.owner.create({ idempotencyKey: 'dead-line-next', inputClass: 'ordinary' }, h.ctx);
+  h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  await tick();
+  const request = h.requests.at(-1)!;
+  const history = request.history ?? [];
+  assert.ok(history.some(turn => turn.role === 'model' && turn.text.includes('never reached her')), 'the dead answer is still history');
+  assert.equal(history.at(-1)?.role, 'user', 'and the seed closes it as heard');
+  assert.match(history.at(-1)!.text, /line dropped/i, 'the seed says the line dropped instead of inviting a repeat');
+  h.owner.revoke(next.liveSessionId);
 });
 
 test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {

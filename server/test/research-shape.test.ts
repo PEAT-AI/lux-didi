@@ -107,7 +107,8 @@ test('a calendar window is asked for with the primary-calendar scope', () => {
 test('candidateSubs uses the authored query and the per-source limits', () => {
   const knowledge = candidateSubs('knowledge_search', { question: 'raw sentence here', configured: CONFIGURED, evidence: new Map(), query: 'lux didi' });
   assert.equal(knowledge[0]?.args['limit'], RESEARCH.knowledgeHits, 'P5-R1 and 3r K1: six hits with bounded bodies');
-  assert.equal(knowledge[0]?.args['query'], 'lux didi');
+  // MED-1022: the authored terms lead, and the question's own words follow them inside the budget.
+  assert.equal(knowledge[0]?.args['query'], 'lux didi raw sentence here');
   const chat = candidateSubs('chat_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'after:2026-10-15 release' });
   assert.equal(chat[0]?.args['limit'], RESEARCH.chatLines);
   const mail = candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'in:inbox newer_than:2d' });

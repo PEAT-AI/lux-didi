@@ -607,12 +607,14 @@ test('F8: a daily word is not schedule intent, and a schedule question still is'
 
 // --- F6: an identical read inside one live session is paid once ---------------------------------
 
+// MED-1022: the read's key carries the question's own words, so the same read means the same question;
+// a paraphrase of it is a different query and pays for its own dispatch.
 test('F6: the same knowledge read twice inside the session window is dispatched once', async () => {
   const h = harness({});
   h.deps.memo = { calendar: new Map() };
   const first = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
-  const second = await runResearch(h.deps, { action: 'start', question: 'remind me of the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
-  assert.notEqual(first['researchId'], second['researchId'], 'two distinct questions, two distinct runs');
+  const second = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  assert.notEqual(first['researchId'], second['researchId'], 'two distinct runs, two distinct ids');
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the second run reuses the answer instead of paying for it again');
   assert.match(JSON.stringify(second['findings']), /Release 3k scope/u, 'the reused read still reaches the reply');
 });

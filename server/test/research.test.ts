@@ -519,20 +519,16 @@ test('configuredNow re-resolves the configured sources for each run', async () =
   assert.ok((reply['unchecked'] as string[]).includes('calendar'), 'a configured source not read is reported');
 });
 
-test('knowledge first: a knowledge read starts before the selector returns', async () => {
+test('knowledge first: the prime knowledge read starts before any other read', async () => {
   const order: string[] = [];
-  const gate = deferred<void>();
-  const selector: ResearchSelector = { async select() { order.push('selector-start'); await gate.promise; return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
-  const h = harness({ selector, execute: async subs => { order.push(...subs.map(sub => sub.name)); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
-  const running = runResearch(h.deps, { action: 'start', question: 'what did I decide about the release' }, new AbortController().signal);
-  await new Promise<void>(resolve => setImmediate(resolve));
+  let selects = 0;
+  const selector: ResearchSelector = { async select() { selects += 1; return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
+  const h = harness({ selector, execute: async (subs: readonly IntentSubCall[]) => { order.push(...subs.map(call => call.name)); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  await runResearch(h.deps, { action: 'start', question: 'what did I decide about the release' }, new AbortController().signal);
   assert.ok(order.includes('search_knowledge'), 'the prime source read starts immediately');
-  assert.equal(order.includes('selector-start'), true, 'the selector runs in parallel with the knowledge read');
-  assert.ok(order.indexOf('search_knowledge') < order.indexOf('selector-start'), 'the knowledge read starts before the selector');
-  gate.resolve();
-  await running;
+  assert.equal(selects, 0, 'F-B: the voice path never spends a selector round');
+  assert.equal(h.logs[0]!.selectorMs, 0);
 });
-
 test('knowledge findings rank first in the reply', async () => {
   const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }, { kind: 'knowledge_search' }], pUseful: { mail_search: 0.9, knowledge_search: 0.9 } });
   const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name, call.name === 'gmail_search_messages' ? '- Subject | Sender | Mon | body [id m1]' : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
@@ -622,22 +618,18 @@ test('a long read still sends the model a progress line every three seconds, and
   assert.equal(clock.pending(), 0, 'the heartbeat is stopped when the run ends');
 });
 
-test('when the selector deadline passes the fallback starts at once and the model already has an update', async () => {
+test('the fallback read starts at once, with no selector deadline in front of it', async () => {
   const clock = fakeClock();
-  let abortSelector!: (error: Error) => void;
-  const selector: ResearchSelector = { select: () => new Promise<SelectorOutput>((_, reject) => { abortSelector = reject; }) };
   const readAt: { tool: string; at: number }[] = [];
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const running = runResearch(h.deps, { action: 'start', question: 'what happened this week' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
-  clock.advance(RESEARCH.selectorDeadlineMs); await settle();
-  abortSelector(new Error('aborted'));
   await running;
-  assert.equal(h.logs[0]!.fallbackUsed, true, 'the deadline falls back to the fixed recipe');
+  assert.equal(h.logs[0]!.selectorMs, 0, 'no selector round is spent, so nothing waits on a selector deadline');
   const fallbackReads = readAt.filter(entry => entry.tool === 'calendar_list_events');
-  assert.ok(fallbackReads.length > 0, 'the fallback reads the calendar');
-  assert.ok(fallbackReads.every(entry => entry.at === RESEARCH.selectorDeadlineMs), `the fallback read starts the moment the selector gives up: ${JSON.stringify(readAt)}`);
+  assert.ok(fallbackReads.length > 0, 'the fixed recipe reads the calendar');
+  assert.ok(fallbackReads.every(entry => entry.at === 0), `the read starts with the call: ${JSON.stringify(readAt)}`);
   const stamps = h.progress.map(entry => entry.elapsedMs);
   assert.ok(stamps.some(stamp => stamp <= 3_000), 'a progress line inside three seconds of the call');
   assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);
@@ -646,17 +638,16 @@ test('when the selector deadline passes the fallback starts at once and the mode
 // Contract RD: the owner must never wait more than six seconds in silence while a lookup runs.
 test('deadAirMs measures the longest silence the model hears, never the whole run', async () => {
   const clock = fakeClock();
-  const gate = deferred<void>();
-  const slowSelector: ResearchSelector = { select: async () => { await gate.promise; return { questionClass: 'quick_fact', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 0.9 } }; } };
-  const h = harness({ selector: slowSelector, now: clock.now, schedule: clock.schedule });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    await new Promise<void>(resolve => { clock.schedule(() => resolve(), 4_400); });
+    return subs.map(call => sub(call.name, 'evidence', true, call.key));
+  } });
   const running = runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
   await settle();
-  clock.advance(3_000); await settle();
-  clock.advance(6_000); await settle();
-  gate.resolve();
+  clock.advance(4_400); await settle();
   await running;
   const log = h.logs[0]!;
-  assert.ok(log.elapsedMs >= 6_000, `the run really took six seconds: ${log.elapsedMs}`);
+  assert.ok(log.elapsedMs >= 4_000, `the run really took over four seconds: ${log.elapsedMs}`);
   assert.ok(log.deadAirMs <= 3_000, `the worst silence is one beat, not the run: ${log.deadAirMs}`);
 });
 
@@ -764,7 +755,7 @@ test('a cut source logs a disposition the host log admits and the whole run line
 
 // K6: the routed path is additive. Without lookups the selector still chooses, and the reply keeps
 // exactly the shape it had, with no per-source status block.
-test('K6: a start with no lookups keeps the selector path and its reply shape', async () => {
+test('K6: a start with no lookups reads the deterministic plan and never awaits a selector', async () => {
   const selections: string[] = [];
   const h = harness({
     selector: {
@@ -775,7 +766,8 @@ test('K6: a start with no lookups keeps the selector path and its reply shape', 
     },
   });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  assert.ok(selections.length >= 1, 'the selector still chooses the sources');
+  assert.equal(selections.length, 0, 'F-B: the voice path never waits for a selector round');
+  assert.equal(h.logs[0]!.selectorMs, 0, 'an unrouted run spends no selector time');
   assert.equal('sources' in reply, false, 'an unrouted reply carries no per-source status block');
   assert.ok(h.logs.some(entry => entry.event === 'research_run'), 'the unrouted run still logs its run line');
   assert.deepEqual(h.executed.map(call => call.name), ['search_knowledge'], 'the selector-chosen read still runs');
@@ -783,7 +775,7 @@ test('K6: a start with no lookups keeps the selector path and its reply shape', 
 
 // R9: the selector loop's terminal line comes from a finally, so a throw inside the loop leaves a receipt
 // and a good run is never written twice.
-test('R9: a selector round that throws still writes one failed run line, with no exception text', async () => {
+test('R9: a throwing step sink still writes one failed run line, with no exception text', async () => {
   const h = harness({ selector: knowledge });
   const deps: ResearchDeps = { ...h.deps, step: () => { throw new Error('step sink gone'); } };
   await assert.rejects(runResearch(deps, { action: 'start', question: 'what is waiting on me' }, new AbortController().signal), /step sink gone/);
@@ -923,7 +915,9 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   await runResearch(deps, { action: 'start', question: 'release scope' }, new AbortController().signal);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' }, 'an uncut selector read says so too');
+  const { queryTerms, ...knowledgeRest } = receipt.knowledge as unknown as Record<string, unknown>;
+  assert.deepEqual(knowledgeRest, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, dateFilter: false, chatDateOperator: 'none' }, 'an uncut read says so too');
+  assert.ok(typeof queryTerms === 'number' && queryTerms >= 1, `the receipt carries the query term count: ${String(queryTerms)}`);
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.
   assert.deepEqual(safeEvent(receipt)?.['knowledge'], receipt.knowledge, 'the host log keeps the counts and the closed tokens');
@@ -1326,7 +1320,7 @@ test('one configured source never pays a selector round', async () => {
   assert.equal((reply['unchecked'] as string[]).includes('knowledge'), false, 'the one source was read and credited');
 });
 
-test('a quick_fact continuation reads deterministically: no second selector round runs', async () => {
+test('a continuation reads deterministically: no selector round ever runs', async () => {
   // B1: the skip removes the selector round, so the fixture must show the deterministic path still
   // reads and credits the source the direction names. The first round settles quick_fact and stops
   // with rounds left, so the continuation is the round that has to read without the selector.
@@ -1335,13 +1329,13 @@ test('a quick_fact continuation reads deterministically: no second selector roun
   const h = harness({ selector: quick });
   const scheduler = new ResearchScheduler(h.deps);
   const first = await scheduler.call({ action: 'start', question: 'what is the landlord invoice number' }, new AbortController().signal);
-  assert.equal(selects, 1);
+  assert.equal(selects, 0, 'F-B: no selector round runs on the voice path');
   // ROUTE-1022: the round that read the prime source and stopped says nothing more is to fetch.
   assert.equal(first['canContinue'], false, 'a complete reply invites no continuation');
   assert.equal(first['status'], 'complete');
   const readsBefore = h.executed.length;
   const next = await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'what is on my calendar tomorrow' }, new AbortController().signal);
-  assert.equal(selects, 1, 'the class the first round settled never pays a second selector round');
+  assert.equal(selects, 0, 'the continuation never pays a selector round');
   const reads = h.executed.slice(readsBefore);
   assert.ok(reads.some(call => call.name === 'calendar_list_events'), `the continuation reads the source its direction names: ${JSON.stringify(reads)}`);
   assert.equal((next['unchecked'] as string[]).includes('calendar'), false, 'and the reply credits the source it read');
@@ -1489,7 +1483,9 @@ test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one 
   const done = await runResearch(complete.deps, { action: 'start', question: 'what is the release scope' }, new AbortController().signal);
   assert.equal(done['status'], 'complete');
   assert.equal(done['canContinue'], false);
-  assert.equal(done['note'], RESEARCH.completeNote);
+  // ROUTE-1022 shape: the brief fan-out reads the calendar too, so the note carries what that read found
+  // and still ends on the one plain sentence that says nothing else is to fetch.
+  assert.ok(String(done['note']).endsWith(RESEARCH.completeNote));
   const clock = fakeClock();
   const slow: ResearchDeps['execute'] = async subs => {
     await new Promise<void>(resolve => { clock.schedule(() => resolve(), 20_000); });

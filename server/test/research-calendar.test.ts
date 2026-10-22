@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, createGeminiSelector, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, ownerScheduleQuestion, parseSelector, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type ResearchSelector, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -209,25 +209,15 @@ test('calendar in-flight continuation retains received events and never replays 
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2);
 });
 
-test('calendar R4: real selector JSON parsing preserves named windows and refuses invalid or missing windows', async () => {
+test('calendar R4: real selector JSON parsing preserves named windows and refuses invalid or missing windows', () => {
   for (const window of ['Wednesday this week', 'next Wednesday', 'this week', 'whenever', 42, undefined]) {
-    const h = fixture([event(21), event(28)]);
-    h.deps.timeZone = 'UTC';
-    // W2: one configured source has nothing to select, so a selector round needs a second source.
-    h.deps.configured = ['calendar', 'mail'];
-    h.deps.selector = createGeminiSelector({ generate: async () => ({
-      status: 'complete', text: JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 1 } }),
-      providerContent: { role: 'model', parts: [] }, reason: 'synthetic', prompt: { version: 'synthetic', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null },
-    }) });
-    const reply = await runResearch(h.deps, { action: 'start', question: 'Synthetic named window' }, signal());
-    const calls = h.calls.filter(call => call['name'] === 'calendar_list_events');
-    if (typeof window === 'string' && window !== 'whenever') {
-      assert.equal(calls.length, 1);
-      assert.equal(calls[0]!['timeMin'], windowRange(window, fixedNow, 'UTC').timeMin, String(window));
-    } else {
-      assert.equal(calls.length, 0, String(window));
-      assert.match(String(reply['note']), /could not resolve/);
-    }
+    // F-B: the voice path never awaits the selector, so the parser is pinned on its own output.
+    const parsed = parseSelector(JSON.stringify({ questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', ...(window !== undefined ? { window } : {}) }], pUseful: { calendar_window: 0.9 } }));
+    assert.ok(parsed !== null, String(window));
+    assert.equal(parsed.actions.length, 1, String(window));
+    const resolved = typeof window === 'string' && window !== 'whenever';
+    if (resolved) assert.equal(parsed.actions[0]!.window, window, String(window));
+    else assert.equal(parsed.actions[0]!.window, 'unresolved', String(window));
   }
 });
 

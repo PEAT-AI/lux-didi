@@ -203,7 +203,7 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
     emit: () => undefined, log: () => undefined, ledger: new ResearchLedger(),
   };
   // #1021: a content-free question no longer searches knowledge, so the packing test asks a real one.
-  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release email' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string; text: string }[];
   assert.ok(JSON.stringify(reply).length <= 3_000, `reply was ${JSON.stringify(reply).length}`);
   assert.equal(findings.length, 2, 'at least one line per source with hits');
@@ -229,10 +229,10 @@ test('research_subcall matches results by position even when execute keys are co
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '- Subject | Sender | Mon | body [id m1]', originalCharacters: 40, omittedCharacters: 0 })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(subcalls[0]!['ok'], true, 'a composed execute key must still find its result');
   assert.ok((subcalls[0]!['items'] as number) >= 1);
-  assert.equal(subcalls[0]!['queryAuthor'], 'selector');
+  assert.equal(subcalls[0]!['queryAuthor'], 'fallback');
   const findings = reply['findings'] as { text: string }[];
   assert.match(findings[0]!.text, /^mail: 1 of 1 shown/);
 });
@@ -303,9 +303,15 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  assert.deepEqual(logs[0]!['unchecked'], ['calendar', 'mail', 'chat']);
+  const unchecked = logs[0]!['unchecked'] as string[];
+  assert.ok(unchecked.every(source => ['calendar', 'mail', 'chat'].includes(source)), `only sources not read are unchecked: ${JSON.stringify(unchecked)}`);
+  assert.equal(unchecked.includes('knowledge'), false, 'the source that answered is never unchecked');
   assert.equal(typeof logs[0]!['canContinue'], 'boolean');
   assert.ok(Array.isArray(logs[0]!['findingChars']));
+  // RUN-1022 receipts: three closed counts, so the call log says what the answer cost.
+  assert.equal(logs[0]!['bodyReplies'], 0);
+  assert.equal(logs[0]!['metaStartAsContinue'], false);
+  assert.equal(logs[0]!['supersededAborts'], 0);
 });
 
 test('E8/U2: a 31-event week comes back whole, one line per day, never cut at twelve', () => {

@@ -258,10 +258,10 @@ test('both provider declarations carry lookups, and the Gemini dialect flattens 
   assert.match(String(gemini['lookups']!.description), /Original schema: .*"source"/, 'the original schema travels in the description');
 });
 
-test('an unrouted start keeps the selector path and never touches memory', async () => {
+test('an unrouted start reads the deterministic plan and never touches memory', async () => {
   const h = harness({ memory: () => { throw Error('memory must not be read'); } });
   await runResearch(h.deps, { action: 'start', question: 'where does the project stand', lookups: [] }, new AbortController().signal);
-  assert.equal(h.selectorCalls(), 1, 'no lookups means today\'s selector');
+  assert.equal(h.selectorCalls(), 0, 'F-B: no lookups never means a selector round');
   assert.ok(h.executed.includes('search_knowledge'), 'the knowledge prime read is dispatched, exactly as before');
   assert.ok(!h.executed.includes('mattermost_search'), 'and nothing the selector did not choose');
   assert.deepEqual(h.routed, [], 'no routed receipt without lookups');

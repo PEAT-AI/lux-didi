@@ -182,8 +182,6 @@ export const SEED_CHAR_LIMIT = 8_000;
 export const MUTE_WARM_MS = 180_000;
 /** After an unmute with an answer held, this much owner silence earns her one short offer of it. */
 export const MUTED_OFFER_SILENCE_MS = 2_000;
-/** L7: a response started under the mute that is older than this is stale at unmute; it is dropped, never played. */
-const MUTE_KEEP_ANSWER_MS = 5_000;
 /** How many silence windows a held answer is offered in: one, plus one retry after a skip. */
 const MUTED_OFFER_ATTEMPTS = 2;
 const MUTED_OFFER_TEXT = 'An answer to my earlier question arrived while I was muted. Tell me in one sentence.';
@@ -323,6 +321,8 @@ interface ActiveSession {
   heldAnswer: boolean; mutedOfferTimer?: ReturnType<JobTimer> | undefined; mutedOfferAttempts: number;
   /** L7: a response that began under the mute is never played at unmute; its frames are dropped until the turn ends. */
   dropResponse: boolean;
+  /** L7: some of this response arrived under the mute, so it is stale at unmute even if it is still streaming. */
+  mutedResponse: boolean;
   /** L7: the muted time inside this turn, so `live_dead_air` measures the wait the owner actually heard. */
   mutedMs: number;
   /** S4a: the delegation deadline that outlives the S2 watchdog window. */
@@ -1357,7 +1357,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
-      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
+      recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
@@ -1496,8 +1496,8 @@ export class LiveSessionOwner {
       // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
       // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
       handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
-      // The exception is a question answered in full and still fresh; if in doubt, the response is dropped.
-      handle.dropResponse = handle.heldAnswer || handle.speaking || (handle.thinking && handle.firstAudioAt !== undefined && now - handle.firstAudioAt >= MUTE_KEEP_ANSWER_MS);
+      // Only a response still in flight that began under the mute is stale; if in doubt, it is dropped.
+      handle.dropResponse = (handle.speaking || handle.thinking) && handle.mutedResponse;
       // The held answer offer owns the reply the mute deferred; only the next owner turn or provider
       // output arms the watchdog again, so an unmute can never nudge or reopen on the dropped debt.
       this.#armMutedOffer(handle);
@@ -2290,10 +2290,11 @@ export class LiveSessionOwner {
         if (audible || event.type === 'turnComplete') {
           this.#cancelTimers(handle);
         }
-        // A response that ended leaves nothing held and nothing dropped: the next turn is the owner's again.
-        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.dropResponse = false; handle.heldAnswer = false; }
+        // A response that ended is no longer streaming, so the next turn is the owner's again; a held answer stays for the offer.
+        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.dropResponse = false; handle.mutedResponse = false; }
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
+          if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
@@ -2406,7 +2407,7 @@ export class LiveSessionOwner {
           countAudio(handle, 'output', event.pcm.byteLength, this.#now(), event.rmsDbfs);
           // A muted owner hears nothing: the frame is dropped and the answer is marked held for the offer.
           if (handle.muted) {
-            if (event.audible !== false) { handle.heldAnswer = true; handle.awaitingAnswer = false; }
+            if (event.audible !== false) { handle.heldAnswer = true; handle.mutedResponse = true; handle.awaitingAnswer = false; }
             continue;
           }
           // L7: a response that began under the mute is never played late; its frames are dropped until the turn ends.

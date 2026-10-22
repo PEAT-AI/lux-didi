@@ -303,8 +303,8 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
-  // F3: the keyword plan answers round one, so it reads what it matches and the rest stays unchecked.
-  assert.deepEqual(logs[0]!['unchecked'], ['calendar', 'mail', 'chat']);
+  // F3: the keyword plan answers round one, so the fan-out it starts reads every configured source.
+  assert.deepEqual(logs[0]!['unchecked'], []);
   assert.equal(typeof logs[0]!['canContinue'], 'boolean');
   assert.ok(Array.isArray(logs[0]!['findingChars']));
 });

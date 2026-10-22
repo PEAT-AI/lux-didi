@@ -278,13 +278,15 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
     const token = call.args['pageToken'];
     const page = typeof token === 'string' ? token : 'first';
     sent.push(page);
-    console.error('DEV exec', page);
     if (page === 'p2') return { key: call.key, name: call.name, ok: false, text: 'provider failure: http 429 rateLimitExceeded', originalCharacters: 0, omittedCharacters: 0, code: 'connector_error' };
     return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) };
   }));
   h.deps.memo = { calendar: new Map() };
   h.deps.schedule = callback => { waits += 1; const timer = setTimeout(callback, 0); return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } }; };
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
   const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
+  await reading;
   assert.deepEqual(sent, ['first', 'p2', 'p2'], 'the failed page is retried once after a wait, and page 1 is never refetched');
   assert.equal(waits, 1, 'exactly one delayed retry');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;

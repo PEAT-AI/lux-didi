@@ -262,9 +262,8 @@ test('an unrouted start keeps the selector path and never touches memory', async
   const h = harness({ memory: () => { throw Error('memory must not be read'); } });
   await runResearch(h.deps, { action: 'start', question: 'where does the project stand', lookups: [] }, new AbortController().signal);
   assert.equal(h.selectorCalls(), 1, 'the selector is still asked, beside the run');
-  // F3: the keyword plan answers round one; the selector's plan only runs when that plan finds nothing.
+  // F3: the keyword plan answers round one, and an unmatched question takes its brief fan-out.
   assert.ok(h.executed.includes('search_knowledge'), 'the knowledge prime read is dispatched');
-  assert.ok(!h.executed.includes('mattermost_search'), 'and nothing the question did not match');
   assert.deepEqual(h.routed, [], 'no routed receipt without lookups');
 });
 

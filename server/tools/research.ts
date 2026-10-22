@@ -2442,17 +2442,13 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
         retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
       } catch { /* the first answer stands */ }
     }
-    if (process.env['PI_DEV_MAIL'] === '1') console.error('DEV', { ops: run.ops, failed, limited: limited.length, retried: retried.length, rate: run.mailRateRetried, codes: results.map(r => r?.text?.slice(0, 40)) });
     if (limited.length > 0 && run.mailRateRetried !== true) {
       run.mailRateRetried = true;
-      console.error('DEV pre-pause', limited, run.ops);
       await pause(deps, RESEARCH.rateLimitRetryMs);
-      console.error('DEV post-pause', limited);
       try {
         const again = await deps.execute(limited.map(index => calls[index]!), signal);
-        console.error('DEV retried', again.length);
         limited.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
-      } catch (error) { console.error('DEV threw', String(error)); }
+      } catch { /* the delayed retry is the last word on this page */ }
     }
     reads.forEach((read, n) => {
       read.inflight = false;
@@ -3313,12 +3309,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           fallbackUsed = true;
           usedFallbackThisRound = true;
           const plan = routed ?? fallbackSelection(question || run.direction || '', configured, now());
-          // F3: the unobvious question reads the cheap source first instead of fanning the whole brief out
-          // before anything is in hand. A brief is never run for a source that was already read.
-          const onlyBrief = plan.actions.length === 1 && plan.actions[0]!.kind === 'brief';
-          selection = onlyBrief && !run.readKinds.has('knowledge_search')
-            ? { questionClass: plan.questionClass, actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question || run.direction || '', now()) }], pUseful: { knowledge_search: 0.4 } }
-            : { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
+          // F3: the plan starts at once. A brief is the fan-out of a first round, never a second read of
+          // sources this run already paid for.
+          selection = round === 1 ? plan : { ...plan, actions: plan.actions.filter(action => action.kind !== 'brief') };
           if (driver === undefined) driver = 'fallback';
         }
         else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }

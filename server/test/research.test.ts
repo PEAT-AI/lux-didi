@@ -536,9 +536,8 @@ test('the brief fan-out is credited to every source it read and its findings rea
 // owner's own call spent 22 Gmail pages and three identical 'open loop follow up' searches on a
 // question about the business model.
 test('a brief on a question that names no source reads knowledge only, and searches its own terms', async () => {
-  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
   const sent: { name: string; args: Record<string, unknown> }[] = [];
-  const h = harness({ selector, execute: async subs => subs.map(call => {
+  const h = harness({ execute: async subs => subs.map(call => {
     sent.push({ name: call.name, args: { ...call.args } });
     return sub(call.name, '### Insight (PATTERN) [id 1]\nbody', true, call.key);
   }) });

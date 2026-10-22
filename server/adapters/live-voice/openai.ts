@@ -352,7 +352,9 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     hostLogEvent({ event: 'openai_instructions_size', chars: instructions.length, bytes: Buffer.byteLength(instructions) });
     if (!(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
-    return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs);
+    // #1022 D1: a recovery seed carries the pickup, which the provider never answers on its own, so the
+    // session asks for that response once it is live. A normal connect seeds no pickup and asks for nothing.
+    return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs, request.openingText !== undefined);
   }
 
   /**
@@ -526,7 +528,8 @@ class Session implements LiveVoiceSession {
       ...(this.connectionWeakAt === undefined ? {} : { weakAt: this.connectionWeakAt }) } });
 
   constructor(private readonly settings: Settings, private readonly start: string,
-    private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number) {
+    private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number,
+    private readonly answerOnReady = false) {
     void this.ready.catch(() => {});
     this.clock = settings.clock ?? REAL_CLOCK;
     let consumed = false;
@@ -746,6 +749,7 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint() || !this.emit({ type: 'ready' })) return;
     this.readiness.resolve();
     this.touch();
+    if (this.answerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
   }
 
   private audioDelta(message: ObjectValue): Uint8Array | undefined {

@@ -239,3 +239,11 @@ test('1022: the connector lifecycle lines carry closed fields and nothing else',
   assert.deepEqual(safeEvent({ event: 'calendar_digest', state: 'absent', items: 0, ageMs: 0 }),
     { event: 'calendar_digest', state: 'absent', items: 0, ageMs: 0 }, 'an absent digest is stated as absent');
 });
+
+test('C-R2: both skip reasons the summarizer already logs pass the sanitizer', () => {
+  for (const reason of ['history_provenance_unavailable', 'summary_route_class_denied']) {
+    assert.deepEqual(safeEvent({ event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason }),
+      { event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason }, `C-R2: ${reason} reaches host.log`);
+  }
+  assert.equal(safeEvent({ event: 'conversation_summary_skipped', liveSessionId: LIVE_SESSION_ID, reason: 'free text reason' }), undefined, 'and the closed set still refuses anything else');
+});

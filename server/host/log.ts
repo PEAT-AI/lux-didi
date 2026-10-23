@@ -21,7 +21,9 @@ const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // ROUTE-1022 K5: what a brief plan actually read, as a closed set.
 const RESEARCH_PLANS = ['knowledge_only', 'named_sources'];
 // ROUTE-R2: why a source was skipped, so a grant gap is never indistinguishable from an outage.
-const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'];
+const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed'];
+// Release 4: why a source result is partial, a closed set, and how many pages it lost.
+const RESEARCH_PARTIAL_REASONS = ['pages_failed'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];
@@ -817,8 +819,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasMail = Object.prototype.hasOwnProperty.call(value, 'mail');
     // ROUTE-1022 K5: the same plan token as the run receipt, admitted only from its closed set.
     const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
+    const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
     if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasPlan ? ['plan'] : [])].sort().join(',')) return;
+    if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -854,7 +858,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         mail = { ...shape, retried };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}) };
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

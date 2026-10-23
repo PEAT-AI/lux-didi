@@ -50,7 +50,7 @@ export class Orb {
     this.context=this.surface.getContext('2d');
     if(transparentInk)this.ink=new OrbInkSurface(canvas,this.surface);
     if(this.context)this.classic=new ClassicRenderer(this.context);
-    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.motionState.low,scale:this.lastScale}),configurable:true});
+    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.mid,motion:this.coordinator.counters,scale:this.lastScale}),configurable:true});
     this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);
     this.motion.addEventListener('change',this.reset);
     document.addEventListener('visibilitychange',this.surfaceChanged);

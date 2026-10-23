@@ -135,7 +135,6 @@ export function createStateDebounce<S extends string>(initial: S, ms = DEBOUNCE_
     state: () => current,
     request(state, at) {
       if (state === current) { pending = undefined; return; }
-      if (options.settled) { commit(at, state); return; }
       if (pending?.state === state) return;
       pending = { state, since: at };
     },

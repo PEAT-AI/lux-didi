@@ -1,8 +1,9 @@
+import { MotionCoordinator } from './orb-motion.ts';
 /** Didi lifecycle/state adapter for the authorized first-party Canvas renderer.
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU } from './orb-classic.ts';
-import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
+import { LatestFrame, frameInterval, posture, shouldPaint, type LevelSample } from './orb-level.ts';
 import { OrbInkSurface } from './orb-ink.ts';
 import { ORB_VISUALS, orbVisualOf, presenceMuted, registerOrbRenderer } from './orb-states.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
@@ -23,7 +24,7 @@ export class Orb {
   private frameReady = false;
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
-  private motionState: MotionState = initialMotion();
+  private coordinator = new MotionCoordinator();
   private paints = 0;
   private lastScale = 1;
   private mid = 0;
@@ -57,8 +58,9 @@ export class Orb {
     this.resize();
     // Native player/capture taps post one small level frame here; the renderer owns only the
     // smoothing and geometry, never capture or transport authority.
-    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => { if(orbSurfaceVisible())this.audio.push(levelFrame(sample)); };
+    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => { if(orbSurfaceVisible())this.audio.push(this.coordinator.sample(sample,performance.now())); };
   }
+  interrupt() { this.coordinator.interrupt(); }
   setState(state: VoiceState) { this.state=state; this.reset(); this.transition={activity:this.lastActivity,target:this.lastTarget}; }
   private resize() {
     this.size=Math.max(1,this.canvas.clientWidth);
@@ -112,11 +114,12 @@ export class Orb {
     // even with no live state at all. The pill publishes its own visual, so this only fills the gap.
     const muted=visual===undefined && presenceMuted();
     const active=muted?ORB_VISUALS['hot-muted'].posture:visual?.posture??posture(this.state,frame);
-    const mid=Math.min(1,Math.max(0,frame.mid));
+    const coordinated=this.coordinator.advance(this.state,time,still,muted||visual?.posture==='quiet');
+    const mid=Math.min(1,Math.max(0,coordinated.frame.mid));
     this.mid+=(mid-this.mid)*smoothingAlpha(dt,mid>this.mid?ORB_SMOOTHING_TAU.midAttack:ORB_SMOOTHING_TAU.midDecay);
-    const high=Math.min(1,Math.max(0,frame.high));
+    const high=Math.min(1,Math.max(0,coordinated.frame.high));
     this.high+=(high-this.high)*smoothingAlpha(dt,high>this.high?ORB_SMOOTHING_TAU.highAttack:ORB_SMOOTHING_TAU.highDecay);
-    const m=stepMotion(this.motionState,active,frame,dt,still);
+    const m=coordinated;
     this.lastActivity=m.activity;this.lastTarget=m.activityTarget;this.lastScale=m.scale;this.paints++;
     if(!still)this.phase+=dt;
     if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;

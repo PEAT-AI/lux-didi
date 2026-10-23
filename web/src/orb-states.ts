@@ -135,6 +135,7 @@ export function createStateDebounce<S extends string>(initial: S, ms = DEBOUNCE_
     state: () => current,
     request(state, at) {
       if (state === current) { pending = undefined; return; }
+      if (options.settled) { commit(at, state); return; }
       if (pending?.state === state) return;
       pending = { state, since: at };
     },
@@ -194,7 +195,7 @@ interface Running { from: OrbVisual; to: OrbVisual; start: number }
  *  easing, so nothing moves on screen. */
 export function createOrbStateMachine(
   initial: MiniVisualState = 'cold',
-  options: { reducedMotion?: boolean } = {},
+  options: { reducedMotion?: boolean; settled?: boolean } = {},
 ): OrbStateMachine {
   let current: MiniVisualState = initial;
   let pending: Pending | undefined;
@@ -219,6 +220,7 @@ export function createOrbStateMachine(
     state: () => current,
     request(state, at) {
       if (state === current) { pending = undefined; return; }
+      if (options.settled) { commit(at, state); return; }
       if (pending?.state === state) return;
       pending = { state, since: at };
     },

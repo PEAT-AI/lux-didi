@@ -141,7 +141,7 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   if (!doc || !frame) return () => {};
   const now = scope.now ?? (() => (typeof performance === 'undefined' ? Date.now() : performance.now()));
   const reducedMotion = scope.reducedMotion ?? (() => (typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)').matches : false));
-  const machine = createOrbStateMachine('cold', { reducedMotion: reducedMotion() });
+  const machine = createOrbStateMachine('cold', { reducedMotion: reducedMotion(), settled: true });
   let handle: number | undefined;
   let stopped = false;
   let settle: ReturnType<typeof setTimeout> | undefined;

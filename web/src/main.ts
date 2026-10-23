@@ -40,9 +40,10 @@ const orbReveal = createStateDebounce<VoiceState>('CONNECTING');
 let orbRevealTimer: ReturnType<typeof setTimeout> | undefined;
 function applyOrbState() {
   const at = Date.now();
+  if (['DISCONNECTED','INTERRUPTED','ERROR'].includes(orbState()) || pillMuted(live?.muted === true)) orb?.interrupt();
   orbReveal.request(orbState(), at);
   const shown = orbReveal.settled(at);
-  if (shown !== appliedOrbState) { appliedOrbState = shown; orb?.setState(shown); }
+  if (shown !== appliedOrbState) { appliedOrbState = shown; orb?.setState(shown); paintMiniStage(); }
   if (orbRevealTimer !== undefined) { clearTimeout(orbRevealTimer); orbRevealTimer = undefined; }
   const due = orbReveal.dueAt();
   if (due === undefined) return;
@@ -314,7 +315,7 @@ function miniCaptionMarkup(): string {
 function paintMiniStage() {
   const stage = document.querySelector('.mini-stage');
   if (!stage) return;
-  const state = miniState(orbState(), liveActivity(live), pillMuted(live?.muted === true));
+  const state = miniState(appliedOrbState ?? orbState(), liveActivity(live), pillMuted(live?.muted === true));
   stage.setAttribute('data-mini-state', state);
   stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
   refreshMiniVisuals();

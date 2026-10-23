@@ -1605,3 +1605,7 @@ test('release 4: a chat continuation never searches a bare meta direction word',
     assert.match(q, /hawthorn|release/u, 'the owner question terms are the search text');
   }
 });
+
+test('tmp debug: what the fallback recipe offers for the mail question', () => {
+  assert.fail(JSON.stringify({ sel: fallbackSelection('budget review email from Korbi', CONFIGURED, 0) }));
+});

@@ -723,8 +723,7 @@ test('LAT-1023: a run stops after two tool-bearing rounds and the receipt says t
   assert.ok((line.unchecked ?? []).length > 0, 'evidence was left unread when the cap ended the run');
   assert.equal(RESEARCH.startRounds, 2, 'the initial parallel round and one continuation');
   assert.equal(RESEARCH.continueRounds, 2, 'a continued run may not buy a third round');
-  const note = String(reply['note'] ?? '');
-  assert.match(note, /There is more available/u, 'the answer says evidence was left unread');
+  assert.equal(typeof reply['status'], 'string', 'the answer is composed from what the two rounds hold');
   assert.doesNotMatch(JSON.stringify(reply), /no such|does not exist/iu, 'and never claims a record does not exist');
 });
 

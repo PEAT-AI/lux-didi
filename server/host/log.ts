@@ -748,7 +748,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_run') {
     // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
     // never question text, evidence or item ids.
-    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars', 'roundCapHit', 'answerCompacted'];
+    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars'];
     // #260: the run's own driver is optional (a stop line makes no selection) but is admitted only as
     // one of the four; any other value refuses the whole event, as the closed sets above do. #280:
     // a routed start writes its own line and names `routed`.

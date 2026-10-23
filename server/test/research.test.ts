@@ -418,15 +418,17 @@ test('a mail read is dispatched at once, so no source budget can slip past the s
   assert.equal(dispatchedAt, 0);
 });
 
-test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {
+test('knowledge shaping carries at least ninety percent of a ledger under the reply limit', async () => {
   const body = 'k'.repeat(60);
-  const items = Array.from({ length: 41 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
+  // LAT-1023: the Live answer is bounded at 2,500 chars, so the ledger this test shapes is one that fits whole;
+  // a wider one is trimmed by whole items, which its own compaction test covers.
+  const items = Array.from({ length: 20 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
   const h = harness({ executeText: items.join('\n') });
   // #1021: a content-free question no longer searches knowledge, so the ledger test asks a real one.
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
   const lines = finding.text.split('\n').slice(1);
-  assert.ok(lines.length >= 37, `carried ${lines.length} of 41 lines`);
+  assert.ok(lines.length >= 18, `carried ${lines.length} of 20 lines`);
   const total = items.reduce((sum, _, i) => sum + `#${i + 1} Insight ${i} | ${body}`.length, 0);
   const carried = lines.reduce((sum, line) => sum + line.length, 0);
   assert.ok(carried / total >= 0.9, `carried ${carried} of ${total} bytes`);
@@ -1618,7 +1620,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
-  const items = shown.split(/\n(?=\*\*#\d+\*\*)/u).slice(1);
+  const items = shown.split(/\n(?=#\d+ )/u).slice(1);
   assert.ok(items.length >= 1, 'the answer still carries whole items');
   for (const item of items) assert.match(item, /Decision \d+ \| (?:decision text )*decision text ?$/u, 'an item is never sliced mid-text');
   const line = h.logs[0]!;
@@ -1630,10 +1632,11 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
 });
 
 test('LAT-1023: a short answer is returned unchanged with no compaction token', async () => {
-  const h = harness({});
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  const short = '**#1** [PATTERN] Release 4 | the orb shows live and the mic frees on mute';
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, short, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the release orb' }, new AbortController().signal);
   assert.ok(JSON.stringify(reply).length <= 2_500);
   const findings = reply['findings'] as { text: string }[];
-  assert.ok(findings.some(finding => finding.text.includes('evidence')), 'the short evidence rides back unchanged');
+  assert.ok(findings.some(finding => finding.text.includes('the orb shows live and the mic frees on mute')), 'the short evidence rides back unchanged');
   assert.equal(h.logs[0]!.answerCompacted, undefined, 'nothing was dropped, so no compaction token');
 });

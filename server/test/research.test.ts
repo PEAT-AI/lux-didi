@@ -1605,6 +1605,17 @@ test('release 4: a chat continuation never searches a bare meta direction word',
 });
 
 
+test('PROBE latency rounds', async () => {
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, '', true, call.key)) });
+  const first = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release and the invoice' }, new AbortController().signal);
+  const line = h.logs[0]!;
+  console.log('PROBE-ROUNDS rounds', line.rounds, 'perRound', JSON.stringify(line.perRound.map(r => r.chosen)), 'stop', line.stopReason, 'cls', line.questionClass, 'exec', h.executed.length, 'status', line.status);
+  h.executed.length = 0;
+  await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, new AbortController().signal);
+  const cont = h.logs[1]!;
+  console.log('PROBE-CONT-ROUNDS rounds', cont.rounds, 'perRound', JSON.stringify(cont.perRound.map(r => r.chosen)), 'stop', cont.stopReason, 'exec', h.executed.length);
+});
+
 test('PROBE latency receipts', async () => {
   for (const configured of [['knowledge', 'chat', 'calendar'], ['knowledge', 'chat', 'calendar', 'mail']] as const) {
     const h = harness({ configured: configured as readonly SourceKind[] });

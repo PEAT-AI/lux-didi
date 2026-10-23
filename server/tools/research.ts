@@ -815,7 +815,6 @@ export function ownerScheduleQuestion(question: string): boolean {
  * calendar together, and a question about what was said before keeps the memory layer.
  */
 const ATTENTION_WORDS = /\b(?:what needs (?:me|my attention)|anything urgent|anything (?:important|waiting)|what(?:'s| is) waiting|what needs a reply)\b/u;
-const MEMORY_WORDS = /\b(?:what did (?:we|you) say|last time (?:we|i) (?:talked|spoke|met)|you told me|remind me what|as we discussed)\b/u;
 
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
 const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|messages?|wrote|sent|replied|replies|reply)\b/u;
@@ -830,7 +829,6 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
 /** The source a question is about, in the order the first answer waits for them. */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
   { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
-  { source: 'memory', words: MEMORY_WORDS },
 ];
 
 /**
@@ -842,7 +840,7 @@ export function requiredSources(question: string): SourceKind[] {
   if (WEB_WORDS.test(text)) return [];
   // MAILQ 8: what needs him is never one layer, and the words of one layer never displace another.
   if (ATTENTION_WORDS.test(text)) return ['mail', 'chat', 'calendar'];
-  return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 3).map(route => route.source);
+  return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
 }
 
 /**
@@ -1195,8 +1193,6 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     }
     if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: '', limit: RESEARCH.chatLines, sort: 'newest', ...(config.timeZone === undefined ? {} : { from_date: isoDay('yesterday', config.nowMs ?? Date.now(), config.timeZone) ?? '' }) }, 'b2'));
-    // MAILQ 8: what was said before is the memory layer's read, not a mail or calendar guess.
-    if (named.has('memory')) subs.push(search(HISTORY_IDENTITY.name, { query: contentKeywords(topicTerms(config.topic, config.question) ?? '').join(' ') || 'recall' }, 'b4'));
     // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
     // MAILQ 1: the topic's terms are the query; a pure instruction start reads nothing.
     // F1: the brief's knowledge read is the topic's words, never the question's; with no term it

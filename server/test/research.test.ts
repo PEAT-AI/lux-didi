@@ -1640,3 +1640,28 @@ test('LAT-1023: a short answer is returned unchanged with no compaction token', 
   assert.ok(findings.some(finding => finding.text.includes('the orb shows live and the mic frees on mute')), 'the short evidence rides back unchanged');
   assert.equal(h.logs[0]!.answerCompacted, undefined, 'nothing was dropped, so no compaction token');
 });
+
+test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an answer stays at 2,500', async () => {
+  const body = 'Body evidence sentence. '.repeat(280);
+  assert.ok(body.length > RESEARCH.replyLimitChars + 1_000, 'the fixture body is wider than the answer budget');
+  const scope = { endpointId: 'local', transport: 'stdio' as const, bindingDigest: 'sha256:body-scope', schemaDigest: 'sha256:schema', toolName: 'gmail_read_message', generation: 1, account: 'owner', resource: 'mail' };
+  const evidence = {
+    kind: 'remote-body' as const, source: scope, entitySha256: 'e'.repeat(64), bodySha256: 'b'.repeat(64),
+    expiresAt: Date.now() + 600_000, tool: 'gmail_read_message', body, upstreamComplete: true as const, upstreamOmitted: false as const,
+  };
+  const binding = { executionId: 'exec-body', name: 'gmail_read_message', contentIndex: 0, partIndex: 0, result: { id: 'body-1', sha256: 'c'.repeat(64) } };
+  const h = harness({
+    execute: async subs => subs.map(call => call.name === 'gmail_read_message'
+      ? { ...sub(call.name, '', true, call.key), binding, hostEvidence: evidence }
+      : sub(call.name, 'evidence', true, call.key)),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'read me the full mail from Ana about the invoice', lookups: [{ source: 'mail', query: 'from:ana' }],
+  }, new AbortController().signal);
+  const slices = reply['bodySlices'] as { text: string; offset: number }[] | undefined;
+  assert.ok(Array.isArray(slices) && slices.length === 1, 'the requested body comes back as one page');
+  assert.ok(slices![0]!.text.length > RESEARCH.replyLimitChars, `a body page may pass the answer budget (${slices![0]!.text.length} chars)`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.bodyLimitChars, `and stays inside the body bound (${JSON.stringify(reply).length} chars)`);
+  assert.equal(RESEARCH.bodyLimitChars, 6_000, 'the body page bound is the page width a requested read had before');
+  assert.equal(RESEARCH.replyLimitChars, 2_500, 'and the composed answer keeps the Live budget');
+});

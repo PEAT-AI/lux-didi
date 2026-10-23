@@ -119,6 +119,12 @@ export const RESEARCH = Object.freeze({
    * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
    */
   replyLimitChars: 2_500,
+  /**
+   * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
+   * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
+   * this release exists to cut, so a body page is sized by this and the answer text never is.
+   */
+  bodyLimitChars: 6_000,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
   mailLines: 8, chatLines: 8, knowledgeLines: 40,
@@ -2311,8 +2317,8 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
 
 const calendarDayLines = (days: readonly { day: string; entries: string[] }[]): string[] => days.map(entry => `- ${entry.day}: ${entry.entries.join('; ')}`);
 
-function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false): JsonObject {
-  const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, limit);
+function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
+  const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
   const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[] }[] = [];
   for (const entry of run.ledger.values()) {

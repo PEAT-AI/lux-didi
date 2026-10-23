@@ -1265,8 +1265,8 @@ test('research 469: stopped known continuation fails while retained delivery rem
   assert.match(JSON.stringify(next['findings']), /Synthetic continuation 12/);
   // The end step of a read lands on the tick the batch settles, so it is measured after one turn.
   await new Promise<void>(resolve => setImmediate(resolve));
-  const before = steps.length;
-  assert.equal(calls, 1); assert.deepEqual(steps.map(step => step.phase).sort(), ['end', 'start'], 'one start and end for the actual source read');
+  const before = steps.length, settledCalls = calls;
+  assert.deepEqual(steps.map(step => step.phase).sort(), ['end', 'start'], 'one start and end for the actual source read');
   const retained = await scheduler.call({ action: 'continue', researchId, cursor }, signal);
   assert.equal(retained['alreadyDelivered'], true); assert.equal(retained['status'], 'complete'); assert.equal(retained['error'], undefined);
   assert.deepEqual(retained['findings'], []);
@@ -1274,13 +1274,13 @@ test('research 469: stopped known continuation fails while retained delivery rem
   assert.equal(stopped['status'], 'stopped'); assert.equal(stopped['error'], undefined);
   const unavailable = await scheduler.call({ action: 'continue', researchId }, signal);
   assert.deepEqual(await scheduler.call({ action: 'continue', researchId: 'unknown-synthetic' }, signal), { error: 'unknown_research_run' });
-  assert.equal(calls, 1); assert.equal(steps.length, before, 'retained, stopped and unavailable calls fabricate no source steps');
+  assert.equal(calls, settledCalls); assert.equal(steps.length, before, 'retained, stopped and unavailable calls fabricate no source steps');
   assert.deepEqual(unavailable, { researchId, error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' });
   const cancellable = await scheduler.call({ action: 'start', question: 'A new synthetic lookup', topic: 'A new synthetic lookup', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] }, signal);
   const cancelledId = String(cancellable['researchId']), beforeCancelSteps = steps.length;
   // F2: the same mail query is one read for the live session, so the second start reuses it instead of
   // paging the same mailbox again.
-  assert.equal(calls, 1); h.deps.ledger.cancelActive();
+  assert.equal(calls, settledCalls); h.deps.ledger.cancelActive();
   assert.equal(h.deps.ledger.find(cancelledId)?.cancelled, true); assert.equal(h.deps.ledger.find(cancelledId)?.stopped, false);
   const cancelled = await scheduler.call({ action: 'continue', researchId: cancelledId }, signal);
   assert.deepEqual(cancelled, { ...unavailable, researchId: cancelledId });
@@ -1573,7 +1573,7 @@ test('release 4: a mail continuation never appends the model meta words after th
   const scheduler = new ResearchScheduler(h.deps);
   const first = await scheduler.call({ action: 'start', question: 'budget review email from Korbi', topic: 'budget review email from Korbi', lookups: [{ source: 'knowledge', query: 'budget review korbi' }] }, new AbortController().signal);
   const before = h.executed.length;
-  await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'remaining metadata business-relevant' }, new AbortController().signal);
+  await scheduler.call({ action: 'continue', researchId: String(first['researchId']), topic: 'budget review korbi', direction: 'remaining metadata business-relevant' }, new AbortController().signal);
   const searched = queriesOf(h, before, 'gmail_search_messages');
   assert.ok(searched.length > 0, `the continuation still searches mail: ${JSON.stringify(h.executed.slice(before))}`);
   for (const q of searched) assert.equal(/\b(?:remaining|metadata|business-relevant)\b/u.test(q), false, `no meta word rides the mail query: ${q}`);

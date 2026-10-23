@@ -1029,12 +1029,12 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   if (kind === 'chat_search') {
     // ONE-1023: an ISO day is only what the owner's own question names, never a day the direction text
     // invented; the direction words are filler here as they are for knowledge.
-    // DATES-R1 F3: with no content term left, the recency window is the only useful thing to send, so an
-    // empty query is never dispatched.
+    // DATES-R1 F3 and DATES-R2 F4: with no content term left, the recency window is the only useful thing
+    // to send, so an empty query is never dispatched, whoever wrote the query text.
     const dated = DATE_WORD.test(config.question);
     const compiled = chatQuery(config.query ?? 'after:yesterday', config.nowMs, config.timeZone);
     const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
-    const query = dated || terms !== '' ? terms : compiled;
+    const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
     return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }

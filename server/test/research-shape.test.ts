@@ -370,8 +370,10 @@ test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owne
   assert.equal(chat('read full post body later budget review', 'what did we decide about the budget'), 'budget review', 'later is filler on the chat side as well');
   assert.equal(chat(undefined, 'what did the team say'), 'After:2026-10-21', 'a termless chat search keeps the recency window, never an empty query');
   assert.equal(chat('budget after:yesterday', 'what is the budget'), 'budget', 'a day the question never named is dropped');
-  // DATES-R1 F3: a termless chat search keeps the recency window instead of dispatching an empty query.
+  // DATES-R1 F3 and DATES-R2 F4: a termless chat search keeps the recency window instead of dispatching an
+  // empty query, whether the termless text came from the fallback or from the model.
   assert.equal(chat(undefined, "what's new in Mattermost"), 'After:2026-10-21', 'the termless fallback never sends an empty query');
+  assert.equal(chat('read full post body', 'what did the team say'), 'After:2026-10-21', 'a model query of pure filler falls back to the recency window');
   const brief = candidateSubs('brief', config);
   assert.equal(brief.find(call => call.name === 'mattermost_search')?.args['query'], 'After:2026-10-21');
 });

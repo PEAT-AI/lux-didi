@@ -520,6 +520,29 @@ test('fresh owner Start selects model-first with no fabricated history', async t
   await attachment.done;
 });
 
+test('1023-R1: the opening directive is a completed user turn to the provider, never the owner speaking', async t => {
+  const h = await harness(t);
+  const rows = (liveSessionId: string) => h.store.transaction(tx => tx.all('SELECT kind, text FROM live_journal WHERE live_session_id=?', [liveSessionId])
+    .map(row => ({ kind: String(row['kind']), text: row['text'] === null ? null : String(row['text']) })));
+  const first = await attached(h, 'directive-not-owner');
+  assert.deepEqual(rows(first.session.liveSessionId).filter(row => row.kind === 'inputTranscription'), [],
+    'the host never journals its own directive as owner transcription');
+  assert.equal(JSON.stringify(rows(first.session.liveSessionId)).includes(FRESH_OPENING), false,
+    'and never as any other journal row, so no summary or memory read can find it');
+  assert.equal(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), false,
+    'the owner transcript stays empty on a call that only received the directive');
+  // The same query #ownerSpoke runs: a call that only carried the directive still counts as the owner not speaking.
+  assert.equal(h.store.transaction(tx => !!tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1",
+    [first.session.liveSessionId])), false, 'the owner-speaks-first probe stays false');
+  h.owner.revoke(first.session.liveSessionId);
+  await first.attachment.done;
+  const second = await attached(h, 'directive-not-owner-2');
+  const seeded = h.requests.at(-1)!;
+  assert.deepEqual(seeded.history, [], 'the next call seeds no owner turn for a call that only carried the directive');
+  assert.equal(JSON.stringify(seeded).includes(FRESH_OPENING), false, 'the directive never reaches the next call as history');
+  assert.deepEqual(rows(second.session.liveSessionId).filter(row => row.kind === 'inputTranscription'), [], 'and the second call journals none either');
+});
+
 function accepted(h: Harness, id: string): { system: string; memory: { status: string; selectedIds: string[]; omitted: { id: string; reason: string }[] }; pickup?: { jobId: string; identity: string } } {
   return h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
 }

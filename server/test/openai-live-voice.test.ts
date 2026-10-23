@@ -416,6 +416,9 @@ describe('openai gpt-live adapter', () => {
     const { f } = await ready(t, {}, { history, opening: 'model_first' });
     await tally(f.frames, 2);
     assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the provider is asked once, so she opens without being spoken to');
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string }[];
+    assert.equal(input.some(item => item.role === 'user' && JSON.stringify(item).includes(FRESH_OPENING)), false,
+      '1023-R1: the directive is a developer item, never seeded as owner speech');
     await quiet();
     assert.equal(f.frames.length, 2, 'exactly one opener request, never a second');
   });

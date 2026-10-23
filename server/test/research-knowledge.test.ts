@@ -157,3 +157,39 @@ test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimm
   const bytes = JSON.stringify(reply).length;
   assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} budget`);
 });
+
+// --- ONE-1023: notes live in the past, and a day filter never hides them -----------------------
+
+const FRIDAY = Date.parse('2026-10-23T04:30:00Z');
+
+test('ONE-1023: a question about today reads the notes that exist, with no day filter', async () => {
+  const executed: IntentSubCall[] = [];
+  const h = harness({
+    now: () => FRIDAY,
+    execute: async subs => { executed.push(...subs); return subs.map(call => sub(call.name, '### 2026-10-16 budget review [id 41]\nwe agreed the budget review', true, call.key)); },
+  });
+  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: 'what meetings do I have today' }, new AbortController().signal);
+  const searched = executed.find(call => call.name === 'search_knowledge');
+  assert.ok(searched !== undefined, 'the knowledge read still runs');
+  assert.equal('meeting_date_from' in searched.args, false, 'a day that has not passed cannot be filtered on');
+  assert.match(JSON.stringify(reply), /budget review/u, 'the earlier notes answer the question');
+});
+
+test('ONE-1023: a filtered search that matched nothing retries once without the filter', async () => {
+  const executed: IntentSubCall[] = [];
+  const h = harness({
+    now: () => FRIDAY,
+    execute: async subs => {
+      executed.push(...subs);
+      return subs.map(call => sub(call.name, 'meeting_date_from' in call.args ? '' : '### budget review [id 41]\nthe budget review is agreed', true, call.key));
+    },
+  });
+  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review" }, new AbortController().signal);
+  const searches = executed.filter(call => call.name === 'search_knowledge');
+  assert.equal(searches.length, 2, 'one retry, never more');
+  assert.equal('meeting_date_from' in searches[0]!.args, true, 'the first read carries the past day');
+  assert.equal('meeting_date_from' in searches[1]!.args, false, 'the retry drops it');
+  assert.match(JSON.stringify(reply), /budget review is agreed/u, 'the hit reaches the reply');
+  const receipt = h.sources.filter(entry => entry.source === 'knowledge').at(-1);
+  assert.equal(receipt?.knowledge?.dayFilter, 'dropped_on_empty', 'the receipt says the filter was dropped');
+});

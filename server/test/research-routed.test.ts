@@ -643,3 +643,41 @@ test('F6: the same knowledge read twice inside the session window is dispatched 
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the second run reuses the answer instead of paying for it again');
   assert.match(JSON.stringify(second['findings']), /Release 3k scope/u, 'the reused read still reaches the reply');
 });
+
+// ONE-1023: four near-identical lookups in one call are one search, and two lookups of the same
+// window are one calendar read; the receipt counts what the shared dispatch served.
+test('ONE-1023: identical reads inside one run dispatch once and are counted', async () => {
+  const h = harness({ now: () => 0 });
+  const lookups = [
+    { source: 'calendar', query: 'what is on my calendar today' },
+    { source: 'calendar', query: "what's on today" },
+    { source: 'knowledge', query: 'read full post body budget review' },
+    { source: 'knowledge', query: 'budget review' },
+  ];
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what do we know about the budget review', lookups }, new AbortController().signal);
+  assert.equal(h.executed.filter(name => name === 'calendar_list_events').length, 1, 'one window, one calendar read');
+  assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the same normalized query, one search');
+  const knowledge = h.sources.filter(entry => entry.source === 'knowledge');
+  assert.equal(knowledge.at(-1)?.knowledge?.deduped, 1, 'the receipt counts the read the dispatch shared');
+  assert.match(JSON.stringify(reply), /Release 3k scope/u, 'the shared read reaches the reply');
+});
+
+// DATES-R1 F2: the day filter decision is the read's own, never a flag for the whole run.
+test('DATES-R1: a read that kept its day filter reports past_window beside one that dropped it', async () => {
+  const now = Date.parse('2026-10-23T04:30:00Z');
+  const h = harness({
+    now: () => now,
+    execute: async subs => subs.map(call => {
+      const filtered = 'meeting_date_from' in call.args;
+      // The question's own terms ride after the lookup's, so the lookup word decides here.
+      const hiring = String(call.args['query'] ?? '').startsWith('hiring');
+      const text = filtered && !hiring ? '' : '### budget review [id 41]\nthe budget review is agreed';
+      return sub(call.name, text, true, call.key);
+    }),
+  });
+  const lookups = [{ source: 'knowledge', query: 'budget review' }, { source: 'knowledge', query: 'hiring plan' }];
+  await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review and the hiring plan", lookups }, new AbortController().signal);
+  const receipts = h.sources.filter(entry => entry.source === 'knowledge');
+  assert.equal(receipts.length, 2, 'one receipt per knowledge read');
+  assert.deepEqual(receipts.map(entry => entry.knowledge?.dayFilter).sort(), ['dropped_on_empty', 'past_window'], 'the read whose filter was dropped says so, the read that kept its filter says that instead');
+});

@@ -197,7 +197,7 @@ export interface ResearchSourceLog {
   /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
   coalesced: number;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
-  knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean };
+  knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
   /** E5: the mail search's shape, and the one broader retry's shape when it ran. Counts, never words. */
   mail?: MailQueryShape & { retried?: MailQueryShape };
 }
@@ -376,6 +376,9 @@ const KNOWLEDGE_FILLER = new Set([
   // and the instruction words above, so the model's own keyword fallback drops them too.
   'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific',
   'detailed', 'lookup', 'lookups', 'searching', 'requested',
+  // ONE-1023: the model's own direction words rode into the search text and spent its terms.
+  'read', 'reads', 'reading', 'full', 'body', 'bodies', 'post', 'posts', 'current', 'currently',
+  'available', 'retrieve', 'retrieves', 'retrieved', 'retrieving', 'especially', 'useful', 'usefully', 'later',
 ]);
 
 /** The names a spoken question carries: a capitalised word past the first, never a stop word. */
@@ -683,7 +686,12 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
       : 'newer_than:14d';
     return { query: ['in:inbox', window, ...flags, ...mailKeywords].join(' ') };
   }
-  if (kind === 'chat_search') return { query: `after:yesterday${terms ? ` ${terms}` : ''}` };
+  // ONE-1023: the day operator is the owner's own day. DATES-R1 F3: the no-operator rule applies to
+  // content terms, and with none left the base recency window stays, never an empty query.
+  if (kind === 'chat_search') {
+    const dated = DATE_WORD.test(question);
+    return { query: dated || terms === '' ? `after:yesterday${terms ? ` ${terms}` : ''}` : terms };
+  }
   if (kind === 'calendar_window') {
     return { window: calendarWindowOf(question) };
   }
@@ -880,16 +888,21 @@ export function meetingBounds(question: string, query: string | undefined, nowMs
   const word = DATE_WORD.exec(text)?.[0].toLowerCase();
   if (word === undefined) return undefined;
   const today = localDay(new Date(nowMs).toISOString(), timeZone);
+  // Notes exist only for meetings that already happened, so a day that has not passed yet narrows nothing.
   if (word === 'yesterday' || word === 'today' || word === 'tomorrow') {
-    const day = dayShift(today, word === 'yesterday' ? -1 : word === 'tomorrow' ? 1 : 0);
+    if (word !== 'yesterday') return undefined;
+    const day = dayShift(today, -1);
     return { from: day, to: day };
   }
   try {
     // windowRange reads today, tomorrow, this and next week, a weekday and an ISO day, never yesterday
     // and never last week, so the previous week is this week's own Monday..Sunday moved back seven days.
+    // It already moves next week by seven, so weeks counts last week alone.
     const range = windowRange(word === 'last week' ? 'this week' : word, nowMs, timeZone);
-    const weeks = word === 'last week' ? -7 : word === 'next week' ? 7 : 0;
-    return { from: dayShift(localDay(range.timeMin, timeZone), weeks), to: dayShift(localDay(range.timeMax, timeZone), weeks - 1) };
+    const weeks = word === 'last week' ? -7 : 0;
+    const from = dayShift(localDay(range.timeMin, timeZone), weeks);
+    const to = dayShift(localDay(range.timeMax, timeZone), weeks - 1);
+    return to < today ? { from, to } : undefined;
   } catch { return undefined; }
 }
 
@@ -898,19 +911,58 @@ export function meetingBounds(question: string, query: string | undefined, nowMs
  * `truncated` reads the mark `insightItems` writes on a hit the server cut at the asked-for window.
  * MED-1022/T-R2: the receipt also names the query's term count, whether the day filter was applied and
  * what became of the chat date operator. Counts and closed tokens only, never the query text.
+ * ONE-1023: the day filter is a closed token, and `deduped` counts the reads a shared dispatch served.
  */
-function knowledgeReceipt(lines: readonly string[], chatDate: ChatDateOperator, search?: IntentSubCall): {
+function knowledgeReceipt(lines: readonly string[], chatDate: ChatDateOperator, search?: IntentSubCall, options: { droppedFilters?: ReadonlySet<string> | undefined; deduped?: number | undefined } = {}): {
   detail: string; maxChars: number; deadlineMs: number; truncated: boolean;
-  queryTerms: number; dateFilter: boolean; chatDateOperator: ChatDateOperator;
+  queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number;
 } {
   const query = search === undefined ? undefined : search.args['query'];
   return {
     detail: RESEARCH.knowledgeDetail, maxChars: RESEARCH.knowledgeBodyChars, deadlineMs: RESEARCH.knowledgeDeadlineMs,
     truncated: lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeBodyChars} chars`)),
     queryTerms: typeof query === 'string' ? query.split(/\s+/u).filter(Boolean).length : 0,
-    dateFilter: search !== undefined && search.args['meeting_date_from'] !== undefined,
+    dayFilter: dayFilterOf(search, options.droppedFilters?.has(dayFilterKey(search)) ?? false),
     chatDateOperator: chatDate,
+    deduped: options.deduped ?? 0,
   };
+}
+
+/** The closed token for the day filter decision: none sent, a past window sent, or a window dropped on empty. */
+export type DayFilter = 'none' | 'past_window' | 'dropped_on_empty';
+function dayFilterOf(search: IntentSubCall | undefined, dropped: boolean): DayFilter {
+  if (search === undefined || search.args['meeting_date_from'] === undefined) return 'none';
+  return dropped ? 'dropped_on_empty' : 'past_window';
+}
+
+/** The identity of one day-filtered read, so the drop is recorded on the read that earned it. */
+function dayFilterKey(search: IntentSubCall | undefined): string {
+  return search === undefined ? '' : JSON.stringify(search.args);
+}
+
+/** The same search with its day bounds removed, for the one retry an empty filtered search earns. */
+function withoutDayFilter(sub: IntentSubCall): IntentSubCall | undefined {
+  if (sub.name !== INTERNAL.knowledgeSearch || sub.args['meeting_date_from'] === undefined) return undefined;
+  const args: JsonObject = {};
+  for (const [key, value] of Object.entries(sub.args)) if (key !== 'meeting_date_from' && key !== 'meeting_date_to') args[key] = value;
+  return { key: sub.key, name: sub.name, args };
+}
+
+/** A day-filtered knowledge search that matched nothing asks the same query once more without the filter. */
+async function droppedDayFilterRetry(deps: ResearchDeps, subs: readonly IntentSubCall[], results: readonly IntentSubResult[], signal: AbortSignal, dropped: Set<string>): Promise<void> {
+  for (let index = 0; index < subs.length; index++) {
+    const sub = subs[index]!;
+    const result = results[index];
+    if (result === undefined || !result.ok || result.text.trim() !== '') continue;
+    const bare = withoutDayFilter(sub);
+    if (bare === undefined) continue;
+    try {
+      const [retried] = await deps.execute([bare], signal);
+      if (retried?.ok !== true || retried.text.trim() === '') continue;
+      (results as IntentSubResult[])[index] = retried;
+      dropped.add(dayFilterKey(sub));
+    } catch { /* keep the empty first answer */ }
+  }
 }
 
 const CHAT_DATE_OPERATOR = /\b(after|before|on):([^\s]+)/giu;
@@ -919,12 +971,16 @@ const CHAT_DATE_OPERATOR = /\b(after|before|on):([^\s]+)/giu;
  * MED-1022: the Mattermost index reads `After:`/`Before:`/`On:` with an ISO day and ignores any other
  * word, so `after:yesterday` returned the whole archive. A date word is compiled to the day it names in
  * the owner's zone, and an operator no calendar can resolve is dropped instead of sent.
+ * ONE-1023: the model's direction words are the same filler knowledge drops, so they never ride a chat
+ * search either; an operator and a quoted phrase survive.
  */
 export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): string {
   return query.replace(CHAT_DATE_OPERATOR, (_operator: string, kind: string, value: string): string => {
     const day = isoDay(value, nowMs, timeZone);
     return day === undefined ? '' : `${kind[0]!.toUpperCase()}${kind.slice(1)}:${day}`;
-  }).split(/\s+/u).filter(Boolean).join(' ');
+  }).split(/\s+/u).filter(Boolean)
+    .filter(word => /^(?:after|before|on):/iu.test(word) || !KNOWLEDGE_FILLER.has(word.replace(/[.:]+$/u, '').toLowerCase()))
+    .join(' ');
 }
 
 /** MED-1022/T-R2: the closed token for a chat date operator, so the receipt never carries query text. */
@@ -970,7 +1026,17 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   }
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
-  if (kind === 'chat_search') return [search(INTERNAL.chatSearch, { query: chatQuery(config.query ?? 'after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'c0')];
+  if (kind === 'chat_search') {
+    // ONE-1023: an ISO day is only what the owner's own question names, never a day the direction text
+    // invented; the direction words are filler here as they are for knowledge.
+    // DATES-R1 F3 and DATES-R2 F4: with no content term left, the recency window is the only useful thing
+    // to send, so an empty query is never dispatched, whoever wrote the query text.
+    const dated = DATE_WORD.test(config.question);
+    const compiled = chatQuery(config.query ?? 'after:yesterday', config.nowMs, config.timeZone);
+    const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
+    const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
+    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines }, 'c0')];
+  }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
     ? [search(WEB_SEARCH_ACTION, { query: config.query ?? contentKeywords(config.question).join(' ') }, 'w0')] : [];
@@ -1081,6 +1147,8 @@ export interface RunState {
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
+  /** ONE-1023: the day-filtered knowledge reads whose filter was dropped for a retry, by their own args. */
+  droppedDayFilters: Set<string>;
   calendarScopeAttempted?: boolean;
   /** N3: the counted note the calendar list supports, for the routed answer that carries no raw list. */
   calendarNotRead?: string;
@@ -1147,7 +1215,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -2407,6 +2475,8 @@ interface RoutedOutcome {
   mail?: MailQueryInfo;
   /** MED-1022: the one sub-call this read issued, so the knowledge receipt counts its own query terms. */
   sub?: IntentSubCall;
+  /** ONE-1023: identical reads this one dispatch served, so the receipt counts them. */
+  deduped?: number;
 }
 
 interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
@@ -2831,8 +2901,8 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
 
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
-  const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0): RoutedOutcome =>
-    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }) });
+  const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0, deduped = 0): RoutedOutcome =>
+    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(deduped > 0 ? { deduped } : {}), ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }) });
   const done: RoutedOutcome[] = [];
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
     const args = plan.lookup.history ?? { query: plan.lookup.query };
@@ -2889,13 +2959,14 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   if (source === 'mail' && reads.every(plan => plan.read.subs.length === 1 && plan.read.subs[0]?.name === INTERNAL.mailList)) return mailGroup(deps, run, reads, context.signal, remainingMs, context.now);
   const subs: IntentSubCall[] = [];
   const owned: number[][] = reads.map(() => []);
+  const reused: number[] = reads.map(() => 0);
   const seen = new Map<string, number>();
   reads.forEach((plan, index) => {
     for (const sub of plan.read.subs) {
       // A sub two lookups would both issue (the calendar list serves every window) is dispatched once.
       const signature = `${sub.name}:${JSON.stringify(sub.args)}`;
       const existing = seen.get(signature);
-      if (existing !== undefined) { owned[index]!.push(existing); continue; }
+      if (existing !== undefined) { owned[index]!.push(existing); reused[index]! += 1; continue; }
       subs.push(sub);
       owned[index]!.push(subs.length - 1);
       seen.set(signature, subs.length - 1);
@@ -2931,6 +3002,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     }
   }
   catch { return [...done, ...all(signal.aborted ? 'timeout' : 'failed')]; }
+  await droppedDayFilterRetry(deps, subs, results, signal, run.droppedDayFilters);
   // The execute contract returns one result per sub, in order, so each lookup keeps its own lines.
   const cutShort = signal.aborted;
   reads.forEach((plan, index) => {
@@ -2940,7 +3012,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     const missed = own.some(result => !result.ok);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
-    done.push({ ...settle(plan, outcome, block.lines, block.total), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
+    done.push({ ...settle(plan, outcome, block.lines, block.total, reused[index] ?? 0), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
   });
   cut.done();
   return done;
@@ -2994,7 +3066,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
-        ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub) } : {}),
+        ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
         ...mailReceiptField(outcome.mail),
       });
       logSubcall({
@@ -3493,7 +3565,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // answer point, so the first answer cannot cut a read that is still working.
           const prefetchCut = new AbortController();
           const prefetchTimer = schedule(() => prefetchCut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.min(RESEARCH.sourceDeadline.knowledge, remainingMs));
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then((results: IntentSubResult[]) => {
+          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
+            // ONE-1023: a past day that matched nothing still asks the topic once, without the day filter.
+            await droppedDayFilterRetry(deps, knowledgeSubs, results, AbortSignal.any([signal, prefetchCut.signal]), run.droppedDayFilters);
             knowledgeEndedAt = now();
             return results;
           }).catch((error: unknown) => {
@@ -3643,6 +3717,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
+          // DATES-R1 F2b: the knowledge reads this run already issued, so the receipt counts them here too.
+          const dedupedKnowledge = served.filter(call => call.name === INTERNAL.knowledgeSearch && run.calls.has(callSignature(call))).length;
           const issued = served.filter(call => !run.calls.has(callSignature(call)));
           if (issued.length === 0) { cutTimer.cancel(); return; }
           for (const call of issued) run.calls.add(callSignature(call));
@@ -3770,7 +3846,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               // whether this round pulled it through the answer cut or through the prefetched read.
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
               deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
-              ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch)) } : {}),
+              ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
               ...mailReceiptField(mailInfo),
             });
             // R6: this source settled after the call had already answered, so what it found is handed over

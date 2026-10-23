@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { connectingBeforeFirstSpeech, liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
+import { connectingBeforeFirstSpeech, orbVoiceState, presencePhase, liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
 import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
@@ -92,6 +92,34 @@ test('Q4: the orb and pill say Connecting until the first audible model frame', 
   assert.equal(liveLabel({ state: 'thinking', cursor: 2, entries: [] }), 'Thinking');
   assert.equal(connectingBeforeFirstSpeech(undefined), false);
   assert.equal(connectingBeforeFirstSpeech({ state: 'speaking', cursor: 3, entries: [] }), false);
+});
+
+test('ORB-1023: the connecting look ends when presence goes live, not at first speech', () => {
+  // f7380cbd: provider ready and chime stop at 25.56 s, LIVE at 25.566 s, the owner's first
+  // answer at 35.95 s. Naya never speaks first, so "before first speech" is not a connect window.
+  const opened = { state: 'listening' as const, cursor: 0, entries: [] };
+  assert.equal(presencePhase({ state: 'live', muted: false }), 'live');
+  assert.equal(presencePhase({ muted: false }), undefined, 'a page that was never told a state has none');
+  assert.equal(presencePhase(undefined), undefined);
+  assert.equal(connectingBeforeFirstSpeech(opened, 'live'), false);
+  assert.equal(connectingBeforeFirstSpeech(opened, 'hotMuted'), false);
+  assert.equal(connectingBeforeFirstSpeech(opened, 'connecting'), true);
+  assert.equal(connectingBeforeFirstSpeech(opened, 'cold'), true);
+  assert.equal(liveLabel(opened, 'live'), 'Listening');
+  assert.equal(orbVoiceState(opened, 'live'), 'LISTENING');
+  assert.equal(orbVoiceState(opened, 'connecting'), 'CONNECTING');
+  assert.equal(orbVoiceState({ state: 'listening', cursor: 0, entries: [] }, undefined), 'CONNECTING');
+});
+
+test('ORB-1023: the mini panel takes its look from the same presence fact', () => {
+  const opened = { state: 'listening' as const, cursor: 0, entries: [] };
+  const speaking = { state: 'speaking' as const, cursor: 1, entries: [
+    { seq: 1, kind: 'outputTranscription' as const, text: 'Yes.' }] };
+  assert.equal(miniState(orbVoiceState(opened, 'live'), undefined), 'listening');
+  assert.equal(miniState(orbVoiceState(speaking, 'live'), undefined), 'speaking');
+  assert.equal(miniState(orbVoiceState(opened, 'live'), undefined, true), 'muted');
+  assert.equal(miniState(orbVoiceState(opened, 'connecting'), undefined), 'connecting');
+  assert.equal(miniState(orbVoiceState(undefined, 'cold'), undefined), 'idle');
 });
 
 test('a muted indicator appears only when the projection reports it', () => {

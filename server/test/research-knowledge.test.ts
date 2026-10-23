@@ -87,7 +87,7 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', CUT_SEARCH)]);
   assert.equal(block.lines[0], 'knowledge: confidence=medium top=0.37 candidates=yes');
   assert.ok(!block.text.includes('Score:'), 'the incomparable per-hit score line is dropped');
-  assert.ok(block.lines.some(line => line.endsWith('cut at 3000 chars')), 'the search reply carries the full body window');
+  assert.ok(block.lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeBodyChars} chars`)), 'the search reply carries the body window it asked for');
   const bare = shapeBlock('knowledge_search', [sub('search_knowledge', '**#9** [PATTERN] A plain hit')]);
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });

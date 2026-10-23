@@ -1166,8 +1166,11 @@ interface BodyCursor { key: string; offset: number; end: number; nextCursor?: st
 const bodyDelivery = Symbol('bodyDelivery');
 interface BodyDelivery { researchId: string; runId: number; cursor: string }
 type BodyReply = JsonObject & { [bodyDelivery]?: BodyDelivery };
+type CompactionReply = JsonObject & { [compactionDelivery]?: { items: number } };
 interface MailCursor { signature: string; scope: string; sourceState?: string; delivered: boolean; ids: string[]; nextCursor?: string; partial?: boolean }
 const mailDelivery = Symbol('mailDelivery');
+/** LAT-1023: whole items this reply dropped to fit the Live budget, carried on the reply and never serialized. */
+const compactionDelivery = Symbol('compactionDelivery');
 interface MailDelivery { researchId: string; runId: number; keys: string[]; cursor?: string; nextCursor?: string }
 type MailReply = JsonObject & { [mailDelivery]?: MailDelivery };
 const calendarDelivery = Symbol('calendarDelivery');
@@ -1226,8 +1229,6 @@ export interface RunState {
   metaStartAsContinue: boolean;
   /** K14: whole-body replies this run sent, so one body costs one round trip each page. */
   bodyReplies: number;
-  /** LAT-1023: whole items the last answer dropped to fit the Live budget, for the run receipt. */
-  compactDropped: number;
   /** L10: dispatches this run aborted because a new start replaced it. */
   supersededAborts: number;
   /** K8b: calls waiting on this run's in-flight reads, woken when the last one settles. */
@@ -1271,7 +1272,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, compactDropped: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -2448,7 +2449,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     if (trimCalendarEvent(trimmed)) continue;
     trimmed.lines.pop(); dropped += 1;
   }
-  run.compactDropped = dropped + droppedEvents;
+  const compactItems = dropped + droppedEvents;
   // A trimmed answer always says it was trimmed and how much it left out.
   const omission = droppedEvents === 0 ? undefined : `I left out ${droppedEvents} calendar ${droppedEvents === 1 ? 'event' : 'events'} to keep this answer short.`;
   if (omission !== undefined) note = note === undefined ? omission : `${note} ${omission}`;
@@ -2467,6 +2468,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     }
     result[mailDelivery] = { researchId: run.researchId, runId: run.runId, keys: mailRemaining.slice(0, shown).map(([key]) => key), ...(run.mailCursorRequested ? { cursor: run.mailCursorRequested } : {}), ...(nextCursor ? { nextCursor } : {}) };
   }
+  if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
   return result;
 }
@@ -4017,9 +4019,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     // receipt tells a fast answer from a robbed one without ever carrying the text.
     const leftUnread = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
     const roundCapHit = run.rounds >= ROUND_CAP_ROUNDS && (leftUnread.length > 0 || run.pending.size > 0) ? run.rounds : undefined;
+    const compacted = (reply as CompactionReply | undefined)?.[compactionDelivery];
     // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
     // because the host log refuses a line whose driver is not one of the four.
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes, ...(roundCapHit === undefined ? {} : { roundCapHit }), ...(run.compactDropped > 0 ? { answerCompacted: { items: run.compactDropped, chars: replyBytes } } : {}), ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes, ...(roundCapHit === undefined ? {} : { roundCapHit }), ...(compacted === undefined ? {} : { answerCompacted: { items: compacted.items, chars: replyBytes } }), ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 

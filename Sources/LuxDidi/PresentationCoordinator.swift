@@ -152,8 +152,11 @@ final class PresentationCoordinator {
         generation &+= 1; pending = nil; fullShown = false
         hideFullWindow()
         log(["event": "window_closed", "live": liveIsRunning(), "orb": miniShown])
-        if !miniShown { _ = presentMini(trigger: .other); return }
-        mode = .mini; didCommit(mode, generation)
+        if miniShown { mode = .mini; didCommit(mode, generation); return }
+        // Nothing is on screen until an orb that can be hosted commits, so the mode names that
+        // truth instead of the window that just went away.
+        mode = .hidden; didCommit(mode, generation)
+        _ = presentMini(trigger: .other)
     }
 
     func toggleWindow(activating: Bool) {

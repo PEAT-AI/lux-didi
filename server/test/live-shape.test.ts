@@ -538,8 +538,8 @@ test('#6: the confidence line never reaches the model text but is carried for re
 });
 
 test('#7: a long event title survives whole and the body is what the bound trims', () => {
-  const title = 'Quarterly planning review with the whole European commercial organisation and partners';
-  assert.ok(title.length >= 90);
+  const title = 'Quarterly planning review with the whole European commercial organisation, our partners in the Nordics and the shared services leads from Berlin';
+  assert.equal(title.length, 144);
   const shaped = shapeGcalList({ events: [{ summary: title, location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
     htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(60) }] });
   assert.ok(shaped.text.includes(title), 'the title is never the part a cut removes');

@@ -1141,7 +1141,9 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // F1: only the topic's words are terms, and the model's own query when it wrote one; the
     // question is never a knowledge search text.
     const topicText = topicTerms(config.topic, config.question);
-    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(config.query);
+    // A model query is already keywords, so it is kept as written: `team` is filler for a spoken
+    // question, never for a search string, and the question never joins it.
+    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(config.query, '');
     if (!query) return [];
     const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];

@@ -532,8 +532,9 @@ test('1023-R1: the opening directive is a completed user turn to the provider, n
   assert.equal(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), false,
     'the owner transcript stays empty on a call that only received the directive');
   // The same query #ownerSpoke runs: a call that only carried the directive still counts as the owner not speaking.
-  assert.equal(h.store.transaction(tx => !!tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1",
-    [first.session.liveSessionId])), false, 'the owner-speaks-first probe stays false');
+  const ownerSpoke = (liveSessionId: string): boolean => h.store.transaction(tx => !!tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1",
+    [liveSessionId]));
+  assert.equal(ownerSpoke(first.session.liveSessionId), false, 'the owner-speaks-first probe stays false');
   h.owner.revoke(first.session.liveSessionId);
   await first.attachment.done;
   h.f.frames.length = 0;
@@ -542,6 +543,15 @@ test('1023-R1: the opening directive is a completed user turn to the provider, n
   assert.deepEqual(seeded.history, [], 'the next call seeds no owner turn for a call that only carried the directive');
   assert.equal(JSON.stringify(seeded).includes(FRESH_OPENING), false, 'the directive never reaches the next call as history');
   assert.deepEqual(rows(second.session.liveSessionId).filter(row => row.kind === 'inputTranscription'), [], 'and the second call journals none either');
+  // Positive control, same harness and same queries: a real owner turn does reach the journal, so the emptiness
+  // above is the directive being kept out and not the journal path being blind.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic owner words on this call.', finished: true } } });
+  await drain(h, second.session.liveSessionId, 2);
+  assert.deepEqual(rows(second.session.liveSessionId).filter(row => row.kind === 'inputTranscription').map(row => row.text),
+    ['Synthetic owner words on this call.'], 'the same journal records a real owner turn, verbatim');
+  assert.equal(ownerSpoke(second.session.liveSessionId), true, 'and the owner-speaks-first probe sees it');
+  assert.equal(rows(second.session.liveSessionId).some(row => row.text !== null && row.text.includes(FRESH_OPENING)), false,
+    'a real owner turn and the directive never appear together as owner speech');
 });
 
 function accepted(h: Harness, id: string): { system: string; memory: { status: string; selectedIds: string[]; omitted: { id: string; reason: string }[] }; pickup?: { jobId: string; identity: string } } {

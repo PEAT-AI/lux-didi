@@ -423,6 +423,25 @@ describe('openai gpt-live adapter', () => {
     assert.equal(f.frames.length, 2, 'exactly one opener request, never a second');
   });
 
+  test('1023-N3: owner speech cannot reach the provider before the ready settle, so the opener never races him', async t => {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ opening: 'model_first' }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    // Every owner byte goes through sendAudio, and sendAudio refuses until session.started, so the opener request
+    // below is the first thing the provider hears on a fresh call: there is no window in which he can speak first.
+    assert.throws(() => session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' }), code('not_ready'),
+      'the microphone is closed before the ready settle');
+    f.send({ type: 'session.started', session: { id: 'sess_opener_race' } });
+    await session.ready;
+    await tally(f.frames, 2);
+    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the one opener request, with no owner audio ahead of it');
+    session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' });
+    await quiet();
+    assert.equal(f.frames.some(frame => (frame as unknown as Start).type === 'session.input_audio.append'), true,
+      'the same call accepts owner audio once it is ready');
+  });
+
   test('1023-N3: the owner speaking first asks for no opener at all', async t => {
     const { f } = await ready(t, {}, { opening: 'user_first' });
     await quiet();

@@ -343,39 +343,38 @@ test('MED-1022: the knowledge query drops filler, keeps the spoken name, and tak
 test('MED-1022: a named meeting and a date word become the connector meeting bounds', () => {
   const now = Date.parse('2026-10-22T06:00:00Z');
   const config = { configured: ['knowledge'] as const, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
-  const dated = candidateSubs('knowledge_search', { ...config, question: "what did we decide in yesterday's call about pricing" });
+  const dated = candidateSubs('knowledge_search', { ...config, topic: 'pricing', question: "what did we decide in yesterday's call about pricing" });
   assert.equal(dated[0]?.args['meeting_date_from'], '2026-10-21', 'yesterday is resolved in the owner zone');
   assert.equal(dated[0]?.args['meeting_date_to'], '2026-10-21');
   assert.equal('participant' in (dated[0]?.args ?? {}), false, 'a name never becomes a hard participant filter');
-  const noDate = candidateSubs('knowledge_search', { ...config, question: 'what did we decide in the call about pricing' });
+  const noDate = candidateSubs('knowledge_search', { ...config, topic: 'pricing', question: 'what did we decide in the call about pricing' });
   assert.equal('meeting_date_from' in (noDate[0]?.args ?? {}), false, 'a meeting with no date word is not narrowed');
-  const noMeeting = candidateSubs('knowledge_search', { ...config, question: 'what did we ship yesterday' });
+  const noMeeting = candidateSubs('knowledge_search', { ...config, topic: 'ship', question: 'what did we ship yesterday' });
   assert.equal('meeting_date_from' in (noMeeting[0]?.args ?? {}), false, 'a date with no meeting named is not narrowed');
   // T-R5: last week is the previous Monday to Sunday in the owner's zone, not an unresolved window.
-  const lastWeek = candidateSubs('knowledge_search', { ...config, question: "what did we agree in last week's call" });
+  const lastWeek = candidateSubs('knowledge_search', { ...config, topic: 'agreement', question: "what did we agree in last week's call" });
   assert.equal(lastWeek[0]?.args['meeting_date_from'], '2026-10-12', 'Monday of the previous week');
   assert.equal(lastWeek[0]?.args['meeting_date_to'], '2026-10-18', 'and its Sunday');
 });
 
-test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owner named', () => {
+test('MAILQ-R2 10: a chat window is the tool from_date and sort newest, never an inline operator', () => {
   const now = Date.parse('2026-10-22T06:00:00Z');
   const config = { question: 'what did the team say yesterday', configured: CONFIGURED, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
-  const chat = (query?: string, question?: string): unknown => candidateSubs('chat_search', { ...config, ...(question === undefined ? {} : { question }), ...(query === undefined ? {} : { query }) })[0]?.args['query'];
-  assert.equal(chat(), 'After:2026-10-21', 'the default names a real day, never a word the parser ignores');
-  assert.equal(chat('budget after:yesterday'), 'budget After:2026-10-21');
-  assert.equal(chat('budget after:someday'), 'budget', 'an operator no calendar can resolve is dropped');
-  // ONE-1023: a question that names no day carries no invented operator, and the direction words are filler.
-  assert.equal(chat('read full post body current available budget review', 'what did we decide about the budget'), 'budget review', 'instruction words never ride a chat search');
-  // DATES-R1 F1: `later` is in the contract's own direction word list, so it is filler too.
-  assert.equal(chat('read full post body later budget review', 'what did we decide about the budget'), 'budget review', 'later is filler on the chat side as well');
-  assert.equal(chat(undefined, 'what did the team say'), 'After:2026-10-21', 'a termless chat search keeps the recency window, never an empty query');
-  assert.equal(chat('budget after:yesterday', 'what is the budget'), 'budget', 'a day the question never named is dropped');
-  // DATES-R1 F3 and DATES-R2 F4: a termless chat search keeps the recency window instead of dispatching an
-  // empty query, whether the termless text came from the fallback or from the model.
-  assert.equal(chat(undefined, "what's new in Mattermost"), 'After:2026-10-21', 'the termless fallback never sends an empty query');
-  assert.equal(chat('read full post body', 'what did the team say'), 'After:2026-10-21', 'a model query of pure filler falls back to the recency window');
+  const argsOf = (query?: string, question?: string): Record<string, unknown> | undefined => candidateSubs('chat_search', { ...config, ...(question === undefined ? {} : { question }), ...(query === undefined ? {} : { query }) })[0]?.args;
+  // The default names a real day in the owner's zone and asks for the newest posts.
+  assert.equal(argsOf()?.['from_date'], '2026-10-21', 'the default window is the day the question named');
+  assert.equal(argsOf()?.['sort'], 'newest', 'and the read is newest first');
+  assert.equal(argsOf()?.['query'], '', 'with no term of its own when the model wrote none');
+  // A day the question never named is not a window.
+  assert.equal(argsOf('budget', 'what is the budget')?.['from_date'], undefined, 'no day word, no window');
+  assert.equal(argsOf('budget', 'what is the budget')?.['query'], 'budget', 'and the term is the query, never an operator');
+  // ONE-1023: the direction words are filler on the chat side too.
+  assert.equal(argsOf('read full post body current available budget review', 'what did we decide about the budget')?.['query'], 'budget review', 'instruction words never ride a chat search');
+  assert.equal(argsOf('read full post body later budget review', 'what did we decide about the budget')?.['query'], 'budget review', 'later is filler on the chat side as well');
   const brief = candidateSubs('brief', config);
-  assert.equal(brief.find(call => call.name === 'mattermost_search')?.args['query'], 'After:2026-10-21');
+  const chatBrief = brief.find(call => call.name === 'mattermost_search')?.args ?? {};
+  assert.equal(chatBrief['sort'], 'newest', 'the brief reads the newest posts of its window');
+  assert.equal(chatBrief['from_date'], '2026-10-21');
 });
 
 test('OPEN2-2: a calendar item keeps its open: line in the reply the model is given', () => {

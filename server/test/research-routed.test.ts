@@ -391,14 +391,14 @@ test('two lookups on one source coalesce into one execution, each reporting its 
   assert.deepEqual(h.sources.map(event => event.outcome), ['ok', 'empty'], 'each lookup keeps its own outcome');
 });
 
-test('the per-lookup receipt carries source, outcome and ms and never a query', async () => {
+test('the per-lookup receipt carries source, outcome and ms and never a query word', async () => {
   const h = harness({ now: () => 5 });
   await runResearch(h.deps, {
     action: 'start', question: 'where does the project stand', topic: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'secret release plan' }],
   }, new AbortController().signal);
   assert.equal(h.sources.length, 1);
   const receipt = h.sources[0]!;
-  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'knowledge', 'ms', 'outcome', 'researchId', 'source'], 'the receipt names the deadline the read was given, the batch it shared and the body window it asked for');
+  assert.deepEqual(Object.keys(receipt).sort(), ['coalesced', 'deadlineMs', 'event', 'knowledge', 'ms', 'outcome', 'query', 'researchId', 'source'], 'the receipt names the deadline the read was given, the batch it shared, the body window it asked for and the shape of its query, never its words');
   assert.equal(receipt.coalesced, 1, 'a lone lookup is a batch of one');
   assert.equal(receipt.source, 'knowledge');
   assert.equal(receipt.outcome, 'ok');

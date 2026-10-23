@@ -1108,7 +1108,9 @@ export function chatQuery(query: string): string {
 export type ChatDateOperator = 'compiled' | 'dropped' | 'none';
 
 /** Whether the chat wire carries an ISO date operator, lost one the caller wrote, or had none. */
-export function chatDateOperator(original: string | undefined, compiled: string): ChatDateOperator {
+export function chatDateOperator(original: string | undefined, compiled: string, window?: JsonObject): ChatDateOperator {
+  // MAILQ 10: the window rides the tool's own from_date, so a compiled day is the argument, not an operator.
+  if (typeof window?.['from_date'] === 'string' && window['from_date'] !== '') return 'compiled';
   if (/\b(?:after|before|on):/iu.test(compiled)) return 'compiled';
   return original !== undefined && /\b(?:after|before|on):/iu.test(original) ? 'dropped' : 'none';
 }
@@ -2667,7 +2669,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
 function recordChatDate(run: RunState, original: string | undefined, subs: readonly IntentSubCall[]): void {
   const sub = subs.find(call => call.name === INTERNAL.chatSearch);
   if (sub === undefined) return;
-  const status = chatDateOperator(original, String(sub.args['query'] ?? ''));
+  const status = chatDateOperator(original, String(sub.args['query'] ?? ''), sub.args);
   if (status === 'compiled' || run.chatDate === undefined) run.chatDate = status;
 }
 

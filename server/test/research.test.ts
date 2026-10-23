@@ -895,7 +895,7 @@ test('Q5-R1: a question that names an insight routes to get_insight with that id
   assert.deepEqual(namedInsightIds('the full text of ids=[7,8]'), [7, 8], 'an ids=[...] ask names both entries');
   assert.deepEqual(namedInsightIds('what did issue #1014 change'), [], 'a bare issue number in passing is not an insight id');
   assert.deepEqual(namedInsightIds('read the whole of #1014'), [1014], 'the same number with a full-text ask is that insight');
-  assert.deepEqual(candidateSubs('knowledge_search', { ...config, question: 'what did we decide about the release scope' }).map(call => call.name), ['search_knowledge'], 'an ordinary question still searches');
+  assert.deepEqual(candidateSubs('knowledge_search', { ...config, topic: 'release scope', question: 'what did we decide about the release scope' }).map(call => call.name), ['search_knowledge'], 'an ordinary question still searches');
 });
 
 test('Q5-R2: a cut result block carries one machine line, and a whole one carries none', () => {
@@ -988,7 +988,7 @@ test('MED-1022: a run that compiles a chat date operator states it on the knowle
 test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox scan', () => {
   assert.equal(compileMailQuery('show me anything in my email', undefined), 'in:inbox newer_than:14d', 'instruction words are no terms');
   assert.equal(compileMailQuery('List anything in my email', undefined), 'in:inbox newer_than:14d', 'and the list verb is no term either');
-  assert.equal(compileMailQuery('find the agricon mail', undefined), 'agricon', 'a real content term still searches');
+  assert.equal(compileMailQuery('find the agricon mail', undefined, Date.now(), undefined, 'agricon'), 'agricon', 'a real content term still searches, through the topic');
 });
 
 // MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed

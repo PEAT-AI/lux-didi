@@ -122,7 +122,7 @@ export class Orb {
     const m=coordinated;
     this.lastActivity=m.activity;this.lastTarget=m.activityTarget;this.lastScale=m.scale;this.paints++;
     if(!still)this.phase+=dt;
-    if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;
+    if(this.canvas.dataset.posture!==m.posture)this.canvas.dataset.posture=m.posture;
     const s=this.size,c=s/2;
     ctx.clearRect(0,0,s,s);
     const zoom=ORB_PRESENCE.heroScale*m.scale;
@@ -133,7 +133,7 @@ export class Orb {
     const activity=m.activity, glow=m.glow;
     const drawLayer=(hue: number, alpha: number) => {
       ctx.globalAlpha=alpha;
-      this.classic?.draw(c,c,s*0.05,hue,still?0.8:this.phase,active,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
+      this.classic?.draw(c,c,s*0.05,hue,still?0.8:this.phase,m.posture,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
     };
     // M3-R6: a state change crossfades the two layers by opacity. Walking one hue number
     // from the listening teal to the amber would pass saturated lime on the way.

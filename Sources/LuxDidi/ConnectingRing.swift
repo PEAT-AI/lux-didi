@@ -1,52 +1,72 @@
 import AVFoundation
 import Foundation
 
-/// Issue #529: Vicuna's friendly ring while a voice connection is being built. The numbers are
-/// copied from Vicuna's `earcon.service.ts` playConnecting, not retuned here.
+/// Issue #529: a soft sci-fi pad while a voice connection is being built, looping with no click.
 enum ConnectingRingTone {
     static let sampleRate = 24000.0
-    static let firstTone = 659.25
-    static let secondTone = 880.0
-    static let noteMs = 200
-    static let gapMs = 120
-    static let loopMs = 1800
-    static let triangleMix = 0.10
-    static let peak: Float = 0.12
-    static let fadeMs = 20
+    static let loopMs = 2400
+    static let peak: Float = 0.10
     static let stopRampMs = 30
+    /// One detune step is a whole cycle per loop, so each pair beats once per loop and the seam
+    /// closes.
+    static let detune: Double = 1 / (Double(loopMs) / 1000)
+    /// An A open fifth in detuned pairs: A3, E4 and A4, with each voice shimmering against its twin.
+    static let padFrequencies: [Double] = [220, 220 + detune, 330, 330 + detune, 440, 440 + detune]
+    static let padGains: [Double] = [0.55, 0.55, 0.34, 0.34, 0.24, 0.24]
+    static let sparkleFrequency = 1440.0
+    static let sparkleGain = 0.10
+    static let pingStartHz = 520.0
+    static let pingEndHz = 880.0
+    static let pingStartMs = 600
+    static let pingMs = 1200
+    static let pingDecayMs = 300.0
+    static let pingGain = 0.5
+    static let pingReleaseMs = 30
 
-    static var noteFrames: Int { Int(sampleRate * Double(noteMs) / 1000) }
-    static var gapFrames: Int { Int(sampleRate * Double(gapMs) / 1000) }
-    static var fadeFrames: Int { Int(sampleRate * Double(fadeMs) / 1000) }
     static var loopFrames: Int { Int(sampleRate * Double(loopMs) / 1000) }
-    static var secondOnset: Int { noteFrames + gapFrames }
+    static var loopSeconds: Double { Double(loopMs) / 1000 }
 
-    /// One 1800 ms loop: E5 at 0, A5 at 320 ms, then silence to the loop end, so a looping player
-    /// puts the pair at 0, 1.8 and 3.6 s. Each note is a sine plus a triangle at 10 percent mix,
-    /// scaled so the peak is 0.12, with 20 ms raised-cosine fades.
+    /// One 2400 ms loop: the pad, a high partial that wobbles twice per loop and one sonar ping on
+    /// an upward glide, all under a breath that starts and ends at silence so the loop begins
+    /// quietly and wraps without a click.
     static func samples() -> [Float] {
         var out = [Float](repeating: 0, count: loopFrames)
-        let scale = peak / (1 + Float(triangleMix))
-        for (onset, frequency) in [(0, firstTone), (secondOnset, secondTone)] {
-            for index in 0..<noteFrames {
-                let phase = 2 * Double.pi * frequency * Double(index) / sampleRate
-                let sine = Float(sin(phase))
-                let triangle = Float(2 / Double.pi * asin(sin(phase)))
-                out[onset + index] = (sine + Float(triangleMix) * triangle) * scale * fade(index)
+        let loop = loopSeconds
+        let pingStart = Int(sampleRate * Double(pingStartMs) / 1000)
+        let pingFrames = Int(sampleRate * Double(pingMs) / 1000)
+        let pingRelease = Int(sampleRate * Double(pingReleaseMs) / 1000)
+        let glide = (pingEndHz - pingStartHz) / (Double(pingFrames) / sampleRate)
+        for index in 0..<loopFrames {
+            let time = Double(index) / sampleRate
+            var value = 0.0
+            for (frequency, gain) in zip(padFrequencies, padGains) {
+                value += gain * sin(2 * Double.pi * frequency * time)
             }
+            let wobble = 0.5 + 0.5 * cos(4 * Double.pi * time / loop)
+            value += sparkleGain * wobble * sin(2 * Double.pi * sparkleFrequency * time)
+            let pingIndex = index - pingStart
+            if pingIndex >= 0 && pingIndex < pingFrames {
+                let pingTime = Double(pingIndex) / sampleRate
+                let phase = 2 * Double.pi
+                    * (pingStartHz * pingTime + 0.5 * glide * pingTime * pingTime)
+                let decay = exp(-pingTime / (pingDecayMs / 1000))
+                let tail = pingFrames - 1 - pingIndex
+                let release = tail < pingRelease
+                    ? 0.5 - 0.5 * cos(Double.pi * Double(tail) / Double(pingRelease)) : 1
+                value += pingGain * release * decay * sin(phase)
+            }
+            let breath = sin(Double.pi * time / loop)
+            out[index] = Float(value * breath * breath)
         }
-        return out
+        return scaledToPeak(out)
     }
 
-    private static func fade(_ index: Int) -> Float {
-        if index < fadeFrames {
-            return Float(0.5 - 0.5 * cos(Double.pi * Double(index) / Double(fadeFrames)))
-        }
-        if index >= noteFrames - fadeFrames {
-            let tail = noteFrames - 1 - index
-            return Float(0.5 - 0.5 * cos(Double.pi * Double(tail) / Double(fadeFrames)))
-        }
-        return 1
+    /// Scaled just under the cap, so rounding and 16-bit quantization never exceed it.
+    private static func scaledToPeak(_ samples: [Float]) -> [Float] {
+        let top = samples.map { abs($0) }.max() ?? 0
+        guard top > 0 else { return samples }
+        let scale = peak * 0.98 / top
+        return samples.map { $0 * scale }
     }
 
     /// Rendered once per ring, so playback never synthesizes on the audio thread.
@@ -60,44 +80,53 @@ enum ConnectingRingTone {
     }
 }
 
-/// The connected chime after the ring, copied from Vicuna's `earcon.service.ts` playConnected:
-/// 440 Hz then 550 Hz, 100 ms each with a 50 ms gap, peak 0.15 and a 15 ms linear fade. Parity with
-/// the ring the owner asked for, on the ring's own player, so no third engine appears.
+/// The arrival chime after the ring: a friendly three note bell arpeggio, A5 then C#6 then E6,
+/// on the ring's own player.
 enum ConnectingChimeTone {
     static let sampleRate = 24000.0
-    static let firstTone = 440.0
-    static let secondTone = 550.0
-    static let noteMs = 100
-    static let gapMs = 50
-    static let peak: Float = 0.15
-    static let fadeMs = 15
+    static let noteFrequencies: [Double] = [880, 1108.73, 1318.51]
+    static let onsetMs: [Int] = [0, 80, 160]
+    static let lengthMs = 760
+    static let peak: Float = 0.14
+    static let decayMs = 160.0
+    static let attackMs = 6
+    /// The closing release: the buffer ends at silence and the director waits this long past it.
+    static let fadeMs = 40
+    static let partialGains: [Double] = [1, 0.35, 0.12]
+    static let partialDecays: [Double] = [1, 0.6, 0.4]
 
-    static var noteFrames: Int { Int(sampleRate * Double(noteMs) / 1000) }
-    static var gapFrames: Int { Int(sampleRate * Double(gapMs) / 1000) }
-    static var fadeFrames: Int { Int(sampleRate * Double(fadeMs) / 1000) }
-    static var secondOnset: Int { noteFrames + gapFrames }
-    static var totalFrames: Int { secondOnset + noteFrames }
-    /// The chime's own length: two tones and the gap between them.
-    static var lengthMs: Int { Int(Double(totalFrames) / sampleRate * 1000) }
+    static var totalFrames: Int { Int(sampleRate * Double(lengthMs) / 1000) }
+    static var onsetFrames: [Int] { onsetMs.map { Int(sampleRate * Double($0) / 1000) } }
 
+    /// One shot: three bells 80 ms apart, each a sine plus two quieter partials on exponential
+    /// decays, all released to silence at the end.
     static func samples() -> [Float] {
         var out = [Float](repeating: 0, count: totalFrames)
-        for (onset, frequency) in [(0, firstTone), (secondOnset, secondTone)] {
-            for index in 0..<noteFrames {
-                let phase = 2 * Double.pi * frequency * Double(index) / sampleRate
-                out[onset + index] = Float(sin(phase)) * peak * fade(index)
+        let attackFrames = Int(sampleRate * Double(attackMs) / 1000)
+        let releaseFrames = Int(sampleRate * Double(fadeMs) / 1000)
+        for (frequency, onset) in zip(noteFrequencies, onsetFrames) {
+            for index in onset..<totalFrames {
+                let time = Double(index - onset) / sampleRate
+                var value = 0.0
+                for partial in 0..<partialGains.count {
+                    let multiple = Double(partial + 1)
+                    let decay = decayMs / 1000 * partialDecays[partial]
+                    value += partialGains[partial] * exp(-time / decay)
+                        * sin(2 * Double.pi * frequency * multiple * time)
+                }
+                let head = index - onset
+                let attack = head < attackFrames
+                    ? 0.5 - 0.5 * cos(Double.pi * Double(head) / Double(attackFrames)) : 1
+                let tail = totalFrames - 1 - index
+                let release = tail < releaseFrames
+                    ? 0.5 - 0.5 * cos(Double.pi * Double(tail) / Double(releaseFrames)) : 1
+                out[index] += Float(value * attack * release)
             }
         }
-        return out
-    }
-
-    /// A linear 15 ms fade in and out, as Vicuna's gain ramps are linear.
-    private static func fade(_ index: Int) -> Float {
-        if index < fadeFrames { return Float(index) / Float(fadeFrames) }
-        if index >= noteFrames - fadeFrames {
-            return Float(noteFrames - 1 - index) / Float(fadeFrames)
-        }
-        return 1
+        let top = out.map { abs($0) }.max() ?? 0
+        guard top > 0 else { return out }
+        let scale = peak * 0.98 / top
+        return out.map { $0 * scale }
     }
 
     static func buffer() -> AVAudioPCMBuffer? {
@@ -368,6 +397,18 @@ final class ConnectingRing {
         case .play, .discard, .none:
             break
         }
+    }
+
+    /// SOUND-R1: the host is rebuilding a dropped call, so the ring sounds the reconnect while the
+    /// presence the owner sees stays live. An ended rebuild ramps out through the ordinary cold or
+    /// muted presence record, which plays no chime.
+    func rebuildStarted() {
+        presenceChanged(.connecting, failed: false)
+    }
+
+    /// SOUND-R1: the rebuilt call is live again, so the ring returns to live and plays the chime.
+    func rebuildSettled() {
+        presenceChanged(.live, failed: false)
     }
 
     /// The player is only built once a ring is asked for.

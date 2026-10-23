@@ -358,6 +358,10 @@ import WebKit
         }
         liveJournal.append(record)
     }
+    /// SOUND-R1: a dropped call the host is rebuilding rings the reconnect while presence stays live.
+    func ringRebuildStarted() { connectingRing.rebuildStarted() }
+    /// SOUND-R1: the rebuilt call is live again, so a reconnect ring ends with the arrival chime.
+    func ringRebuildSettled() { connectingRing.rebuildSettled() }
     /// The gentle ring while a connection is built (#529): its `connecting_ring` record goes back
     /// through the presence receipt path above.
     private lazy var connectingRing: ConnectingRing = {
@@ -1134,6 +1138,13 @@ struct RootView: View {
     }
 
     private func presenceTransitioned(_ state: NativeLiveConversation.State, generation: UInt64) {
+        // SOUND-R1: a dropped call the host rebuilds rings the reconnect, and the call going live
+        // again plays the arrival chime. Neither is a presence move, and a muted call never rings.
+        switch state {
+        case .rebuilding: if presence.state == .live { model.ringRebuildStarted() }
+        case .listening, .speaking, .muted: model.ringRebuildSettled()
+        default: break
+        }
         switch state {
         case .listening: presence.ready(generation)
         case .speaking:

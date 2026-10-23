@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -255,7 +255,7 @@ test('#575: a finding already given in the session becomes a one-line note', asy
 
 // Review F1: capReply trimmed after the note was built, so a capped reply could say nothing was left while
 // it offered a continuation.
-test('#567: a reply capped after its note was built never says nothing is left', async () => {
+test('#567: a reply capped after its note was built advertises the continuation it needs', async () => {
   const ledger = new ResearchLedger();
   const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
   const h = harness({
@@ -269,11 +269,46 @@ test('#567: a reply capped after its note was built never says nothing is left',
   };
   await runResearch(h.deps, call, new AbortController().signal);
   const second = await runResearch(h.deps, call, new AbortController().signal);
-  const text = JSON.stringify(second);
-  const note = String(second['note'] ?? '');
-  assert.ok(text.length <= RESEARCH.replyLimitChars, `reply was ${text.length} chars`);
-  if (second['canContinue'] === true) assert.doesNotMatch(note, /Nothing more to fetch/u, 'a reply that offers a continuation never says nothing is left');
-  if (/Nothing more to fetch/u.test(note)) assert.equal(second['canContinue'], false, 'a complete reply offers no continuation');
+  const pages = (second['historyPages'] ?? []) as { hits?: unknown[] }[];
+  const kept = pages.reduce((total, page) => total + (page.hits?.length ?? 0), 0);
+  assert.ok(kept < hits.length, `the cap trimmed the page hits: ${kept} of ${hits.length} kept`);
+  assert.ok(JSON.stringify(second).length <= RESEARCH.replyLimitChars, 'the trimmed reply stays inside the budget');
+  assert.equal(second['status'], 'partial', 'a reply the cap trimmed is partial');
+  assert.equal(second['canContinue'], true, 'and it offers the continuation that would fetch the rest');
+  assert.doesNotMatch(String(second['note'] ?? ''), /Nothing more to fetch/u, 'the note never says nothing is left');
+});
+
+// Review F2: the serialized reply is hard-bounded, and a finding header never survives with no evidence line.
+test('#567: capReply hard-bounds a reply and keeps every finding whole', () => {
+  const reply = {
+    researchId: 'r-1', status: 'complete', canContinue: false, note: RESEARCH.completeNote,
+    findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'x'.repeat(9_000)}`, chars: 9_000 }],
+  };
+  const capped = capReply(reply, RESEARCH.replyLimitChars);
+  assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
+  assert.equal(capped['status'], 'partial', 'a capped reply is never complete');
+  assert.equal(capped['canContinue'], true, 'and it offers the continuation');
+  assert.doesNotMatch(String(capped['note'] ?? ''), /Nothing more to fetch/u, 'the note agrees with the continuation');
+  for (const finding of (capped['findings'] ?? []) as { text: string }[]) assert.ok(finding.text.split('\n').length > 1, 'a header never stands without an evidence line');
+});
+
+test('#567: a one line finding that cannot fit is dropped whole, never left as a bare header', () => {
+  const reply = {
+    researchId: 'r-2', status: 'partial', canContinue: true,
+    findings: [{ source: 'knowledge', text: 'knowledge: 5 of 9 shown\nonly one evidence line here', chars: 26 }],
+  };
+  const capped = capReply(reply, 150);
+  assert.deepEqual(capped['findings'], [], 'the finding goes whole, never as a header over nothing');
+  assert.ok(JSON.stringify(capped).length <= 150);
+});
+
+test('#567: a reply already inside the budget is returned untouched', () => {
+  const reply = {
+    researchId: 'r-3', status: 'complete', canContinue: false, note: RESEARCH.completeNote,
+    findings: [{ source: 'knowledge', text: 'knowledge: 1 of 1 shown\none line', chars: 8 }],
+  };
+  const before = JSON.stringify(reply);
+  assert.equal(JSON.stringify(capReply(reply, RESEARCH.replyLimitChars)), before, 'nothing is flipped when nothing is trimmed');
 });
 
 test('mongoose is never offered while unconfigured', () => {

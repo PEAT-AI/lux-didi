@@ -53,7 +53,10 @@ export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEv
 export interface CalendarScope { received: number; partial: boolean }
 export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean }
 export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean }
+/** #6: the ranker's own retrieval metadata, read before the preamble is stripped and carried for research. */
+export interface KnowledgeConfidence { confidence: string; top?: string; candidates?: string }
 export interface ShapedResult {
+  knowledgeConfidence?: KnowledgeConfidence;
   mailPage?: MailPage;
   calendarPage?: CalendarPage;
   calendarScope?: CalendarScope;
@@ -367,11 +370,15 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
     if (openLine) lines.splice(1, 0, openLine);
-    const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
+    // #7: the first line is the event's own identity (time, title, place), so it is never the part a
+    // cut removes: a long company name survives whole and only the body is trimmed against the bound.
+    const headerLine = lines[0]!;
+    const bodyLines = lines.slice(1);
+    const cut = cutAtSentence(bodyLines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1));
     if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
-    const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
-    const line = `${recut.text}${note(recut.omitted)}`;
+    const recut = cutAtSentence(bodyLines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1 - note(cut.omitted).length));
+    const line = [headerLine, `${recut.text}${note(recut.omitted)}`].filter(part => part.length > 0).join('\n');
     normalized.push({ id: eventId, start, line, bodyTruncated: true });
     return line;
   });
@@ -553,6 +560,18 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
  * the answer card (#254); the hits and their ids stay untouched. */
 const KNOWLEDGE_HEADER = /^#\s*Knowledge Search\b.*$/u;
 const KNOWLEDGE_METADATA = /^_.*(?:confidence:|top score:|relevant candidate:).*$/u;
+/** #6: the confidence line is stripped from the model text but never lost: research reads it here. */
+function knowledgeConfidenceOf(raw: string): KnowledgeConfidence | undefined {
+  for (const line of raw.split('\n')) {
+    if (!KNOWLEDGE_METADATA.test(line.trim())) continue;
+    const confidence = /confidence:\s*([a-z]+)/u.exec(line)?.[1];
+    if (confidence === undefined) continue;
+    const top = /top score:\s*([\d.]+)/u.exec(line)?.[1];
+    const candidates = /relevant candidate:\s*([a-z]+)/u.exec(line)?.[1];
+    return { confidence, ...(top === undefined ? {} : { top }), ...(candidates === undefined ? {} : { candidates }) };
+  }
+  return undefined;
+}
 function stripKnowledgePreamble(raw: string): string {
   return raw.split('\n').filter(line => {
     const trimmed = line.trim();
@@ -606,12 +625,14 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       }
     }
   }
+  const confidence = knowledgeConfidenceOf(raw);
+  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result : { ...result, knowledgeConfidence: confidence };
   const ranked = knowledgeRanked(raw);
-  if (ranked) return ranked;
+  if (ranked) return carry(ranked);
   const clean = stripKnowledgePreamble(raw);
   const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) });
+  return carry(withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) }));
 }
 
 const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;

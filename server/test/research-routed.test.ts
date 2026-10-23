@@ -250,7 +250,7 @@ test('calendar lookups carry a day or a named window', () => {
   assert.equal(calendarWindowOf('week'), 'week');
   assert.equal(calendarWindowOf('2026-10-17'), '2026-10-17');
   assert.equal(calendarWindowOf('meetings on 2026-10-17'), '2026-10-17');
-  assert.equal(calendarWindowOf('anything about the release'), 'today');
+  assert.equal(calendarWindowOf('anything about the release'), '', 'an unparseable window is never today (#5)');
 });
 
 test('the declared lookups key is valid on start only and matches its validator', () => {

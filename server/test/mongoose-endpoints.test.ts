@@ -35,7 +35,7 @@ test('the connector carries three endpoints, one place per endpoint', () => {
     assert.ok(!knowledge.reads.includes('run_sql'));
     assert.ok(!knowledge.reads.includes('get_company_crm'));
   }
-  assert.equal(mongooseEndpoint('mongoose-knowledge')?.tools.length, 50);
+  assert.equal(mongooseEndpoint('mongoose-knowledge')?.tools.length, 37);
   assert.equal(mongooseEndpoint('mongoose-data')?.tools.length, 23);
   assert.equal(mongooseEndpoint('mongoose-crm')?.tools.length, 5);
   assert.deepEqual(mongooseEndpoint('mongoose-crm')?.reads, ['get_company_crm', 'list_inbound_leads', 'inbound_lead_events']);

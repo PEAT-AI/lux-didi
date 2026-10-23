@@ -311,6 +311,39 @@ test('#567: a reply already inside the budget is returned untouched', () => {
   assert.equal(JSON.stringify(capReply(reply, RESEARCH.replyLimitChars)), before, 'nothing is flipped when nothing is trimmed');
 });
 
+// RESCAP-R5: a long best knowledge hit emptied the answer, because the trim loop dropped the only line.
+test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', async () => {
+  const long = `the release ships on Friday ${'x'.repeat(4_000)}`;
+  const h = harness({ executeText: long });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
+  }, new AbortController().signal);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+  const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
+  assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
+  assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
+});
+
+test('#567/R5: capReply clips the only evidence line instead of dropping the finding', () => {
+  const reply = {
+    researchId: 'r-5', status: 'partial', canContinue: true,
+    findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'y'.repeat(4_000)}`, chars: 4_000 }],
+  };
+  const capped = capReply(reply, RESEARCH.replyLimitChars);
+  assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
+  const findings = capped['findings'] as { text: string }[];
+  assert.equal(findings.length, 1, 'the finding survives the cap');
+  const lines = findings[0]!.text.split('\n');
+  assert.equal(lines.length, 2, 'it keeps its header and one evidence line');
+  assert.ok((lines[1] ?? '').length >= RESEARCH.clipFloorChars, 'the evidence line is clipped, never removed');
+  assert.match(lines[1] ?? '', /\u2026/u, 'the clip is marked');
+});
+
+test('#567/R5: the knowledge body request is sized to fit the reply budget', () => {
+  assert.ok(RESEARCH.knowledgeBodyChars < RESEARCH.replyLimitChars, `body ${RESEARCH.knowledgeBodyChars} fits the ${RESEARCH.replyLimitChars} char reply`);
+  assert.ok(RESEARCH.knowledgeBodyChars <= RESEARCH.replyLimitChars - 400, 'with room for the envelope and one more source');
+});
+
 test('mongoose is never offered while unconfigured', () => {
   const offered = offerableCandidates(['knowledge', 'calendar', 'mail', 'chat'], []);
   assert.equal(offered.includes('brief'), true);

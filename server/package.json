@@ -38,6 +38,7 @@
     "dist/services",
     "adapters/mcp/SDK-LICENSE.txt",
     "dist/adapters/live-voice",
+    "dist/adapters/lux-write",
     "dist/live",
     "dist/trace"
   ],

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,7 @@ import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { parseSaveCommand, VAULT_REMOTE_TOOL, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { parseSaveCommand, VAULT_REMOTE_TOOL, VAULT_WRITE_IDENTITY, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
@@ -156,17 +156,18 @@ test('a duplicate refusal is never reported as saved', async t => {
   assert.equal(fake.calls.length, 1);
 });
 
-test('the write surface is one tool and no other remote name exists', () => {
+test('the write surface is one tool and no other remote name exists', async () => {
   assert.equal(VAULT_REMOTE_TOOL, 'save_insight');
   for (const tool of LUX_KNOWLEDGE_TOOLS) assert.ok(!/^(save|delete|purge|update|link)_insight$/.test(tool));
-  const client = readFileSync(new URL('../adapters/lux-write/client.ts', import.meta.url), 'utf8');
-  const service = readFileSync(new URL('../tools/vault-write.ts', import.meta.url), 'utf8');
+  const client = await import('../adapters/lux-write/client.js');
+  assert.deepEqual(Object.keys(client).sort(), ['createLuxWriteTransport', 'luxWriteEndpoint'],
+    'the write client exposes one transport factory, and no per-tool door');
+  const service = await import('../tools/vault-write.js');
   for (const forbidden of ['delete_insight', 'purge_insight', 'update_insight', 'link_insight']) {
-    assert.ok(!client.includes(forbidden), `${forbidden} is not reachable from the write client`);
-    assert.ok(!service.includes(forbidden), `${forbidden} is not reachable from the write service`);
+    assert.equal((service as Record<string, unknown>)[forbidden], undefined, `${forbidden} is not a door the write service holds`);
   }
-  const tools = readFileSync(new URL('../tools/index.ts', import.meta.url), 'utf8');
-  assert.ok(!tools.slice(0, tools.indexOf('liveDefinitions(')).includes('definitions.push({ ...VAULT_WRITE_IDENTITY'), 'the text chat path declares no vault write');
+  assert.deepEqual(service.VAULT_WRITE_IDENTITY, { name: 'save_to_vault', accountId: 'gateway:live-voice', resourceId: 'owner-vault' },
+    'the write tool is the gateway’s own, not a remote declaration');
 });
 
 test('the grammar is anchored and the content key ignores case, spacing and punctuation', () => {

@@ -690,3 +690,13 @@ test('Gmail retained evidence: actual SDK full received body is host-only and ke
     assert.equal(metadataSnapshot[HOST_EVIDENCE], undefined); assert.match(String(metadataSnapshot.response['text']), /Metadata-only view requested/);
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('#574: one named calendar asks for attendees and organizer too, and an older helper is never sent it', async () => {
+  const advertised = fakeCalendarPort({ calendars: [{ id: 'a', summary: 'Alpha' }], eventsFor: () => timedEvent });
+  await (await calendarReader(advertised.port, {}, { include: { type: 'array', items: { type: 'string' } } })).gcalList({ calendarId: 'a' });
+  assert.equal(advertised.listArgs.length, 1);
+  assert.deepEqual(advertised.listArgs[0]!['include'], ['attendees', 'organizer'], 'the day read names who is in the meeting');
+  const old = fakeCalendarPort({ calendars: [{ id: 'a', summary: 'Alpha' }], eventsFor: () => timedEvent });
+  await (await calendarReader(old.port)).gcalList({ calendarId: 'a' });
+  assert.equal('include' in old.listArgs[0]!, false, 'the old helper refuses any argument it does not declare');
+});

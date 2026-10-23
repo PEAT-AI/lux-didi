@@ -454,8 +454,8 @@ const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly Connector
  * The read envelope of one Mongoose connection: the endpoint's own declared reads when its id names
  * one of the connected endpoints, and the widest envelope for a synthetic or retired endpoint id.
  */
-export function mongooseEnvelopeOf(endpointId: string): readonly string[] {
-  return mongooseEndpoint(endpointId)?.reads ?? MONGOOSE_READ_TOOLS;
+export function mongooseEnvelopeOf(endpointId: string | undefined): readonly string[] {
+  return (endpointId === undefined ? undefined : mongooseEndpoint(endpointId)?.reads) ?? MONGOOSE_READ_TOOLS;
 }
 
 const mongooseDescriptor: ConnectorDescriptor = {
@@ -464,7 +464,7 @@ const mongooseDescriptor: ConnectorDescriptor = {
     // The typed seven first, then one pass-through declaration for every other tool of the read
     // envelope: the model table in tools/index.ts keeps only the granted names, and the reader
     // validates each call's arguments against the schema the server discovered.
-    const envelope = mongooseEnvelopeOf(policy.endpoint.id);
+    const envelope = mongooseEnvelopeOf(policy.endpoint?.id);
     const typed = mongooseTypedDeclarations(policy);
     const other = envelope
       .filter(name => !typed.some(declaration => declaration.name === name))

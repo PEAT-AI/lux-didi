@@ -810,12 +810,6 @@ export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
 }
 
-/**
- * MAILQ 8 (#579): an attention ask is never one layer. It reads what is waiting in mail, chat and the
- * calendar together, and a question about what was said before keeps the memory layer.
- */
-const ATTENTION_WORDS = /\b(?:what needs (?:me|my attention)|anything urgent|anything (?:important|waiting)|what(?:'s| is) waiting|what needs a reply)\b/u;
-
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
 const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|messages?|wrote|sent|replied|replies|reply)\b/u;
 const CALENDAR_WORDS = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/u;
@@ -838,8 +832,6 @@ const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
 export function requiredSources(question: string): SourceKind[] {
   const text = question.toLowerCase();
   if (WEB_WORDS.test(text)) return [];
-  // MAILQ 8: what needs him is never one layer, and the words of one layer never displace another.
-  if (ATTENTION_WORDS.test(text)) return ['mail', 'chat', 'calendar'];
   return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
 }
 
@@ -876,10 +868,9 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     pUseful[kind] = p;
   };
   const webWords = WEB_WORDS.test(text);
-  const attention = ATTENTION_WORDS.test(text);
-  const mailWords = MAIL_WORDS.test(text) || attention;
+  const mailWords = MAIL_WORDS.test(text);
   const calendarWords = CALENDAR_WORDS.test(text);
-  const chatWords = CHAT_WORDS.test(text) || attention;
+  const chatWords = CHAT_WORDS.test(text);
   const matched = mailWords || calendarWords || chatWords;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
@@ -887,8 +878,6 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     return { questionClass: 'cross_source', actions, pUseful };
   }
   offer('knowledge_search', 0.4, 'knowledge');
-  // MAILQ 8: an attention ask reads mail, chat and the calendar together, not the calendar alone.
-  if (attention) { offer('mail_search', 0.55, 'mail'); offer('chat_search', 0.5, 'chat'); offer('calendar_window', 0.45, 'calendar'); return { questionClass: 'cross_source', actions, pUseful }; }
   if (mailWords) offer('mail_search', 0.4, 'mail');
   if (calendarWords) offer('calendar_window', 0.4, 'calendar');
   if (chatWords) offer('chat_search', 0.4, 'chat');

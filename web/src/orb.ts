@@ -25,6 +25,7 @@ export class Orb {
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
   private coordinator = new MotionCoordinator();
+  private bodyState: VoiceState | undefined;
   private paints = 0;
   private lastScale = 1;
   private mid = 0;
@@ -61,6 +62,7 @@ export class Orb {
     (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => { if(orbSurfaceVisible())this.audio.push(this.coordinator.sample(sample,performance.now())); };
   }
   interrupt() { this.coordinator.interrupt(); }
+  setBodyState(state: VoiceState) { this.bodyState=state; }
   setState(state: VoiceState) { this.state=state; this.reset(); this.transition={activity:this.lastActivity,target:this.lastTarget}; }
   private resize() {
     this.size=Math.max(1,this.canvas.clientWidth);
@@ -113,8 +115,8 @@ export class Orb {
     // #1021: the owner's mute outlives the session, so the full orb is purple while she waits,
     // even with no live state at all. The pill publishes its own visual, so this only fills the gap.
     const muted=visual===undefined && presenceMuted();
-    const active=muted?ORB_VISUALS['hot-muted'].posture:visual?.posture??posture(this.state,frame);
-    const coordinated=this.coordinator.advance(this.state,time,still,muted||visual?.posture==='quiet');
+    const active=muted?ORB_VISUALS['hot-muted'].posture:visual?.posture??posture(this.state,{level:0,playback:0});
+    const coordinated=this.coordinator.advance(this.bodyState??this.state,time,still,presenceMuted()||visual?.state==='hot-muted',this.state);
     const mid=Math.min(1,Math.max(0,coordinated.frame.mid));
     this.mid+=(mid-this.mid)*smoothingAlpha(dt,mid>this.mid?ORB_SMOOTHING_TAU.midAttack:ORB_SMOOTHING_TAU.midDecay);
     const high=Math.min(1,Math.max(0,coordinated.frame.high));

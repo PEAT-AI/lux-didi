@@ -41,6 +41,7 @@ const orbReveal = createStateDebounce<VoiceState>('CONNECTING');
 let orbRevealTimer: ReturnType<typeof setTimeout> | undefined;
 function applyOrbState() {
   const at = Date.now();
+  orb?.setBodyState(orbState());
   if (['DISCONNECTED','INTERRUPTED','ERROR'].includes(orbState()) || pillMuted(live?.muted === true)) orb?.interrupt();
   orbReveal.request(orbState(), at);
   const shown = orbReveal.settled(at);

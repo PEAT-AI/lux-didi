@@ -55,7 +55,7 @@ export class MotionCoordinator {
     return { ...this.frame, source };
   }
 
-  advance(state: string, at: number, still = false, muted = false) {
+  advance(state: string, at: number, still = false, muted = false, statusState = state) {
     const dt = this.lastAt === undefined ? 0 : Math.max(0, Math.min(0.1, (at - this.lastAt) / 1000));
     this.lastAt = at;
     this.counters.frameAgeMs = Math.max(0, at - this.frame.timestamp);
@@ -73,7 +73,7 @@ export class MotionCoordinator {
       this.quiet ??= at;
       if (at - this.quiet >= 180) this.speaking = false;
     } else this.quiet = undefined;
-    const kind: OrbPosture = !disabled && this.speaking ? 'speaking' : disabled ? 'quiet' : state === 'LISTENING' ? 'listening' : state === 'PROCESSING' ? 'thinking' : 'idle';
+    const kind: OrbPosture = !disabled && this.speaking ? 'speaking' : disabled ? 'quiet' : statusState === 'LISTENING' ? 'listening' : statusState === 'PROCESSING' ? 'thinking' : 'idle';
     const w = smooth((at - this.targetAt) / 240);
     for (const key of Object.keys(this.current) as OrbPosture[]) this.current[key] = this.from[key] + (Number(key === this.target) - this.from[key]) * w;
     if (kind !== this.target) { this.from = { ...this.current }; this.target = kind; this.targetAt = at; }
@@ -85,7 +85,7 @@ export class MotionCoordinator {
     const depthModulation = 1 + 0.08 * Math.sin(this.elapsed * 2 * Math.PI / 31);
     targets.breathPeriod *= periodModulation;
     targets.breathDepth *= depthModulation;
-    const status: OrbPosture = state === 'PROCESSING' ? 'thinking' : state === 'SPEAKING' ? 'speaking' : state === 'LISTENING' ? 'listening' : disabled ? 'quiet' : 'idle';
+    const status: OrbPosture = statusState === 'PROCESSING' ? 'thinking' : statusState === 'SPEAKING' ? 'speaking' : statusState === 'LISTENING' ? 'listening' : ['DISCONNECTED','ERROR','INTERRUPTED'].includes(statusState) ? 'quiet' : 'idle';
     targets.swirl = POSTURE_TARGETS[status].swirl;
     const motion = stepMotion(this.motion, kind, disabled ? { ...frame, low: 0, level: 0, flux: 0 } : frame, dt, still, { ...targets, speakingWeight: this.current.speaking, listeningWeight: this.current.listening });
     return { ...motion, posture: kind, weights: { ...this.current }, source: this.source, frame, breathPhase: this.motion.breathPhase, periodModulation, depthModulation };

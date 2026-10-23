@@ -74,7 +74,7 @@ export class MotionCoordinator {
     for (const key of Object.keys(this.current) as OrbPosture[]) this.current[key] = this.from[key] + (Number(key === this.target) - this.from[key]) * w;
     if (kind !== this.target) { this.from = { ...this.current }; this.target = kind; this.targetAt = at; }
     if (still) this.current = weights(kind);
-    const targets = { ...POSTURE_TARGETS.idle } as { [K in keyof typeof POSTURE_TARGETS.idle]: number };
+    const targets = { ...POSTURE_TARGETS.idle } as { -readonly [K in keyof typeof POSTURE_TARGETS.idle]: number };
     for (const key of Object.keys(targets) as (keyof typeof targets)[]) targets[key] = (Object.keys(this.current) as OrbPosture[]).reduce((sum, posture) => sum + POSTURE_TARGETS[posture][key] * this.current[posture], 0);
     if (!still) this.elapsed += dt;
     const periodModulation = 1 + 0.06 * Math.sin(this.elapsed * 2 * Math.PI / 23);

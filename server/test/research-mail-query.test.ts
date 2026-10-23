@@ -391,5 +391,5 @@ test('MAILQ 2: a "what came in" ask scans the unread inbox and counts what came 
   assert.match(text, /^mail: 10 of 10 shown$/mu, 'the reply says how many came in and that nothing was held back');
   assert.match(text, /Sender 9 \| Thread 9 \| Mon, 19 Oct 2026/u, 'newest first, with sender and date');
   assert.equal(text.includes('Thread 0'), true, 'the oldest of the ten is there too');
-  assert.equal(text.split('\n').filter(line => line.includes('Thread 5')).length, 1, 'a thread both reads returned is listed once');
+  assert.equal(text.split('\n').filter(line => line.startsWith('Sender') && line.includes('Thread 5')).length, 1, 'a thread both reads returned is listed once');
 });

@@ -255,8 +255,10 @@ test('only new authoritative host interruption or owner transcription clears own
 test('audible onset bypasses a stale debounced status without changing its swirl', () => {
   const m = new MotionCoordinator();
   m.sample(voiceSample(0.1), 0);
-  m.advance('CONNECTING', 0, false, false, 'DISCONNECTED');
+  m.advance('CONNECTING', 0, false, false, 'PROCESSING');
   m.sample(voiceSample(0.1), 30);
-  assert.equal(m.advance('CONNECTING', 30, false, false, 'DISCONNECTED').posture, 'speaking');
+  const output = m.advance('CONNECTING', 30, false, false, 'PROCESSING');
+  assert.equal(output.posture, 'speaking');
+  assert.ok(Math.abs(output.swirl - 0.03 * POSTURE_TARGETS.thinking.swirl) < 1e-9);
   assert.notEqual(m.advance('DISCONNECTED', 31, false, false, 'SPEAKING').posture, 'speaking');
 });

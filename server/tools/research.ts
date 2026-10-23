@@ -1200,6 +1200,10 @@ interface CalendarRead {
   code?: string;
 }
 export interface RunState {
+  /** #575: the start of the call before this one, so her own lines from the last two calls stay out of memory evidence. */
+  previousCallAt?: number;
+  /** #575: finding texts this session already delivered, shared by every run of the session. */
+  deliveredFindings: Set<string>;
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number; mailRateRetried?: boolean;
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
@@ -1264,11 +1268,15 @@ export class ResearchLedger {
   #counter = 0;
   #activeId: string | undefined;
   #last: RunState | undefined;
+  /** #575: what this session already told the model, so a repeat costs one line instead of a block. */
+  readonly delivered = new Set<string>();
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
   begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
+    const previousCallAt = this.#last?.startedAt;
     const run: RunState = {
+      ...(previousCallAt === undefined ? {} : { previousCallAt }), deliveredFindings: this.delivered,
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
       ...(input.question === undefined ? {} : { question: input.question }),
       ...(input.callKey === undefined ? {} : { callKey: input.callKey }),
@@ -2338,6 +2346,20 @@ function receiptCounts(reply: JsonObject | undefined, run: RunState, configured:
   };
 }
 
+const ALREADY_GIVEN = 'already given';
+/** #575: two findings are the same when their text is, whatever the JSON escaping. */
+const findingKey = (text: string): string => text.replace(/\s+/gu, ' ').trim();
+
+/** #575: the one ask where her own earlier words are the evidence the owner wants. */
+const ASKS_WHAT_SHE_SAID = /\bwhat (?:did|do|have) (?:you|she) (?:say|said)\b|\bwhat (?:you|she) (?:said|answered)\b/iu;
+
+/** #575: a hit dated before the previous call's start is history; anything newer is the live conversation. */
+function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boolean {
+  if (asked || hit['role'] !== 'assistant') return true;
+  const at = Date.parse(String(hit['date'] ?? ''));
+  return Number.isFinite(at) && at < (run.previousCallAt ?? run.startedAt);
+}
+
 /**
  * N4 (#567): the budget is measured on the whole serialized reply, after every section is attached, so a
  * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
@@ -2472,6 +2494,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         // N3: the primary-calendar answer says what it did not read, from the list it carried.
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
         const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`;
+        // #575: a block this session already gave is one line, never a second copy of the same evidence.
+        if (run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
         return { source: group.source, text, chars: group.lines.join('\n').length };
       });
     // ROUTE-1022 (#526): a reply says whether it is the whole answer. A complete one says so in plain
@@ -2526,7 +2550,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   }
   if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
-  return capReply(result, limit);
+  const capped = capReply(result, limit);
+  // #575: what this reply actually carried is what the session must not hand over again.
+  for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
+    if (typeof finding.text === 'string' && finding.text.length > 0 && !finding.text.includes(ALREADY_GIVEN)) run.deliveredFindings.add(findingKey(finding.text));
+  }
+  return capped;
 }
 
 /**
@@ -3065,10 +3094,14 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
         done.push({ ...settle(plan, 'unavailable'), historyPage: page }); continue;
       }
       if (typeof page['nextCursor'] === 'string') run.historyTokens.add(page['nextCursor']);
-      const hits = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
+      // #575: her own spoken turn from this call or the last one confirms a past answer instead of being
+      // new evidence, so it is dropped unless the owner asked what she said.
+      const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
+      const hits = (Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : []).filter(hit => memoryHitAllowed(hit, run, askedWhatSheSaid));
+      const kept = { ...page, hits };
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
-      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: page });
+      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: kept });
     } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); } finally { cut.done(); }
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory' && !entry.read.unresolved);

@@ -69,7 +69,8 @@ const OPENAI_LISTENING_SECTION = 'Do not treat a cough, music, or nearby convers
 export function openAiInstructions(persona: string): string {
   return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
-const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
+/** Release 4: Naya opens every new call, seeded history or not, with one short dry and edgy line in her own voice. */
+export const FRESH_OPENING = 'Start the call with one short line of your own, twelve words at most, dry and a little edgy and specific to the moment or to one of the opening options; no greeting formula, no offer of help, no list of questions, no tool call before it; then stop and listen.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
 const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
@@ -373,7 +374,10 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private seed(history: readonly { role: 'user' | 'model'; text: string }[], request: LiveVoiceRequest): { items: JsonObject[]; characters: number } {
     const items: JsonObject[] = [];
     let characters = 0;
-    for (const turn of history) {
+    const freshOpening = request.openingText === undefined && request.opening === 'model_first';
+    // The 128-message ceiling is the provider's: the opening directive takes one slot, so the oldest turn goes.
+    const kept = freshOpening ? history.slice(-(SEED_MESSAGE_LIMIT - 1)) : history;
+    for (const turn of kept) {
       characters += turn.text.length;
       items.push({ type: 'message', role: turn.role === 'model' ? 'assistant' : 'user',
         content: [{ type: turn.role === 'model' ? 'output_text' : 'input_text', text: turn.text }] });
@@ -381,7 +385,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     if (request.openingText !== undefined) {
       characters += request.openingText.length;
       items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: request.openingText }] });
-    } else if (request.opening === 'model_first' && !history.length) {
+    } else if (freshOpening) {
       characters += FRESH_OPENING.length;
       items.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
     }

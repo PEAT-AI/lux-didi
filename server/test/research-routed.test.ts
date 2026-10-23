@@ -709,3 +709,27 @@ test('release 4: a gmail page that fails after three good pages keeps the items 
   const mailText = findings.filter(finding => finding.source === 'mail').map(finding => finding.text).join('\n');
   for (const id of ['m1', 'm2', 'm3']) assert.match(mailText, new RegExp(id, 'u'), `the page ${id} items survive the later failure`);
 });
+
+
+// --- LAT-1023: answers come sooner and the call stays light --------------------------------------
+
+test('LAT-1023: a run stops after two tool-bearing rounds and the receipt says the cap was hit', async () => {
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, '', true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  const line = h.logs[0]!;
+  assert.equal(line.rounds, 2, 'the initial parallel round and at most one continuation round');
+  assert.deepEqual(line.perRound.map(row => row.chosen), [['knowledge_search'], ['brief']], 'two rounds were dispatched, never a third');
+  assert.equal(line.roundCapHit, 2, 'and the receipt names the cap with its round count');
+  assert.ok((line.unchecked ?? []).length > 0, 'evidence was left unread when the cap ended the run');
+  assert.equal(RESEARCH.startRounds, 2, 'the initial parallel round and one continuation');
+  assert.equal(RESEARCH.continueRounds, 2, 'a continued run may not buy a third round');
+  assert.equal(typeof reply['status'], 'string', 'the answer is composed from what the two rounds hold');
+  assert.doesNotMatch(JSON.stringify(reply), /no such|does not exist/iu, 'and never claims a record does not exist');
+});
+
+test('LAT-1023: a run that answers in its first round never claims the cap', async () => {
+  const h = harness({});
+  await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  assert.equal(h.logs[0]!.rounds, 1);
+  assert.equal(h.logs[0]!.roundCapHit, undefined, 'an answered first round hit no cap');
+});

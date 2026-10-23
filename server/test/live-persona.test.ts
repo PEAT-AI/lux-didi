@@ -348,7 +348,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
-  assert.equal(sha(NAYA_VOICE_SURFACE), 'fe0c181f6049070157ee54d268c554bcf1d2f1fd548179f26eb5cc92ebf18a97');
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'b371a4e39ee8f4c218e19094da86862d44b65372c6dbbcb04f51af813d857856');
   assert.equal(sha(NAYA_VOICE_TOOLS), 'ca6aac13131468d2e5cc1bc93d3e15b0b27f00343c1d42f28e99522f48c5f4b9');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
   assert.equal(sha(NAYA_TOOLS), 'c7e7eb9abcbef5a71850afe65178e055e437b2d51e8aae8852ed9986aa9ee5a0');
@@ -662,8 +662,9 @@ test('the voice surface asks for varied phrasing, never the same framing phrase 
 const WRAPPER_3O_CHARS = 6603;
 /** W5-R1: the wrapper size this change leaves, base plus full conduct, in chars. W11 raises it for the
  * one open paragraph, which names what she can open and the handle she opens it with; W12 raises it for the
- * vault rule, which says what a save is and what a receipt is not. */
-const WRAPPER_W5_CHARS = 12_346;
+ * vault rule, which says what a save is and what a receipt is not. LAT-1023 raises it for the source name
+ * the backchannel ack carries, so the first line before a lookup says what she is reading. */
+const WRAPPER_W5_CHARS = 12_502;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -970,7 +971,7 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
 });
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
-  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends\. Never fill the silence while a lookup runs\./);
+  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends\. When that first line announces a lookup, name the sources you are reading in a few words, such as checking your mail or looking in your vault and calendar\. Never fill the silence while a lookup runs\./);
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the earlier thread only if it still matters; otherwise let it go\./);
 });
 
@@ -1140,7 +1141,8 @@ const W5_REPLACED = [
   'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
 ];
 /** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
-const W5_VOICE_BEFORE = 8780;
+// LAT-1023: the voice surface grows by the source name the first ack carries.
+const W5_VOICE_BEFORE = 8936;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1197,4 +1199,15 @@ test('OPEN2-7: the open paragraph says she opens only a handle she was shown and
   assert.match(NAYA_OPEN_SURFACE, /instead of claiming success/);
   assert.equal(NAYA_OPEN_SURFACE.length <= 844, true, 'the paragraph stays inside the frozen voice budget');
   assert.equal(/https?:|\/\/|\.com|\.google|\.ai/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
+});
+
+test('LAT-1023: the first ack before a lookup names the sources it is reading', () => {
+  // The ack rule already lives in the backchannel policy, so the source name rides the same sentence and
+  // no new speech path, timer or host cue is added.
+  assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/u);
+  assert.match(NAYA_VOICE_SURFACE, /When that first line announces a lookup, name the sources you are reading in a few words/u);
+  assert.match(NAYA_VOICE_SURFACE, /checking your mail/u);
+  assert.match(NAYA_VOICE_SURFACE, /looking in your vault and calendar/u);
+  assert.equal(NAYA_LIVE_BASE.split('name the sources you are reading in a few words').length - 1, 1, 'the rule reaches the live persona once');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });

@@ -46,6 +46,9 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'stop_insufficient', source: null },
 ]);
 
+/** LAT-1023: the round cap, shared by every run kind so a continuation never buys a third round. */
+const ROUND_CAP_ROUNDS = 2;
+
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
   tool: RESEARCH_TOOL_NAME,
@@ -53,8 +56,13 @@ export const RESEARCH = Object.freeze({
   coalesceWindowMs: 60_000,
   startDeadlineMs: 15_000,
   continueDeadlineMs: 30_000,
-  startRounds: 2,
-  continueRounds: 3,
+  /**
+   * LAT-1023: one run reads in at most two tool-bearing rounds, the parallel first round plus one
+   * continuation round, and then composes its answer from what it holds. A third round is what made an
+   * owner's ask wait 26 s for his own mail while the context grew to 44k tokens.
+   */
+  startRounds: ROUND_CAP_ROUNDS,
+  continueRounds: ROUND_CAP_ROUNDS,
   maxOps: 8,
   maxConcurrent: 4,
   /**
@@ -105,8 +113,18 @@ export const RESEARCH = Object.freeze({
   p50Seconds: Object.freeze({ knowledge: 2.9, chat: 3.6, calendar: 4.7, gmail: 10.0 } as Record<'knowledge' | 'chat' | 'calendar' | 'gmail', number>),
   /** Selector cost multiplier by elapsed seconds: cheap early, expensive late. */
   lambda: Object.freeze([{ upToMs: 4_000, value: 0 }, { upToMs: 8_000, value: 0.5 }, { upToMs: Number.POSITIVE_INFINITY, value: 1.5 }]),
-  /** Q1-R0: more data beats token thrift; 6,000 chars of telegraphic lines, never prose. */
-  replyLimitChars: 6_000,
+  /**
+   * LAT-1023: the whole answer a Live model receives, envelope included, is at most this many chars.
+   * Q1-R0 spent 6,000 chars of telegraphic lines on every reply and a call grew from 15k to 44k tokens in
+   * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
+   */
+  replyLimitChars: 2_500,
+  /**
+   * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
+   * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
+   * this release exists to cut, so a body page is sized by this and the answer text never is.
+   */
+  bodyLimitChars: 6_000,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
   mailLines: 8, chatLines: 8, knowledgeLines: 40,
@@ -148,6 +166,11 @@ export const RESEARCH = Object.freeze({
   /** ROUTE-1022 (#526): what a reply tells the model in plain words, so it never re-asks, and a cut run names its readers. */
   completeNote: 'Nothing more to fetch for this question.',
   stillReadingNote: 'Still reading: ',
+  /**
+   * LAT-1023: one short clause, so an answer that ran out of rounds or of room never reads as a whole
+   * record and never lets the model claim a record does not exist.
+   */
+  moreAvailableNote: 'There is more available if you want it.',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -1143,8 +1166,11 @@ interface BodyCursor { key: string; offset: number; end: number; nextCursor?: st
 const bodyDelivery = Symbol('bodyDelivery');
 interface BodyDelivery { researchId: string; runId: number; cursor: string }
 type BodyReply = JsonObject & { [bodyDelivery]?: BodyDelivery };
+type CompactionReply = JsonObject & { [compactionDelivery]?: { items: number } };
 interface MailCursor { signature: string; scope: string; sourceState?: string; delivered: boolean; ids: string[]; nextCursor?: string; partial?: boolean }
 const mailDelivery = Symbol('mailDelivery');
+/** LAT-1023: whole items this reply dropped to fit the Live budget, carried on the reply and never serialized. */
+const compactionDelivery = Symbol('compactionDelivery');
 interface MailDelivery { researchId: string; runId: number; keys: string[]; cursor?: string; nextCursor?: string }
 type MailReply = JsonObject & { [mailDelivery]?: MailDelivery };
 const calendarDelivery = Symbol('calendarDelivery');
@@ -1381,6 +1407,10 @@ export interface ResearchRunLog {
   elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
   driver?: ResearchDriver;
   unchecked?: SourceKind[]; canContinue?: boolean; findingChars?: number[];
+  /** LAT-1023: the round cap ended the run at this many rounds with evidence left unread. */
+  roundCapHit?: number;
+  /** LAT-1023: the answer was compacted to its character budget, whole items dropped and the bytes sent. */
+  answerCompacted?: { items: number; chars: number };
   /** ROUTE-1022 K5: the plan a brief actually ran, closed token only. */
   plan?: 'knowledge_only' | 'named_sources';
   bodyReplies?: number; metaStartAsContinue?: boolean; supersededAborts?: number;
@@ -2288,8 +2318,18 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
 
 const calendarDayLines = (days: readonly { day: string; entries: string[] }[]): string[] => days.map(entry => `- ${entry.day}: ${entry.entries.join('; ')}`);
 
-function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false): JsonObject {
-  const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, limit);
+/** LAT-1023: the two counted ways an answer comes back short, shared by every run receipt. */
+function receiptCounts(reply: JsonObject | undefined, run: RunState, configured: readonly SourceKind[]): { roundCapHit?: number; answerCompacted?: { items: number; chars: number } } {
+  const leftUnread = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+  const compacted = (reply as CompactionReply | undefined)?.[compactionDelivery];
+  return {
+    ...(run.rounds >= ROUND_CAP_ROUNDS && (leftUnread.length > 0 || run.pending.size > 0) ? { roundCapHit: run.rounds } : {}),
+    ...(compacted === undefined ? {} : { answerCompacted: { items: compacted.items, chars: JSON.stringify(reply ?? {}).length } }),
+  };
+}
+
+function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
+  const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
   const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[] }[] = [];
   for (const entry of run.ledger.values()) {
@@ -2400,20 +2440,26 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // hears "nothing more" while a read it asked for is still in flight.
     const stillReading = configured.filter(source => run.pending.has(source));
     const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
+    // LAT-1023: evidence left unread is named in one short clause, so a capped answer is never read as the
+    // whole record. A source this run never reached and a page it dropped both count as unread.
+    const moreAvailable = trimmed || configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
     const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`)
-      : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}` : note;
+      : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
+        : moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
-  // Trim the longest source first, never below one line while any source still has more than one.
+  // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
+  // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3).
   let guard = 4096;
   while (guard-- > 0 && JSON.stringify(render().reply).length > limit) {
-    const removable = groups.filter(group => group.days !== undefined ? shownOf(group) > 1 : group.lines.length > (groups.length > 1 ? 1 : 0));
+    const removable = groups.filter(group => shownOf(group) > 0);
     if (removable.length === 0) break;
     removable.sort((a, b) => b.lines.length - a.lines.length);
     const trimmed = removable[0]!;
     if (trimCalendarEvent(trimmed)) continue;
     trimmed.lines.pop(); dropped += 1;
   }
+  const compactItems = dropped + droppedEvents;
   // A trimmed answer always says it was trimmed and how much it left out.
   const omission = droppedEvents === 0 ? undefined : `I left out ${droppedEvents} calendar ${droppedEvents === 1 ? 'event' : 'events'} to keep this answer short.`;
   if (omission !== undefined) note = note === undefined ? omission : `${note} ${omission}`;
@@ -2432,6 +2478,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     }
     result[mailDelivery] = { researchId: run.researchId, runId: run.runId, keys: mailRemaining.slice(0, shown).map(([key]) => key), ...(run.mailCursorRequested ? { cursor: run.mailCursorRequested } : {}), ...(nextCursor ? { nextCursor } : {}) };
   }
+  if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
   return result;
 }
@@ -3190,7 +3237,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     throw error;
   } finally {
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), ...receiptCounts(reply, run, configured), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 
@@ -3977,9 +4024,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     answerTimer.cancel();
     if (runFailed) elapsedMs = Math.max(0, now() - started);
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
+    const replyBytes = JSON.stringify(reply ?? {}).length;
+    // LAT-1023: the cap and the trim are the two ways an answer comes back short, each counted by the helper.
     // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
     // because the host log refuses a line whose driver is not one of the four.
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes, ...receiptCounts(reply, run, configured), ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 

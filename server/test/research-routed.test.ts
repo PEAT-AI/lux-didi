@@ -669,7 +669,8 @@ test('DATES-R1: a read that kept its day filter reports past_window beside one t
     now: () => now,
     execute: async subs => subs.map(call => {
       const filtered = 'meeting_date_from' in call.args;
-      const hiring = String(call.args['query'] ?? '').includes('hiring');
+      // The question's own terms ride after the lookup's, so the lookup word decides here.
+      const hiring = String(call.args['query'] ?? '').startsWith('hiring');
       const text = filtered && !hiring ? '' : '### budget review [id 41]\nthe budget review is agreed';
       return sub(call.name, text, true, call.key);
     }),

@@ -29,7 +29,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number; hits?: { snippet: string; role?: string; date?: string }[] } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -58,7 +58,7 @@ function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; 
     return calls.map(call => {
       const found = opts.memory?.(String(call.args['query'] ?? ''));
       return { key: call.key, name: call.name, ok: !!found, text: '', originalCharacters: 0, omittedCharacters: 0,
-        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
+        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.hits ?? found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
     });
   };
   return { deps, progress, logs, subcalls, executed, joined };
@@ -212,6 +212,45 @@ test('N5: a trimmed reply that can continue still says more is available', async
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(reply['canContinue'], true);
   assert.match(String(reply['note'] ?? ''), /more available/);
+});
+
+// #575: a memory hit that is her own earlier voice confirms a past answer instead of finding new
+// evidence, so it is dropped unless the owner asks what she said.
+test('#575: memory drops her own earlier turns and keeps the owner turns', async () => {
+  const hits = [
+    { snippet: 'he said the release ships on Friday', role: 'user', date: '2026-10-23T09:00:00.000Z' },
+    { snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:05.000Z' },
+  ];
+  const h = harness({ configured: ['memory'], memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 2 }) });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did we say about the release', lookups: [{ source: 'memory', history: { query: 'release ships' } }],
+  }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.match(text, /he said the release ships on Friday/, 'the owner turn stays evidence');
+  assert.doesNotMatch(text, /I said the release ships on Friday/, 'her own earlier reply is not evidence');
+});
+
+test('#575: a question about what she said keeps her own turn', async () => {
+  const hits = [{ snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:05.000Z' }];
+  const h = harness({ configured: ['memory'], memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 1 }) });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did you say about the release', lookups: [{ source: 'memory', history: { query: 'release ships' } }],
+  }, new AbortController().signal);
+  assert.match(JSON.stringify(reply), /I said the release ships on Friday/, 'the owner asked what she said, so her turn answers it');
+});
+
+test('#575: a finding already given in the session becomes a one-line note', async () => {
+  const ledger = new ResearchLedger();
+  const h = harness({ ledger, executeText: '### Release scope (DECISION | 2026-10-17) [id 12] the release ships on Friday' });
+  const call = { action: 'start' as const, question: 'what is the release scope', lookups: [{ source: 'knowledge' as const, query: 'release scope' }] };
+  const first = await runResearch(h.deps, call, new AbortController().signal);
+  const second = await runResearch(h.deps, call, new AbortController().signal);
+  const firstText = (first['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
+  const secondText = (second['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
+  assert.match(firstText, /release ships on Friday/, 'the first reply carries the evidence');
+  assert.doesNotMatch(secondText, /release ships on Friday/, 'the same evidence is never repeated in the session');
+  assert.match(secondText, /already given/, 'it is replaced by a one-line note');
+  assert.ok(JSON.stringify(second).length < JSON.stringify(first).length, 'the repeat is shorter than the original');
 });
 
 test('mongoose is never offered while unconfigured', () => {

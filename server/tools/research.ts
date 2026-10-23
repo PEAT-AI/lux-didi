@@ -2365,7 +2365,7 @@ function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boole
  * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
  * page hits the findings already carry, then the last lines of the widest finding; no structure is cut.
  */
-function capReply(reply: JsonObject, limit: number): JsonObject {
+export function capReply(reply: JsonObject, limit: number): JsonObject {
   // A requested body read pages at its own 6,000 char room, so it is never held to the search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
   const size = (): number => JSON.stringify(reply).length;

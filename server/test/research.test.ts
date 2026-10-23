@@ -1649,14 +1649,17 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
     kind: 'remote-body' as const, source: scope, entitySha256: 'e'.repeat(64), bodySha256: 'b'.repeat(64),
     expiresAt: Date.now() + 600_000, tool: 'gmail_read_message', body, upstreamComplete: true as const, upstreamOmitted: false as const,
   };
-  const binding = { executionId: 'exec-body', name: 'gmail_read_message', contentIndex: 0, partIndex: 0, result: { id: 'body-1', sha256: 'c'.repeat(64) } };
+  // The body arrives on the run's own dispatch, exactly as a read the owner asked for does: the reply is
+  // the page, sized by the body bound rather than by the answer budget.
   const h = harness({
-    execute: async subs => subs.map(call => call.name === 'gmail_read_message'
-      ? { ...sub(call.name, '', true, call.key), binding, hostEvidence: evidence }
-      : sub(call.name, 'evidence', true, call.key)),
+    execute: async subs => subs.map(call => ({
+      ...sub(call.name, '', true, call.key),
+      binding: { executionId: 'exec-body', name: call.name, contentIndex: 0, partIndex: 0, result: { id: 'body-1', sha256: 'c'.repeat(64) } },
+      hostEvidence: evidence,
+    })),
   });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'read me the full mail from Ana about the invoice', lookups: [{ source: 'mail', query: 'from:ana' }],
+    action: 'start', question: 'what did the invoice mail from Ana say in full',
   }, new AbortController().signal);
   const slices = reply['bodySlices'] as { text: string; offset: number }[] | undefined;
   assert.ok(Array.isArray(slices) && slices.length === 1, 'the requested body comes back as one page');

@@ -214,9 +214,10 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     let webView: WKWebView
     /// #1021: the owner's mute outlives the session, so the mini page is told the fact directly
     /// instead of reading it off a live state that is already gone.
-    func applyMuted(_ muted: Bool) {
-        webView.evaluateJavaScript("window.didiPresence=Object.assign(window.didiPresence||{},{muted:\(muted)});"
-            + "window.didiPresenceChanged&&window.didiPresenceChanged()", completionHandler: nil)
+    /// ORB-1023: the same push carries the presence state, so the mini orb leaves the grey
+    /// connecting look the moment the machine says LIVE, whether or not Naya has spoken.
+    func pushPresence(_ state: PresenceState, muted: Bool) {
+        webView.evaluateJavaScript(PresencePush.js(state: state, muted: muted), completionHandler: nil)
     }
     var onVisibilityChanged: (() -> Void)?
     private let frameKey: String

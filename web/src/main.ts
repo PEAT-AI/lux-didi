@@ -5,7 +5,7 @@ import { ConnectedView } from './connected';
 import { Orb, orbSurfaceVisible, type VoiceState } from './orb';
 import { createStateDebounce } from './orb-states';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive, startMongooseSignIn } from './api';
-import { activityMarkup, connectingBeforeFirstSpeech, liveActivity, liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { activityMarkup, orbVoiceState, presencePhase, liveActivity, liveMarkup, liveSegments, liveLabel, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -99,9 +99,9 @@ function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
   // The machine owns the look while it is stopping, idle or error, so a Stop press changes it at once (3p).
-  // Q4: listening before Naya's first audible frame is the connect window, so the orb says
-  // Connecting there instead of Listening.
-  if((miniRoute||!machineOwnsOrb(liveMachine.view)) && live && live.state!=='idle')return connectingBeforeFirstSpeech(live)?'CONNECTING':liveVoiceState(live.state);
+  // Q4 + ORB-1023: listening before Naya's first audible frame is the connect window, but the
+  // presence machine's LIVE ends it: a silent call is a live call.
+  if((miniRoute||!machineOwnsOrb(liveMachine.view)) && live && live.state!=='idle')return orbVoiceState(live, presencePhase());
   if(liveMachine.view.state==='error')return 'ERROR';
   if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';
@@ -724,9 +724,14 @@ Object.assign(window,{
     window.dispatchEvent(new Event('didi-surface-visibility'));
   },
   /** #1021: the app pushes the owner's mute as a plain assignment; this asks for the repaint a
-   *  data attribute cannot do by itself, so the pill goes purple at the mute and back at the tap. */
+   *  data attribute cannot do by itself, so the pill goes purple at the mute and back at the tap.
+   *  ORB-1023: the same push carries the presence state, so the full-window orb and its caption
+   *  leave Connecting the moment the call is live, not when Naya first speaks. */
   didiPresenceChanged(){
+    const caption=document.querySelector('.orb-caption');
+    if(caption)caption.innerHTML=miniRoute?miniCaptionMarkup():orbCaptionMarkup();
     if(miniRoute||document.querySelector('.mini-stage')){paintMiniStage();refreshMiniVisuals();}
+    applyOrbState();
   },
   didiPrepareSurface(generation:number){
     if(!Number.isSafeInteger(generation)||generation<surfaceGeneration)return{generation,painted:false};

@@ -382,7 +382,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     if (request.openingText !== undefined) {
       characters += request.openingText.length;
       items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: request.openingText }] });
-    } else if (request.opening === 'model_first' && !history.length) {
+    } else if (request.opening === 'model_first') {
       characters += FRESH_OPENING.length;
       items.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
     }

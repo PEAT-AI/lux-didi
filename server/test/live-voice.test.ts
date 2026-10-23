@@ -33,7 +33,10 @@ test('explicit user-first opening preserves incomplete history and model-first o
     assert.equal('historyConfig' in (f.frames[0] as { setup: Record<string, unknown> }).setup, false,
       'normal client content never declares a non-generating initial-history phase');
     f.send({ setupComplete: {} }); await session.ready; await f.frame(2);
-    assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: 'Actual pending job result' }] }], turnComplete: opening === 'model_first' } });
+    assert.deepEqual(f.frames[1], { clientContent: { turns: [
+      { role: 'user', parts: [{ text: 'Actual pending job result' }] },
+      ...(opening === 'model_first' ? [{ role: 'user', parts: [{ text: FRESH_OPENING }] }] : []),
+    ], turnComplete: opening === 'model_first' } });
     assert.equal((await events.next()).value?.type, 'ready');
     if (opening === 'model_first') {
       // The provider fixture responds to the completed opening turn without any microphone frame.

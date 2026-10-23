@@ -5,11 +5,11 @@ import type { DataClass, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoi
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { geminiDialect } from '../../tools/declarations.js';
 import { effectiveLanguageCode } from '../../prompt/live-persona.js';
+import { FRESH_OPENING } from './openai.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
-const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
 // The model-first opening nudge is provider-neutral and accent-free: the accent lives in the system
 // instruction, the voice and the language in the setup frame, for every provider.
 // Upstream liveness limits for the send path (release 3g-c). The hard ceiling (half the send buffer held for

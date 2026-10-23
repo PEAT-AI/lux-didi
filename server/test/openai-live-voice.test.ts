@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
+import { AUDIBLE_RMS_DBFS, FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
@@ -365,6 +365,30 @@ describe('openai gpt-live adapter', () => {
     ]);
     const seeded = Array.from({ length: 200 }, (_, index) => ({ role: 'user' as const, text: `turn ${index}`, dataClass: 'ordinary' as const }));
     assert.throws(() => new OpenAiLiveVoiceAdapter(options()).open(request({ history: seeded }), control()), code('invalid_request'));
+  });
+
+  test('#1023: a new call with seeded history still seeds the fresh opening directive', async t => {
+    const f = await fixture(t);
+    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }];
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+      .open(request({ history, opening: 'model_first' }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    assert.deepEqual(start.session['input'], [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Plan the week' }] },
+      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] },
+    ], 'the seeded history is followed by the opening directive');
+  });
+
+  test('#1023: the opening directive asks for one short dry line, never a canned greeting', () => {
+    assert.match(FRESH_OPENING, /twelve words at most/);
+    assert.match(FRESH_OPENING, /^Start the call /, 'written as an instruction');
+    assert.match(FRESH_OPENING, /no greeting formula/);
+    assert.match(FRESH_OPENING, /no offer of help/);
+    assert.match(FRESH_OPENING, /no tool call before it/);
+    assert.match(FRESH_OPENING, /then stop and listen/);
+    assert.doesNotMatch(FRESH_OPENING, /\b(hello|hi|hey|good morning|good evening|how can i help|what can i do)\b/i);
   });
 
   test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {

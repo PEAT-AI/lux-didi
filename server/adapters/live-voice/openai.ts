@@ -69,7 +69,8 @@ const OPENAI_LISTENING_SECTION = 'Do not treat a cough, music, or nearby convers
 export function openAiInstructions(persona: string): string {
   return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
-const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
+/** Release 4: Naya opens every new call, seeded history or not, with one short dry and edgy line in her own voice. */
+export const FRESH_OPENING = 'Start the call with one short line of your own, twelve words at most, dry and a little edgy and specific to the moment or to one of the opening options; no greeting formula, no offer of help, no list of questions, no tool call before it; then stop and listen.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
 const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;

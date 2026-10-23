@@ -1,3 +1,4 @@
+import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -144,7 +145,7 @@ async function attached(h: Harness, key = 'k1') {
   h.f.send({ setupComplete: {} });
   await attachment.ready;
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }

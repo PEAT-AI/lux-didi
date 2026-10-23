@@ -403,20 +403,19 @@ struct NativeOrbTimeline {
     private var analyzer = NativeOrbAnalyzer(sampleRate: Double(NativePlaybackQueue.frameRate))
     private var windows: [NativeOrbBands] = []
     private var consumed = 0
-    private var startedAtMs: Int?
     var queuedWindows: Int { windows.count }
 
     mutating func append(_ pcm: Data) { windows.append(contentsOf: analyzer.analyze(pcm)) }
-    /// The player started: position zero is the first window appended since the last reset.
-    mutating func started(atMs: Int) { if startedAtMs == nil { startedAtMs = atMs } }
     /// The queue ran dry, was flushed or the audio was released: the next burst starts at zero.
     mutating func reset() {
-        analyzer.reset(); windows.removeAll(keepingCapacity: true); consumed = 0; startedAtMs = nil
+        analyzer.reset(); windows.removeAll(keepingCapacity: true); consumed = 0
     }
-    /// The window playing at `atMs`; silent before the player starts and past the scheduled audio.
-    mutating func sample(atMs: Int) -> NativeOrbBands {
-        guard let start = startedAtMs, atMs >= start else { return .silent }
-        let index = (atMs - start) / NativeOrbAnalyzer.windowMs - consumed
+    /// Positive presentation offsets look ahead from the rendered sample; no clock means silence.
+    mutating func sample(renderedSample: Int64?, sampleRate: Double = Double(NativePlaybackQueue.frameRate), presentationOffsetMs: Double = 0) -> NativeOrbBands {
+        guard let renderedSample, renderedSample >= 0, sampleRate.isFinite, sampleRate > 0, presentationOffsetMs.isFinite else { return .silent }
+        let positionMs = Double(renderedSample) * 1000 / sampleRate + presentationOffsetMs
+        guard positionMs >= 0, positionMs < Double(Int.max) else { return .silent }
+        let index = Int(positionMs) / NativeOrbAnalyzer.windowMs - consumed
         guard index >= 0, index < windows.count else { return .silent }
         if index > 256 {
             // Drop played windows in blocks, so reads stay O(1) and memory follows the queue.
@@ -1255,7 +1254,9 @@ struct NativeLiveInterruptionSample: Sendable {
     func orbBands() -> (input: NativeOrbBands, output: NativeOrbBands) {
         let now = nowMs()
         let input = !muted && now - inputBandsAtMs <= 200 ? inputBands : .silent
-        return (input, outputOrb.sample(atMs: now))
+        let renderTime = player?.lastRenderTime
+        let clock = renderTime.flatMap { player?.playerTime(forNodeTime: $0) }
+        return (input, outputOrb.sample(renderedSample: clock?.sampleTime, sampleRate: clock?.sampleRate ?? Double(NativePlaybackQueue.frameRate)))
     }
     /// E1: append one already-computed meter level to a small bounded ring. Stores the number only.
     private func recordLevel(_ value: Float) {
@@ -1437,7 +1438,7 @@ struct NativeLiveInterruptionSample: Sendable {
         if newSegment { emitReceipt(.enqueued, segment: playbackSegment) }
         if arrival.start {
             if let driver = playbackDriverForTesting { driver.play() } else { player?.play() }
-            emitReceipt(.started, segment: playbackSegment); outputOrb.started(atMs: nowMs())
+            emitReceipt(.started, segment: playbackSegment)
         }
         publishPlaybackState()
     }

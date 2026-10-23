@@ -392,6 +392,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * MAILQ 6 (#572): a caller that names a window in days gets exactly that window, so "anything new"
    * never reaches back into an archive ranked by relevance alone.
    */
+  function declaredArguments(tool: string): string[] {
+    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === tool);
+    const schema = definition?.inputSchema;
+    return isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
+  }
+
   function searchWindow(after: unknown, before: unknown, days?: unknown): Record<string, string> | undefined {
     const lower = after !== undefined ? boundedText(after)
       : days === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString()
@@ -408,10 +414,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       window['before'] = upper;
       window['to_date'] = day(upper);
     }
-    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_search');
-    const schema = definition?.inputSchema;
-    const declared = isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
-    for (const key of Object.keys(window)) if (!declared.includes(key)) delete window[key];
+    for (const key of Object.keys(window)) if (!declaredArguments('mattermost_search').includes(key)) delete window[key];
     return window;
   }
 
@@ -532,7 +535,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
       const sort = input.sort;
       if (sort !== undefined && sort !== 'newest' && sort !== 'relevance') return { state: 'refused', reason: 'invalid-sort' };
-      return dispatch('mattermost_search', { query, ...bounded, ...window, ...(sort === undefined ? {} : { sort }) }, signal);
+      // MAILQ 10: the sort travels only when the child declares it, like every other forwarded argument.
+      const declared = declaredArguments('mattermost_search');
+      return dispatch('mattermost_search', { query, ...bounded, ...window, ...(sort === undefined || !declared.includes('sort') ? {} : { sort }) }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

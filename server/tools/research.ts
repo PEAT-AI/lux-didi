@@ -163,6 +163,8 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 3_000,
+  /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
+  clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
   knowledgeOpenIds: 0,
   /** ROUTE-1022 (#526): what a reply tells the model in plain words, so it never re-asks, and a cut run names its readers. */

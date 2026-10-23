@@ -512,9 +512,10 @@ const WEEKDAY_NAMES = 'sunday|monday|tuesday|wednesday|thursday|friday|saturday'
  */
 function planText(question: string, run: { direction?: string | undefined; question?: string | undefined }): string {
   if (question.trim() !== '') return question;
-  const direction = run.direction ?? '';
-  if (direction.trim() !== '' && contentKeywords(direction).length > 0) return direction;
-  return run.question ?? direction;
+  const direction = (run.direction ?? '').trim();
+  const words = direction.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
+  const metaOnly = words.length > 0 && words.every(word => META_WORDS.has(word.replace(/\.+$/u, '')));
+  return metaOnly || direction === '' ? run.question ?? direction : direction;
 }
 
 /** The owner's calendar year at an instant, in the zone the window is resolved for. */

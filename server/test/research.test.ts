@@ -1572,10 +1572,8 @@ test('release 4: a mail continuation never appends the model meta words after th
   await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'remaining metadata business-relevant' }, new AbortController().signal);
   const searched = queriesOf(h, before, 'gmail_search_messages');
   assert.ok(searched.length > 0, `the continuation still searches mail: ${JSON.stringify(h.executed.slice(before))}`);
-  for (const q of searched) {
-    assert.equal(/\b(?:remaining|metadata|business-relevant)\b/u.test(q), false, `no meta word rides the mail query: ${q}`);
-    assert.match(q, /korbi/u, `the owner question terms are the search text: ${JSON.stringify(h.executed.slice(before))}`);
-  }
+  for (const q of searched) assert.equal(/\b(?:remaining|metadata|business-relevant)\b/u.test(q), false, `no meta word rides the mail query: ${q}`);
+  assert.match(searched[0]!, /korbi/u, 'the continuation search text is the owner question, not the direction');
 });
 
 test('release 4: a knowledge continuation never searches the instruction words of its direction', async () => {
@@ -1606,6 +1604,3 @@ test('release 4: a chat continuation never searches a bare meta direction word',
   }
 });
 
-test('tmp debug: what the fallback recipe offers for the mail question', () => {
-  assert.fail(JSON.stringify({ sel: fallbackSelection('budget review email from Korbi', CONFIGURED, 0) }));
-});

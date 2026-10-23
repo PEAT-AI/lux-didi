@@ -198,6 +198,11 @@ test('the tools conduct names conditional capabilities and preserves source iden
   assert.match(NAYA_BACKEND_PROCEDURE, /put independent source lookups in one research plan so the host can run them concurrently/);
   assert.match(NAYA_VOICE_TOOLS, /Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages/);
   assert.match(NAYA_VOICE_TOOLS, /Do not promise an unsolicited callback, future monitoring or work after this session/);
+  // Release 4: the vault is lux, memory is remember_note, and only a true receipt is a save.
+  assert.match(NAYA_VOICE_TOOLS, /The vault and memory are different places\. The vault is lux/);
+  assert.match(NAYA_VOICE_TOOLS, /he says the save phrase first, "save to my vault" and then the note/);
+  assert.match(NAYA_VOICE_TOOLS, /Say the note is saved only on saved:true/);
+  assert.match(NAYA_VOICE_TOOLS, /On outcome_unknown say you are not sure it landed and that he can check the vault, and never claim it was saved/);
   assert.doesNotMatch(NAYA_TOOLS, /three to five word|never announce progress|One moment|or call it at once/i);
   assert.doesNotMatch(NAYA_TOOLS, /[\u2013\u2014]/);
 });

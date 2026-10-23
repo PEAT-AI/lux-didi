@@ -2,6 +2,7 @@
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
 import { decodeEntities, escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { stepPhrase, toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
+import { vaultCardMarkup, vaultCardState } from './vault-card.ts';
 import type { VoiceState } from './orb.ts';
 import { levelPeak, playbackPeak } from './orb-level.ts';
 import type { LiveCurrent, LiveEntry, LiveJob, LiveSource, LiveState, LiveTool } from './protocol.ts';
@@ -352,8 +353,9 @@ export function activityRowMarkup(live: LiveCurrent | undefined, elapsedMs = 0):
   const activity = liveActivity(live);
   const steps = stepListMarkup(live);
   const line = activity && (activity.kind === 'tools' || activity.kind === 'thinking') ? activityMarkup(activity, elapsedMs) : '';
-  if (!line && !steps) return '';
-  return `<div class="feed-activity" data-seg="activity">${line}${steps}</div>`;
+  const vault = vaultCardMarkup(vaultCardState(live));
+  if (!line && !steps && !vault) return '';
+  return `<div class="feed-activity" data-seg="activity">${line}${steps}${vault}</div>`;
 }
 
 /** The first sentence of an answer, the headline of the keeper turn row (spec 2.2 item 1). */

@@ -1269,14 +1269,14 @@ export class ResearchLedger {
   #activeId: string | undefined;
   #last: RunState | undefined;
   /** #575: what this session already told the model, so a repeat costs one line instead of a block. */
-  readonly delivered = new Set<string>();
+  readonly deliveredFindings = new Set<string>();
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
   begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
     const previousCallAt = this.#last?.startedAt;
     const run: RunState = {
-      ...(previousCallAt === undefined ? {} : { previousCallAt }), deliveredFindings: this.delivered,
+      ...(previousCallAt === undefined ? {} : { previousCallAt }), deliveredFindings: this.deliveredFindings,
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
       ...(input.question === undefined ? {} : { question: input.question }),
       ...(input.callKey === undefined ? {} : { callKey: input.callKey }),

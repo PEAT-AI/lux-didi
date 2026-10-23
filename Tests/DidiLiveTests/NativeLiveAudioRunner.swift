@@ -820,9 +820,7 @@ private func checkPrimaryChannelConversion() throws {
 
         device.setMuted(true)
         try audioRequire(!device.hasEngine && device.isCapturing,
-                         "mute stops the engine and the voice-processing unit, keeping the warm slot")
-        try audioRequire(!device.isVoiceProcessingEnabledForTesting,
-                         "mute drops the voice-processing unit with the engine")
+                         "mute stops the engine and drops the tap and voice-processing unit with it")
         try audioRequire(device.audioReleaseCount == releases + 1,
                          "mute tears the device down through the one release path")
         try audioRequire(!owner.isOwned && !owner.crossProcessHeld,
@@ -908,6 +906,38 @@ private func checkPrimaryChannelConversion() throws {
         taken.release(holder: ObjectIdentifier(taken))
         device.stop()
         print("PASS mute re-acquire refusal: another app's hold on the device surfaces audio_refused")
+    }
+
+    /// A mute that lands while the call is still connecting, before capture exists, must keep the
+    /// microphone closed: the engine opens on unmute, never on start.
+    @MainActor static func checkMuteBeforeCapture() async throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100,
+                                         channels: 2, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let lockURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mute-connecting-" + UUID().uuidString)
+        let owner = AudioOwner(lockFileURL: lockURL, journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                          defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                          owner: owner, journal: journal,
+                                          deviceState: { _ in false }, isBuiltInOutput: { true })
+        var starts = 0
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in starts += 1 }
+        let sends = NativeAudioSendProbe()
+        device.setMuted(true)
+        try await device.start { await sends.send($0) }
+        try audioRequire(!device.hasEngine && !owner.isOwned && starts == 0,
+                         "a mute before capture exists keeps the engine and the microphone closed")
+        try audioRequire(journal.events.contains { $0.name == "audio_muted_start_skipped" },
+                         "the start held back by the mute leaves one record")
+        device.setMuted(false)
+        try audioRequire(starts == 1 && device.hasEngine && owner.isOwned,
+                         "unmute opens the one engine the mute held back")
+        device.stop()
+        print("PASS mute before capture: a connecting mute keeps the microphone closed until unmute")
     }
 
     @MainActor static func deviceInputIsFree(lockURL: URL, _ message: String) {
@@ -1117,6 +1147,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkBusyDeviceSkipsVoiceProcessing()
             try await checkMuteReleasesMicrophone()
             try await checkMuteReacquireRefusal()
+            try await checkMuteBeforeCapture()
             try await VoiceProcessingSnapshotTests.run()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat

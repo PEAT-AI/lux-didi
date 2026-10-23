@@ -1100,7 +1100,7 @@ struct RootView: View {
         if !surface.visible, coordinator.mode != .full { coordinator.hideAll() }
         else { coordinator.requestPresence() }
         miniPanel?.alphaValue = 1
-        miniPanel?.applyMuted(presence.mutedHeld)
+        miniPanel?.pushPresence(presence.state, muted: presence.mutedHeld)
         pushPresenceState()
     }
     @objc func toggleAlwaysShowNaya() {
@@ -1200,7 +1200,7 @@ struct RootView: View {
                     if miniPanel == nil {
                         miniPanel = MiniOrbPanel(web: mini.webView, onStep: { [weak self] step in self?.applyPresenceStep(step) },
                             onExpand: { [weak self] in self?.miniOrb.openFullInterface() })
-                        miniPanel?.applyMuted(presence.mutedHeld)
+                        miniPanel?.pushPresence(presence.state, muted: presence.mutedHeld)
                     }
                     miniPanel?.onVisibilityChanged = { [weak self] in self?.syncPresentedSurface() }
                     miniPanel?.contentView?.layoutSubtreeIfNeeded()

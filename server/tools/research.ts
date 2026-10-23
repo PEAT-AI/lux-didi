@@ -506,14 +506,15 @@ const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'ju
 const WEEKDAY_NAMES = 'sunday|monday|tuesday|wednesday|thursday|friday|saturday';
 
 /**
- * Release 4: what a hop plans from. The owner's question stands as it was asked; a continuation plans from
- * the model's direction words filtered like any other search text, and a direction that is nothing but
- * instruction words falls back to the question the run was opened with.
+ * Release 4: what a hop plans from. The owner's question stands as it was asked, and a continuation still
+ * plans from its direction; a direction that is nothing but instruction words has no search in it, so the
+ * question the run was opened with is the text instead of an empty or meta query.
  */
 function planText(question: string, run: { direction?: string | undefined; question?: string | undefined }): string {
   if (question.trim() !== '') return question;
-  const directed = contentKeywords(run.direction ?? '').join(' ');
-  return directed !== '' ? directed : run.question ?? '';
+  const direction = run.direction ?? '';
+  if (direction.trim() !== '' && contentKeywords(direction).length > 0) return direction;
+  return run.question ?? direction;
 }
 
 /** The owner's calendar year at an instant, in the zone the window is resolved for. */

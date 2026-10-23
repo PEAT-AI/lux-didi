@@ -315,7 +315,9 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
   assert.deepEqual(sent, ['first', 'p2', 'p2'], 'the failed page is retried once after a wait, and page 1 is never refetched');
   assert.equal(waits, 1, 'exactly one delayed retry');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
-  assert.equal(receipt.outcome, 'failed', 'a read that stopped mid-way is not ok, even though it carried its first page');
+  assert.equal(receipt.outcome, 'ok', 'a read that delivered its pages keeps them, even when a later page stopped');
+  assert.equal(receipt.partial, 'pages_failed', 'and the source result says partial with the page it lost');
+  assert.equal(receipt.failedPages, 1, 'the count of pages it lost');
   assert.match(String(reply['note']), /Still reading: mail|mail search stopped/u, 'the answer never claims the mailbox was read to the end');
 });
 

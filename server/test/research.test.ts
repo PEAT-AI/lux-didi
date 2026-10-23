@@ -1567,7 +1567,7 @@ function queriesOf(h: Harness, from: number, tool: string): string[] {
 test('release 4: a mail continuation never appends the model meta words after the inbox window', async () => {
   const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'budget review email from Korbi' }, new AbortController().signal);
+  const first = await scheduler.call({ action: 'start', question: 'budget review email from Korbi', lookups: [{ source: 'knowledge', query: 'budget review korbi' }] }, new AbortController().signal);
   const before = h.executed.length;
   await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'remaining metadata business-relevant' }, new AbortController().signal);
   const searched = queriesOf(h, before, 'gmail_search_messages');
@@ -1579,9 +1579,9 @@ test('release 4: a mail continuation never appends the model meta words after th
 });
 
 test('release 4: a knowledge continuation never searches the instruction words of its direction', async () => {
-  const h = harness({ configured: ['knowledge'] });
+  const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'what notes do we have on the hawthorn release' }, new AbortController().signal);
+  const first = await scheduler.call({ action: 'start', question: 'what notes do we have on the hawthorn release', lookups: [{ source: 'chat', query: 'hawthorn release' }] }, new AbortController().signal);
   const before = h.executed.length;
   await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'through retained earlier action-needed' }, new AbortController().signal);
   const searched = queriesOf(h, before, 'search_knowledge');
@@ -1593,9 +1593,9 @@ test('release 4: a knowledge continuation never searches the instruction words o
 });
 
 test('release 4: a chat continuation never searches a bare meta direction word', async () => {
-  const h = harness({ configured: ['chat'] });
+  const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'what did the team say in chat about the hawthorn release' }, new AbortController().signal);
+  const first = await scheduler.call({ action: 'start', question: 'what did the team say in chat about the hawthorn release', lookups: [{ source: 'knowledge', query: 'hawthorn release' }] }, new AbortController().signal);
   const before = h.executed.length;
   await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'other' }, new AbortController().signal);
   const searched = queriesOf(h, before, 'mattermost_search');

@@ -54,12 +54,14 @@ test('fallbackSelection never passes the spoken sentence as a query, on five syn
   }
 });
 
-test('the fallback mail query carries operators and keywords, chat carries after:, knowledge only keywords', () => {
+test('the fallback mail query carries operators and keywords, chat carries after: only for a named day, knowledge only keywords', () => {
   const mail = fallbackSelection('Can you check my email for the release status please', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   const mailQuery = mail.actions.find(action => action.kind === 'mail_search')?.query ?? '';
   assert.match(mailQuery, /^in:inbox newer_than:14d /);
   assert.match(mailQuery, /release/);
-  assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, 'after:yesterday');
+  // ONE-1023: the fallback never invents a day the question did not name.
+  assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, '', 'no invented day operator');
+  assert.match(String(fallbackSelection('what did the team say yesterday in Mattermost', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query), /^after:yesterday\b/u, 'a named day keeps the operator');
   const knowledge = fallbackSelection('Search my notes for Lux Didi decisions', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   const knowledgeFallback = knowledge.actions.find(action => action.kind === 'knowledge_search')?.query ?? '';
   assert.equal(/[?:"]|in:|after:|newer_than/.test(knowledgeFallback), false);
@@ -349,13 +351,17 @@ test('MED-1022: a named meeting and a date word become the connector meeting bou
   assert.equal(lastWeek[0]?.args['meeting_date_to'], '2026-10-18', 'and its Sunday');
 });
 
-test('MED-1022: a chat date word compiles to the ISO operator the connector parses', () => {
+test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owner named', () => {
   const now = Date.parse('2026-10-22T06:00:00Z');
-  const config = { question: 'what did the team say', configured: CONFIGURED, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
-  const chat = (query?: string): unknown => candidateSubs('chat_search', { ...config, ...(query === undefined ? {} : { query }) })[0]?.args['query'];
+  const config = { question: 'what did the team say yesterday', configured: CONFIGURED, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
+  const chat = (query?: string, question?: string): unknown => candidateSubs('chat_search', { ...config, ...(question === undefined ? {} : { question }), ...(query === undefined ? {} : { query }) })[0]?.args['query'];
   assert.equal(chat(), 'After:2026-10-21', 'the default names a real day, never a word the parser ignores');
   assert.equal(chat('budget after:yesterday'), 'budget After:2026-10-21');
   assert.equal(chat('budget after:someday'), 'budget', 'an operator no calendar can resolve is dropped');
+  // ONE-1023: a question that names no day carries no invented operator, and the direction words are filler.
+  assert.equal(chat('read full post body current available budget review', 'what did we decide about the budget'), 'budget review', 'instruction words never ride a chat search');
+  assert.equal(chat(undefined, 'what did the team say'), '', 'a question that names no day sends no operator');
+  assert.equal(chat('budget after:yesterday', 'what is the budget'), 'budget', 'a day the question never named is dropped');
   const brief = candidateSubs('brief', config);
   assert.equal(brief.find(call => call.name === 'mattermost_search')?.args['query'], 'After:2026-10-21');
 });

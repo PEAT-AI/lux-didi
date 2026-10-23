@@ -45,6 +45,8 @@ const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 's
 const ROUTED_OUTCOMES = ['ok', 'empty', 'unavailable', 'failed', 'timeout'];
 /** MED-1022: what became of a chat date word, as a closed set, never the operator or the day. */
 const KNOWLEDGE_CHAT_DATE_OPERATORS = ['compiled', 'dropped', 'none'];
+/** ONE-1023: the day filter decision, a closed set, never the day it named. */
+const KNOWLEDGE_DAY_FILTERS = ['none', 'past_window', 'dropped_on_empty'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model', 'history_provenance_unavailable', 'summary_route_class_denied'];
@@ -822,19 +824,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
     if (!isSafeCount(value.ms) || !isSafeCount(value.deadlineMs) || !isSafeCount(value.coalesced)) return;
     // MED-1022: the receipt also names the query's term count, whether the day filter was applied and what
-    // became of the chat date operator. Counts and closed tokens only, so no query text can ride.
-    let knowledge: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dateFilter: boolean; chatDateOperator: string } | undefined;
+    // became of the chat date operator. ONE-1023: the day filter is a closed token and deduped is a count.
+    let knowledge: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: string; chatDateOperator: string; deduped: number } | undefined;
     if (hasKnowledge) {
       const row = value.knowledge as Record<string, unknown> | null | undefined;
       if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
-      const fields = ['detail', 'maxChars', 'deadlineMs', 'truncated', 'queryTerms', 'dateFilter', 'chatDateOperator'];
+      const fields = ['detail', 'maxChars', 'deadlineMs', 'truncated', 'queryTerms', 'dayFilter', 'chatDateOperator', 'deduped'];
       if (Object.keys(row).sort().join(',') !== fields.sort().join(',')) return;
       if (!isSafeToken(row['detail']) || !isSafeCount(row['maxChars']) || !isSafeCount(row['deadlineMs']) || typeof row['truncated'] !== 'boolean') return;
-      if (!isSafeCount(row['queryTerms']) || typeof row['dateFilter'] !== 'boolean') return;
+      if (!isSafeCount(row['queryTerms']) || !isSafeCount(row['deduped'])) return;
+      if (typeof row['dayFilter'] !== 'string' || !KNOWLEDGE_DAY_FILTERS.includes(row['dayFilter'])) return;
       if (typeof row['chatDateOperator'] !== 'string' || !KNOWLEDGE_CHAT_DATE_OPERATORS.includes(row['chatDateOperator'])) return;
       knowledge = {
         detail: row['detail'], maxChars: row['maxChars'], deadlineMs: row['deadlineMs'], truncated: row['truncated'],
-        queryTerms: row['queryTerms'], dateFilter: row['dateFilter'], chatDateOperator: row['chatDateOperator'],
+        queryTerms: row['queryTerms'], dayFilter: row['dayFilter'], chatDateOperator: row['chatDateOperator'], deduped: row['deduped'],
       };
     }
     let mail: { terms: number; operators: string[]; window?: string; retried?: { terms: number; operators: string[]; window?: string } } | undefined;

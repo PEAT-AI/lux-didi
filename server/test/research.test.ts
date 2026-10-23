@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, namedInsightIds, offerableCandidates, shapeBlock,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -946,7 +946,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   // ROUTE-1022 K5: a brief on a question that names no source reads his knowledge only, so this run
   // compiles no chat date operator; the old brief chat window is gone and the receipt says so.
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' }, 'an uncut read names no chat operator it never compiled');
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 }, 'an uncut read names no chat operator it never compiled and no day filter it never sent');
 
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.
@@ -965,7 +965,7 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   assert.equal(args['max_chars'], 3_000);
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dateFilter: false, chatDateOperator: 'none' });
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 });
 });
 
 // MED-1022: the chat date operator token must still be seen as 'compiled' on a run that really compiles
@@ -1535,4 +1535,22 @@ test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one 
   assert.equal(partial['status'], 'partial');
   assert.equal(partial['canContinue'], true);
   assert.match(String(partial['note']), /calendar/, 'a partial reply names exactly what is still reading');
+});
+
+// --- ONE-1023: a meeting day filter only where notes can exist ---------------------------------
+
+test('ONE-1023: next week is moved once, and a window that reaches today narrows nothing', () => {
+  const now = Date.parse('2026-10-23T04:30:00Z');
+  const zone = 'Asia/Kolkata';
+  // The bug: windowRange already moved next week by seven, and meetingBounds moved it again, so the
+  // filter read 2026-11-02 to 2026-11-08 for a question about 2026-10-26 to 2026-11-01.
+  assert.equal(windowRange('next week', now, zone).timeMin, '2026-10-25T18:30:00.000Z', 'windowRange moves next week itself, to Monday 2026-10-26 in Kolkata');
+  assert.equal(meetingBounds('meetings next week', undefined, now, zone), undefined, 'next week has no notes to filter by');
+  const yesterday = meetingBounds("notes from yesterday's meeting", undefined, now, zone);
+  assert.deepEqual(yesterday, { from: '2026-10-22', to: '2026-10-22' }, 'a past day still filters');
+  assert.deepEqual(meetingBounds("last week's meeting", undefined, now, zone), { from: '2026-10-12', to: '2026-10-18' }, 'last week is its own Monday to Sunday');
+  assert.deepEqual(meetingBounds('notes from the 2026-10-16 meeting', undefined, now, zone), { from: '2026-10-16', to: '2026-10-16' }, 'a past ISO day still filters');
+  assert.equal(meetingBounds('what meetings do I have today', undefined, now, zone), undefined, 'today has no notes yet');
+  assert.equal(meetingBounds("tomorrow's meeting", undefined, now, zone), undefined, 'neither does tomorrow');
+  assert.equal(meetingBounds('my meetings this week', undefined, now, zone), undefined, 'a week that reaches today asks the topic, not the day');
 });

@@ -643,3 +643,21 @@ test('F6: the same knowledge read twice inside the session window is dispatched 
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the second run reuses the answer instead of paying for it again');
   assert.match(JSON.stringify(second['findings']), /Release 3k scope/u, 'the reused read still reaches the reply');
 });
+
+// ONE-1023: four near-identical lookups in one call are one search, and two lookups of the same
+// window are one calendar read; the receipt counts what the shared dispatch served.
+test('ONE-1023: identical reads inside one run dispatch once and are counted', async () => {
+  const h = harness({ now: () => 0 });
+  const lookups = [
+    { source: 'calendar', query: 'what is on my calendar today' },
+    { source: 'calendar', query: "what's on today" },
+    { source: 'knowledge', query: 'read full post body budget review' },
+    { source: 'knowledge', query: 'budget review' },
+  ];
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what do we know about the budget review', lookups }, new AbortController().signal);
+  assert.equal(h.executed.filter(name => name === 'calendar_list_events').length, 1, 'one window, one calendar read');
+  assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the same normalized query, one search');
+  const knowledge = h.sources.filter(entry => entry.source === 'knowledge');
+  assert.equal(knowledge.at(-1)?.knowledge?.deduped, 1, 'the receipt counts the read the dispatch shared');
+  assert.match(JSON.stringify(reply), /Release 3k scope/u, 'the shared read reaches the reply');
+});

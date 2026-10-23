@@ -553,11 +553,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const resolved = openTarget(openTool.name, args, ownerWords(context.runId));
           const refused = 'target' in resolved ? undefined : resolved.code;
           const dispatched = 'target' in resolved ? resolved.target : undefined;
-          const code = dispatched === undefined ? refused! : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
-          // A guard refusal never reached the native side, so its receipt is the closed policy code.
-          const receiptCode: NativeActionCode = dispatched === undefined ? (refused === 'not_found' ? 'not_found' : 'not_allowed') : code;
-          if (dispatched) nativeActionReceipt(dispatched.action, receiptCode, dispatched.detail);
-          else nativeActionReceipt('open_url', receiptCode, openTool.name === 'open_home' ? 'home' : 'none');
+          // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
+          // model is told the reason the call was refused.
+          const code: NativeActionCode = dispatched === undefined ? (refused === 'not_found' ? 'not_found' : 'not_allowed') : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
+          else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           if (context.signal.aborted) return { status: 'failed' as const };
@@ -571,7 +571,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const opened = code === 'opened' && dispatched ? { code: 'opened' as const, kind: dispatched.kind, title: dispatched.title } : undefined;
-            return complete(call as ToolCallIntent, refused !== undefined ? { code, guidance: OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
+            return complete(call as ToolCallIntent, refused !== undefined ? { code: refused, guidance: OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },

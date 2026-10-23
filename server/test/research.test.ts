@@ -253,6 +253,29 @@ test('#575: a finding already given in the session becomes a one-line note', asy
   assert.ok(JSON.stringify(second).length < JSON.stringify(first).length, 'the repeat is shorter than the original');
 });
 
+// Review F1: capReply trimmed after the note was built, so a capped reply could say nothing was left while
+// it offered a continuation.
+test('#567: a reply capped after its note was built never says nothing is left', async () => {
+  const ledger = new ResearchLedger();
+  const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
+  const h = harness({
+    ledger, configured: ['memory', 'knowledge'],
+    executeText: '### Release scope [id 12] the release ships on Friday',
+    memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: hits.length }),
+  });
+  const call = {
+    action: 'start' as const, question: 'what is the release scope',
+    lookups: [{ source: 'memory' as const, history: { query: 'release' } }, { source: 'knowledge' as const, query: 'release scope' }],
+  };
+  await runResearch(h.deps, call, new AbortController().signal);
+  const second = await runResearch(h.deps, call, new AbortController().signal);
+  const text = JSON.stringify(second);
+  const note = String(second['note'] ?? '');
+  assert.ok(text.length <= RESEARCH.replyLimitChars, `reply was ${text.length} chars`);
+  if (second['canContinue'] === true) assert.doesNotMatch(note, /Nothing more to fetch/u, 'a reply that offers a continuation never says nothing is left');
+  if (/Nothing more to fetch/u.test(note)) assert.equal(second['canContinue'], false, 'a complete reply offers no continuation');
+});
+
 test('mongoose is never offered while unconfigured', () => {
   const offered = offerableCandidates(['knowledge', 'calendar', 'mail', 'chat'], []);
   assert.equal(offered.includes('brief'), true);

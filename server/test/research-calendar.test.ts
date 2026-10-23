@@ -546,11 +546,12 @@ test('#5: the window grammar reads every declared form out of the sentence and r
     ['what does next week look like', 'next week'],
     ['what is on my calendar this week', 'this week'],
     ['meetings on 2026-10-17', '2026-10-17'],
-    ['what is on my calendar', 'today'],
   ];
   for (const [question, window] of table) assert.equal(calendarWindowOf(question), window, question);
-  assert.equal(calendarWindowOf('anything about the release'), '', 'an unparseable window names none');
-  assert.equal(calendarWindowOf('the week after next', 'today'), 'today', 'the caller may still pass a fallback');
+  assert.equal(calendarWindowOf('anything about the release'), '', 'a sentence with no window word names none');
+  assert.equal(calendarWindowOf('what is on my calendar', 'today'), 'today', 'a caller may name today for a question that carries no window');
+  assert.equal(calendarWindowOf('Wednesday tomorrow'), '', 'two window words name no single window');
+  assert.equal(calendarWindowOf('the week after next', 'today'), '', 'a window the grammar cannot read is never today');
 });
 
 test('#5: a day read follows the sentence, and an unparseable window reads nothing', async () => {

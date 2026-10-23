@@ -275,17 +275,21 @@ export function normalizeLookups(value: unknown): ResearchLookup[] {
 /** The declared calendar window grammar; the resolver accepts these forms and refuses every other one. */
 const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})$/u;
 
-/** #5: the same grammar found anywhere in the owner's sentence, longest form first. */
-const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|week|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/u;
+/** #5: the same grammar found anywhere in the owner's sentence, longest form first, never a bare
+ *  `week` on its own, since "the week after next" names no window this grammar can read. */
+const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
 
 /**
- * #5: recognize only explicit supported calendar grammar, read out of the owner's own sentence; an
- * unparseable window returns the fallback (empty by default), never today, so a read never widens.
+ * #5: recognize only explicit supported calendar grammar, read out of the owner's own sentence. Two
+ * window words in one sentence name no single window, and a sentence with none returns the fallback,
+ * so a caller that needs today asks for it and a read never silently widens to today.
  */
 export function calendarWindowOf(query: string, fallback = ''): string {
   const value = query.trim().toLowerCase().replace(/[?.!]+$/, '').replace(/^(?:what is on|what's on|show me|what meetings do i have) /, '').replace(/^(?:my )?(?:meetings|events|calendar|schedule)(?: on| for)?(?: |$)/, '');
   if (CALENDAR_WINDOW.test(value)) return value;
-  return CALENDAR_WINDOW_IN_TEXT.exec(value)?.[0] ?? fallback;
+  const found = [...new Set([...value.matchAll(CALENDAR_WINDOW_IN_TEXT)].map(match => match[0]))];
+  if (found.length === 0) return fallback;
+  return found.length === 1 ? found[0]! : '';
 }
 
 /**
@@ -750,7 +754,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
   }
   if (kind === 'calendar_window') {
     // #5: an unparseable window names no window at all, rather than reading today's by default.
-    const window = calendarWindowOf(question);
+    const window = calendarWindowOf(question, 'today');
     return window === '' ? {} : { window };
   }
   return {};
@@ -1081,7 +1085,9 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     // Research keeps the declared primary-calendar scope. #5: the window is the owner's own, and a
     // window the grammar cannot parse dispatches nothing instead of silently reading today.
     let range: { timeMin: string; timeMax: string };
-    try { range = windowRange(config.window ?? calendarWindowOf(config.question), config.nowMs ?? Date.now(), config.timeZone); }
+    // A question that names no window reads today, the connector's own default; an ambiguous or
+    // unreadable one dispatches nothing.
+    try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone); }
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }

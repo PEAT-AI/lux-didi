@@ -59,8 +59,12 @@ test('the fallback mail query carries operators and keywords, chat carries after
   const mailQuery = mail.actions.find(action => action.kind === 'mail_search')?.query ?? '';
   assert.match(mailQuery, /^in:inbox newer_than:14d /);
   assert.match(mailQuery, /release/);
-  // ONE-1023: the fallback never invents a day the question did not name.
-  assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, '', 'no invented day operator');
+  // ONE-1023 and DATES-R1 F3: no invented day when content terms remain, and with none left the base
+  // recency window stays, because an empty chat query answers nothing.
+  const termful = String(fallbackSelection('What did the team say about the release in Mattermost', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query);
+  assert.equal(/after:|before:|on:/iu.test(termful), false, 'no invented day operator when a term survives');
+  assert.match(termful, /release/u, 'the content term still rides');
+  assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, 'after:yesterday', 'a termless fallback keeps the recency window');
   assert.match(String(fallbackSelection('what did the team say yesterday in Mattermost', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query), /^after:yesterday\b/u, 'a named day keeps the operator');
   const knowledge = fallbackSelection('Search my notes for Lux Didi decisions', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   const knowledgeFallback = knowledge.actions.find(action => action.kind === 'knowledge_search')?.query ?? '';
@@ -364,8 +368,10 @@ test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owne
   assert.equal(chat('read full post body current available budget review', 'what did we decide about the budget'), 'budget review', 'instruction words never ride a chat search');
   // DATES-R1 F1: `later` is in the contract's own direction word list, so it is filler too.
   assert.equal(chat('read full post body later budget review', 'what did we decide about the budget'), 'budget review', 'later is filler on the chat side as well');
-  assert.equal(chat(undefined, 'what did the team say'), '', 'a question that names no day sends no operator');
+  assert.equal(chat(undefined, 'what did the team say'), 'After:2026-10-21', 'a termless chat search keeps the recency window, never an empty query');
   assert.equal(chat('budget after:yesterday', 'what is the budget'), 'budget', 'a day the question never named is dropped');
+  // DATES-R1 F3: a termless chat search keeps the recency window instead of dispatching an empty query.
+  assert.equal(chat(undefined, "what's new in Mattermost"), 'After:2026-10-21', 'the termless fallback never sends an empty query');
   const brief = candidateSubs('brief', config);
   assert.equal(brief.find(call => call.name === 'mattermost_search')?.args['query'], 'After:2026-10-21');
 });

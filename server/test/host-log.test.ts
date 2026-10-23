@@ -366,3 +366,15 @@ test('release 4: the partial source receipt and the window reason reach host.log
   assert.ok(safeEvent({ ...run, sources: [row] }) !== undefined, 'the window reason reaches host.log');
   assert.equal(safeEvent({ ...run, sources: [{ ...row, reason: 'whatever' }] }), undefined, 'and the closed set still refuses anything else');
 });
+test('vault_write keeps its closed shape: a state token, an insight id on a save, latency, never text', () => {
+  const saved = { event: 'vault_write', state: 'confirmed', insightId: 'insight-7', latencyMs: 42 };
+  assert.deepEqual(safeEvent(saved), saved, 'the confirmed receipt passes the allowlist');
+  const failed = { event: 'vault_write', state: 'failed', latencyMs: 42 };
+  assert.deepEqual(safeEvent(failed), failed, 'a failed write carries no insight id');
+  const uncertain = { event: 'vault_write', state: 'uncertain', latencyMs: 9000 };
+  assert.deepEqual(safeEvent(uncertain), uncertain, 'an uncertain write is a state and a latency');
+  assert.equal(safeEvent({ ...saved, content: 'the boat survey is on Tuesday' }), undefined, 'a note never crosses the log boundary');
+  assert.equal(safeEvent({ ...saved, state: 'saved' }), undefined, 'only the closed state tokens are allowed');
+  assert.equal(safeEvent({ event: 'vault_write', state: 'confirmed', latencyMs: 42 }), undefined, 'a confirmed save without an id is not a receipt');
+  assert.equal(safeEvent({ event: 'vault_write', state: 'failed', insightId: 'insight-7', latencyMs: 42 }), undefined, 'a failed write carries no id');
+});

@@ -310,6 +310,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     }
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
   }
+  if (value.event === 'vault_write') {
+    // Closed shape: the operation state token, the vault's own insight id on a confirmed save, and the wire latency. Never text.
+    const hasInsight = value.insightId !== undefined;
+    if (!closedKeys(value, ['event', 'state', ...(hasInsight ? ['insightId'] : []), 'latencyMs'])) return;
+    if (typeof value.state !== 'string' || !['confirmed', 'failed', 'uncertain'].includes(value.state)) return;
+    if ((value.state === 'confirmed') !== hasInsight) return;
+    if (hasInsight && !isSafeToken(value.insightId)) return;
+    if (!Number.isSafeInteger(value.latencyMs) || Number(value.latencyMs) < 0) return;
+    return { event: 'vault_write', state: value.state, ...(hasInsight ? { insightId: value.insightId } : {}), latencyMs: value.latencyMs };
+  }
   if (value.event === 'memory_note') {
     // Closed shape: whether the note was saved, its code, the note's content word count, how many of
     // those words the window's owner turns carried, and how many turns the window held. Never text.

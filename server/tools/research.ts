@@ -1105,7 +1105,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     // A brief reads primary events; calendar names alone are not findings.
     if (config.configured.includes('calendar') && named.has('calendar')) {
       const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone);
-      subs.push(search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'b0'));
+      subs.push(search(INTERNAL.calendarList, calendarWindowArgs(range), 'b0'));
     }
     if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));

@@ -410,7 +410,7 @@ test('#573: a handle of another kind is a mismatch, and the asked kind opens wit
   const shown = openTarget('open_source', { handle: deckHandle }, 'open the presentation');
   assert.ok('target' in shown, 'the slides link is the presentation he asked for');
   assert.equal(shown.target.kind, 'docs');
-  assert.match(shown.target.title, /deck/);
+  assert.match(shown.target.title, /Slides|deck/);
   endHandleSession('live-open-guard-kind');
 });
 

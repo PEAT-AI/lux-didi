@@ -161,9 +161,9 @@ export function initialMotion(kind: OrbPosture = 'idle'): MotionState {
 
 /** Advance the envelope by dt seconds. `still` (reduced motion, first paint) snaps every follower
  *  to its target and freezes the phases, so a still frame shows the state's resting pose. */
-export function stepMotion(m: MotionState, kind: OrbPosture, frame: Pick<AudioFrame, 'level' | 'low' | 'flux'>, dt: number, still = false, blended?: { [K in keyof typeof POSTURE_TARGETS.idle]: number }): MotionOutput {
+export function stepMotion(m: MotionState, kind: OrbPosture, frame: Pick<AudioFrame, 'level' | 'low' | 'flux'>, dt: number, still = false, blended?: { [K in keyof typeof POSTURE_TARGETS.idle]: number } & { speakingWeight: number; listeningWeight: number }): MotionOutput {
   const t = blended ?? POSTURE_TARGETS[kind];
-  const voiced = kind === 'speaking' || kind === 'listening';
+  const voiced = blended ? blended.speakingWeight + blended.listeningWeight > 0 : kind === 'speaking' || kind === 'listening';
   const low = voiced ? frame.low : 0, level = voiced ? frame.level : 0, flux = voiced ? frame.flux : 0;
   const snap = still;
   const f = (cur: number, target: number, a: number, r = a) => snap ? target : follow(cur, target, dt, a, r);
@@ -172,13 +172,14 @@ export function stepMotion(m: MotionState, kind: OrbPosture, frame: Pick<AudioFr
   m.flux = f(m.flux, flux, MOTION_TAU.fluxAttack, MOTION_TAU.fluxDecay);
   m.swell = f(m.swell, low, MOTION_TAU.swellAttack, MOTION_TAU.swellDecay);
   let activityTarget: number = t.activity;
-  if (kind === 'speaking') activityTarget = speakingTarget(m.low);
+  if (blended) activityTarget += blended.speakingWeight * (speakingTarget(m.low) - 1) + blended.listeningWeight * 0.5 * m.low;
+  else if (kind === 'speaking') activityTarget = speakingTarget(m.low);
   else if (kind === 'listening') activityTarget = listeningTarget(m.low);
   const [attack, decay] = kind === 'listening' ? [MOTION_TAU.listenAttack, MOTION_TAU.listenDecay] : [MOTION_TAU.activityAttack, MOTION_TAU.activityDecay];
   // Out of speech the macro settles slowly (state tau), so a state change never drops the body.
-  m.activity = snap || (blended && !voiced) ? activityTarget : follow(m.activity, activityTarget, dt, kind === 'speaking' || kind === 'listening' ? attack : MOTION_TAU.state, kind === 'speaking' || kind === 'listening' ? decay : MOTION_TAU.state * 1.6);
-  const glowTarget = kind === 'speaking' ? t.glow + 0.3 * m.level : kind === 'listening' ? t.glow + 0.12 * m.low : t.glow;
-  const flareTarget = kind === 'speaking' ? t.flare + 0.3 * m.level : t.flare;
+  m.activity = snap || blended ? activityTarget : follow(m.activity, activityTarget, dt, kind === 'speaking' || kind === 'listening' ? attack : MOTION_TAU.state, kind === 'speaking' || kind === 'listening' ? decay : MOTION_TAU.state * 1.6);
+  const glowTarget = blended ? t.glow + 0.3 * m.level * blended.speakingWeight + 0.12 * m.low * blended.listeningWeight : kind === 'speaking' ? t.glow + 0.3 * m.level : kind === 'listening' ? t.glow + 0.12 * m.low : t.glow;
+  const flareTarget = blended ? t.flare + 0.3 * m.level * blended.speakingWeight : kind === 'speaking' ? t.flare + 0.3 * m.level : t.flare;
   m.glow = blended ? glowTarget : f(m.glow, glowTarget, MOTION_TAU.state * 0.4, MOTION_TAU.state);
   m.flare = blended ? flareTarget : f(m.flare, flareTarget, MOTION_TAU.state * 0.4, MOTION_TAU.state);
   m.breathDepth = blended ? t.breathDepth : f(m.breathDepth, t.breathDepth, MOTION_TAU.state * 2);

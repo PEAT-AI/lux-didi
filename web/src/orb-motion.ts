@@ -25,7 +25,8 @@ export class MotionCoordinator {
   private lastAt: number | undefined;
   private elapsed = 0;
   private motion = initialMotion();
-  readonly counters = { sourceChanges: 0, frameIntervalMs: 0, frameAgeMs: 0 };
+  private switches: number[] = [];
+  readonly counters = { sourceChanges: 0, sourceChangesPerSecond: 0, frameIntervalMs: 0, frameAgeMs: 0 };
 
   interrupt() {
     this.outputUntil = -Infinity;
@@ -47,6 +48,7 @@ export class MotionCoordinator {
       this.sourceAt = at;
       this.source = source;
       this.counters.sourceChanges++;
+      this.switches.push(at);
     }
     this.counters.frameIntervalMs = Math.max(0, at - this.frame.timestamp);
     this.frame = mixFrame(this.sourceFrom, selected, smooth((at - this.sourceAt) / 80));
@@ -57,8 +59,10 @@ export class MotionCoordinator {
     const dt = this.lastAt === undefined ? 0 : Math.max(0, Math.min(0.1, (at - this.lastAt) / 1000));
     this.lastAt = at;
     this.counters.frameAgeMs = Math.max(0, at - this.frame.timestamp);
+    this.switches = this.switches.filter(time => at - time < 1000);
+    this.counters.sourceChangesPerSecond = this.switches.length;
     const frame = at - this.frame.timestamp > 500 ? { ...silentFrame(), timestamp: at } : this.frame;
-    const disabled = muted || ['DISCONNECTED', 'ERROR', 'INTERRUPTED', 'IDLE', 'CONNECTING', 'RECONNECTING'].includes(state);
+    const disabled = muted || ['DISCONNECTED', 'ERROR', 'INTERRUPTED', 'IDLE'].includes(state);
     if (disabled) this.interrupt();
     const rms = disabled || this.blocked ? 0 : frame.playback;
     if (rms >= 0.012) {
@@ -83,7 +87,7 @@ export class MotionCoordinator {
     targets.breathDepth *= depthModulation;
     const status: OrbPosture = state === 'PROCESSING' ? 'thinking' : state === 'SPEAKING' ? 'speaking' : state === 'LISTENING' ? 'listening' : disabled ? 'quiet' : 'idle';
     targets.swirl = POSTURE_TARGETS[status].swirl;
-    const motion = stepMotion(this.motion, kind, disabled ? { ...frame, low: 0, level: 0, flux: 0 } : frame, dt, still, targets);
+    const motion = stepMotion(this.motion, kind, disabled ? { ...frame, low: 0, level: 0, flux: 0 } : frame, dt, still, { ...targets, speakingWeight: this.current.speaking, listeningWeight: this.current.listening });
     return { ...motion, posture: kind, weights: { ...this.current }, source: this.source, frame, breathPhase: this.motion.breathPhase, periodModulation, depthModulation };
   }
 }

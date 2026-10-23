@@ -130,7 +130,7 @@ export class Orb {
     const hueTarget=muted?ORB_VISUALS['hot-muted'].hue:visual?.hue??(this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174);
     this.hue=this.hue===undefined||still||visual?.hue!==undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.14);
     // The pill's machine has already eased these, so they are drawn as given.
-    const activity=m.activity*(visual?.amplitude??1), glow=visual?.glow??m.glow;
+    const activity=m.activity, glow=m.glow;
     const drawLayer=(hue: number, alpha: number) => {
       ctx.globalAlpha=alpha;
       this.classic?.draw(c,c,s*0.05,hue,still?0.8:this.phase,active,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);

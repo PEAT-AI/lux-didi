@@ -3635,7 +3635,9 @@ test('1023-N8: a start right after a call that just ended names his last topic w
   const h = await harness(t);
   const first = await attached(h, 'pending-summary-1');
   h.f.send({ serverContent: { inputTranscription: { text: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.', finished: true } } });
-  await drain(h, first.session.liveSessionId, 1);
+  await drain(h, first.session.liveSessionId, 2);
+  assert.match(h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [first.session.liveSessionId])
+    .map(row => String(row['text'] ?? '')).join('')), /Mongoose/, 'the owner words reached the journal before the call ended');
   h.owner.revoke(first.session.liveSessionId);
   await first.attachment.done;
   h.store.transaction(tx => {

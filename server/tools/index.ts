@@ -32,6 +32,14 @@ function dispatchedFailureCode(reason: string): ToolFailureCode {
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
+/**
+ * The model-facing name of one granted connector tool (MONGO-R5): a bare name stays bare unless another
+ * source already offers that exact name, in which case the connector name prefixes it (mongoose_search).
+ */
+export function modelFacingName(connector: string, name: string, taken: (candidate: string) => boolean): string {
+  return taken(name) ? `${connector}_${name}` : name;
+}
+
 export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
   const binding = ownerBindings.get(owner);
   if (!binding || binding.store !== expected.store || binding.registry !== expected.registry || binding.ownerId !== expected.ownerId) throw Error('tools_owner_binding_mismatch');
@@ -586,7 +594,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
         for (const name of p.toolNames) {
-          if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
+          const modelName = modelFacingName(p.connector, name, candidate => definitions.some(d => d.name === candidate));
+          if (definitions.some(d => d.name === modelName)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
           // A connector capability granted for internal use (Mattermost channel-name resolution)
           // is absent from the model-facing table; it stays dispatchable through the connector.
@@ -594,7 +603,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (descriptor.envelope.includes(name)) continue;
             throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
           }
-          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
+          definitions.push({ name: modelName, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
             parameters: declaration.parameters,
             async execute(args, context) {

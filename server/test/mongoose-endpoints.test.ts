@@ -3,9 +3,10 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { MONGOOSE_ENDPOINTS, MONGOOSE_READ_PREFIXES, mongooseBareToolName, mongooseEndpoint, mongooseEndpointOfUrl, mongooseMetadataUrl, mongooseReadOnly, mongooseRefusal } from '../connectors/mongoose.js';
+import { MONGOOSE_ENDPOINTS, mongooseEndpoint, mongooseEndpointOfUrl, mongooseMetadataUrl, mongooseReadOnly, mongooseRefusal } from '../connectors/mongoose.js';
 import { CONNECTOR_DESCRIPTORS, mongooseEnvelopeOf } from '../connectors/index.js';
 import { REMEMBER_PARAMETERS } from '../tools/remember.js';
+import { modelFacingName } from '../tools/index.js';
 import { researchDeclaration } from '../tools/research.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { runMongooseLogins, mongooseLoginTargets } from '../host/mongoose-login.js';
@@ -25,18 +26,18 @@ test('the connector carries three endpoints, one place per endpoint', () => {
     assert.ok(!endpoint.url.endsWith('/'), `${endpoint.id} url has no trailing slash`);
     assert.ok(!endpoint.tools.includes('describe_tools') && !endpoint.tools.includes('call_tool'), `${endpoint.id} carries no gateway pair`);
     for (const admin of ['provision_user', 'set_user_access', 'list_users', 'list_user_handles', 'get_schema']) {
-      assert.ok(!endpoint.tools.some(name => mongooseBareToolName(name) === admin), `${endpoint.id} carries no admin tool ${admin}`);
+      assert.ok(!endpoint.tools.includes(admin), `${endpoint.id} carries no admin tool ${admin}`);
     }
     for (const write of ['create_ticket', 'update_knowledge_item', 'create_content', 'set_project']) {
-      assert.ok(!endpoint.reads.some(name => mongooseBareToolName(name) === write), `${endpoint.id} read allowlist excludes ${write}`);
+      assert.ok(!endpoint.reads.includes(write), `${endpoint.id} read allowlist excludes ${write}`);
     }
-    for (const name of endpoint.tools) assert.ok(name.startsWith(`${endpoint.name === 'knowledge' ? 'kb' : endpoint.name}_`), `${name} carries its endpoint prefix`);
+    for (const name of endpoint.tools) assert.ok(/^[a-z][a-z0-9_]*$/.test(name), `${name} is a bare tool name`);
   }
   assert.equal(mongooseEndpoint('mongoose-knowledge')?.tools.length, 17);
   assert.equal(mongooseEndpoint('mongoose-data')?.tools.length, 10);
   assert.equal(mongooseEndpoint('mongoose-crm')?.tools.length, 3);
-  assert.ok(mongooseEndpoint('mongoose-knowledge')?.tools.includes('kb_get_started'), 'the identity probe is kb_get_started');
-  assert.deepEqual(mongooseEndpoint('mongoose-crm')?.reads, ['crm_get_company_crm', 'crm_list_inbound_leads', 'crm_inbound_lead_events']);
+  assert.ok(mongooseEndpoint('mongoose-knowledge')?.tools.includes('get_started'), 'the identity probe is get_started');
+  assert.deepEqual(mongooseEndpoint('mongoose-crm')?.reads, ['get_company_crm', 'list_inbound_leads', 'inbound_lead_events']);
   assert.deepEqual(mongooseEndpoint('mongoose-data')?.label, 'Mongoose Data');
   assert.deepEqual(mongooseEndpoint('mongoose-crm')?.label, 'Mongoose CRM');
   assert.equal(mongooseEndpoint('mongoose-admin'), undefined);
@@ -66,14 +67,14 @@ test('a denial decodes to a named spoken reason and its teams', () => {
   assert.equal(mongooseRefusal('not json').code, 'endpoint_unavailable');
 });
 
-test('three endpoints publish distinct prefixed names and load without an ambiguous name', () => {
+test('three endpoints publish distinct bare names and load without an ambiguous name', () => {
   const names = MONGOOSE_ENDPOINTS.flatMap(endpoint => endpoint.tools);
-  assert.equal(new Set(names).size, names.length, 'no tool name repeats across the three endpoints');
-  assert.ok(names.includes('kb_get_started') && names.includes('data_run_sql') && names.includes('crm_list_inbound_leads'));
-  // The classifier reads the verb after the endpoint prefix, so a prefixed read is still a read.
+  assert.equal(new Set(names).size, names.length, 'no tool name repeats inside Mongoose');
+  assert.ok(names.includes('get_started') && names.includes('run_sql') && names.includes('list_inbound_leads'));
+  assert.ok(!names.some(name => /^(kb|data|crm)_/.test(name)), 'no endpoint prefix');
+  // Bare names keep the read verb at the front, so the annotation-free classifier still reads them.
   for (const name of MONGOOSE_ENDPOINTS.flatMap(endpoint => endpoint.reads)) assert.equal(mongooseReadOnly({ name }), true, name);
-  assert.equal(mongooseReadOnly({ name: 'kb_create_ticket' }), false);
-  assert.ok(MONGOOSE_READ_PREFIXES.includes('get_'));
+  assert.equal(mongooseReadOnly({ name: 'create_ticket' }), false);
 });
 
 test('#530: an approval row qualifies on endpoint id plus the current manifest', () => {
@@ -91,12 +92,12 @@ test('#530: an approval row qualifies on endpoint id plus the current manifest',
 });
 
 test('an endpoint forwards only its own read allowlist', () => {
-  assert.ok(mongooseEnvelopeOf('mongoose-data').includes('data_run_sql'));
-  assert.ok(!mongooseEnvelopeOf('mongoose-data').includes('kb_search_mongoose'));
-  assert.ok(mongooseEnvelopeOf('mongoose-crm').includes('crm_list_inbound_leads'));
-  assert.ok(!mongooseEnvelopeOf('mongoose-crm').includes('data_run_sql'));
-  assert.ok(!mongooseEnvelopeOf('mongoose-knowledge').includes('crm_get_company_crm'));
-  assert.ok(mongooseEnvelopeOf('mongoose-knowledge').includes('kb_get_started'));
+  assert.ok(mongooseEnvelopeOf('mongoose-data').includes('run_sql'));
+  assert.ok(!mongooseEnvelopeOf('mongoose-data').includes('search_mongoose'));
+  assert.ok(mongooseEnvelopeOf('mongoose-crm').includes('list_inbound_leads'));
+  assert.ok(!mongooseEnvelopeOf('mongoose-crm').includes('run_sql'));
+  assert.ok(!mongooseEnvelopeOf('mongoose-knowledge').includes('get_company_crm'));
+  assert.ok(mongooseEnvelopeOf('mongoose-knowledge').includes('get_started'));
 });
 
 test('three consents, one registration, one record per endpoint', async () => {
@@ -145,12 +146,20 @@ test('three consents, one registration, one record per endpoint', async () => {
 
 test('the assembled model registry with every connector on stays at or under 32', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
-  const names = [
+  const declared = [
     ...Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy).map(tool => tool.name)),
     researchDeclaration().name,
     'remember_note',
   ];
+  const names = declared.map(name => modelFacingName('mongoose', name, candidate => candidate !== name && declared.includes(candidate)));
   assert.ok(new Set(names).size === names.length, `no name repeats: ${names.join(', ')}`);
   assert.ok(names.length <= 32, `the model loop refuses more than 32 tools, saw ${names.length}`);
   assert.ok(REMEMBER_PARAMETERS !== undefined);
+});
+
+test('MONGO-R5: a bare Mongoose name that collides is model-facing under its connector', () => {
+  const taken = (candidate: string): boolean => candidate === 'search';
+  assert.equal(modelFacingName('mongoose', 'search', taken), 'mongoose_search');
+  assert.equal(modelFacingName('mongoose', 'run_sql', taken), 'run_sql');
+  assert.equal(modelFacingName('google', 'search', taken), 'google_search');
 });

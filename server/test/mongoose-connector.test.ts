@@ -27,8 +27,8 @@ const RESOURCE = 'resource-a';
 const readTools: ToolDefinition[] = MONGOOSE_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } }));
 // Advisory readOnlyHint must never turn a writer into authority.
 const writeTools: ToolDefinition[] = [
-  { name: 'kb_create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-  { name: 'kb_claim_ticket', inputSchema: { type: 'object' } },
+  { name: 'create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+  { name: 'claim_ticket', inputSchema: { type: 'object' } },
 ];
 
 async function body(req: IncomingMessage): Promise<Buffer> {
@@ -101,7 +101,7 @@ test('search round trip: exact outgoing arguments and opaque unknown/local-only 
   try {
     const result = await reader(adapter, registry, digest).search({ query: 'agri pricing', limit: 3 });
     assert.equal(result.state, 'completed');
-    assert.deepEqual(f.calls, [{ name: 'kb_search_mongoose', arguments: { query: 'agri pricing', limit: 3 } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_mongoose', arguments: { query: 'agri pricing', limit: 3 } }]);
     const projected = projectMongooseResult(adapter, result);
     assert.equal(projected.ok, true);
     if (!projected.ok) return;
@@ -129,7 +129,7 @@ test('bearer missing is a typed refusal before an empty success', async t => {
 test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {
   const f = await fixture(); t.after(() => f.close());
   const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry, [...MONGOOSE_TOOLS, 'kb_create_ticket']);
+  const digest = await approve(adapter, registry, [...MONGOOSE_TOOLS, 'create_ticket']);
   try {
     const result = await reader(adapter, registry, digest).search({ query: 'agri' });
     assert.equal(result.state, 'refused');
@@ -141,7 +141,7 @@ test('only the read envelope is eligible; a granted writer refuses the whole cal
 test('a tool outside the read grant refuses before dispatch', async t => {
   const f = await fixture(); t.after(() => f.close());
   const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry, MONGOOSE_TOOLS.filter(name => name !== 'kb_get_ticket'));
+  const digest = await approve(adapter, registry, MONGOOSE_TOOLS.filter(name => name !== 'get_ticket'));
   try {
     const result = await reader(adapter, registry, digest).getTicket({ number: 'ticket-1' });
     assert.equal(result.state, 'refused');
@@ -197,7 +197,7 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
     const grant = runtime.registry.currentGrant('mongoose');
     assert.ok(grant, 'the runtime must approve a read grant');
     assert.deepEqual([...grant.toolNames].sort(), [...MONGOOSE_TOOLS].sort());
-    assert.equal(grant.toolNames.includes('kb_create_ticket' as never), false);
+    assert.equal(grant.toolNames.includes('create_ticket' as never), false);
     assert.equal(runtime.status().endpoints[0]?.tools, MONGOOSE_TOOLS.length);
     assert.equal(runtime.status().endpoints[0]?.state, 'connected');
     assert.deepEqual(runtime.connectionIds(), ['mongoose']);
@@ -213,7 +213,7 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
   }
 });
 
-for (const [connector, tool] of [['mongoose', 'kb_search_mongoose'], ['mattermost', 'mattermost_search']] as const) {
+for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost', 'mattermost_search']] as const) {
   test(`${connector} Live descriptor validates bounds and dispatches against the original MCP schema`, async () => {
     const f = await fixture({ requireBearer: false, tools: [{ name: tool, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 1 } }, required: ['query'], additionalProperties: false } }] });
     const dir = mkdtempSync(join(tmpdir(), 'didi-company-descriptor-'));
@@ -256,7 +256,7 @@ for (const [connector, tool] of [['mongoose', 'kb_search_mongoose'], ['mattermos
 test('search_mongoose projects an SSE MCP entity from separately decodedResult', async t => {
   const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
-  const tool = { name: 'kb_search_mongoose', inputSchema: { type: 'object' } };
+  const tool = { name: 'search_mongoose', inputSchema: { type: 'object' } };
   sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
   sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ items: [{ id: 'synthetic-id', title: 'Synthetic SSE', body: 'Public synthetic body' }] }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
   await sdk.connect(transport);
@@ -271,7 +271,7 @@ test('search_mongoose projects an SSE MCP entity from separately decodedResult',
   t.after(async () => { await adapter.close(); await sdk.close(); });
   const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
   if (discovery.state !== 'discovered') throw Error('discovery failed');
-  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['kb_search_mongoose'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['search_mongoose'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
   const result = await createMongooseReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } }).search({ query: 'synthetic' });
   assert.equal(result.state, 'completed');
   if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
@@ -299,22 +299,22 @@ test("mongoose connect failures map to a closed stage", () => {
 // The published surface of the three ACCESS servers, each tool under its own endpoint prefix. The
 // classifier must agree with it: 46 reads and 13 writes, disjoint, with no name left unclassified.
 const CATALOG_64 = [
-  'kb_ask_mongoose', 'kb_check_data_capability', 'kb_claim_ticket', 'kb_create_knowledge_item',
-  'kb_create_ticket', 'kb_get_commercial_paths', 'crm_get_company_crm', 'kb_get_company_profile',
-  'kb_get_knowledge_graph', 'kb_get_knowledge_item', 'kb_get_knowledge_versions', 'kb_get_market_profile',
-  'kb_get_reach', 'get_schema', 'kb_get_started', 'kb_get_ticket',
-  'crm_inbound_lead_events', 'data_create_content', 'data_create_scheduled_delivery', 'data_edit_content',
-  'data_find_content', 'data_generate_hashes', 'data_get_context', 'data_get_current_project',
-  'data_get_lightdash_version', 'data_get_metadata', 'data_get_query_result', 'data_grep_fields',
-  'data_list_content', 'data_list_explores', 'data_list_projects', 'data_list_verified_content',
-  'data_read_content', 'data_resolve_url', 'data_run_metric_query', 'data_run_sql',
-  'data_search_field_values', 'data_set_project', 'kb_lint_knowledge', 'kb_list_companies',
-  'kb_list_company_products', 'kb_list_data_capabilities', 'crm_list_inbound_leads', 'kb_list_knowledge_domains',
-  'kb_list_knowledge_edges', 'kb_list_knowledge_items', 'kb_list_markets', 'kb_list_offerings',
-  'kb_list_seed_conflicts', 'kb_list_tickets', 'list_user_handles', 'list_users',
-  'kb_lookup_efficacy_evidence', 'kb_patch_knowledge_body', 'provision_user', 'kb_read_knowledge_body',
-  'kb_resolve_seed_conflict', 'kb_search_mongoose', 'kb_set_knowledge_edge', 'kb_set_knowledge_item_status',
-  'set_user_access', 'kb_summarize_email_engagements', 'kb_update_knowledge_item', 'kb_update_ticket',
+  'ask_mongoose', 'check_data_capability', 'claim_ticket', 'create_knowledge_item',
+  'create_ticket', 'get_commercial_paths', 'get_company_crm', 'get_company_profile',
+  'get_knowledge_graph', 'get_knowledge_item', 'get_knowledge_versions', 'get_market_profile',
+  'get_reach', 'get_schema', 'get_started', 'get_ticket',
+  'inbound_lead_events', 'create_content', 'create_scheduled_delivery', 'edit_content',
+  'find_content', 'generate_hashes', 'get_context', 'get_current_project',
+  'get_lightdash_version', 'get_metadata', 'get_query_result', 'grep_fields',
+  'list_content', 'list_explores', 'list_projects', 'list_verified_content',
+  'read_content', 'resolve_url', 'run_metric_query', 'run_sql',
+  'search_field_values', 'set_project', 'lint_knowledge', 'list_companies',
+  'list_company_products', 'list_data_capabilities', 'list_inbound_leads', 'list_knowledge_domains',
+  'list_knowledge_edges', 'list_knowledge_items', 'list_markets', 'list_offerings',
+  'list_seed_conflicts', 'list_tickets', 'list_user_handles', 'list_users',
+  'lookup_efficacy_evidence', 'patch_knowledge_body', 'provision_user', 'read_knowledge_body',
+  'resolve_seed_conflict', 'search_mongoose', 'set_knowledge_edge', 'set_knowledge_item_status',
+  'set_user_access', 'summarize_email_engagements', 'update_knowledge_item', 'update_ticket',
 ];
 
 const CATALOG_READS = [...MONGOOSE_READ_TOOLS];
@@ -344,15 +344,15 @@ test('annotations without a read hint never authorize a name on its spelling alo
   assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { readOnlyHint: 'yes' } }), false);
   assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { readOnlyHint: false } }), false);
   assert.equal(mongooseReadOnly({ name: 'custom_reader' }), false);
-  assert.equal(mongooseReadOnly({ name: 'kb_ask_mongoose' }), true);
+  assert.equal(mongooseReadOnly({ name: 'ask_mongoose' }), true);
 });
 
 test('the runtime grants every annotated read tool and no write, and forwards one widened read', async () => {
   const reads: ToolDefinition[] = [
     { name: 'get_schema', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
-    { name: 'kb_list_markets', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
-    { name: 'kb_create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-    { name: 'data_run_sql', inputSchema: { type: 'object', properties: { sql: { type: 'string' } } }, annotations: { readOnlyHint: true } },
+    { name: 'list_markets', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
+    { name: 'create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+    { name: 'run_sql', inputSchema: { type: 'object', properties: { sql: { type: 'string' } } }, annotations: { readOnlyHint: true } },
   ];
   const f = await fixture({ requireBearer: false, tools: reads });
   const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-widened-'));
@@ -369,8 +369,8 @@ test('the runtime grants every annotated read tool and no write, and forwards on
     runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
     const grant = runtime.registry.currentGrant('mongoose');
     assert.ok(grant);
-    assert.deepEqual([...grant.toolNames].sort(), ['get_schema', 'data_run_sql', 'kb_list_markets']);
-    assert.equal(grant.toolNames.includes('kb_create_ticket'), false);
+    assert.deepEqual([...grant.toolNames].sort(), ['get_schema', 'run_sql', 'list_markets']);
+    assert.equal(grant.toolNames.includes('create_ticket'), false);
   } finally {
     if (runtime) await runtime.close();
     await f.close();
@@ -443,9 +443,9 @@ test('one widened read tool call carries the bearer resolved from the OAuth reco
 
 test('Mongoose current contract: typed detail reads send ref, ticket number and company name through original schema validation', async t => {
   const schemas = [
-    { name: 'kb_read_knowledge_body', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1, maximum: 9000 } }, required: ['ref'], additionalProperties: false } },
-    { name: 'kb_get_ticket', inputSchema: { type: 'object', properties: { number: { type: ['integer', 'string'] }, body_offset: { type: 'integer' }, detail: { type: 'string', enum: ['summary', 'full'] } }, required: ['number'], additionalProperties: false } },
-    { name: 'kb_get_company_profile', inputSchema: { type: 'object', properties: { company_name: { type: 'string' }, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: 'array', items: { type: 'string' } } }, required: ['company_name'], additionalProperties: false } },
+    { name: 'read_knowledge_body', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1, maximum: 9000 } }, required: ['ref'], additionalProperties: false } },
+    { name: 'get_ticket', inputSchema: { type: 'object', properties: { number: { type: ['integer', 'string'] }, body_offset: { type: 'integer' }, detail: { type: 'string', enum: ['summary', 'full'] } }, required: ['number'], additionalProperties: false } },
+    { name: 'get_company_profile', inputSchema: { type: 'object', properties: { company_name: { type: 'string' }, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: 'array', items: { type: 'string' } } }, required: ['company_name'], additionalProperties: false } },
   ];
   const f = await fixture({ tools: schemas }); t.after(() => f.close());
   const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
@@ -456,25 +456,25 @@ test('Mongoose current contract: typed detail reads send ref, ticket number and 
   assert.equal((await source.getTicket({ number: 17, body_offset: 1200, detail: 'full' })).state, 'completed');
   assert.equal((await source.companyProfile({ company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] })).state, 'completed');
   assert.deepEqual(f.calls, [
-    { name: 'kb_read_knowledge_body', arguments: { ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 } },
-    { name: 'kb_get_ticket', arguments: { number: 17, body_offset: 1200, detail: 'full' } },
-    { name: 'kb_get_company_profile', arguments: { company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] } },
+    { name: 'read_knowledge_body', arguments: { ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 } },
+    { name: 'get_ticket', arguments: { number: 17, body_offset: 1200, detail: 'full' } },
+    { name: 'get_company_profile', arguments: { company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] } },
   ]);
   const before = f.calls.length;
-  assert.equal((await source.call('kb_read_knowledge_body', { id: 'synthetic-ref' })).state, 'refused', 'old id arguments remain refused by the original schema');
+  assert.equal((await source.call('read_knowledge_body', { id: 'synthetic-ref' })).state, 'refused', 'old id arguments remain refused by the original schema');
   assert.equal(f.calls.length, before);
 });
 
 for (const [label, tool, data] of [
-  ['flat', 'kb_search_mongoose', { results: [{ entity_type: 'knowledge', id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active', url: 'https://example.invalid/kb/17' }], has_more: true, next_cursor: 1, total_estimate: 2 }],
-  ['grouped', 'kb_search_mongoose', { hits: { company: [{ company_name: 'Synthetic Company', name: 'Synthetic Company', snippet: 'Company evidence.' }], knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }], offering: [], ticket: [{ number: 17, title: 'Synthetic ticket', snippet: 'Ticket evidence.' }] }, has_more: true, next_cursor: 1, total: 4 }],
-  ['ask', 'kb_ask_mongoose', { found: false, has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
+  ['flat', 'search_mongoose', { results: [{ entity_type: 'knowledge', id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active', url: 'https://example.invalid/kb/17' }], has_more: true, next_cursor: 1, total_estimate: 2 }],
+  ['grouped', 'search_mongoose', { hits: { company: [{ company_name: 'Synthetic Company', name: 'Synthetic Company', snippet: 'Company evidence.' }], knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }], offering: [], ticket: [{ number: 17, title: 'Synthetic ticket', snippet: 'Ticket evidence.' }] }, has_more: true, next_cursor: 1, total: 4 }],
+  ['ask', 'ask_mongoose', { found: false, has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
 ] as const) {
   test(`Mongoose evidence projection: ${label} preserves entity identity, snippets and answerability through the actual SDK`, async t => {
     const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
     const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
     const digest = await approve(adapter, registry);
-    const result = await reader(adapter, registry, digest).call(tool, tool === 'kb_ask_mongoose' ? { question: 'synthetic launch' } : { query: 'synthetic launch' });
+    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic launch' } : { query: 'synthetic launch' });
     const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
     assert.match(projected.projection.text, /kb-17/); assert.match(projected.projection.text, /Launch delayed to Monday/); assert.match(projected.projection.text, /active/);
     if (label !== 'ask') { assert.equal(projected.projection.partial, true); assert.match(projected.projection.text, /next_cursor: 1/); }
@@ -494,12 +494,12 @@ test('Mongoose evidence projection: a complete chunk is not a whole body and pre
 
 test('Mongoose literal projection: knowledge subtype is not an entity type and ask trimming retains its answerability contract', async t => {
   const literal = JSON.parse(readFileSync(new URL('../../test/fixtures/mongoose-literal-sanitized.json', import.meta.url), 'utf8')) as Record<string, unknown>;
-  const ask = { found: true, answer_state: 'answered', has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', name: 'Synthetic evidence', snippet: 'A received citation.', snippet_truncated: true }] }, hits_total: 12, hits_truncated: true }, answerability: { decision: 'read_evidence', next_tool: { name: 'kb_read_knowledge_body', arguments: { ref: 'engineering/synthetic' } } } };
-  for (const [label, tool, data] of [['flat', 'kb_search_mongoose', literal['flat']], ['grouped', 'kb_search_mongoose', literal['grouped']], ['body', 'kb_read_knowledge_body', literal['bodyChunk']], ['ask', 'kb_ask_mongoose', ask]] as const) {
+  const ask = { found: true, answer_state: 'answered', has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', name: 'Synthetic evidence', snippet: 'A received citation.', snippet_truncated: true }] }, hits_total: 12, hits_truncated: true }, answerability: { decision: 'read_evidence', next_tool: { name: 'read_knowledge_body', arguments: { ref: 'engineering/synthetic' } } } };
+  for (const [label, tool, data] of [['flat', 'search_mongoose', literal['flat']], ['grouped', 'search_mongoose', literal['grouped']], ['body', 'read_knowledge_body', literal['bodyChunk']], ['ask', 'ask_mongoose', ask]] as const) {
     const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
     const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
     const digest = await approve(adapter, registry);
-    const result = await reader(adapter, registry, digest).call(tool, tool === 'kb_ask_mongoose' ? { question: 'synthetic' } : tool === 'kb_read_knowledge_body' ? { ref: 'engineering/synthetic' } : { query: 'synthetic' });
+    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic' } : tool === 'read_knowledge_body' ? { ref: 'engineering/synthetic' } : { query: 'synthetic' });
     const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) continue;
     assert.equal(projected.projection.partial, true);
     assert.doesNotMatch(projected.projection.text, /fixture@example.invalid|system_role/);
@@ -509,7 +509,7 @@ test('Mongoose literal projection: knowledge subtype is not an entity type and a
 });
 
 test('Mongoose literal projection: local coverage clipping remains bounded and character accounting is exact', async t => {
-  const f = await fixture({ text: JSON.stringify({ found: false, has_more: false, results: { hits: { knowledge: [{ id: 'synthetic', name: 'Synthetic evidence', snippet: 'A received citation.' }] } }, answerability: { decision: 'requires_tool', next_tool: { name: 'kb_search_mongoose', arguments: { query: 'q'.repeat(6000) } } } }) }); t.after(() => f.close());
+  const f = await fixture({ text: JSON.stringify({ found: false, has_more: false, results: { hits: { knowledge: [{ id: 'synthetic', name: 'Synthetic evidence', snippet: 'A received citation.' }] } }, answerability: { decision: 'requires_tool', next_tool: { name: 'search_mongoose', arguments: { query: 'q'.repeat(6000) } } } }) }); t.after(() => f.close());
   const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
   const digest = await approve(adapter, registry);
   const projected = projectMongooseResult(adapter, await reader(adapter, registry, digest).ask({ question: 'synthetic' })); assert.equal(projected.ok, true); if (!projected.ok) return;

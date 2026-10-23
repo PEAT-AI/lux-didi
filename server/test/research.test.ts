@@ -418,15 +418,17 @@ test('a mail read is dispatched at once, so no source budget can slip past the s
   assert.equal(dispatchedAt, 0);
 });
 
-test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {
+test('knowledge shaping carries at least ninety percent of a ledger under the reply limit', async () => {
   const body = 'k'.repeat(60);
-  const items = Array.from({ length: 41 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
+  // LAT-1023: the Live answer is bounded at 2,500 chars, so the ledger this test shapes is one that fits whole;
+  // a wider one is trimmed by whole items, which its own compaction test covers.
+  const items = Array.from({ length: 20 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
   const h = harness({ executeText: items.join('\n') });
   // #1021: a content-free question no longer searches knowledge, so the ledger test asks a real one.
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
   const lines = finding.text.split('\n').slice(1);
-  assert.ok(lines.length >= 37, `carried ${lines.length} of 41 lines`);
+  assert.ok(lines.length >= 18, `carried ${lines.length} of 20 lines`);
   const total = items.reduce((sum, _, i) => sum + `#${i + 1} Insight ${i} | ${body}`.length, 0);
   const carried = lines.reduce((sum, line) => sum + line.length, 0);
   assert.ok(carried / total >= 0.9, `carried ${carried} of ${total} bytes`);
@@ -1604,3 +1606,85 @@ test('release 4: a chat continuation never searches a bare meta direction word',
   }
 });
 
+
+
+// --- LAT-1023: the answer to Live stays small and whole -------------------------------------------
+
+const WIDE_HITS = Array.from({ length: 14 }, (_, index) => `**#${index + 1}** [PATTERN] Decision ${index} | ${'decision text '.repeat(60)}`).join('\n');
+
+test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole items', async () => {
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
+  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars`);
+  const findings = reply['findings'] as { text: string }[];
+  const shown = findings.map(finding => finding.text).join('\n');
+  const items = shown.split(/\n(?=#\d+ )/u).slice(1);
+  assert.ok(items.length >= 1, 'the answer still carries whole items');
+  for (const item of items) assert.match(item, /Decision \d+ \| (?:decision text )*decision text ?$/u, 'an item is never sliced mid-text');
+  const line = h.logs[0]!;
+  assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
+  assert.ok((line.answerCompacted?.items ?? 0) > 0, 'with the count of whole items it dropped');
+  assert.equal(line.answerCompacted?.chars, text.length, 'and the characters it sent');
+  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what was left out');
+  assert.doesNotMatch(shown, /no such|does not exist/iu);
+});
+
+test('LAT-1023: a short answer is returned unchanged with no compaction token', async () => {
+  const short = '**#1** [PATTERN] Release 4 | the orb shows live and the mic frees on mute';
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, short, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the release orb' }, new AbortController().signal);
+  assert.ok(JSON.stringify(reply).length <= 2_500);
+  const findings = reply['findings'] as { text: string }[];
+  assert.ok(findings.some(finding => finding.text.includes('the orb shows live and the mic frees on mute')), 'the short evidence rides back unchanged');
+  assert.equal(h.logs[0]!.answerCompacted, undefined, 'nothing was dropped, so no compaction token');
+});
+
+test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an answer stays at 2,500', async () => {
+  const body = 'Body evidence sentence. '.repeat(280);
+  assert.ok(body.length > RESEARCH.replyLimitChars + 1_000, 'the fixture body is wider than the answer budget');
+  const scope = { endpointId: 'local', transport: 'stdio' as const, bindingDigest: 'sha256:body-scope', schemaDigest: 'sha256:schema', toolName: 'gmail_read_message', generation: 1, account: 'owner', resource: 'mail' };
+  const evidence = {
+    kind: 'remote-body' as const, source: scope, entitySha256: 'e'.repeat(64), bodySha256: 'b'.repeat(64),
+    expiresAt: Date.now() + 600_000, tool: 'gmail_read_message', body, upstreamComplete: true as const, upstreamOmitted: false as const,
+  };
+  // The body arrives on the run's own dispatch, exactly as a read the owner asked for does: the reply is
+  // the page, sized by the body bound rather than by the answer budget.
+  const h = harness({
+    execute: async subs => subs.map(call => ({
+      ...sub(call.name, '', true, call.key),
+      binding: { executionId: 'exec-body', name: call.name, contentIndex: 0, partIndex: 0, result: { id: 'body-1', sha256: 'c'.repeat(64) } },
+      hostEvidence: evidence,
+    })),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did the invoice mail from Ana say in full',
+  }, new AbortController().signal);
+  const slices = reply['bodySlices'] as { text: string; offset: number }[] | undefined;
+  assert.ok(Array.isArray(slices) && slices.length === 1, 'the requested body comes back as one page');
+  assert.ok(slices![0]!.text.length > RESEARCH.replyLimitChars, `a body page may pass the answer budget (${slices![0]!.text.length} chars)`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.bodyLimitChars, `and stays inside the body bound (${JSON.stringify(reply).length} chars)`);
+  assert.equal(RESEARCH.bodyLimitChars, 6_000, 'the body page bound is the page width a requested read had before');
+  assert.equal(RESEARCH.replyLimitChars, 2_500, 'and the composed answer keeps the Live budget');
+});
+
+test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget is still trimmed to it', async () => {
+  // The reviewer's shape: one knowledge hit is one line of the connector's whole body, and the mail group
+  // beside it holds whole short lines. A trim that keeps one line per source cannot reach the budget.
+  const wide = `**#1** [PATTERN] Long body | ${'w'.repeat(2_900)}`;
+  const mail = ['- Release notes | from: Ana | date: 2026-10-16 [id m1]', '- Invoice | from: Ana | date: 2026-10-17 [id m2]', '- Plan | from: Ana | date: 2026-10-18 [id m3]'].join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? wide : mail, true, call.key)),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did we decide about the invoice and the release plan',
+    lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
+  }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, over ${RESEARCH.replyLimitChars}`);
+  const line = h.logs.at(-1)!;
+  assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
+  assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
+  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
+});

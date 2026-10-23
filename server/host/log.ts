@@ -762,7 +762,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (has('supersededAborts') && !isSafeCount(value.supersededAborts)) return;
     // ROUTE-1022 K5: the plan a brief actually ran, as one closed token, never the question.
     if (has('plan') && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
-    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan'].filter(has);
+    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan', 'roundCapHit', 'answerCompacted'].filter(has);
     if (Object.keys(value).sort().join(',') !== [...keys, ...optionals].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
     if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
@@ -803,7 +803,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
     if (typeof value.canContinue !== 'boolean') return;
     if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}), ...(has('bodyReplies') ? { bodyReplies: value.bodyReplies } : {}), ...(has('metaStartAsContinue') ? { metaStartAsContinue: value.metaStartAsContinue } : {}), ...(has('supersededAborts') ? { supersededAborts: value.supersededAborts } : {}), ...(has('plan') ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
+    // LAT-1023: the round cap and the compaction are closed counts, never a query, an item or its text.
+    if (has('roundCapHit') && !isSafeCount(value.roundCapHit)) return;
+    if (has('answerCompacted')) {
+      const compacted = value.answerCompacted;
+      if (!compacted || typeof compacted !== 'object' || Array.isArray(compacted)) return;
+      const cell = compacted as Record<string, unknown>;
+      if (Object.keys(cell).sort().join(',') !== ['chars', 'items'].sort().join(',')) return;
+      if (!isSafeCount(cell['items']) || !isSafeCount(cell['chars']) || cell['items'] === 0) return;
+    }
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(has('roundCapHit') ? { roundCapHit: value.roundCapHit as number } : {}), ...(has('answerCompacted') ? { answerCompacted: value.answerCompacted as { items: number; chars: number } } : {}), ...(hasDriver ? { driver: value.driver } : {}), ...(has('bodyReplies') ? { bodyReplies: value.bodyReplies } : {}), ...(has('metaStartAsContinue') ? { metaStartAsContinue: value.metaStartAsContinue } : {}), ...(has('supersededAborts') ? { supersededAborts: value.supersededAborts } : {}), ...(has('plan') ? { plan: value.plan as 'knowledge_only' | 'named_sources' } : {}) };
   }
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.

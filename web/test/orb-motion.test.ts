@@ -240,3 +240,14 @@ test('source bands blend for 80 ms and playback survives semantic tool thinking'
   assert.notEqual(m.advance('PROCESSING', 111, false, true).posture, 'speaking');
   assert.notEqual(m.advance('DISCONNECTED', 112).posture, 'speaking');
 });
+
+import { outputInterrupted } from '../src/orb-motion.ts';
+test('only new authoritative host interruption or owner transcription clears ownership', () => {
+  const before = { since: 'session', entries: [{ seq: 1, kind: 'interrupted' }] };
+  assert.equal(outputInterrupted(undefined, before), false);
+  assert.equal(outputInterrupted(before, before), false);
+  assert.equal(outputInterrupted(before, { ...before, entries: [...before.entries, { seq: 2, kind: 'interrupted' }] }), true);
+  assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'inputTranscription', text: 'fixture owner speech' }] }), true);
+  assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'outputTranscription', text: 'fixture model speech' }] }), false);
+  assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'inputTranscription', text: ' ' }] }), false);
+});

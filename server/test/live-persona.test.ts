@@ -351,7 +351,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   assert.equal(sha(NAYA_VOICE_SURFACE), 'fe0c181f6049070157ee54d268c554bcf1d2f1fd548179f26eb5cc92ebf18a97');
   assert.equal(sha(NAYA_VOICE_TOOLS), 'ca6aac13131468d2e5cc1bc93d3e15b0b27f00343c1d42f28e99522f48c5f4b9');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '8521c91c01fccb39549141e85a1a55d6bc6fbd3d65b7b82229daaa103789e989');
+  assert.equal(sha(NAYA_TOOLS), 'c7e7eb9abcbef5a71850afe65178e055e437b2d51e8aae8852ed9986aa9ee5a0');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));

@@ -200,7 +200,14 @@ export interface ResearchSourceLog {
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
   /** E5: the mail search's shape, and the one broader retry's shape when it ran. Counts, never words. */
   mail?: MailQueryShape & { retried?: MailQueryShape };
+  /** Release 4: a read that delivered its pages but lost a later one, and how many pages it lost. */
+  partial?: MailPartialReason;
+  failedPages?: number;
 }
+
+/** Release 4: the closed reasons a source result carries a partial marker. */
+export const MAIL_PARTIAL_REASONS = ['pages_failed'] as const;
+export type MailPartialReason = typeof MAIL_PARTIAL_REASONS[number];
 
 /** A source that cannot serve a read right now, with the reason its connector gave. */
 export interface UnavailableSource { source: SourceKind; reason: string }
@@ -347,6 +354,12 @@ const STOP_WORDS = new Set(['a', 'an', 'and', 'any', 'anything', 'are', 'around'
   'anything', 'calendar', 'chat', 'email', 'emails', 'gmail', 'important', 'inbox', 'knowledge', 'mail', 'mattermost', 'messages', 'notes', 'recent', 'slack', 'something', 'team', 'things', 'today', 'tomorrow', 'unread', 'urgent', 'yesterday', 'week', 'month', 'day',
   // ROUTE-1022 K7: instruction words the model writes into a query; never content in this product.
   'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific', 'detailed', 'lookup', 'lookups', 'searching', 'requested']);
+/**
+ * Release 4: the words a continuation hop writes about its own search, never about the owner's question.
+ * They are filler to every source, so no hop spends a search term on them.
+ */
+const META_WORDS = new Set(['remaining', 'remain', 'remains', 'metadata', 'meta', 'business-relevant',
+  'other', 'others', 'through', 'retain', 'retained', 'retaining', 'earlier', 'action-needed']);
 const WORD_SHAPE = /[^a-z0-9@._:-]+/g;
 
 /** The content keywords of a spoken question: stop words and filler removed, 3 to 8 of them. */
@@ -356,7 +369,7 @@ export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<st
   for (const word of words) {
     // K7: a spoken question's punctuation is not a word, so `findings.` is the filler `findings`.
     const bare = word.replace(/\.+$/u, '');
-    if (STOP_WORDS.has(bare) || bare.length < 3 || kept.includes(bare) || (skip?.has(bare) ?? false)) continue;
+    if (STOP_WORDS.has(bare) || META_WORDS.has(bare) || bare.length < 3 || kept.includes(bare) || (skip?.has(bare) ?? false)) continue;
     kept.push(bare);
     if (kept.length >= max) break;
   }
@@ -459,7 +472,7 @@ export function mailTerms(text: string, max = 4, skip?: ReadonlySet<string>): st
   const terms: string[] = [];
   for (const word of words) {
     // K6: the owner's own name is in every thread, so it is never a term to search for.
-    if (STOP_WORDS.has(word) || MAIL_FILLER.has(word) || OWNER_MAIL_NAMES.has(word) || skip?.has(word) === true) continue;
+    if (STOP_WORDS.has(word) || META_WORDS.has(word) || MAIL_FILLER.has(word) || OWNER_MAIL_NAMES.has(word) || skip?.has(word) === true) continue;
     if (/^[a-z_]+:$/u.test(word)) continue;
     if (!/\d/u.test(word) && word.length < 3) continue;
     if (terms.includes(word)) continue;
@@ -491,6 +504,19 @@ function gmailDate(day: string): string { return day.replaceAll('-', '/'); }
 
 const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const WEEKDAY_NAMES = 'sunday|monday|tuesday|wednesday|thursday|friday|saturday';
+
+/**
+ * Release 4: what a hop plans from. The owner's question stands as it was asked, and a continuation still
+ * plans from its direction; a direction that is nothing but instruction words has no search in it, so the
+ * question the run was opened with is the text instead of an empty or meta query.
+ */
+function planText(question: string, run: { direction?: string | undefined; question?: string | undefined }): string {
+  if (question.trim() !== '') return question;
+  const direction = (run.direction ?? '').trim();
+  const words = direction.toLowerCase().replace(WORD_SHAPE, ' ').split(/\s+/).filter(Boolean);
+  const metaOnly = words.length > 0 && words.every(word => META_WORDS.has(word.replace(/\.+$/u, '')));
+  return metaOnly || direction === '' ? run.question ?? direction : direction;
+}
 
 /** The owner's calendar year at an instant, in the zone the window is resolved for. */
 function localYear(nowMs: number, timeZone: string): number {
@@ -856,7 +882,7 @@ export function knowledgeQuery(text: string, question?: string): string {
   // question, never for a search string, so it is clipped and kept instead of dropped.
   // K7: a spoken question's punctuation is not a word, so `findings.` is the filler `findings`.
   const bare = (word: string): string => word.replace(/[.:]+$/u, '') || word;
-  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(word => Boolean(word) && !KNOWLEDGE_FILLER.has(bare(word))).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
+  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(word => Boolean(word) && !KNOWLEDGE_FILLER.has(bare(word)) && !META_WORDS.has(bare(word))).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
 }
 
 /** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree.
@@ -979,7 +1005,7 @@ export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.Dat
     const day = isoDay(value, nowMs, timeZone);
     return day === undefined ? '' : `${kind[0]!.toUpperCase()}${kind.slice(1)}:${day}`;
   }).split(/\s+/u).filter(Boolean)
-    .filter(word => /^(?:after|before|on):/iu.test(word) || !KNOWLEDGE_FILLER.has(word.replace(/[.:]+$/u, '').toLowerCase()))
+    .filter(word => /^(?:after|before|on):/iu.test(word) || !(KNOWLEDGE_FILLER.has(word.replace(/[.:]+$/u, '').toLowerCase()) || META_WORDS.has(word.replace(/[.:]+$/u, '').toLowerCase())))
     .join(' ');
 }
 
@@ -1100,6 +1126,8 @@ interface MailRead {
   args: JsonObject; messages: Map<string, MailMessage>; bindings: ToolResultBinding[];
   tokens: Set<string>; nextPageToken?: string; exhausted: boolean; failed: boolean;
   received: number; invalid: number; upstreamIncomplete?: boolean; inflight?: boolean;
+  /** Release 4: pages a later page lost, so a read that already delivered is partial, never failed. */
+  failedPages?: number;
   /** F2: pages this read has already taken, so one question never pages a mailbox without end. */
   pages: number;
   /** A connector answer that carried text but no page envelope is one read, kept whole. */
@@ -1155,6 +1183,8 @@ export interface RunState {
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
+  /** Release 4: the question this run was opened with, so a continuation hop never searches on the model's meta words alone. */
+  question?: string;
   /** #451 H22: the model call this run answers, the adapter's own call id (ruling W6-R1). */
   callKey?: string;
   /** #1020: the moment the call answered ahead of its readers, so a later cut is logged partial, not failed. */
@@ -1206,10 +1236,11 @@ export class ResearchLedger {
   #last: RunState | undefined;
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
-  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
+  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
     const run: RunState = {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
+      ...(input.question === undefined ? {} : { question: input.question }),
       ...(input.callKey === undefined ? {} : { callKey: input.callKey }),
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
@@ -1329,12 +1360,14 @@ export interface ResearchProgress {
 export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'routed';
 
 /** ROUTE-R2: the closed reason a run log gives for a skipped source, so a grant gap never reads as an outage. */
-export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'timeout', 'read_failed'] as const;
+export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed'] as const;
 export type SkipReason = typeof SKIP_REASONS[number];
 
 export function skipReasonOf(rawReason: string | undefined, outcome: LookupOutcome): SkipReason {
   if (rawReason === 'not_configured') return 'not_configured';
   if (rawReason === 'source_not_granted') return 'not_granted';
+  // Release 4: a window the grammar cannot resolve is its own closed reason, never an endpoint outage.
+  if (rawReason === 'window_unparsed') return 'window_unparsed';
   if (outcome === 'timeout' || rawReason === 'deadline_exhausted' || rawReason === 'cancelled') return 'timeout';
   if (outcome === 'unavailable' || rawReason !== undefined) return 'endpoint_unavailable';
   return 'read_failed';
@@ -2152,7 +2185,7 @@ const REASON_WORDS: Record<string, string> = {
   'credential-refresh-failed': 'sign in again',
   // #500: a source the identity server will not publish a read grant for.
   source_not_granted: 'read grant not published',
-  unresolved_window: 'could not resolve that date or window',
+  window_unparsed: 'could not resolve that date or window, ask for a day or a week',
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',
@@ -2323,7 +2356,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     ...(trouble !== undefined ? [trouble] : []),
     ...(mailCoverageNote !== undefined ? [mailCoverageNote] : []),
   ];
-  if (run.unavailableReasons.get('calendar') === 'unresolved_window') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
+  if (run.unavailableReasons.get('calendar') === 'window_unparsed') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   let note = clauses.length === 0 ? undefined : clauses.join(' ');
   // P5: a source that could not be read names its own reason, so an outage is never read as "nothing
   // found" and never as a timeout.
@@ -2422,7 +2455,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
     try { range = windowRange(calendarWindowOf(query, ''), context.now(), context.timeZone); }
-    catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true }; }
+    catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true, reason: 'window_unparsed' }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
       { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
       { key: 'cal1', name: INTERNAL.calendars, args: { maxResults: 20 } as JsonObject },
@@ -2473,6 +2506,8 @@ interface RoutedOutcome {
   outcome: LookupOutcome; ms: number; historyPage?: JsonObject; lines: string[]; total: number;
   /** E5: the mail queries this read ran, so the receipt carries their shape and the reply their words. */
   mail?: MailQueryInfo;
+  /** Release 4: the pages this read lost after it had already delivered, so the receipt says partial. */
+  partial?: { reason: MailPartialReason; failedPages: number };
   /** MED-1022: the one sub-call this read issued, so the knowledge receipt counts its own query terms. */
   sub?: IntentSubCall;
   /** ONE-1023: identical reads this one dispatch served, so the receipt counts them. */
@@ -2621,6 +2656,12 @@ function pause(deps: ResearchDeps, ms: number): Promise<void> {
   return new Promise<void>(resolve => { (deps.schedule ?? scheduleTimer)(resolve, ms); });
 }
 
+/**
+ * Release 4: a page this read lost is counted, so a read that already delivered its earlier pages is
+ * reported partial instead of failed.
+ */
+function failMailPage(read: MailRead): void { read.failed = true; read.failedPages = (read.failedPages ?? 0) + 1; }
+
 async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: readonly MailRead[], parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   await collectMail(deps, run, parent, remainingMs, now);
   if (parent.aborted) return;
@@ -2662,9 +2703,9 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     run.ops += calls.length;
     let results: IntentSubResult[];
     try { results = await deps.execute(calls, signal); }
-    catch { for (const read of reads) { read.inflight = false; read.failed = true; } if (signal.aborted) run.cutShort.add('mail'); break; }
+    catch { for (const read of reads) { read.inflight = false; failMailPage(read); } if (signal.aborted) run.cutShort.add('mail'); break; }
     if (parent.aborted || run.cancelled || run.stopped) { for (const read of reads) read.inflight = false; invalidateEvidence(run); break; }
-    if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; read.failed = true; } run.cutShort.add('mail'); break; }
+    if (signal.aborted || now() >= run.mailDeadlineAt) { for (const read of reads) { read.inflight = false; failMailPage(read); } run.cutShort.add('mail'); break; }
     // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
     // A native page that failed is terminal for its source, so only a first page is retried.
     // F2: a rate-limited page never takes that immediate retry; it waits once, then the read is closed.
@@ -2688,7 +2729,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     reads.forEach((read, n) => {
       read.inflight = false;
       const result = results[n];
-      if (!result?.ok || deps.authorizeEvidence && !result.binding) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      if (!result?.ok || deps.authorizeEvidence && !result.binding) { failMailPage(read); if (result?.code !== undefined) read.code = result.code; return; }
       read.pages += 1;
       // A search that answered with text but no page envelope is still that search's answer: each tagged
       // line is one message, so the follow-up read and the reply carry it like any other page.
@@ -2707,7 +2748,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       for (const message of page.messages) if (!read.messages.has(message.id)) read.messages.set(message.id, message);
       read.received += page.received; read.invalid += page.invalid; read.upstreamIncomplete ||= page.upstreamIncomplete === true;
       const next = page.nextPageToken;
-      if (next && (next.length > 4096 || read.tokens.has(next))) { read.failed = true; return; }
+      if (next && (next.length > 4096 || read.tokens.has(next))) { failMailPage(read); return; }
       if (next) read.nextPageToken = next;
       else { delete read.nextPageToken; read.exhausted = true; }
     });
@@ -2726,10 +2767,13 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
   await collectMailWithRetry(deps, run, reads, signal, firstPage ? Math.min(remainingMs, RESEARCH.firstAnswerMs) : remainingMs, now);
   return plans.map((plan, n) => {
     const read = reads[n]!, lines = [...read.messages.values()].map(message => message.line);
-    // F2: a read that failed or was cut short is not ok, even when it had already carried lines.
-    const outcome: LookupOutcome = lines.length > 0 ? (read.failed || run.cutShort.has('mail') ? 'failed' : 'ok') : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
+    // Release 4: a read that already delivered its pages keeps them; a later lost page makes it partial,
+    // and only a read that delivered nothing at all is a failed read.
+    const delivered = lines.length > 0;
+    const outcome: LookupOutcome = delivered ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
+    const failedPages = read.failedPages ?? 0;
     const info = mailQueryInfo(read);
-    return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }) };
+    return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }), ...(delivered && failedPages > 0 ? { partial: { reason: 'pages_failed' as const, failedPages } } : {}) };
   });
 }
 
@@ -2862,7 +2906,7 @@ async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly 
   const owned = new Map<RoutedPlan, string>();
   for (const plan of plans) {
     const call = plan.read.subs.find(sub => sub.name === INTERNAL.calendarList);
-    if (!call || plan.read.unresolved) { run.unavailableReasons.set('calendar', 'unresolved_window'); continue; }
+    if (!call || plan.read.unresolved) { run.unavailableReasons.set('calendar', 'window_unparsed'); continue; }
     const key = JSON.stringify(call.args);
     owned.set(plan, key);
     if (!run.calendar.has(key)) run.calendar.set(key, { args: { ...call.args }, events: new Map(), bindings: [], tokens: new Set(), exhausted: false, failed: false, bodyTruncated: false, unread: 0 });
@@ -2938,7 +2982,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   // N3: an unresolvable window reads nothing and says why, instead of spending the batch deadline.
   // K1: a lookup this routing cannot serve settles under its own name and reason, never as another layer.
   for (const plan of plans.filter(entry => entry.read.unresolved)) {
-    run.unavailableReasons.set(plan.read.source as SourceKind, plan.read.reason ?? 'unresolved_window');
+    run.unavailableReasons.set(plan.read.source as SourceKind, plan.read.reason ?? 'window_unparsed');
     done.push(settle(plan, 'unavailable'));
   }
   if (reads.length === 0) return done;
@@ -3068,6 +3112,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
         ...mailReceiptField(outcome.mail),
+        ...(outcome.partial === undefined ? {} : { partial: outcome.partial.reason, failedPages: outcome.partial.failedPages }),
       });
       logSubcall({
         event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
@@ -3341,7 +3386,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
-    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
+    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
   } else {
     if (call.cursor !== undefined) {
       const prior = deps.ledger.find(call.researchId ?? '');
@@ -3514,7 +3559,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // ROUTE-1022 (#526): the source classes this question is about, and the run's own budget as the
   // latest moment the first answer may hold for them. Both are read by the first answer point only,
   // and both are set here so the budget is the one this run declared.
-  const required = new Set(requiredSources(question || run.direction || '').filter(source => configured.includes(source)));
+  // Release 4: a continuation plans from its own content words, never from the model's meta words.
+  const plannedText = planText(question, run);
+  const required = new Set(requiredSources(plannedText).filter(source => configured.includes(source)));
   if (required.size > 0) first.required = required;
   first.releaseAt = () => started + answerMs;
   /**
@@ -3594,10 +3641,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       const candidatesForSelector = narrowed ?? offerable;
       // ROUTE-1022 (#526): an unambiguous question is routed here, so the selector call is never spent
       // on it. The router reads the same word classes the fallback recipe does.
-      const routed = round === 1 && hint.length === 0 ? routedSelection(question || run.direction || '', configured, now()) : undefined;
+      const routed = round === 1 && hint.length === 0 ? routedSelection(plannedText, configured, now()) : undefined;
       if (narrowed !== undefined) {
         // Outcome 6: one certain source is deterministic; skip the selector call entirely.
-        selection = fallbackSelection(question || run.direction || '', configured, now());
+        selection = fallbackSelection(plannedText, configured, now());
       } else if (routed !== undefined) {
         selection = routed;
         if (driver === undefined) driver = 'routed';
@@ -3605,7 +3652,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         // F-B: the voice path never waits for a selector round; the deterministic recipe answers at once.
         fallbackUsed = true;
         usedFallbackThisRound = true;
-        selection = fallbackSelection(question || run.direction || '', configured, now());
+        selection = fallbackSelection(plannedText, configured, now());
         if (driver === undefined) driver = 'fallback';
       }
 
@@ -3615,7 +3662,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // A single-source hint must always run that source, even when the question carried no terms
       // the fallback could match (an empty or terse spoken question): seed the hinted searches.
       if (narrowed !== undefined) {
-        const text = question || run.direction || '';
+        const text = plannedText;
         for (const kind of narrowed) {
           if (selection.actions.some(action => action.kind === kind)) continue;
           selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
@@ -3625,10 +3672,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
 
       // ROUTE-1022: a question about the owner's own schedule keeps the calendar read in the plan on
       // the selector path and the fallback path alike, whenever the calendar endpoint can serve it.
-      const scheduleText = question || run.direction || '';
-      if (ownerScheduleQuestion(scheduleText) && selection.actions.length > 0 && candidatesForSelector.includes('calendar_window')
+      if (ownerScheduleQuestion(plannedText) && selection.actions.length > 0 && candidatesForSelector.includes('calendar_window')
         && !unavailable.includes('calendar') && !selection.actions.some(action => action.kind === 'calendar_window')) {
-        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', scheduleText, now()) });
+        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now()) });
         selection.pUseful['calendar_window'] ??= 0.4;
       }
 
@@ -3679,7 +3725,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const action = selection.actions.find(entry => entry.kind === kind);
           let subs: IntentSubCall[];
           try { subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
-          catch { run.unavailableReasons.set('calendar', 'unresolved_window'); run.sourcesFailed.add('calendar'); return; }
+          catch { run.unavailableReasons.set('calendar', 'window_unparsed'); run.sourcesFailed.add('calendar'); return; }
           recordChatDate(run, action?.query, subs);
           // F2: the live step speaks the owner's words, never the compiled Gmail query.
           if (kind === 'mail_search' && action?.query !== undefined) for (const sub of subs) run.ownerQueries.set(String(sub.args['q']), action.query);

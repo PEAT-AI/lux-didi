@@ -1554,3 +1554,53 @@ test('ONE-1023: next week is moved once, and a window that reaches today narrows
   assert.equal(meetingBounds("tomorrow's meeting", undefined, now, zone), undefined, 'neither does tomorrow');
   assert.equal(meetingBounds('my meetings this week', undefined, now, zone), undefined, 'a week that reaches today asks the topic, not the day');
 });
+
+// --- Release 4: a continuation hop searches content words, never the model's meta words ----------
+
+/** The queries one continuation hop dispatched, by tool, so a test reads what really left the host. */
+function queriesOf(h: Harness, from: number, tool: string): string[] {
+  return h.executed.slice(from).filter(call => call.name === tool)
+    .map(call => (call.args as Record<string, unknown>)['q'] ?? (call.args as Record<string, unknown>)['query'])
+    .filter((value): value is string => typeof value === 'string');
+}
+
+test('release 4: a mail continuation never appends the model meta words after the inbox window', async () => {
+  const h = harness({});
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'budget review email from Korbi', lookups: [{ source: 'knowledge', query: 'budget review korbi' }] }, new AbortController().signal);
+  const before = h.executed.length;
+  await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'remaining metadata business-relevant' }, new AbortController().signal);
+  const searched = queriesOf(h, before, 'gmail_search_messages');
+  assert.ok(searched.length > 0, `the continuation still searches mail: ${JSON.stringify(h.executed.slice(before))}`);
+  for (const q of searched) assert.equal(/\b(?:remaining|metadata|business-relevant)\b/u.test(q), false, `no meta word rides the mail query: ${q}`);
+  assert.match(searched[0]!, /korbi/u, 'the continuation search text is the owner question, not the direction');
+});
+
+test('release 4: a knowledge continuation never searches the instruction words of its direction', async () => {
+  const h = harness({});
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'what notes do we have on the hawthorn release', lookups: [{ source: 'chat', query: 'hawthorn release' }] }, new AbortController().signal);
+  const before = h.executed.length;
+  await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'through retained earlier action-needed' }, new AbortController().signal);
+  const searched = queriesOf(h, before, 'search_knowledge');
+  assert.ok(searched.length > 0, `the continuation still reads knowledge: ${JSON.stringify(h.executed.slice(before))}`);
+  for (const q of searched) {
+    assert.equal(/\b(?:through|retained|earlier|action-needed)\b/u.test(q), false, `no instruction word rides the knowledge query: ${q}`);
+    assert.match(q, /hawthorn|release/u, 'the owner question terms are the search text');
+  }
+});
+
+test('release 4: a chat continuation never searches a bare meta direction word', async () => {
+  const h = harness({});
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'what did the team say in chat about the hawthorn release', lookups: [{ source: 'knowledge', query: 'hawthorn release' }] }, new AbortController().signal);
+  const before = h.executed.length;
+  await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'other' }, new AbortController().signal);
+  const searched = queriesOf(h, before, 'mattermost_search');
+  assert.ok(searched.length > 0, `the continuation still reads chat: ${JSON.stringify(h.executed.slice(before))}`);
+  for (const q of searched) {
+    assert.equal(/(?:^|\s)other(?:\s|$)/u.test(q), false, `the meta word other never becomes a chat query: ${q}`);
+    assert.match(q, /hawthorn|release/u, 'the owner question terms are the search text');
+  }
+});
+

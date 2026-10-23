@@ -259,6 +259,8 @@ test('ROUTE-R2: the host log keeps a skip reason only from the closed set', () =
   assert.ok(kept !== undefined, 'a skipped row keeps its closed reason');
   assert.deepEqual((kept['sources'] as Record<string, unknown>[])[0], { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'not_granted' });
   assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'identity_unverified' }] }), undefined, 'an open word is refused');
+  const window = { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'window_unparsed' };
+  assert.deepEqual((safeEvent({ ...receipt, sources: [window] })?.['sources'] as Record<string, unknown>[])[0], window, 'release 4: the window reason is a closed member of the set');
   assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 4, reason: 'timeout' }] }), undefined, 'a served row carries no skip reason');
 });
 
@@ -315,7 +317,9 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
   assert.deepEqual(sent, ['first', 'p2', 'p2'], 'the failed page is retried once after a wait, and page 1 is never refetched');
   assert.equal(waits, 1, 'exactly one delayed retry');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
-  assert.equal(receipt.outcome, 'failed', 'a read that stopped mid-way is not ok, even though it carried its first page');
+  assert.equal(receipt.outcome, 'ok', 'a read that delivered its pages keeps them, even when a later page stopped');
+  assert.equal(receipt.partial, 'pages_failed', 'and the source result says partial with the page it lost');
+  assert.equal(receipt.failedPages, 1, 'the count of pages it lost');
   assert.match(String(reply['note']), /Still reading: mail|mail search stopped/u, 'the answer never claims the mailbox was read to the end');
 });
 

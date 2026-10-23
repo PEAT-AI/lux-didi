@@ -10,6 +10,7 @@ import { ChatService, ChatError, chatMigrations, admitCapabilities, ownerEvidenc
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
+import { recordHistorySession } from '../domain/history-lifecycle.js';
 import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
@@ -591,8 +592,11 @@ test('text chat and voice receive the same summary for the same past session', a
   const NOW = 1_700_000_000_000;
   const f = fixture({ now: () => NOW });
   try {
-    f.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 'past-chat', status: 'complete', endedAt: NOW - 1_000, now: NOW,
-      summary: 'The owner said they moved to Lisbon; Naya noted the timezone change.' }));
+    f.store.transaction(tx => {
+      recordHistorySession(tx, 'past-chat', f.store.assistantId, ['ordinary'], [], NOW - 2_000);
+      summaries.insertSummary(tx, { liveSessionId: 'past-chat', status: 'complete', endedAt: NOW - 1_000, now: NOW, dataClass: 'ordinary', sourceRevision: 1,
+        summary: 'The owner said they moved to Lisbon; Naya noted the timezone change.' });
+    });
     const run = f.accept('What did we discuss?', 'parity');
     const done = await terminal(f, run);
     assert.equal(done.outcome, 'complete');

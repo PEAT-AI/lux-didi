@@ -1683,6 +1683,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
   assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, over ${RESEARCH.replyLimitChars}`);
+  console.log('PROBE-B3 logs', JSON.stringify(h.logs.map(entry => [entry.event, entry.answerCompacted ?? null, entry.replyBytes, entry.stopReason, entry.rounds])), 'bytes', text.length, 'findings', JSON.stringify(((reply['findings'] ?? []) as {source:string;text:string}[]).map(f => [f.source, f.text.length])), 'note', String(reply['note'] ?? ''));
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');

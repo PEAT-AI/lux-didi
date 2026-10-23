@@ -438,16 +438,16 @@ const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly Connector
   const offset = { type: 'integer', minimum: 0 };
   const detail = { type: 'string', enum: ['summary', 'full'] };
   return [
-    mongooseDeclaration('ask_mongoose', 'Ask company knowledge and preserve the returned evidence and answerability.', { question: text, limit }, ['question']),
-    mongooseDeclaration('search_mongoose', 'Search curated company, product, knowledge and ticket evidence. Use returned entity identifiers for precise reads; offset follows source-native pagination.', {
+    mongooseDeclaration('kb_ask_mongoose', 'Ask company knowledge and preserve the returned evidence and answerability.', { question: text, limit }, ['question']),
+    mongooseDeclaration('kb_search_mongoose', 'Search curated company, product, knowledge and ticket evidence. Use returned entity identifiers for precise reads; offset follows source-native pagination.', {
       query: text, limit, offset, scope: { type: 'string', enum: ['all', 'knowledge'] }, domain: { type: ['string', 'null'] },
       include: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }, { type: 'null' }] }, include_strong: { type: 'boolean' },
     }, ['query']),
-    mongooseDeclaration('get_knowledge_item', 'Read one company knowledge item using id, item_id or identifier. detail selects summary or full.', { id: text, item_id: text, identifier: text, detail }),
-    mongooseDeclaration('read_knowledge_body', 'Read a company knowledge body chunk by returned ref. Continue with its exact cursor; max_chars controls this chunk.', { ref: text, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1 } }, ['ref']),
-    mongooseDeclaration('get_company_profile', 'Read a named company profile; detail and sections select the evidence.', { company_name: text, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: ['array', 'null'], items: { type: 'string' } }, flagship_only: { type: 'boolean' }, launch_year: { type: ['number', 'null'] } }, ['company_name']),
-    companyDeclaration('list_tickets', 'List bounded company tickets.', Math.min(500, policy.bounds.maxQueryChars), undefined, Math.min(100, policy.bounds.maxSearchLimit)),
-    mongooseDeclaration('get_ticket', 'Read a company ticket by its returned number. body_offset continues its body; offset and limit continue its related lists.', { number: { type: ['number', 'string'] }, detail, body_offset: offset, limit, offset }, ['number']),
+    mongooseDeclaration('kb_get_knowledge_item', 'Read one company knowledge item using id, item_id or identifier. detail selects summary or full.', { id: text, item_id: text, identifier: text, detail }),
+    mongooseDeclaration('kb_read_knowledge_body', 'Read a company knowledge body chunk by returned ref. Continue with its exact cursor; max_chars controls this chunk.', { ref: text, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1 } }, ['ref']),
+    mongooseDeclaration('kb_get_company_profile', 'Read a named company profile; detail and sections select the evidence.', { company_name: text, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: ['array', 'null'], items: { type: 'string' } }, flagship_only: { type: 'boolean' }, launch_year: { type: ['number', 'null'] } }, ['company_name']),
+    companyDeclaration('kb_list_tickets', 'List bounded company tickets.', Math.min(500, policy.bounds.maxQueryChars), undefined, Math.min(100, policy.bounds.maxSearchLimit)),
+    mongooseDeclaration('kb_get_ticket', 'Read a company ticket by its returned number. body_offset continues its body; offset and limit continue its related lists.', { number: { type: ['number', 'string'] }, detail, body_offset: offset, limit, offset }, ['number']),
   ];
 };
 /**
@@ -475,13 +475,13 @@ const mongooseDescriptor: ConnectorDescriptor = {
     const reader = createMongooseReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxSearchLimit: Math.min(50, policy.bounds.maxSearchLimit), maxListLimit: Math.min(100, policy.bounds.maxSearchLimit), queryChars: Math.min(500, policy.bounds.maxQueryChars) } });
     return { async call(tool, args, signal) {
       switch (tool) {
-        case 'ask_mongoose': return reader.ask(args as { question: string; limit?: number }, signal);
-        case 'search_mongoose': return reader.search(args as unknown as SearchInput, signal);
-        case 'get_knowledge_item': return reader.getKnowledgeItem(args as KnowledgeItemInput, signal);
-        case 'read_knowledge_body': return reader.readKnowledgeBody(args as unknown as KnowledgeBodyInput, signal);
-        case 'get_company_profile': return reader.companyProfile(args as unknown as CompanyProfileInput, signal);
-        case 'list_tickets': return reader.listTickets(args, signal);
-        case 'get_ticket': return reader.getTicket(args as unknown as TicketInput, signal);
+        case 'kb_ask_mongoose': return reader.ask(args as { question: string; limit?: number }, signal);
+        case 'kb_search_mongoose': return reader.search(args as unknown as SearchInput, signal);
+        case 'kb_get_knowledge_item': return reader.getKnowledgeItem(args as KnowledgeItemInput, signal);
+        case 'kb_read_knowledge_body': return reader.readKnowledgeBody(args as unknown as KnowledgeBodyInput, signal);
+        case 'kb_get_company_profile': return reader.companyProfile(args as unknown as CompanyProfileInput, signal);
+        case 'kb_list_tickets': return reader.listTickets(args, signal);
+        case 'kb_get_ticket': return reader.getTicket(args as unknown as TicketInput, signal);
         default: return reader.call(tool, args, signal);
       }
     } };

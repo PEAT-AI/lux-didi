@@ -6,93 +6,101 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
 /**
  * The remote tools this connector carries a typed projection for, in fixed order.
  */
+/** The typed names the reader projects for the knowledge endpoint, in fixed order. */
 export const MONGOOSE_TOOLS = [
-  'ask_mongoose',
-  'search_mongoose',
-  'get_knowledge_item',
-  'read_knowledge_body',
-  'get_company_profile',
-  'list_tickets',
-  'get_ticket',
+  'kb_ask_mongoose',
+  'kb_search_mongoose',
+  'kb_get_knowledge_item',
+  'kb_read_knowledge_body',
+  'kb_get_company_profile',
+  'kb_list_tickets',
+  'kb_get_ticket',
 ] as const;
 export type MongooseTool = (typeof MONGOOSE_TOOLS)[number];
 
-/** The read prefixes the classifier accepts when a server ships no MCP annotations. */
-export const MONGOOSE_READ_PREFIXES = ['get_', 'list_', 'search_', 'ask_', 'read_', 'lookup_', 'check_'] as const;
-
 /**
- * The widest read envelope this connector will ever call: every read-only tool of the published
- * 64-tool surface, plus the Lightdash reads, whose mutability the server takes from Lightdash.
- * A write is absent, and the discovery-time classifier below narrows this list to what the server
- * itself annotates as read-only before anything is granted.
+ * Every tool name carries the prefix of the one endpoint that serves it, so no name repeats across the
+ * three servers and the model-facing table needs no renaming step.
  */
-export const MONGOOSE_READ_TOOLS = [
+const KNOWLEDGE_READS = [
   ...MONGOOSE_TOOLS,
-  'check_data_capability',
-  'get_commercial_paths',
-  'get_company_crm',
-  'get_knowledge_graph',
-  'get_knowledge_versions',
-  'get_market_profile',
-  'get_reach',
-  'get_schema',
-  'get_started',
-  'inbound_lead_events',
-  'lint_knowledge',
-  'list_companies',
-  'list_company_products',
-  'list_data_capabilities',
-  'list_inbound_leads',
-  'list_knowledge_domains',
-  'list_knowledge_edges',
-  'list_knowledge_items',
-  'list_markets',
-  'list_offerings',
-  'list_seed_conflicts',
-  'list_user_handles',
-  'list_users',
-  'lookup_efficacy_evidence',
-  'summarize_email_engagements',
-  'lightdash_find_content',
-  'lightdash_generate_hashes',
-  'lightdash_get_context',
-  'lightdash_get_current_project',
-  'lightdash_get_lightdash_version',
-  'lightdash_get_metadata',
-  'lightdash_get_query_result',
-  'lightdash_grep_fields',
-  'lightdash_list_content',
-  'lightdash_list_explores',
-  'lightdash_list_projects',
-  'lightdash_list_verified_content',
-  'lightdash_read_content',
-  'lightdash_resolve_url',
-  'lightdash_run_metric_query',
-  'lightdash_run_sql',
-  'lightdash_search_field_values',
+  'kb_check_data_capability',
+  'kb_get_commercial_paths',
+  'kb_get_knowledge_graph',
+  'kb_get_knowledge_versions',
+  'kb_get_market_profile',
+  'kb_get_reach',
+  'kb_get_started',
+  'kb_lint_knowledge',
+  'kb_list_companies',
+  'kb_list_company_products',
+  'kb_list_data_capabilities',
+  'kb_list_knowledge_domains',
+  'kb_list_knowledge_edges',
+  'kb_list_knowledge_items',
+  'kb_list_markets',
+  'kb_list_offerings',
+  'kb_list_seed_conflicts',
+  'kb_lookup_efficacy_evidence',
+  'kb_summarize_email_engagements',
 ] as const;
 
-/**
- * The known write surface of the published catalog. A write is never auto-approved, whatever the
- * remote's advisory annotation says; it stays behind the existing explicit grant.
- */
-export const MONGOOSE_KNOWN_WRITES = [
-  'claim_ticket',
-  'create_knowledge_item',
-  'create_ticket',
-  'patch_knowledge_body',
-  'provision_user',
-  'resolve_seed_conflict',
-  'set_knowledge_edge',
-  'set_knowledge_item_status',
-  'set_user_access',
-  'update_knowledge_item',
-  'update_ticket',
-  'lightdash_create_content',
-  'lightdash_create_scheduled_delivery',
-  'lightdash_edit_content',
-  'lightdash_set_project',
+const KNOWLEDGE_WRITES = [
+  'kb_claim_ticket',
+  'kb_create_knowledge_item',
+  'kb_create_ticket',
+  'kb_patch_knowledge_body',
+  'kb_resolve_seed_conflict',
+  'kb_set_knowledge_edge',
+  'kb_set_knowledge_item_status',
+  'kb_update_knowledge_item',
+  'kb_update_ticket',
 ] as const;
+
+const DATA_READS = [
+  'data_find_content',
+  'data_generate_hashes',
+  'data_get_context',
+  'data_get_current_project',
+  'data_get_lightdash_version',
+  'data_get_metadata',
+  'data_get_query_result',
+  'data_grep_fields',
+  'data_list_content',
+  'data_list_explores',
+  'data_list_projects',
+  'data_list_verified_content',
+  'data_read_content',
+  'data_resolve_url',
+  'data_run_metric_query',
+  'data_run_sql',
+  'data_search_field_values',
+] as const;
+
+const DATA_WRITES = ['data_create_content', 'data_create_scheduled_delivery', 'data_edit_content', 'data_set_project'] as const;
+
+const CRM_READS = ['crm_get_company_crm', 'crm_list_inbound_leads', 'crm_inbound_lead_events'] as const;
+
+/** The read envelope of the whole connector: the union of the three endpoints' own reads. */
+export const MONGOOSE_READ_TOOLS = [...KNOWLEDGE_READS, ...DATA_READS, ...CRM_READS] as const;
+
+/** The names a Mongoose server may send as advisory writes: never a read, whatever its annotation says. */
+export const MONGOOSE_KNOWN_WRITES = [...KNOWLEDGE_WRITES, ...DATA_WRITES] as const;
+
+/** The read prefixes the classifier accepts, read after the endpoint prefix is removed. */
+export const MONGOOSE_READ_PREFIXES = [
+  'get_', 'list_', 'search_', 'ask_', 'read_', 'lookup_', 'check_', 'lint_', 'summarize_',
+  'find_', 'grep_', 'generate_', 'resolve_', 'run_', 'inbound_',
+] as const;
+
+/** The endpoint prefix of one tool name. */
+export const MONGOOSE_TOOL_PREFIXES = ['kb_', 'data_', 'crm_'] as const;
+
+/** A tool name without its endpoint prefix, so the classifier reads the verb, not the endpoint. */
+export function mongooseBareToolName(tool: string): string {
+  const prefix = MONGOOSE_TOOL_PREFIXES.find(candidate => tool.startsWith(candidate));
+  return prefix === undefined ? tool : tool.slice(prefix.length);
+}
 
 /**
  * The Mongoose ACCESS endpoints. One entry per endpoint, so an id, a URL, an audience and a read
@@ -115,35 +123,8 @@ export interface MongooseEndpoint {
   readonly reads: readonly string[];
 }
 
-/** The two names every endpoint carries by design; the only names three endpoints share. */
-export const MONGOOSE_GATEWAY_TOOLS = ['describe_tools', 'call_tool'] as const;
-
 /** Development base; the merge notice pins the release URL. No trailing slash. */
 export const MONGOOSE_BASE_URL = 'https://mongoose.dev.peat-cloud.com';
-
-const KNOWLEDGE_READS = [
-  'ask_mongoose', 'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile',
-  'list_tickets', 'get_ticket', 'check_data_capability', 'get_commercial_paths', 'get_knowledge_graph',
-  'get_knowledge_versions', 'get_market_profile', 'get_reach', 'get_started', 'lint_knowledge',
-  'list_companies', 'list_company_products', 'list_data_capabilities', 'list_knowledge_domains',
-  'list_knowledge_edges', 'list_knowledge_items', 'list_markets', 'list_offerings', 'list_seed_conflicts',
-  'lookup_efficacy_evidence', 'summarize_email_engagements',
-] as const;
-
-const KNOWLEDGE_WRITES = [
-  'claim_ticket', 'create_knowledge_item', 'create_ticket', 'patch_knowledge_body', 'resolve_seed_conflict',
-  'set_knowledge_edge', 'set_knowledge_item_status', 'update_knowledge_item', 'update_ticket',
-] as const;
-
-const DATA_READS = [
-  'find_content', 'generate_hashes', 'get_context', 'get_current_project', 'get_lightdash_version',
-  'get_metadata', 'get_query_result', 'grep_fields', 'list_content', 'list_explores', 'list_projects',
-  'list_verified_content', 'read_content', 'resolve_url', 'run_metric_query', 'run_sql', 'search_field_values',
-] as const;
-
-const DATA_WRITES = ['create_content', 'create_scheduled_delivery', 'edit_content', 'set_project'] as const;
-
-const CRM_READS = ['get_company_crm', 'list_inbound_leads', 'inbound_lead_events'] as const;
 
 /**
  * The connected endpoints, in the order the settings panel and the sign-in command use. Knowledge
@@ -154,17 +135,17 @@ export const MONGOOSE_ENDPOINTS: readonly MongooseEndpoint[] = [
   {
     id: 'mongoose-knowledge', name: 'knowledge', label: 'Mongoose knowledge', audience: 'mongoose:knowledge',
     source: 'company', url: `${MONGOOSE_BASE_URL}/mcp/knowledge`,
-    tools: [...MONGOOSE_GATEWAY_TOOLS, ...KNOWLEDGE_READS, ...KNOWLEDGE_WRITES], reads: KNOWLEDGE_READS,
+    tools: [...KNOWLEDGE_READS, ...KNOWLEDGE_WRITES], reads: KNOWLEDGE_READS,
   },
   {
     id: 'mongoose-data', name: 'data', label: 'Lightdash numbers', audience: 'mongoose:data',
     source: 'data', url: `${MONGOOSE_BASE_URL}/mcp/data`,
-    tools: [...MONGOOSE_GATEWAY_TOOLS, ...DATA_READS, ...DATA_WRITES], reads: DATA_READS,
+    tools: [...DATA_READS, ...DATA_WRITES], reads: DATA_READS,
   },
   {
     id: 'mongoose-crm', name: 'crm', label: 'HubSpot companies and leads', audience: 'mongoose:crm',
     source: 'crm', url: `${MONGOOSE_BASE_URL}/mcp/crm`,
-    tools: [...MONGOOSE_GATEWAY_TOOLS, ...CRM_READS], reads: CRM_READS,
+    tools: [...CRM_READS], reads: CRM_READS,
   },
 ];
 
@@ -189,11 +170,6 @@ export function mongooseEndpointOfUrl(url: string): MongooseEndpoint | undefined
 export function mongooseMetadataUrl(endpointUrl: string): string {
   const parsed = new URL(endpointUrl);
   return `${parsed.origin}/.well-known/oauth-protected-resource${parsed.pathname.replace(/\/+$/, '')}`;
-}
-
-/** A tool name two endpoints both grant is model-facing under its endpoint id. */
-export function mongooseModelToolName(endpointId: string, tool: string): string {
-  return `${endpointId}__${tool}`;
 }
 
 /**
@@ -253,7 +229,8 @@ export function mongooseReadOnly(tool: { name: string; annotations?: unknown }):
     const hint = (annotations as Record<string, unknown>)['readOnlyHint'];
     return typeof hint === 'boolean' ? hint : false;
   }
-  return MONGOOSE_READ_PREFIXES.some(prefix => tool.name.startsWith(prefix));
+  const bare = mongooseBareToolName(tool.name);
+  return MONGOOSE_READ_PREFIXES.some(prefix => bare.startsWith(prefix));
 }
 
 /** Bounded argument defaults; a caller may only narrow these, never widen them. */
@@ -470,16 +447,16 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
 
   return {
     async ask(input: AskInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'ask_mongoose');
+      const denied = preflight(registry, settings, 'kb_ask_mongoose');
       if (denied) return { state: 'refused', reason: denied };
       const question = boundedQuestion(input.question);
       if (question === undefined) return { state: 'refused', reason: 'invalid-question' };
       const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      return dispatch('ask_mongoose', { question, ...bounded }, signal);
+      return dispatch('kb_ask_mongoose', { question, ...bounded }, signal);
     },
     async search(input: SearchInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'search_mongoose');
+      const denied = preflight(registry, settings, 'kb_search_mongoose');
       if (denied) return { state: 'refused', reason: denied };
       const query = boundedQuestion(input.query);
       if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
@@ -487,42 +464,42 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       const args = typedArgs(input, ['query', 'limit', 'scope', 'domain', 'include', 'include_strong', 'offset'], ['query']);
       if (!args) return { state: 'refused', reason: 'invalid-search-input' };
-      return dispatch('search_mongoose', { ...args, query, ...bounded }, signal);
+      return dispatch('kb_search_mongoose', { ...args, query, ...bounded }, signal);
     },
     async getKnowledgeItem(input: KnowledgeItemInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'get_knowledge_item');
+      const denied = preflight(registry, settings, 'kb_get_knowledge_item');
       if (denied) return { state: 'refused', reason: denied };
       const args = typedArgs(input, ['id', 'item_id', 'identifier', 'detail'], ['id', 'item_id', 'identifier']);
       if (!args || !['id', 'item_id', 'identifier'].some(key => args[key] !== undefined)) return { state: 'refused', reason: 'invalid-id' };
-      return dispatch('get_knowledge_item', args, signal);
+      return dispatch('kb_get_knowledge_item', args, signal);
     },
     async readKnowledgeBody(input: KnowledgeBodyInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'read_knowledge_body');
+      const denied = preflight(registry, settings, 'kb_read_knowledge_body');
       if (denied) return { state: 'refused', reason: denied };
       const args = typedArgs(input, ['ref', 'cursor', 'max_chars'], ['ref']);
       if (!args || args['ref'] === undefined) return { state: 'refused', reason: 'invalid-ref' };
-      return dispatch('read_knowledge_body', args, signal);
+      return dispatch('kb_read_knowledge_body', args, signal);
     },
     async companyProfile(input: CompanyProfileInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'get_company_profile');
+      const denied = preflight(registry, settings, 'kb_get_company_profile');
       if (denied) return { state: 'refused', reason: denied };
       const args = typedArgs(input, ['company_name', 'detail', 'sections', 'flagship_only', 'launch_year'], ['company_name']);
       if (!args || args['company_name'] === undefined) return { state: 'refused', reason: 'invalid-company-name' };
-      return dispatch('get_company_profile', args, signal);
+      return dispatch('kb_get_company_profile', args, signal);
     },
     async listTickets(input: ListInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'list_tickets');
+      const denied = preflight(registry, settings, 'kb_list_tickets');
       if (denied) return { state: 'refused', reason: denied };
       const bounded = limited(input.limit, MONGOOSE_DEFAULTS.listLimit, settings.maxListLimit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      return dispatch('list_tickets', bounded, signal);
+      return dispatch('kb_list_tickets', bounded, signal);
     },
     async getTicket(input: TicketInput, signal?: AbortSignal): Promise<MongooseResult> {
-      const denied = preflight(registry, settings, 'get_ticket');
+      const denied = preflight(registry, settings, 'kb_get_ticket');
       if (denied) return { state: 'refused', reason: denied };
       const args = typedArgs(input, ['number', 'detail', 'body_offset', 'limit', 'offset'], []);
       if (!args || (typeof args['number'] !== 'number' && boundedQuestion(args['number']) === undefined)) return { state: 'refused', reason: 'invalid-ticket-number' };
-      return dispatch('get_ticket', args, signal);
+      return dispatch('kb_get_ticket', args, signal);
     },
     async call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
       // Only a read name the local envelope carries is forwarded; the grant is checked in preflight.

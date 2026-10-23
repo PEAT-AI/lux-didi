@@ -2,6 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { hostClockDomain } from './clock.js';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
+import { QUERY_SHAPE_OPERATORS } from './schema.js';
 import {
   CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
   RESPONSE_STATUSES,
@@ -388,14 +389,14 @@ export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', '
 export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
 export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
 
-/** An operator is a lowercase code with no space, so a phrase can never be stored as one. */
-const OPERATOR_SHAPE = /^[a-z][a-z0-9_]{0,16}$/;
+/** An operator is a token from the closed list, so a searched word can never be stored as one. */
+const isOperator = (value: unknown): boolean => typeof value === 'string' && isOneOf(QUERY_SHAPE_OPERATORS, value);
 
 export function recordQueryShape(exec: TraceExec, shape: TraceQueryShape, at: number, researchId?: string): number {
   if (!isOneOf(QUERY_SHAPE_SOURCES, shape.source) || !isCount(shape.terms) || !isCount(shape.topicWords)) {
     throw new TraceRecordError('INVALID_VALUE', 'query_shape: source, terms or topicWords is outside its allowlist');
   }
-  if (shape.operators.some(operator => !OPERATOR_SHAPE.test(operator))) {
+  if (!shape.operators.every(isOperator)) {
     throw new TraceRecordError('INVALID_VALUE', 'query_shape: an operator is not a closed token');
   }
   if (researchId !== undefined && !isId(researchId)) throw new TraceRecordError('INVALID_VALUE', 'query_shape: researchId is not an id');

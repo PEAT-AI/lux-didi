@@ -3,6 +3,12 @@ import type { SchemaMigration } from '../contracts/storage.js';
 // Trace-owned additive migrations on the SAME Store connection as everything else: one
 // state.sqlite, never a second database. Five metadata tables carry ids, closed codes,
 // counts and durations only; the two content tables are the only place owner text lives.
+/** MAILQ 5: the closed operator tokens a stored query shape may name, lowercased. */
+export const QUERY_SHAPE_OPERATORS = [
+  'in', 'is', 'from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than',
+  'has', 'label', 'filename', 'larger', 'smaller', 'list', 'deliveredto', 'rfc822msgid',
+] as const;
+
 export const traceMigrations: readonly SchemaMigration[] = [{
   owner: 'trace',
   version: 1,

@@ -1,4 +1,5 @@
 import { RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
+import { QUERY_SHAPE_OPERATORS } from '../trace/schema.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -887,7 +888,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (typeof source !== 'string' || !ROUTED_SOURCES.includes(source)) return;
       if (!isSafeCount(row['terms']) || !isSafeCount(row['topicWords'])) return;
       const operators = row['operators'];
-      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !/^[a-z][a-z0-9_]{0,16}$/u.test(operator))) return;
+      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !(QUERY_SHAPE_OPERATORS as readonly string[]).includes(operator))) return;
       query = { source, terms: row['terms'], operators, topicWords: row['topicWords'] };
     }
     return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasQuery ? { query } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };

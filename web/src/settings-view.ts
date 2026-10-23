@@ -166,7 +166,7 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
   const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>${rows.some(row => row.signIn && row.id.startsWith('mongoose')) ? '<p><button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose</button></p>' : ''}`;
+  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signIn && row.id === 'mongoose' ? ' <button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose</button>' : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

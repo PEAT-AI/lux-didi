@@ -2364,19 +2364,21 @@ function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boole
  * N4 (#567): the budget is measured on the whole serialized reply, after every section is attached, so a
  * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
  * page hits the findings already carry, then the last lines of the widest finding; no structure is cut.
+ * F1/F2 (RESCAP-R3): a finding is dropped whole rather than left as a header over nothing, the reply is
+ * hard-bounded, and the state and the note are derived after the cut so they always agree.
  */
 export function capReply(reply: JsonObject, limit: number): JsonObject {
   // A requested body read pages at its own 6,000 char room, so it is never held to the search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
   const size = (): number => JSON.stringify(reply).length;
   const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
-  let trimmedFindings = false;
+  let trimmed = false;
   let guard = 4096;
   while (guard-- > 0 && size() > limit) {
     const pages = Array.isArray(reply['historyPages']) ? reply['historyPages'] as JsonObject[] : [];
     const widestPage = pages.reduce<JsonObject | undefined>((best, page) => best === undefined || hitsOf(page).length > hitsOf(best).length ? page : best, undefined);
-    if (widestPage !== undefined && hitsOf(widestPage).length > 0) { hitsOf(widestPage).pop(); continue; }
-    const findings = (Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [])
+    if (widestPage !== undefined && hitsOf(widestPage).length > 0) { hitsOf(widestPage).pop(); trimmed = true; continue; }
+    const findings = (Array.isArray(reply['findings']) ? reply['findings'] as { text?: string; chars?: number }[] : [])
       .filter(finding => typeof finding.text === 'string' && finding.text.includes('\n'))
       .sort((left, right) => (right.text ?? '').length - (left.text ?? '').length);
     const widest = findings[0];
@@ -2384,10 +2386,32 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     if (widest === undefined || lines.length <= 1) break;
     const head = (lines.shift() ?? '').replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
     lines.pop();
-    widest.text = [head, ...lines].join('\n');
-    trimmedFindings = true;
+    // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
+    if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
+    else { widest.text = [head, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
+    trimmed = true;
   }
-  if (trimmedFindings && reply['status'] === 'complete') { reply['status'] = 'partial'; reply['canContinue'] = true; }
+  // F2 (review): the hard bound. The page envelopes carry the same evidence as the findings, so they go last.
+  if (size() > limit && reply['historyPages'] !== undefined) { delete reply['historyPages']; trimmed = true; }
+  if (size() > limit) {
+    // The last bound: only the identity, the honest state and the note survive, because nothing else can be
+    // cut without breaking the structure, and the note already says the rest was left out.
+    const researchId = reply['researchId'];
+    for (const key of Object.keys(reply)) delete reply[key];
+    reply['researchId'] = researchId;
+    reply['status'] = 'partial';
+    reply['canContinue'] = true;
+    reply['findings'] = [];
+    trimmed = true;
+  }
+  if (!trimmed) return reply;
+  // F1 (review): the state and the note are derived together after the cut, so a capped reply never says
+  // nothing is left while it offers the continuation that would fetch the rest.
+  if (reply['status'] === 'complete') reply['status'] = 'partial';
+  reply['canContinue'] = true;
+  const note = typeof reply['note'] === 'string' ? reply['note'] : undefined;
+  reply['note'] = note === undefined || note.includes(RESEARCH.completeNote) ? RESEARCH.moreAvailableNote
+    : note.includes(RESEARCH.moreAvailableNote) ? note : `${note} ${RESEARCH.moreAvailableNote}`;
   return reply;
 }
 

@@ -1668,3 +1668,23 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
   assert.equal(RESEARCH.bodyLimitChars, 6_000, 'the body page bound is the page width a requested read had before');
   assert.equal(RESEARCH.replyLimitChars, 2_500, 'and the composed answer keeps the Live budget');
 });
+
+test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget is still trimmed to it', async () => {
+  // The reviewer's shape: one knowledge hit is one line of the connector's whole body, and the mail group
+  // beside it holds whole short lines. A trim that keeps one line per source cannot reach the budget.
+  const wide = `**#1** [PATTERN] Long body | ${'w'.repeat(2_900)}`;
+  const mail = ['- Release notes | from: Ana | date: 2026-10-16 [id m1]', '- Invoice | from: Ana | date: 2026-10-17 [id m2]', '- Plan | from: Ana | date: 2026-10-18 [id m3]'].join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? wide : mail, true, call.key)),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did we decide about the invoice and the release plan',
+    lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
+  }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, over ${RESEARCH.replyLimitChars}`);
+  const line = h.logs[0]!;
+  assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
+  assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
+  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
+});

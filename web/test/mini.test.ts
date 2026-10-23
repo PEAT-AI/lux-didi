@@ -104,7 +104,7 @@ test('the mini route opens no audio context, no microphone and no Live socket', 
   // M3: the state machine and its visual store are pure (no audio, no transport), so
   // they are the one runtime module the pill loads; every other import stays a type.
   const valueImports = imports.filter((line) => !line.startsWith('import type '));
-  assert.deepEqual(valueImports, ["import { createOrbStateMachine, presenceMuted, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';"],
+  assert.deepEqual(valueImports, ["import { createOrbVisualBlend, presenceMuted, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';"],
     'orb-states is the only runtime module the mini route reaches');
   // A runtime guard: painting the mini route constructs no audio or Live
   // transport, so the surface cannot open a session of its own.

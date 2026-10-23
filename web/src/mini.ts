@@ -1,6 +1,6 @@
 /** The transparent floating orb reuses the canonical renderer at 220 CSS pixels. */
 import type { VoiceState } from './orb.ts';
-import { createOrbStateMachine, presenceMuted, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
+import { createOrbVisualBlend, presenceMuted, publishOrbVisual, type MiniVisualState, type OrbVisual } from './orb-states.ts';
 import type { LiveActivity } from './live-view.ts';
 
 export type MiniState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'muted' | 'connecting' | 'tool' | 'error';
@@ -141,7 +141,7 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   if (!doc || !frame) return () => {};
   const now = scope.now ?? (() => (typeof performance === 'undefined' ? Date.now() : performance.now()));
   const reducedMotion = scope.reducedMotion ?? (() => (typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)').matches : false));
-  const machine = createOrbStateMachine('cold', { reducedMotion: reducedMotion(), settled: true });
+  const machine = createOrbVisualBlend('cold', { reducedMotion: reducedMotion() });
   let handle: number | undefined;
   let stopped = false;
   let settle: ReturnType<typeof setTimeout> | undefined;

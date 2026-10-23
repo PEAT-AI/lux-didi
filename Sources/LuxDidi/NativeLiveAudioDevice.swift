@@ -641,6 +641,9 @@ struct NativeLiveInterruptionSample: Sendable {
     var sessionFailedForTesting: Bool { sessionFailed }
     var isVoiceProcessingEnabledForTesting: Bool { engine?.inputNode.isVoiceProcessingEnabled ?? false }
     private var tapInstalled = false
+    /// A mute gave the microphone back; unmute owns the one rebuild that takes it again.
+    private var captureReleasedForMute = false
+    private var mutedAt: Date?
     private var rebuilding = false
     private var lastRebuildAt: Date?
     private var resumeTask: Task<Void, Never>?
@@ -730,6 +733,9 @@ struct NativeLiveInterruptionSample: Sendable {
         guard !rebuilding else {
             log("audio_route_change_ignored", ["reason": "busy"]); return
         }
+        guard !captureReleasedForMute else {
+            log("audio_route_change_ignored", ["reason": "muted"]); return
+        }
         // Rebuild only for a real change of default input/output device or nominal sample rate.
         let inputRate = Self.nominalSampleRate(input: true)
         let outputRate = Self.nominalSampleRate(input: false)
@@ -777,7 +783,9 @@ struct NativeLiveInterruptionSample: Sendable {
         input: { [unowned self] in self.inputDevice().id },
         release: { [weak self] in self?.releaseAudio() },
         rebuild: { [weak self] in
-            guard let self, let send = self.sendFrame else { throw NativeLiveAudioError.captureNotConfigured }
+            guard let self, !self.captureReleasedForMute, let send = self.sendFrame else {
+                throw NativeLiveAudioError.captureNotConfigured
+            }
             try self.build(send: send)
         },
         paused: { [weak self] _ in guard let self else { return }; self.onInputChange?(self.inputDevice().name) },
@@ -845,7 +853,7 @@ struct NativeLiveInterruptionSample: Sendable {
               let value = uid?.takeRetainedValue() else { return "unknown" }
         return value as String
     }
-    func resumeInput() { recovery.resume(); if isCapturing { onResume?() } }
+    func resumeInput() { guard !captureReleasedForMute else { return }; recovery.resume(); if isCapturing { onResume?() } }
 
     /// L12a: the default output's volume scalar and mute flag as this release found them, read through
     /// CoreAudio getters on the output scope and never written. `unknown` when the device or a getter
@@ -1194,7 +1202,43 @@ struct NativeLiveInterruptionSample: Sendable {
     func setMuted(_ muted: Bool) {
         if self.muted != muted { captureEpoch &+= 1 }
         self.muted = muted; capture?.setMuted(muted); inputLevel = 0; inputBands = .silent
-        if muted { turnGeneration &+= 1; flushOutput() }
+        if muted {
+            turnGeneration &+= 1; flushOutput()
+            releaseCaptureForMute()
+        } else {
+            resumeCaptureFromMute()
+        }
+    }
+    /// Muting hands the microphone back to the machine: another app must be able to run its own
+    /// capture, so the engine, the tap and the voice-processing unit all go while the call stays warm.
+    private func releaseCaptureForMute() {
+        guard engine != nil else { return }
+        captureReleasedForMute = true
+        mutedAt = now()
+        releaseAudio(keepingSlot: true)
+        log("audio_muted_release", ["generation": String(captureGeneration),
+                                    "epoch": String(captureEpoch)])
+    }
+    /// Unmute rebuilds capture alone: same conversation, same provider session, no ring, no reconnect.
+    private func resumeCaptureFromMute() {
+        guard captureReleasedForMute else { return }
+        captureReleasedForMute = false
+        guard let send = sendFrame else { return }
+        let requested = now()
+        do { try build(send: send) }
+        catch {
+            log("audio_muted_reacquire_failed",
+                ["reason": (error as? AudioOwnerError)?.rawValue ?? "build_failed"])
+            sendFrame = nil
+            Task { @MainActor [weak self] in await self?.interrupt(error) }
+            return
+        }
+        let waited = mutedAt.map { Int(requested.timeIntervalSince($0) * 1000) } ?? 0
+        let acquired = Int(now().timeIntervalSince(requested) * 1000)
+        mutedAt = nil
+        log("audio_muted_reacquire", ["generation": String(captureGeneration),
+                                      "epoch": String(captureEpoch),
+                                      "waitMs": String(waited), "acquireMs": String(acquired)])
     }
     /// #283: the orb frame for this instant: the owner's latest capture window (silent once older than
     /// 200 ms or while muted) and the model output window at the playback position.
@@ -1431,7 +1475,7 @@ struct NativeLiveInterruptionSample: Sendable {
             captureLifetimeActive = false
         }
     }
-    private func releaseAudio() {
+    private func releaseAudio(keepingSlot: Bool = false) {
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
@@ -1453,7 +1497,7 @@ struct NativeLiveInterruptionSample: Sendable {
         // #476: the owner writes the one audio_released for the lease it held. A device line beside it
         // made every release two identical records in audio.log.
         owner.release(holder: ObjectIdentifier(self))
-        isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
+        isCapturing = keepingSlot; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
         inputBands = .silent; outputOrb.reset()
         audioReleaseCount += 1
     }

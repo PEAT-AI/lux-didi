@@ -1598,7 +1598,9 @@ export function parseResearch(args: unknown): ParsedResearch {
   if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
   if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
-  if (action === 'start' && optionalString(record['topic']) === undefined) return refuse('topic_required');
+  // MAILQ 1: the schema marks the topic required for a start and the tool description says so, but a
+  // start that omits it is served, never refused: the host then searches the question as it always did.
+  if (record['topic'] !== undefined && optionalString(record['topic']) === undefined) return refuse('topic_required');
   if (record['topic'] !== undefined && String(record['topic']).length > 200) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (Object.hasOwn(record, 'cursor')) {

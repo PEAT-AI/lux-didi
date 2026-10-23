@@ -326,7 +326,7 @@ test('validate accepts the three actions and rejects invented keys', () => {
   assert.equal(validateResearch({ action: 'start' }), false);
   assert.equal(validateResearch({ action: 'destroy', question: 'q' }), false);
   assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', evil: 1 }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), false, 'MAILQ 1: the topic is required on a start');
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 7 }), false, 'MAILQ 1: the topic is one short string');
 });
 
 // #263: the declaration names only the sources this session configured and the host loop can read. A session

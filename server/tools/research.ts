@@ -46,6 +46,9 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'stop_insufficient', source: null },
 ]);
 
+/** LAT-1023: the round cap, shared by every run kind so a continuation never buys a third round. */
+const ROUND_CAP_ROUNDS = 2;
+
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
   tool: RESEARCH_TOOL_NAME,
@@ -53,8 +56,13 @@ export const RESEARCH = Object.freeze({
   coalesceWindowMs: 60_000,
   startDeadlineMs: 15_000,
   continueDeadlineMs: 30_000,
-  startRounds: 2,
-  continueRounds: 3,
+  /**
+   * LAT-1023: one run reads in at most two tool-bearing rounds, the parallel first round plus one
+   * continuation round, and then composes its answer from what it holds. A third round is what made an
+   * owner's ask wait 26 s for his own mail while the context grew to 44k tokens.
+   */
+  startRounds: ROUND_CAP_ROUNDS,
+  continueRounds: ROUND_CAP_ROUNDS,
   maxOps: 8,
   maxConcurrent: 4,
   /**
@@ -105,8 +113,12 @@ export const RESEARCH = Object.freeze({
   p50Seconds: Object.freeze({ knowledge: 2.9, chat: 3.6, calendar: 4.7, gmail: 10.0 } as Record<'knowledge' | 'chat' | 'calendar' | 'gmail', number>),
   /** Selector cost multiplier by elapsed seconds: cheap early, expensive late. */
   lambda: Object.freeze([{ upToMs: 4_000, value: 0 }, { upToMs: 8_000, value: 0.5 }, { upToMs: Number.POSITIVE_INFINITY, value: 1.5 }]),
-  /** Q1-R0: more data beats token thrift; 6,000 chars of telegraphic lines, never prose. */
-  replyLimitChars: 6_000,
+  /**
+   * LAT-1023: the whole answer a Live model receives, envelope included, is at most this many chars.
+   * Q1-R0 spent 6,000 chars of telegraphic lines on every reply and a call grew from 15k to 44k tokens in
+   * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
+   */
+  replyLimitChars: 2_500,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
   mailLines: 8, chatLines: 8, knowledgeLines: 40,
@@ -148,6 +160,11 @@ export const RESEARCH = Object.freeze({
   /** ROUTE-1022 (#526): what a reply tells the model in plain words, so it never re-asks, and a cut run names its readers. */
   completeNote: 'Nothing more to fetch for this question.',
   stillReadingNote: 'Still reading: ',
+  /**
+   * LAT-1023: one short clause, so an answer that ran out of rounds or of room never reads as a whole
+   * record and never lets the model claim a record does not exist.
+   */
+  moreAvailableNote: 'There is more available if you want it.',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -1203,6 +1220,8 @@ export interface RunState {
   metaStartAsContinue: boolean;
   /** K14: whole-body replies this run sent, so one body costs one round trip each page. */
   bodyReplies: number;
+  /** LAT-1023: whole items the last answer dropped to fit the Live budget, for the run receipt. */
+  compactDropped: number;
   /** L10: dispatches this run aborted because a new start replaced it. */
   supersededAborts: number;
   /** K8b: calls waiting on this run's in-flight reads, woken when the last one settles. */
@@ -1246,7 +1265,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, compactDropped: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -2404,8 +2423,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // hears "nothing more" while a read it asked for is still in flight.
     const stillReading = configured.filter(source => run.pending.has(source));
     const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
+    // LAT-1023: evidence left unread is named in one short clause, so a capped answer is never read as the
+    // whole record. A source this run never reached and a page it dropped both count as unread.
+    const moreAvailable = trimmed || configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
     const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`)
-      : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}` : note;
+      : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
+        : moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
@@ -2418,6 +2441,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     if (trimCalendarEvent(trimmed)) continue;
     trimmed.lines.pop(); dropped += 1;
   }
+  run.compactDropped = dropped + droppedEvents;
   // A trimmed answer always says it was trimmed and how much it left out.
   const omission = droppedEvents === 0 ? undefined : `I left out ${droppedEvents} calendar ${droppedEvents === 1 ? 'event' : 'events'} to keep this answer short.`;
   if (omission !== undefined) note = note === undefined ? omission : `${note} ${omission}`;
@@ -3981,9 +4005,14 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     answerTimer.cancel();
     if (runFailed) elapsedMs = Math.max(0, now() - started);
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
+    const replyBytes = JSON.stringify(reply ?? {}).length;
+    // LAT-1023: the cap and the trim are the two ways an answer comes back short, and each is counted, so a
+    // receipt tells a fast answer from a robbed one without ever carrying the text.
+    const leftUnread = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+    const roundCapHit = run.rounds >= ROUND_CAP_ROUNDS && (leftUnread.length > 0 || run.pending.size > 0) ? run.rounds : undefined;
     // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
     // because the host log refuses a line whose driver is not one of the four.
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply ?? {}).length, ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes, ...(roundCapHit === undefined ? {} : { roundCapHit }), ...(run.compactDropped > 0 ? { answerCompacted: { items: run.compactDropped, chars: replyBytes } } : {}), ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 

@@ -10,7 +10,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import { domainMigrations } from '../domain/schema.js';
-import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordQueryShape, recordUtterance, type RecordResult } from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -878,4 +878,24 @@ test('W6: a fixture session renders every turn closed, every playback on a turn,
     assert.doesNotMatch(text, /obligation=no_audible_output/);
     assert.match(text, /gaps: none/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- MAILQ 5: the shape of a source query, never its words ---------------------------------------
+
+test('MAILQ 5: a query shape is stored as counts and closed operators, and a word is refused', () => {
+  withStore(store => {
+    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_query_shape')!.n)), 0, 'a fresh store holds no shape');
+    store.transaction(tx => recordQueryShape(tx, { source: 'mail', terms: 3, operators: ['in', 'is', 'newer_than'], topicWords: 2 }, 1_700_000_000_000, SESSION));
+    const row = store.transaction(tx => tx.get('SELECT at, research_id, source, terms, operators, topic_words FROM trace_query_shape'));
+    assert.deepEqual({ ...row }, { at: 1_700_000_000_000, research_id: SESSION, source: 'mail', terms: 3, operators: 'in,is,newer_than', topic_words: 2 });
+    assert.equal(JSON.stringify({ ...row }).includes('invoice'), false, 'no searched word is ever stored');
+    for (const bad of [
+      { source: 'mail' as const, terms: 1, operators: ['invoice'], topicWords: 1 },
+      { source: 'mail' as const, terms: 1, operators: ['board deck'], topicWords: 1 },
+      { source: 'mail' as const, terms: -1, operators: [], topicWords: 0 },
+      { source: 'nowhere' as never, terms: 1, operators: [], topicWords: 0 },
+    ]) {
+      assert.throws(() => store.transaction(tx => recordQueryShape(tx, bad, 1)), TraceRecordError, `refused: ${JSON.stringify(bad)}`);
+    }
+  });
 });

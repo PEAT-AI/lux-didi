@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing,
+  validateResearch, worthContinuing, lastMeetingQuestion, newestDatedFirst, queryShapeOf,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -1687,4 +1687,50 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
   assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
+});
+
+// --- MAILQ 6 (#572) and MAILQ 7 (#576) ---------------------------------------------------------
+
+test('MAILQ 6: a chat triage ask is the windowed attention read, and its window is what the reply says', () => {
+  const subs = candidateSubs('chat_search', { question: 'Is there anything urgent or new in the team chat?', topic: 'messages', configured: ['chat'], evidence: new Map() });
+  assert.equal(subs.length, 1);
+  assert.equal(subs[0]!.name, 'mattermost_attention', 'the attention read, never a relevance-ranked archive search');
+  assert.equal(subs[0]!.args['days'], 7, 'the seven-day window');
+  assert.equal(queryShapeOf(subs), ' in the last 7 days', 'an empty read names its window, never a bare "nothing urgent"');
+  // The topic is what separates a triage ask from a real chat search.
+  const named = candidateSubs('chat_search', { question: 'Anything new in the team chat?', topic: 'Wilmar pilot', configured: ['chat'], evidence: new Map() });
+  assert.equal(named[0]!.name, 'mattermost_search', 'a topic with a real word in it stays a search');
+  assert.equal(String(named[0]!.args['query']), 'Wilmar pilot', 'and only the topic is searched');
+});
+
+test('MAILQ 6: urgent, new, unread, messages and DM now route a question to the chat layer', () => {
+  for (const ask of ['anything urgent from the team', 'any new DMs', 'unread messages in the channel']) {
+    assert.equal(fallbackSelection(ask, ['chat'], 0).actions.some(action => action.kind === 'chat_search'), true, ask);
+  }
+});
+
+// MAILQ 7: a number the owner did not say never enters a query, and a "last meeting" ask reads newest first.
+test('MAILQ 7: a model-written date or clock time never becomes a knowledge query term', () => {
+  const subs = candidateSubs('knowledge_search', {
+    question: 'What did we agree in the last meeting with Wilmar?', topic: 'Wilmar 2026-10-19 14:30 pilot',
+    configured: ['knowledge'], evidence: new Map(),
+  });
+  const query = String(subs[0]!.args['query']);
+  assert.equal(/\d/u.test(query), false, `no digits in "${query}"`);
+  assert.match(query, /wilmar/u);
+  const spoken = candidateSubs('knowledge_search', {
+    question: 'What happened on 19 October with Wilmar?', topic: 'Wilmar 19 October',
+    configured: ['knowledge'], evidence: new Map(),
+  });
+  assert.match(String(spoken[0]!.args['query']), /\b19\b/u, 'a number the owner said is kept');
+});
+
+test('MAILQ 7: a "last meeting" ask reads the newest notes first', () => {
+  const notes = ['## Prep call (MEETING | 2025-03-02) [id 3]\nold', '## Standup (MEETING | 2026-10-19) [id 1]\nnewest', '## Review (MEETING | 2026-05-11) [id 2]\nmiddle'];
+  const result: IntentSubResult = { key: 'k0', name: 'search_knowledge', ok: true, text: notes.join('\n'), originalCharacters: 0, omittedCharacters: 0 };
+  assert.deepEqual(newestDatedFirst(notes).map(line => line.slice(0, 20)), ['## Standup (MEETING ', '## Review (MEETING | ', '## Prep call (MEETING ']);
+  assert.equal(shapeBlock('knowledge_search', [result], undefined, { newestFirst: true }).lines[0], notes[1], 'the newest note leads the block');
+  assert.equal(shapeBlock('knowledge_search', [result], undefined).lines[0], notes[0], 'without the ask, the ranker order stands');
+  assert.equal(lastMeetingQuestion('What did we agree in the last meeting with Wilmar'), true);
+  assert.equal(lastMeetingQuestion('What is the Wilmar pilot status'), false);
 });

@@ -62,8 +62,8 @@ test('K3: the model-authored knowledge query is clipped to ten content terms, an
   const longer = 'decide wriggler three layer schema migration deadline dashboard harvester pipeline ledger';
   assert.deepEqual(knowledgeQuery(longer).split(' ').slice(-1), ['pipeline'], 'the tenth term is the last one that fits');
   assert.equal(knowledgeQuery(longer).split(' ').length, 10);
-  const named = knowledgeQuery('lux meeting transcript results about', 'what did we cover in the prep call with Maria');
-  assert.ok(named.split(' ').includes('maria'), 'a name the question spoke survives the clip');
+  const named = candidateSubs('knowledge_search', { question: 'what did we cover in the prep call with Maria', topic: 'Maria prep call', configured: CONFIGURED, evidence: new Map() });
+  assert.ok(String(named[0]!.args['query']).split(' ').includes('maria'), 'the name reaches the search through the topic, never through the question');
 });
 
 test('K4: a known project name in the question supplies a hint, and never a hard filter', () => {
@@ -127,10 +127,10 @@ test('K8: knowledge latency is stated at its measured p50, and the log carries t
 // ROUTE-1022 K7: the model's own instruction words ('wait findings.', 'continue web results') reached the
 // knowledge query and spent its term budget. They are stop words now, so the question's terms answer.
 test('ROUTE-1022 K7: an instruction sentence is no knowledge query', () => {
-  assert.equal(knowledgeQuery('wait findings.', 'wait findings.'), '', 'nothing is left to search');
+  assert.equal(knowledgeQuery('wait findings.'), '', 'nothing is left to search');
   const subs = candidateSubs('knowledge_search', { question: 'wait findings.', configured: ['knowledge'], evidence: new Map() });
   assert.deepEqual(subs, [], 'a lookup of pure instruction dispatches no search');
-  assert.equal(knowledgeQuery('continue web results agricon 2026', 'continue web results agricon 2026'), 'agricon 2026', 'the content terms survive');
+  assert.equal(knowledgeQuery('continue web results agricon 2026'), 'agricon 2026', 'the content terms survive');
   assert.deepEqual(candidateSubs('knowledge_search', { question: 'wait findings', query: 'wait findings.', configured: ['knowledge'], evidence: new Map() }), [],
     'an authored instruction query falls back to no search rather than a sentence');
 });

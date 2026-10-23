@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, broaderMailQuery, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, mailQueryShape, mailSearchPhrase, runResearch,
   type ResearchDeps, type ResearchRunLog, type ResearchSourceLog,
 } from '../tools/research.js';
 import { shapeGmailList } from '../tools/live-shape.js';
@@ -92,14 +92,6 @@ test('E4: at most four terms survive, a sentence never becomes the query', () =>
   assert.match(q, /(?:newer_than:\d+d|before:\d{4}\/\d{2}\/\d{2})$/u, 'a window is always appended when the question gave none');
 });
 
-test('E5: the one broader retry drops a term, else widens the window once', () => {
-  assert.equal(broaderMailQuery('landlord lease newer_than:60d'), 'landlord newer_than:60d', 'the least salient term is dropped');
-  assert.equal(broaderMailQuery('from:sana OR to:sana signed nda newer_than:14d'), 'from:sana OR to:sana nda newer_than:14d', 'a verb goes before the acronym it names');
-  assert.equal(broaderMailQuery('offsite venue inspection newer_than:14d'), 'offsite venue newer_than:14d', 'a trailing short modifier goes before its noun');
-  assert.equal(broaderMailQuery('from:dana OR to:dana invoice newer_than:14d'), 'from:dana OR to:dana invoice newer_than:30d', 'one term left widens the window by one step');
-  assert.equal(broaderMailQuery('newer_than:60d'), undefined, 'nothing left to widen is no retry');
-  assert.equal(broaderMailQuery('from:plantix'), undefined, 'an authored filter with no terms has nothing to broaden');
-});
 
 test('E5: the search shape is counts and operators, never the words', () => {
   assert.deepEqual(mailQueryShape('from:dana OR to:dana invoice newer_than:14d'),
@@ -151,51 +143,39 @@ test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence
   assert.deepEqual(sent, ['from:dana OR to:dana invoice'], 'one compiled query on the wire, never the sentence');
 });
 
-test('E5: a search that matched nothing runs exactly one broader retry and logs both shapes', async () => {
-  const sent: string[] = [];
-  const h = mailHarness(async subs => subs.map(call => {
-    sent.push(String(call.args['q'] ?? call.name));
-    const found = sent.length > 1;
-    return { key: call.key, name: call.name, ok: true, ...mailPage(found ? ['m9'] : []) } as IntentSubResult;
-  }));
-  const reply = await runResearch(h.deps, {
-    action: 'start', question: 'What did Dana send me about the invoice?',
-    lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
-  }, new AbortController().signal);
-  assert.deepEqual(sent, ['from:dana OR to:dana invoice', 'from:dana OR to:dana'], 'the query, then exactly one broader retry that drops the one term');
-  const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
-  assert.deepEqual(receipt.mail, {
-    terms: 1, operators: ['from', 'to'],
-    retried: { terms: 0, operators: ['from', 'to'] },
-  }, 'both queries by shape: term count, operators and window, never the words');
-  assert.equal(JSON.stringify(receipt).includes('invoice'), false, 'no query word reaches the receipt');
-  const safe = safeEvent(receipt);
-  assert.ok(safe !== undefined, 'the host log keeps the receipt with both shapes');
-  assert.deepEqual((safe['mail'] as Record<string, unknown>)['retried'], { terms: 0, operators: ['from', 'to'] });
-  assert.ok((reply['findings'] as unknown[]).length > 0, 'what the broader search found reaches the reply');
-});
-
-test('E5: an empty retry says how it searched, naming the window it used', async () => {
+test('MAILQ 4: a search that matched nothing is reported empty, with no retry', async () => {
   const sent: string[] = [];
   const h = mailHarness(async subs => subs.map(call => {
     sent.push(String(call.args['q'] ?? call.name));
     return { key: call.key, name: call.name, ok: true, ...mailPage([]) } as IntentSubResult;
   }));
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'What did Dana send me about the invoice?',
-    lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
+    action: 'start', question: 'What did Dana send me about the invoice?', topic: 'invoice',
+    lookups: [{ source: 'mail', query: 'invoice' }],
   }, new AbortController().signal);
-  assert.equal(sent.length, 2, 'exactly one retry, never a loop');
-  const note = String(reply['note'] ?? '');
-  assert.match(note, /I searched your mail with a keyword filter and found nothing matching/, 'the reply says how it searched, and names no window it did not use');
+  assert.deepEqual(sent, ['from:dana OR to:dana invoice'], 'one query, no drop-a-term retry');
+  const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
+  assert.deepEqual(receipt.mail, { terms: 1, operators: ['from', 'to'] }, 'the one query by shape, never the words');
+  assert.equal(JSON.stringify(receipt).includes('invoice'), false, 'no query word reaches the receipt');
+  assert.equal(safeEvent(receipt) !== undefined, true, 'the host log keeps the receipt');
+  assert.match(String(reply['note'] ?? ''), /I searched your mail/u, 'the empty search is reported as empty');
+});
+
+test('MAILQ 4: an empty search says how it searched, naming the window it used', async () => {
+  const h = mailHarness(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, ...mailPage([]) }) as IntentSubResult));
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'What did Dana send me about the invoice this week?', topic: 'invoice',
+    lookups: [{ source: 'mail', query: 'invoice' }],
+  }, new AbortController().signal);
+  assert.match(String(reply['note'] ?? ''), /I searched your mail for "invoice" in the last week and found nothing matching/u);
 });
 
 test('E5: the host log accepts the mail shape only as counts and closed tokens, never words', () => {
   const receipt: ResearchSourceLog = {
     event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'empty', ms: 5, deadlineMs: 12_000, coalesced: 1,
-    mail: { terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:14d', retried: { terms: 1, operators: ['from', 'newer_than'], window: 'newer_than:30d' } },
+    mail: { terms: 1, operators: ['from', 'to', 'newer_than'], window: 'newer_than:14d' },
   };
-  assert.ok(safeEvent(receipt) !== undefined, 'the receipt with both shapes is kept');
+  assert.ok(safeEvent(receipt) !== undefined, 'the receipt with its shape is kept');
   const kept = safeEvent(receipt)!;
   assert.deepEqual(kept['mail'], receipt.mail);
   const freeText = (mail: unknown): Record<string, unknown> => ({ ...receipt, mail });
@@ -359,4 +339,58 @@ test('F9: each refusal code names the fix, and the generic line stays the fallba
   assert.match(String(mail['guidance']), /maxResults/u);
   assert.match(String(mail['guidance']), /no query beside|carries no query/u, 'and the shape it must not use');
   assert.match(String(researchRepair('root_type')['guidance']), /No lookup started/u, 'an unmapped reason keeps the generic line');
+});
+
+// --- MAILQ: what came in, and the topic as the only search text -------------------------------
+
+/** The 40-word instruction paragraph the model really writes, with the host's topic beside it. */
+const PROSE = 'Please explain what the prior discussion said about this, identify the people who need a reaction, verify the exact numbers requiring attention before the review, and tell me what is relevant since Monday.';
+
+test('MAILQ 1: only the topic terms reach the search text, for mail and knowledge', () => {
+  const base = { question: PROSE, topic: 'Wilmar pilot', configured: ['mail', 'knowledge'] as const, evidence: new Map(), nowMs: NOW, timeZone: ZONE };
+  const mail = candidateSubs('mail_search', { ...base, query: PROSE });
+  assert.equal(mail[0]?.args['q'], 'in:inbox newer_than:14d wilmar pilot', 'the topic, its window, and no instruction word');
+  const knowledge = candidateSubs('knowledge_search', base);
+  assert.equal(knowledge[0]?.args['query'], 'wilmar pilot', 'the topic again, for the ranker');
+  for (const word of ['explain', 'prior', 'discussion', 'identify', 'reaction', 'relevant', 'since']) {
+    assert.equal(JSON.stringify([mail, knowledge]).includes(word), false, `${word} never reaches a search`);
+  }
+});
+
+test('MAILQ 3: a model-written Gmail query keeps its operators and loses its prose', () => {
+  assert.equal(
+    compileMailQuery('Has anything important come in?', 'in:inbox newer_than:14d remaining metadata business-relevant', NOW, ZONE, ''),
+    'in:inbox is:important newer_than:14d',
+    'the operators the host recognises survive, the prose words do not',
+  );
+});
+
+const triageMessage = (index: number): Record<string, unknown> => ({
+  id: `m${index}`, threadId: `t${index}`,
+  headers: [
+    { name: 'Subject', value: `Thread ${index}` },
+    { name: 'From', value: `Sender ${index} <s${index}@example.com>` },
+    { name: 'Date', value: `Mon, 19 Oct 2026 0${index}:00:00 +0000` },
+  ],
+});
+
+test('MAILQ 2: a "what came in" ask scans the unread inbox and counts what came in', async () => {
+  const sent: string[] = [];
+  const h = mailHarness(async subs => subs.map(call => {
+    const q = String(call.args['q'] ?? '');
+    sent.push(q);
+    const messages = Array.from({ length: 10 }, (_, index) => triageMessage(9 - index));
+    return { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages }) } as IntentSubResult;
+  }));
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'Has anything important come in that needs a reaction?', topic: 'unread mail',
+    lookups: [{ source: 'mail', query: 'Has anything important come in?' }],
+  }, new AbortController().signal);
+  assert.deepEqual(sent, ['in:inbox is:unread is:important newer_than:2d', 'in:inbox is:unread newer_than:2d'], 'the fixed scan, important first, and no prose word');
+  const text = (reply['findings'] as { text: string }[])[0]?.text ?? '';
+  assert.match(text, /^Mail: 10 of 10 shown$/mu, 'the reply says how many came in and that nothing was held back');
+  assert.match(text, /- Thread 9 \| from: Sender 9 \| date: /u, 'newest first, with sender and date');
+  assert.equal(text.includes('Thread 0'), true, 'the oldest of the ten is there too');
+  const once = text.split('\n').filter(line => line.includes('Thread 5'));
+  assert.equal(once.length, 1, 'a thread both reads returned is listed once');
 });

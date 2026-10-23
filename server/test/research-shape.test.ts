@@ -328,7 +328,7 @@ test('E8/U2: a trimmed calendar block says how many events it left out', () => {
 
 test('MED-1022: the knowledge query drops filler, keeps the spoken name, and takes ten terms', () => {
   assert.equal(RESEARCH.knowledgeQueryTerms, 10);
-  const query = knowledgeQuery('lux meeting transcript results about', 'what did we cover in the prep call with Maria');
+  const query = knowledgeQuery('lux meeting transcript results about prep call Maria');
   const terms = query.split(' ');
   for (const wanted of ['prep', 'call', 'maria']) assert.ok(terms.includes(wanted), `"${wanted}" survives in "${query}"`);
   for (const filler of ['results', 'about']) assert.equal(terms.includes(filler), false, `"${filler}" never rides in "${query}"`);

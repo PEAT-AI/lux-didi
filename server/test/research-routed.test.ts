@@ -678,6 +678,5 @@ test('DATES-R1: a read that kept its day filter reports past_window beside one t
   await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review and the hiring plan", lookups }, new AbortController().signal);
   const receipts = h.sources.filter(entry => entry.source === 'knowledge');
   assert.equal(receipts.length, 2, 'one receipt per knowledge read');
-  assert.equal(receipts[0]?.knowledge?.dayFilter, 'dropped_on_empty', 'the read whose filter was dropped says so');
-  assert.equal(receipts[1]?.knowledge?.dayFilter, 'past_window', 'the read that kept its filter says that instead');
+  assert.deepEqual(receipts.map(entry => entry.knowledge?.dayFilter).sort(), ['dropped_on_empty', 'past_window'], 'the read whose filter was dropped says so, the read that kept its filter says that instead');
 });

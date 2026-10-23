@@ -536,6 +536,7 @@ test('1023-R1: the opening directive is a completed user turn to the provider, n
     [first.session.liveSessionId])), false, 'the owner-speaks-first probe stays false');
   h.owner.revoke(first.session.liveSessionId);
   await first.attachment.done;
+  h.f.frames.length = 0;
   const second = await attached(h, 'directive-not-owner-2');
   const seeded = h.requests.at(-1)!;
   assert.deepEqual(seeded.history, [], 'the next call seeds no owner turn for a call that only carried the directive');

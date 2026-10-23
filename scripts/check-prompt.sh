@@ -25,6 +25,7 @@ cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/sour
 cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
+cp server/tools/vault-write.ts "$out/source/tools/"
 cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 cp server/host/log.ts "$out/source/host/"

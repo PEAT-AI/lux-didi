@@ -1,5 +1,6 @@
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
+import type { VaultDispatchPort } from './vault-write.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { HistorySourceRef } from '../domain/history-reader.js';
@@ -69,7 +70,7 @@ export interface ToolsOwner {
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
   definitions(runId: string): ToolDefinition[];
-  liveDefinitions(runId: string, rememberNote: RememberNotePort): ToolDefinition[];
+  liveDefinitions(runId: string, rememberNote: RememberNotePort, vaultDispatch?: VaultDispatchPort): ToolDefinition[];
   liveRememberApproved(): boolean;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
 }

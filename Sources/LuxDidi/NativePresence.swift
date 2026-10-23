@@ -19,6 +19,18 @@ enum PresenceTrigger: String, Equatable, Sendable {
     case hotkey, click, app, timer, sleep, error
 }
 
+/// What a page is told about presence: the state and the owner's mute in one assignment, so no
+/// surface reads a mute from a state the machine already left (ORB-1023, off f7380cbd where the
+/// mini stayed grey for 10.4 s after LIVE). `didiPresenceChanged` is the page's own repaint
+/// request, because a data attribute cannot repaint a canvas.
+enum PresencePush {
+    static func js(state: PresenceState, muted: Bool) -> String {
+        "window.didiPresence=Object.assign(window.didiPresence||{},"
+            + "{\"state\":\"\(state.rawValue)\",\"muted\":\(muted)});"
+            + "window.didiPresenceChanged&&window.didiPresenceChanged()"
+    }
+}
+
 /// Everything a surface needs to render one presence state: the state, the setting
 /// over the orb, and whether the last teardown failed loud, which is the error posture.
 struct PresencePosture: Equatable {

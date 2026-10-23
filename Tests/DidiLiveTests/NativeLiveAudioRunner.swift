@@ -787,6 +787,189 @@ private func checkPrimaryChannelConversion() throws {
         }
         return buffer
     }
+
+    /// The owner mutes with Right Command and another app needs the microphone: the mute must stop
+    /// the engine, drop the voice-processing unit and give the audio owner back, and unmute must
+    /// rebuild capture alone (no reconnect, no ring).
+    @MainActor static func checkMuteReleasesMicrophone() async throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100,
+                                         channels: 2, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let lockURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mute-release-" + UUID().uuidString)
+        let owner = AudioOwner(lockFileURL: lockURL, journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                          defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                          owner: owner, journal: journal,
+                                          deviceState: { _ in false }, isBuiltInOutput: { true })
+        var starts = 0
+        var captures: [NativeCaptureBuffer] = []
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in starts += 1 }
+        device.onCapturePrepared = { captures.append($0) }
+        let sends = NativeAudioSendProbe()
+        try await device.start { await sends.send($0) }
+        try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
+                         "control: start holds the engine, the capture and the audio owner")
+        try audioRequire(device.isVoiceProcessingEnabledForTesting,
+                         "control: the built-in output route takes voice processing")
+        let generation = device.captureGeneration, epoch = device.captureEpoch
+        let releases = device.audioReleaseCount
+
+        device.setMuted(true)
+        try audioRequire(!device.hasEngine && device.isCapturing,
+                         "mute stops the engine and drops the tap and voice-processing unit with it")
+        try audioRequire(device.audioReleaseCount == releases + 1,
+                         "mute tears the device down through the one release path")
+        try audioRequire(!owner.isOwned && !owner.crossProcessHeld,
+                         "mute releases the audio owner and the cross-process lock")
+        let another = AudioOwner(lockFileURL: lockURL)
+        try another.acquire(holder: ObjectIdentifier(another))
+        another.release(holder: ObjectIdentifier(another))
+        let released = journal.events.filter { $0.name == "audio_muted_release" }
+        try audioRequire(released.count == 1, "one mute release record, got \(released.count)")
+        try audioRequire(released[0].fields["generation"] == String(device.captureGeneration)
+                            && released[0].fields["epoch"] == String(epoch + 1),
+                         "the release record carries the closed tokens it ended")
+
+        device.setMuted(false)
+        try audioRequire(starts == 2, "unmute starts the engine exactly once, got \(starts - 1)")
+        try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
+                         "unmute rebuilds capture and holds the owner again")
+        try audioRequire(device.isVoiceProcessingEnabledForTesting,
+                         "unmute takes the same voice-processing decision as at call start")
+        try audioRequire(device.captureGeneration == generation + 2
+                            && device.captureEpoch == epoch + 2,
+                         "unmute opens a new capture generation and epoch")
+        let acquired = journal.events.filter { $0.name == "audio_muted_reacquire" }
+        try audioRequire(acquired.count == 1 && acquired[0].fields["generation"] == String(generation + 2)
+                            && acquired[0].fields["epoch"] == String(epoch + 2)
+                            && Int(acquired[0].fields["acquireMs"] ?? "") != nil,
+                         "the re-acquire record carries its new tokens and its time in ms")
+        let before = await sends.count
+        guard let rebuilt = captures.last else { throw NativeLiveAudioError.captureNotConfigured }
+        rebuilt.append(try tone(format, start: 4410, count: 1024))
+        for _ in 0..<2000 {
+            if await sends.count > before { break }
+            await Task.yield()
+        }
+        try audioRequire(await sends.count > before,
+                         "unmute delivers frames on the same send closure, so nothing reconnected")
+
+        for _ in 0..<10 { device.setMuted(true); device.setMuted(false) }
+        try audioRequire(device.hasEngine && device.isCapturing && owner.isOwned,
+                         "ten fast toggles end with exactly one engine when unmuted")
+        try audioRequire(!journal.events.contains { $0.name == "audio_release_leak" },
+                         "no toggle retains an engine past its release")
+        device.setMuted(true)
+        try audioRequire(!device.hasEngine && !owner.isOwned,
+                         "ten fast toggles end with no engine while muted")
+        device.stop()
+        deviceInputIsFree(lockURL: lockURL, "the mute never holds the microphone past a toggle")
+        print("PASS mute releases the microphone: engine stopped, tap and voice processing dropped, "
+              + "owner free for another app, one re-acquire and one generation per unmute")
+    }
+
+    /// A re-acquire that hits another app's hold fails loudly through the existing audio_refused
+    /// record, never by capturing while another app owns the device.
+    @MainActor static func checkMuteReacquireRefusal() async throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100,
+                                         channels: 2, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let lockURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mute-refused-" + UUID().uuidString)
+        let owner = AudioOwner(lockFileURL: lockURL, journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                          defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                          owner: owner, journal: journal,
+                                          deviceState: { _ in false }, isBuiltInOutput: { true })
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in }
+        try await device.start { _ in }
+        device.setMuted(true)
+        let taken = AudioOwner(lockFileURL: lockURL)
+        try taken.acquire(holder: ObjectIdentifier(taken))
+        device.setMuted(false)
+        let refused = journal.events.filter { $0.name == "audio_refused" }
+        try audioRequire(refused.map { $0.fields["reason"] } == ["already_in_use", "audio_already_in_use"],
+                         "a refused re-acquire on unmute surfaces audio_refused, got \(refused.map { $0.fields["reason"] ?? "-" })")
+        let failedReacquire = journal.events.filter { $0.name == "audio_muted_reacquire_failed" }
+        try audioRequire(failedReacquire.count == 1
+                            && failedReacquire[0].fields["reason"] == "audio_already_in_use",
+                         "one re-acquire failure record carrying the refusal")
+        try audioRequire(!device.hasEngine && !owner.isOwned,
+                         "a refused re-acquire leaves no engine and no owner")
+        taken.release(holder: ObjectIdentifier(taken))
+        device.stop()
+        print("PASS mute re-acquire refusal: another app's hold on the device surfaces audio_refused")
+    }
+
+    /// A mute and unmute on a device with no session leaves one closed record and no work.
+    @MainActor static func checkMuteWithoutSession() async throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100,
+                                         channels: 2, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                          defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                          journal: journal)
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in }
+        device.setMuted(true)
+        device.setMuted(false)
+        let skipped = journal.events.filter { $0.name == "audio_muted_reacquire_skipped" }
+        try audioRequire(skipped.count == 1 && skipped[0].fields["reason"] == "no_send",
+                         "an unmute with no session says so in one record, never silently")
+        try audioRequire(!device.hasEngine, "a device with no session opens no engine")
+        print("PASS mute without a session: the skipped re-acquire leaves one record")
+    }
+
+    /// A mute that lands while the call is still connecting, before capture exists, must keep the
+    /// microphone closed: the engine opens on unmute, never on start.
+    @MainActor static func checkMuteBeforeCapture() async throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100,
+                                         channels: 2, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let lockURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mute-connecting-" + UUID().uuidString)
+        let owner = AudioOwner(lockFileURL: lockURL, journal: journal)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                          defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                          owner: owner, journal: journal,
+                                          deviceState: { _ in false }, isBuiltInOutput: { true })
+        var starts = 0
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in starts += 1 }
+        let sends = NativeAudioSendProbe()
+        device.setMuted(true)
+        try await device.start { await sends.send($0) }
+        try audioRequire(!device.hasEngine && !owner.isOwned && starts == 0,
+                         "a mute before capture exists keeps the engine and the microphone closed")
+        try audioRequire(journal.events.contains { $0.name == "audio_muted_start_skipped" },
+                         "the start held back by the mute leaves one record")
+        device.setMuted(false)
+        try audioRequire(starts == 1 && device.hasEngine && owner.isOwned,
+                         "unmute opens the one engine the mute held back")
+        device.stop()
+        print("PASS mute before capture: a connecting mute keeps the microphone closed until unmute")
+    }
+
+    @MainActor static func deviceInputIsFree(lockURL: URL, _ message: String) {
+        let probe = AudioOwner(lockFileURL: lockURL)
+        do { try probe.acquire(holder: ObjectIdentifier(probe)) } catch {
+            print("FAIL \(message): the lock is still held")
+            exit(1)
+        }
+        probe.release(holder: ObjectIdentifier(probe))
+    }
+
     @MainActor static func main() async {
         if CommandLine.arguments.dropFirst().contains("--playback-metrics-only") {
             do { try await checkPlaybackGapMetrics() }
@@ -983,6 +1166,10 @@ private func checkPrimaryChannelConversion() throws {
             try checkReleaseLeakAndDeallocation()
             try await checkStartFailureCircuitBreaker()
             try await checkBusyDeviceSkipsVoiceProcessing()
+            try await checkMuteReleasesMicrophone()
+            try await checkMuteReacquireRefusal()
+            try await checkMuteWithoutSession()
+            try await checkMuteBeforeCapture()
             try await VoiceProcessingSnapshotTests.run()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat

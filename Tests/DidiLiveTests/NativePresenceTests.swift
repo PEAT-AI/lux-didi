@@ -8,7 +8,7 @@ import Foundation
         do {
             try await MainActor.run { try run() }
             print("PASS native presence: every transition, cancel while connecting, the held mute, "
-                + "the generation fence, warm mute and resume, muted cold, sleep teardown, no capture before ready, receipts")
+                + "the generation fence, warm mute and resume, muted cold, sleep teardown, no capture before ready, receipts, the presence push")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -54,6 +54,13 @@ import Foundation
         try require(record.receipts.last?["from"] as? String == "connecting"
             && record.receipts.last?["to"] as? String == "live", "the readiness receipt is complete")
 
+        // ORB-1023: the mini page is told the presence state and the mute in one push, so the orb
+        // leaves the connecting look at readiness instead of waiting for Naya's first word.
+        let livePush = PresencePush.js(state: presence.state, muted: presence.mutedHeld)
+        try require(livePush.contains("\"state\":\"live\""), "the live push names the live state, got \(livePush)")
+        try require(livePush.contains("\"muted\":false"), "the live push says the mic is open, got \(livePush)")
+        try require(livePush.contains("didiPresenceChanged"), "the push asks the page to repaint, got \(livePush)")
+
         // A ready from any other generation opens nothing.
         presence.ready(presence.generation &- 1)
         try require(presence.state == .live && record.muted == [false], "a stale ready changes nothing")
@@ -63,6 +70,8 @@ import Foundation
         let warmGeneration = presence.generation
         presence.tap(.hotkey)
         try require(presence.state == .hotMuted && presence.mutedHeld, "a second tap mutes")
+        let mutedPush = PresencePush.js(state: presence.state, muted: presence.mutedHeld)
+        try require(mutedPush.contains("\"muted\":true"), "the muted push carries the mute, got \(mutedPush)")
         try require(record.calls == ["fence", "cancelPlayback", "inputMute:true"],
             "the fence closes first and the session is kept warm, got \(record.calls)")
         try require(record.muted == [false, true], "muting closes the fence")

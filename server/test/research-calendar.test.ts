@@ -512,3 +512,18 @@ test('F7: a partially read calendar list never takes the completion line from a 
   assert.equal((reply['calendarCoverage'] as Record<string, unknown>)['calendarListComplete'], false, 'the list really is partial');
   assert.equal(reply['note'], RESEARCH.completeNote, 'and the completion line is still there, never displaced by the list flag');
 });
+
+// --- Release 4: an unresolved window is its own reason, and a resolvable one still reads -----------
+
+test('release 4: a window the grammar cannot resolve names its own reason instead of an endpoint outage', async () => {
+  const h = fixture([event(20)]);
+  const reply = await runResearch(h.deps, {
+    action: 'start',
+    lookups: [{ source: 'calendar', query: 'sometime soon' }, { source: 'calendar', query: 'tomorrow' }],
+  }, signal());
+  assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the resolvable window still reads the calendar');
+  const unavailable = reply['unavailable'] as Record<string, string> | undefined;
+  assert.equal(unavailable?.['calendar'], 'window_unparsed', 'the reason is the closed window token, never an endpoint outage');
+  assert.match(String(reply['note']), /could not resolve that calendar date or window/u, 'and the reply carries the guidance the model voices');
+  assert.equal(/endpoint_unavailable/u.test(JSON.stringify(reply)), false, 'no outage is claimed for a window the grammar cannot parse');
+});

@@ -7,6 +7,8 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
+import { VaultWriter } from '../tools/vault-write.js';
+import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
@@ -209,6 +211,8 @@ export const RESPONSE_WATCHDOG_NUDGE_MS = 8_000;
 export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 /** At most one watchdog recovery per window; a second mute inside it ends the call honestly instead of looping. */
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
+/** The write tools the Live model may decline or call, and the resource each one is pinned to. */
+const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
 /** 3j: idle is conversational silence, so only an owner speech signal or model output resets it, never a mic frame. */
 const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waitingForInput', 'modelTurnStarted', 'audio', 'modelText', 'outputTranscription', 'turnComplete', 'toolCall']);
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
@@ -594,6 +598,17 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
 const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
 const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
 // Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
+/** The owner turn that just closed: the provider's deltas joined up to the finished boundary, never one fragment. */
+function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
+  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
+  let pending = '', closed = '';
+  for (const row of rows) {
+    pending += String(row['text'] ?? '');
+    if (Number(row['finished']) === 1) { closed = pending.trim(); pending = ''; }
+  }
+  return closed;
+}
+
 const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
   'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
 const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
@@ -818,6 +833,7 @@ export class LiveSessionOwner {
   readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
   readonly #store: LiveStorePort;
+  readonly #vault: VaultWriter;
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -873,6 +889,7 @@ export class LiveSessionOwner {
       const timer = setTimeout(callback, delayMs);
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
+    this.#vault = new VaultWriter({ store: this.#store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: this.#now, log: event => hostLogEvent(event) });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     memoryOwners.set(this.#store, this);
@@ -1342,16 +1359,16 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim)).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
-        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && OWNER_WRITE_RESOURCES.get(tool.name) === tool.resourceId && tool.accountId === 'gateway:live-voice').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const deadLine = this.#deadLineBefore(liveSessionId);
     const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
     const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || OPEN_TOOL_NAMES.has(tool.name));
+    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || tool.name === 'save_to_vault' || OPEN_TOOL_NAMES.has(tool.name));
     // The port carries the original JSON schemas; each adapter builds its own provider dialect.
     const declarations = modelFacing.map(tool => ({ name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters) }));
     const system = acceptedPrompt.system;
@@ -2866,7 +2883,7 @@ export class LiveSessionOwner {
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
-      if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
+      if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
@@ -3138,6 +3155,10 @@ export class LiveSessionOwner {
           try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,text ?? '',journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
+      }
+      if (kind === 'inputTranscription' && finished === 1 && transcription?.finalOrigin !== 'typed') {
+        const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
+        if (ownerTurn) this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
       }
       return journalId;
     };

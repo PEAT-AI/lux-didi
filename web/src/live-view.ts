@@ -2,6 +2,7 @@
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
 import { decodeEntities, escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { stepPhrase, toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
+import { vaultCardMarkup, vaultCardState } from './vault-card.ts';
 import type { VoiceState } from './orb.ts';
 import { levelPeak, playbackPeak } from './orb-level.ts';
 import type { LiveCurrent, LiveEntry, LiveJob, LiveSource, LiveState, LiveTool } from './protocol.ts';
@@ -29,11 +30,36 @@ export function heardModelSpeech(live: LiveCurrent | undefined): boolean {
   return (live?.entries ?? []).some(entry => entry.kind === 'outputTranscription' && (entry.text ?? '').trim().length > 0);
 }
 
+/** The presence machine's state as the native app pushes it (`window.didiPresence.state`). */
+export type PresencePhase = 'cold' | 'connecting' | 'live' | 'hotMuted';
+
+export function presencePhase(source: unknown = (globalThis as { didiPresence?: unknown }).didiPresence): PresencePhase | undefined {
+  const state = typeof source === 'object' && source !== null ? (source as { state?: unknown }).state : undefined;
+  return typeof state === 'string' ? state as PresencePhase : undefined;
+}
+
+/** A live call, muted or not: the connection is up and the connecting look is over. */
+export function presenceConnected(presence: PresencePhase | undefined): boolean {
+  return presence === 'live' || presence === 'hotMuted';
+}
+
 /** Q4: `listening` before the first model frame has only opened the microphone, up to 4.6 s
  * before Naya speaks. Until that frame the orb and the pill say Connecting, so a silent
- * session never reads as if she were listening. */
-export function connectingBeforeFirstSpeech(live: LiveCurrent | undefined): boolean {
+ * session never reads as if she were listening. The presence machine knows better: once it
+ * says LIVE the call is up, whether or not Naya has spoken yet (f7380cbd: LIVE 10.4 s before
+ * the owner's answer, and forever if the owner stays silent). */
+export function connectingBeforeFirstSpeech(live: LiveCurrent | undefined,
+  presence: PresencePhase | undefined = presencePhase()): boolean {
+  if (presenceConnected(presence)) return false;
   return live?.state === 'listening' && !heardModelSpeech(live);
+}
+
+/** The one orb state the pill, the mini panel and the full window share, so the look leaves
+ * Connecting at the same moment on every surface. */
+export function orbVoiceState(live: LiveCurrent | undefined,
+  presence: PresencePhase | undefined = presencePhase()): VoiceState {
+  if (connectingBeforeFirstSpeech(live, presence)) return 'CONNECTING';
+  return liveVoiceState(live?.state ?? 'idle');
 }
 
 /** Tool names whose call is in flight: the calls after the last tool result.
@@ -53,7 +79,8 @@ export function pendingToolNames(live: LiveCurrent): string[] {
 
 /** The one visible state label. A tool name is never folded into it; the
  * activity line owns the phrase. Shared so the orb caption and panel agree. */
-export function liveLabel(live: LiveCurrent | undefined): string {
+export function liveLabel(live: LiveCurrent | undefined,
+  presence: PresencePhase | undefined = presencePhase()): string {
   const past = live?.pastSession;
   if (past) {
     const time = new Date(past.endedAt ?? past.lastObservedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -62,7 +89,7 @@ export function liveLabel(live: LiveCurrent | undefined): string {
     const normal = ['closed', 'cancelled', 'revoked', 'expired'].includes(past.outcome);
     return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
   }
-  if (connectingBeforeFirstSpeech(live)) return 'Connecting';
+  if (connectingBeforeFirstSpeech(live, presence)) return 'Connecting';
   const state = live?.state ?? 'idle';
   // W3: reconnecting and error keep their own words; the uplink measurement only speaks for a call that is up.
   if (state === 'rebuilding' || state === 'error') return liveStateLabel(state);
@@ -352,8 +379,9 @@ export function activityRowMarkup(live: LiveCurrent | undefined, elapsedMs = 0):
   const activity = liveActivity(live);
   const steps = stepListMarkup(live);
   const line = activity && (activity.kind === 'tools' || activity.kind === 'thinking') ? activityMarkup(activity, elapsedMs) : '';
-  if (!line && !steps) return '';
-  return `<div class="feed-activity" data-seg="activity">${line}${steps}</div>`;
+  const vault = vaultCardMarkup(vaultCardState(live));
+  if (!line && !steps && !vault) return '';
+  return `<div class="feed-activity" data-seg="activity">${line}${steps}${vault}</div>`;
 }
 
 /** The first sentence of an answer, the headline of the keeper turn row (spec 2.2 item 1). */

@@ -353,3 +353,28 @@ test('L12d: one host_resources receipt per sixty second window, on the host cloc
   assert.equal(sampler.sample(), false, 'a second read inside the same window stays silent');
   assert.equal(logged.length, 1);
 });
+
+// Release 4: a partial mail read carries a closed marker and a page count, and an unresolved window
+// reason is its own token, so neither reads as an outage.
+test('release 4: the partial source receipt and the window reason reach host.log', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'ok', ms: 730, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, partial: 'pages_failed', failedPages: 1 }), { ...source, partial: 'pages_failed', failedPages: 1 }, 'the partial marker and its count reach host.log');
+  assert.equal(safeEvent({ ...source, partial: 'lost everything', failedPages: 1 }), undefined, 'an unknown partial token is refused');
+  assert.equal(safeEvent({ ...source, partial: 'pages_failed' }), undefined, 'the marker never travels without its count');
+  const run = { event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [], stopReason: 'answered', status: 'answered', ops: 1, sources: [] as Record<string, unknown>[], elapsedMs: 0, deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: 10, unchecked: ['calendar'], canContinue: true, findingChars: [] };
+  const row = { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'window_unparsed' };
+  assert.ok(safeEvent({ ...run, sources: [row] }) !== undefined, 'the window reason reaches host.log');
+  assert.equal(safeEvent({ ...run, sources: [{ ...row, reason: 'whatever' }] }), undefined, 'and the closed set still refuses anything else');
+});
+test('vault_write keeps its closed shape: a state token, an insight id on a save, latency, never text', () => {
+  const saved = { event: 'vault_write', state: 'confirmed', insightId: 'insight-7', latencyMs: 42 };
+  assert.deepEqual(safeEvent(saved), saved, 'the confirmed receipt passes the allowlist');
+  const failed = { event: 'vault_write', state: 'failed', latencyMs: 42 };
+  assert.deepEqual(safeEvent(failed), failed, 'a failed write carries no insight id');
+  const uncertain = { event: 'vault_write', state: 'uncertain', latencyMs: 9000 };
+  assert.deepEqual(safeEvent(uncertain), uncertain, 'an uncertain write is a state and a latency');
+  assert.equal(safeEvent({ ...saved, content: 'the boat survey is on Tuesday' }), undefined, 'a note never crosses the log boundary');
+  assert.equal(safeEvent({ ...saved, state: 'saved' }), undefined, 'only the closed state tokens are allowed');
+  assert.equal(safeEvent({ event: 'vault_write', state: 'confirmed', latencyMs: 42 }), undefined, 'a confirmed save without an id is not a receipt');
+  assert.equal(safeEvent({ event: 'vault_write', state: 'failed', insightId: 'insight-7', latencyMs: 42 }), undefined, 'a failed write carries no id');
+});

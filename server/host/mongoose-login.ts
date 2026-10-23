@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { MONGOOSE_RECORD_SCHEMA, writeMongooseOAuth, type MongooseOAuthRecord } from './mongoose-auth.js';
+import { MONGOOSE_ENDPOINTS, mongooseMetadataUrl } from '../connectors/mongoose.js';
 
 /**
  * The owner's one-time Mongoose sign-in: discovery, one dynamic client registration, PKCE S256, a
@@ -28,6 +29,8 @@ export interface MongooseLoginOptions {
   /** The endpoint's MCP URL; its origin is the OAuth resource and the fallback issuer. */
   resourceUrl: string;
   account: string;
+  /** A client id from the first consent of a run, so three consents share one registration. */
+  clientId?: string;
   redirectPort?: number;
   timeoutMs?: number;
   fetch?: typeof fetch;
@@ -60,9 +63,10 @@ async function getJson(post: typeof fetch, url: string, wait: <T>(promise: Promi
   } catch { return undefined; }
 }
 
-/** The authorization server document, from the protected-resource metadata when it is present. */
-async function discover(post: typeof fetch, origin: string, wait: <T>(promise: Promise<T>) => Promise<T>): Promise<Metadata> {
-  const resource = await getJson(post, `${origin}/.well-known/oauth-protected-resource`, wait);
+/** The authorization server document, read at the endpoint's own path-inserted metadata URL. */
+async function discover(post: typeof fetch, resourceUrl: string, wait: <T>(promise: Promise<T>) => Promise<T>): Promise<Metadata> {
+  const origin = originOf(resourceUrl);
+  const resource = await getJson(post, mongooseMetadataUrl(resourceUrl), wait);
   const listed = resource?.['authorization_servers'];
   const issuer = Array.isArray(listed) && token(listed[0]) ? listed[0] : origin;
   const server = await getJson(post, `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`, wait);
@@ -85,8 +89,10 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     const now = options.now ?? Date.now;
     const requestedPort = options.redirectPort ?? MONGOOSE_LOGIN_PORT;
     const origin = originOf(options.resourceUrl);
-    const metadata = await discover(post, origin, wait);
-    if (!token(metadata['authorization_endpoint']) || !token(metadata['token_endpoint']) || !token(metadata['registration_endpoint'])) throw new MongooseLoginError('metadata-unavailable');
+    const metadata = await discover(post, options.resourceUrl, wait);
+    // A shared client id is the first consent's registration: three consents, one DCR client.
+    const reuse = options.clientId !== undefined;
+    if (!token(metadata['authorization_endpoint']) || !token(metadata['token_endpoint']) || (!reuse && !token(metadata['registration_endpoint']))) throw new MongooseLoginError('metadata-unavailable');
 
     const state = base64url(randomBytes(16));
     const verifier = base64url(randomBytes(32));
@@ -118,7 +124,7 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     const port = bound.port;
     const redirectUri = `http://127.0.0.1:${port}/callback`;
 
-    const registration = await post(String(metadata['registration_endpoint']), {
+    const registration = reuse ? undefined : await post(String(metadata['registration_endpoint']), {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({
@@ -131,7 +137,7 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
       }),
     }).catch(() => undefined);
     const client = registration?.ok ? await wait(registration.json()).catch(() => undefined) as Record<string, unknown> | undefined : undefined;
-    const clientId = client?.['client_id'];
+    const clientId = options.clientId ?? client?.['client_id'];
     if (!token(clientId)) throw new MongooseLoginError('registration-refused');
 
     const authorize = new URL(String(metadata['authorization_endpoint']));
@@ -139,6 +145,7 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     authorize.searchParams.set('client_id', clientId);
     authorize.searchParams.set('redirect_uri', redirectUri);
     authorize.searchParams.set('scope', MONGOOSE_LOGIN_SCOPE);
+    authorize.searchParams.set('resource', options.resourceUrl);
     authorize.searchParams.set('state', state);
     authorize.searchParams.set('code_challenge', challenge);
     authorize.searchParams.set('code_challenge_method', 'S256');
@@ -153,7 +160,7 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     const exchange = await post(String(metadata['token_endpoint']), {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', code: result.code, redirect_uri: redirectUri, client_id: clientId, code_verifier: verifier }),
+      body: new URLSearchParams({ grant_type: 'authorization_code', code: result.code, redirect_uri: redirectUri, client_id: clientId, code_verifier: verifier, resource: options.resourceUrl }),
     }).catch(() => undefined);
     const granted = exchange?.ok ? await wait(exchange.json()).catch(() => undefined) as Record<string, unknown> | undefined : undefined;
     const accessToken = granted?.['access_token'];
@@ -182,4 +189,61 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     const listener = server;
     if (listener) await new Promise<void>(resolve => { listener.close(() => resolve()); listener.closeAllConnections(); });
   }
+}
+
+/** One endpoint this host signs in: its id, its credential reference and its exact URL. */
+export interface MongooseLoginTarget {
+  readonly endpointId: string;
+  readonly credentialRef: string;
+  readonly url: string;
+}
+
+/** The three connected endpoints with the credential reference this host keeps for each. */
+export function mongooseLoginTargets(): readonly MongooseLoginTarget[] {
+  return MONGOOSE_ENDPOINTS.map(endpoint => ({ endpointId: endpoint.id, credentialRef: `${endpoint.name}-mcp`, url: endpoint.url }));
+}
+
+export interface MongooseLoginOutcome {
+  readonly endpointId: string;
+  readonly state: 'signed-in' | 'failed';
+  readonly reason?: MongooseLoginCode;
+}
+
+export interface MongooseLoginsOptions {
+  configDir: string;
+  account: string;
+  targets: readonly MongooseLoginTarget[];
+  timeoutMs?: number;
+  fetch?: typeof fetch;
+  openBrowser?: (url: string) => void;
+  showAuthorizationUrl?: (url: string) => void;
+  now?: () => number;
+}
+
+/**
+ * The owner's sign-in for every connected endpoint: one dynamic client registration, then one
+ * consent per endpoint, and one record per endpoint. One refused consent never aborts the others,
+ * so each endpoint's state is reported on its own.
+ */
+export async function runMongooseLogins(options: MongooseLoginsOptions): Promise<readonly MongooseLoginOutcome[]> {
+  const outcomes: MongooseLoginOutcome[] = [];
+  let shared: { clientId: string; redirectPort: number } | undefined;
+  for (const target of options.targets) {
+    try {
+      const record = await runMongooseLogin({
+        configDir: options.configDir, reference: target.credentialRef, resourceUrl: target.url, account: options.account,
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(shared === undefined ? {} : { clientId: shared.clientId, redirectPort: shared.redirectPort }),
+        ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+        ...(options.openBrowser === undefined ? {} : { openBrowser: options.openBrowser }),
+        ...(options.showAuthorizationUrl === undefined ? {} : { showAuthorizationUrl: options.showAuthorizationUrl }),
+        ...(options.now === undefined ? {} : { now: options.now }),
+      });
+      shared ??= { clientId: record.clientId, redirectPort: record.redirectPort };
+      outcomes.push({ endpointId: target.endpointId, state: 'signed-in' });
+    } catch (error) {
+      outcomes.push({ endpointId: target.endpointId, state: 'failed', reason: error instanceof MongooseLoginError ? error.code : 'token-refused' });
+    }
+  }
+  return outcomes;
 }

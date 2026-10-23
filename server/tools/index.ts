@@ -7,10 +7,10 @@ import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
-import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
+import { approvalQualifies, validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
-import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
+import { ConnectorCompositionError, connectorDescriptor, mongooseModelToolName, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { redactSecretsWithCount } from './redact.js';
 import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
@@ -32,6 +32,18 @@ function dispatchedFailureCode(reason: string): ToolFailureCode {
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
+/** The names more than one connection grants: those are model-facing under their endpoint id. */
+export function sharedGrantedNames(connections: readonly { toolNames: readonly string[] }[]): ReadonlySet<string> {
+  const counts = new Map<string, number>();
+  for (const connection of connections) for (const name of connection.toolNames) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
+}
+
+/** The model-facing name of one granted tool: namespaced only where two endpoints would collide. */
+export function modelToolName(endpointId: string, tool: string, shared: ReadonlySet<string>): string {
+  return shared.has(tool) ? mongooseModelToolName(endpointId, tool) : tool;
+}
+
 export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
   const binding = ownerBindings.get(owner);
   if (!binding || binding.store !== expected.store || binding.registry !== expected.registry || binding.ownerId !== expected.ownerId) throw Error('tools_owner_binding_mismatch');
@@ -359,14 +371,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         // envelope (a release renamed its read tools) is a catalog change, not corruption. Only the
         // same endpoint's own live approval qualifies, and the compare-and-swap on the exact
         // predecessor bytes below still guards the replacement; anything else keeps throwing.
-        const peeked = ((): { enabled?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } } | null => {
+        const peeked = ((): { enabled?: unknown; connector?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } } | null => {
           try { return JSON.parse(String(row?.['policy_json'] ?? '')) as { enabled?: unknown }; } catch { return null; }
         })();
-        const sameEndpoint = peeked !== null && peeked.enabled !== false
-          && peeked.endpoint?.id === p.endpoint.id
-          && peeked.endpoint?.account === p.endpoint.account
-          && peeked.endpoint?.resource === p.endpoint.resource;
-        if (!row || expected !== String(row.policy_sha256) || !sameEndpoint) throw error;
+        // #530: the approval identity is the endpoint id plus its current tool manifest, so a release
+        // that splits one endpoint into three leaves each new id unapproved until it is written once.
+        const qualifies = approvalQualifies(peeked, { connector: p.connector, endpoint: { id: p.endpoint.id, account: p.endpoint.account, resource: p.endpoint.resource } }, options.grantMode === 'owner-trusted-reads');
+        if (!row || expected !== String(row.policy_sha256) || !qualifies) throw error;
       }
       if (current && canonicalJSON(current.policy) === bytes) return false;
       const predecessor = current?.sha256 ?? (row ? String(row.policy_sha256) : null);
@@ -580,6 +591,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return { status: 'completed', result };
         },
       });
+      // A name two connections both grant is model-facing under its endpoint id: the shared gateway pair
+      // never collides, while a genuine duplicate inside one endpoint still throws below.
+      const sharedNames = sharedGrantedNames(snapshot.connections.map(bound => bound.policy));
       for (const bound of snapshot.connections) {
         const p = bound.policy;
         const descriptor = connectorDescriptor(p.connector);
@@ -587,7 +601,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
         for (const name of p.toolNames) {
-          if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
+          const modelName = modelToolName(p.endpoint.id, name, sharedNames);
+          if (definitions.some(d => d.name === modelName)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
           // A connector capability granted for internal use (Mattermost channel-name resolution)
           // is absent from the model-facing table; it stays dispatchable through the connector.
@@ -595,7 +610,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (descriptor.envelope.includes(name)) continue;
             throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
           }
-          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
+          definitions.push({ name: modelName, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
             parameters: declaration.parameters,
             async execute(args, context) {

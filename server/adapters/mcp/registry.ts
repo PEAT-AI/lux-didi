@@ -5,6 +5,37 @@ import { DEFAULT_INHERITED_ENV_VARS } from '@modelcontextprotocol/client/stdio';
 import { bindingDigestOf, endpointBinding, isStdioEndpoint, sourceBindingOf } from './port.js';
 import type { CallRequest, EndpointConfig, HttpEndpointConfig, ReadGrant, ResultScope, StdioEndpointConfig, ToolDefinition } from './port.js';
 
+/** The persisted shape of one connection approval row, as the reconcile reads it. */
+export interface ApprovalRow {
+  readonly enabled?: unknown;
+  readonly connector?: unknown;
+  readonly endpoint?: { readonly id?: unknown; readonly account?: unknown; readonly resource?: unknown };
+}
+
+/**
+ * Whether a persisted approval may be reconciled into the current connection (#530). The approval
+ * identity is the endpoint id plus the current tool manifest: the same endpoint always qualifies,
+ * and under owner-trusted-reads a new endpoint of the same connector kind qualifies once, because a
+ * release that splits one endpoint into three must not be refused by its own old handshake. A
+ * revoked row never qualifies, and an explicit grant mode keeps its owner-approval refusal.
+ */
+export function approvalQualifies(stored: ApprovalRow | null, current: { connector: string; endpoint: { id: string; account: string; resource: string } }, trusted: boolean): boolean {
+  if (stored === null || stored.enabled === false) return false;
+  const sameEndpoint = stored.endpoint?.id === current.endpoint.id
+    && stored.endpoint?.account === current.endpoint.account
+    && stored.endpoint?.resource === current.endpoint.resource;
+  return sameEndpoint || (trusted && stored.connector === current.connector);
+}
+
+/**
+ * The approval identity of one trusted read (Didi #530): the endpoint id plus the tool manifest it was
+ * reviewed at. Keying on both means a release that renames a tool set leaves the new manifest
+ * unapproved until it is reconciled once, instead of refusing it because the handshake moved.
+ */
+export function approvalKey(endpointId: string, manifestDigest: string): string {
+  return `${endpointId}\u0000${manifestDigest}`;
+}
+
 export function canonicalToolDigest(tools: readonly ToolDefinition[]): string {
   const canonical = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonical);

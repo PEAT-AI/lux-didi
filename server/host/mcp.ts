@@ -1,6 +1,6 @@
-import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError, mongooseEnvelopeOf } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
-import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
+import { McpRegistry, approvalKey, approvalQualifies, canonicalToolDigest, type ApprovalRow } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
@@ -455,7 +455,8 @@ export async function composeMcpRuntime(options: {
         // is scheduled for it, and a real 4xx refusal keeps its own park-for-sign-in behaviour.
         return { retryable: stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
       }
-      const envelope = connectorEnvelopes[entry.connector] ?? [];
+      // A Mongoose endpoint approves its own declared read allowlist, never the union of all three.
+      const envelope = entry.connector === 'mongoose' ? mongooseEnvelopeOf(entry.id) : connectorEnvelopes[entry.connector] ?? [];
       const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
@@ -488,19 +489,15 @@ export async function composeMcpRuntime(options: {
         // reviewed envelope, so the row is reconciled from this discovery; a stored revocation still
         // wins, and explicit mode keeps its owner-approval refusal.
         let stored: ConnectionPolicy | null = null;
-        let sameEndpoint = false;
-        let enabledInRow = false;
+        let sameApproval: ApprovalRow | null = null;
         try {
-          const parsed = JSON.parse(bytes) as { enabled?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } };
-          sameEndpoint = parsed.endpoint?.id === policy.endpoint.id
-            && parsed.endpoint?.account === policy.endpoint.account
-            && parsed.endpoint?.resource === policy.endpoint.resource;
-          enabledInRow = parsed.enabled !== false;
+          const parsed = JSON.parse(bytes) as { enabled?: unknown; connector?: unknown; endpoint?: { id?: unknown; account?: unknown; resource?: unknown } };
+          sameApproval = parsed;
           stored = validatePolicy(parsed as unknown as ConnectionPolicy);
         } catch { stored = null; }
         // Only the same endpoint's own approval may be reconciled, and never a revoked one: a tampered,
         // foreign or revoked row keeps the owner-approval refusal.
-        if (!stored && (!trusted || !sameEndpoint || !enabledInRow)) {
+        if (!stored && (!trusted || !approvalQualifies(sameApproval, { connector: entry.connector, endpoint: { id: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource } }, trusted) || sameApproval?.enabled === false)) {
           reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
@@ -514,7 +511,8 @@ export async function composeMcpRuntime(options: {
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
-        const previousSchemas = approvedSchemas.get(entry.id);
+        // #530: approvals are keyed by endpoint id plus the manifest they were reviewed at.
+        const previousSchemas = approvedSchemas.get(approvalKey(entry.id, discovery.schemaDigest));
         const readableChanged = previousSchemas !== undefined && names.some(name => previousSchemas.get(name) !== schemas.get(name));
         // Only an explicit approval mode needs a fresh owner approval for any catalog change: under
         // owner-trusted-reads the reviewed envelope is the approval, so only a change to the contract of
@@ -538,7 +536,7 @@ export async function composeMcpRuntime(options: {
         }
         if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
-      approvedSchemas.set(entry.id, schemas);
+      approvedSchemas.set(approvalKey(entry.id, discovery.schemaDigest), schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.
       const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
       const identitySource = descriptor?.identity?.(policy) ?? null;

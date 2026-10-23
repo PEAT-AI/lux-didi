@@ -23,7 +23,7 @@ import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
-import { MongooseLoginError, runMongooseLogin } from './mongoose-login.js';
+import { MongooseLoginError, runMongooseLogins, type MongooseLoginTarget } from './mongoose-login.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -65,17 +65,28 @@ export function createMongooseSignIn(options: { configDir: string; recover: () =
   return () => {
     if (pending) return pending;
     const selection = loadMcpEndpoints({ configDir: options.configDir });
-    const entry = selection.state === 'configured'
-      ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
-      : undefined;
-    if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    // Every configured mongoose endpoint is signed in, in catalog order: three consents, one grant each.
+    const targets: MongooseLoginTarget[] = [];
+    let account = '';
+    if (selection.state === 'configured') {
+      for (const candidate of selection.catalog.endpoints) {
+        if (candidate.connector !== 'mongoose' || candidate.transport === 'stdio' || !candidate.credentialRef || !candidate.url) continue;
+        targets.push({ endpointId: candidate.id, credentialRef: candidate.credentialRef, url: candidate.url });
+        account = account === '' ? candidate.account : account;
+      }
+    }
+    if (targets.length === 0) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
     let release: (value: { status: 'started'; url: string } | { status: 'failed'; reason: string }) => void = () => {};
     let failure: string | undefined;
     const first = new Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>(resolve => { release = resolve; });
     pending = first;
-    void runMongooseLogin({ configDir: options.configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account,
+    void runMongooseLogins({ configDir: options.configDir, account, targets,
       showAuthorizationUrl: (url: string) => { open(url); release({ status: 'started', url }); } })
-      .then(() => options.recover())
+      .then(outcomes => {
+        const refused = outcomes.find(outcome => outcome.state === 'failed');
+        if (refused) failure = refused.reason ?? 'sign-in-did-not-finish';
+        return options.recover();
+      })
       .catch((error: unknown) => { failure = error instanceof MongooseLoginError ? error.code : 'sign-in-did-not-finish'; })
       .finally(() => {
         pending = undefined;

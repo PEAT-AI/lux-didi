@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defaultDataDir, openInDefaultBrowser, pairLocal, startHost, type HostConfig } from './runtime.js';
 import { supervise } from './supervision.js';
 import { ServiceError } from '../contracts/errors.js';
-import { MongooseLoginError, runMongooseLogin, type MongooseLoginCode } from './mongoose-login.js';
+import { MongooseLoginError, runMongooseLogins, type MongooseLoginCode, type MongooseLoginTarget } from './mongoose-login.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 
 /** One owner line per login failure: a closed code and a plain sentence, never a URL or a token. */
@@ -99,14 +99,25 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 async function runOwnerLogin(config: HostConfig, noBrowser: boolean): Promise<void> {
   const configDir = resolve(config.configDir ?? join(config.dataDir, 'provider-config'));
   const selection = loadMcpEndpoints({ configDir });
-  const entry = selection.state === 'configured'
-    ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
-    : undefined;
-  if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) throw new Error('Mongoose sign-in needs a configured mongoose endpoint with a credential reference');
+  // Every configured mongoose endpoint signs in, one consent each, from this one command.
+  const targets: MongooseLoginTarget[] = [];
+  let account = '';
+  if (selection.state === 'configured') {
+    for (const candidate of selection.catalog.endpoints) {
+      if (candidate.connector !== 'mongoose' || candidate.transport === 'stdio' || !candidate.credentialRef || !candidate.url) continue;
+      targets.push({ endpointId: candidate.id, credentialRef: candidate.credentialRef, url: candidate.url });
+      account = account === '' ? candidate.account : account;
+    }
+  }
+  if (targets.length === 0) throw new Error('Mongoose sign-in needs a configured mongoose endpoint with a credential reference');
   try {
-    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account, ...(noBrowser
+    const outcomes = await runMongooseLogins({ configDir, account, targets, ...(noBrowser
       ? { showAuthorizationUrl: (url: string) => process.stdout.write(`Open this Mongoose sign-in URL. This attempt expires five minutes after it started:\n${url}\n`) }
       : { openBrowser: openInDefaultBrowser }) });
+    const lines = outcomes.map(outcome => `${outcome.endpointId}: ${outcome.state === 'signed-in' ? 'signed in' : `not signed in (${outcome.reason ?? 'sign-in-did-not-finish'})`}`);
+    process.stdout.write(`${lines.join('\n')}\n`);
+    const refused = outcomes.find(outcome => outcome.state === 'failed');
+    if (refused) { process.exitCode = 1; return; }
   } catch (error) {
     const code = error instanceof MongooseLoginError ? error.code : undefined;
     console.error(code ? `Mongoose sign-in failed: ${LOGIN_LINES[code]}.` : 'Mongoose sign-in failed.');

@@ -8,7 +8,7 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
-import { createMongooseReader, MONGOOSE_READ_TOOLS, type SearchInput, type KnowledgeItemInput, type KnowledgeBodyInput, type CompanyProfileInput, type TicketInput } from './mongoose.js';
+import { createMongooseReader, mongooseEndpoint, MONGOOSE_READ_TOOLS, type SearchInput, type KnowledgeItemInput, type KnowledgeBodyInput, type CompanyProfileInput, type TicketInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_TOOLS } from './mattermost.js';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
@@ -450,14 +450,23 @@ const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly Connector
     mongooseDeclaration('get_ticket', 'Read a company ticket by its returned number. body_offset continues its body; offset and limit continue its related lists.', { number: { type: ['number', 'string'] }, detail, body_offset: offset, limit, offset }, ['number']),
   ];
 };
+/**
+ * The read envelope of one Mongoose connection: the endpoint's own declared reads when its id names
+ * one of the connected endpoints, and the widest envelope for a synthetic or retired endpoint id.
+ */
+export function mongooseEnvelopeOf(endpointId: string): readonly string[] {
+  return mongooseEndpoint(endpointId)?.reads ?? MONGOOSE_READ_TOOLS;
+}
+
 const mongooseDescriptor: ConnectorDescriptor = {
   id: 'mongoose', envelope: MONGOOSE_READ_TOOLS,
   declarations(policy) {
     // The typed seven first, then one pass-through declaration for every other tool of the read
     // envelope: the model table in tools/index.ts keeps only the granted names, and the reader
     // validates each call's arguments against the schema the server discovered.
+    const envelope = mongooseEnvelopeOf(policy.endpoint.id);
     const typed = mongooseTypedDeclarations(policy);
-    const other = MONGOOSE_READ_TOOLS
+    const other = envelope
       .filter(name => !typed.some(declaration => declaration.name === name))
       .map(name => mongooseForwardDeclaration(name));
     return [...typed, ...other];

@@ -32,6 +32,7 @@ cp "$root/server/host/mongoose-login.ts" "$out/source/host/"
 # server/tools imports the debug journal receipt and the memory read model: copy those modules too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root/server/test/mongoose-connector.test.ts" "$out/source/test/"
+cp "$root/server/test/mongoose-endpoints.test.ts" "$out/source/test/"
 cp "$root/server/test/mongoose-auth.test.ts" "$out/source/test/"
 cp "$root/server/test/mattermost-connector.test.ts" "$out/source/test/"
 cp "$root/server/test/mattermost-attention.test.ts" "$out/source/test/"
@@ -50,4 +51,4 @@ cp "$root/server/test/fixtures/stdio-mattermost-child.mjs" "$out/dist/test/fixtu
 cp "$root/server/test/fixtures/stdio-mattermost-attention-child.mjs" "$out/dist/test/fixtures/"
 mkdir -p "$out/test/fixtures"
 cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/test/fixtures/"
-node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/mongoose-endpoints.test.js" "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js"

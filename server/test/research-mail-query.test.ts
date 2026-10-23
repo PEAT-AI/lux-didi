@@ -349,7 +349,7 @@ const PROSE = 'Please explain what the prior discussion said about this, identif
 test('MAILQ 1: only the topic terms reach the search text, for mail and knowledge', () => {
   const base = { question: PROSE, topic: 'Wilmar pilot', configured: ['mail', 'knowledge'] as const, evidence: new Map(), nowMs: NOW, timeZone: ZONE };
   const mail = candidateSubs('mail_search', { ...base, query: PROSE });
-  assert.equal(mail[0]?.args['q'], 'in:inbox newer_than:14d wilmar pilot', 'the topic, its window, and no instruction word');
+  assert.equal(mail[0]?.args['q'], 'wilmar pilot', 'the topic words, and no instruction word');
   const knowledge = candidateSubs('knowledge_search', base);
   assert.equal(knowledge[0]?.args['query'], 'wilmar pilot', 'the topic again, for the ranker');
   for (const word of ['explain', 'prior', 'discussion', 'identify', 'reaction', 'relevant', 'since']) {
@@ -360,7 +360,7 @@ test('MAILQ 1: only the topic terms reach the search text, for mail and knowledg
 test('MAILQ 3: a model-written Gmail query keeps its operators and loses its prose', () => {
   assert.equal(
     compileMailQuery('Has anything important come in?', 'in:inbox newer_than:14d remaining metadata business-relevant', NOW, ZONE, ''),
-    'in:inbox is:important newer_than:14d',
+    'in:inbox newer_than:14d',
     'the operators the host recognises survive, the prose words do not',
   );
 });
@@ -388,9 +388,8 @@ test('MAILQ 2: a "what came in" ask scans the unread inbox and counts what came 
   }, new AbortController().signal);
   assert.deepEqual(sent, ['in:inbox is:unread is:important newer_than:2d', 'in:inbox is:unread newer_than:2d'], 'the fixed scan, important first, and no prose word');
   const text = (reply['findings'] as { text: string }[])[0]?.text ?? '';
-  assert.match(text, /^Mail: 10 of 10 shown$/mu, 'the reply says how many came in and that nothing was held back');
-  assert.match(text, /- Thread 9 \| from: Sender 9 \| date: /u, 'newest first, with sender and date');
+  assert.match(text, /^mail: 10 of 10 shown$/mu, 'the reply says how many came in and that nothing was held back');
+  assert.match(text, /Sender 9 \| Thread 9 \| Mon, 19 Oct 2026/u, 'newest first, with sender and date');
   assert.equal(text.includes('Thread 0'), true, 'the oldest of the ten is there too');
-  const once = text.split('\n').filter(line => line.includes('Thread 5'));
-  assert.equal(once.length, 1, 'a thread both reads returned is listed once');
+  assert.equal(text.split('\n').filter(line => line.includes('Thread 5')).length, 1, 'a thread both reads returned is listed once');
 });

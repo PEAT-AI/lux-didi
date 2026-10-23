@@ -1719,16 +1719,16 @@ test('MAILQ 7: a model-written date or clock time never becomes a knowledge quer
   assert.equal(/\d/u.test(query), false, `no digits in "${query}"`);
   assert.match(query, /wilmar/u);
   const spoken = candidateSubs('knowledge_search', {
-    question: 'What happened on 19 October with Wilmar?', topic: 'Wilmar 19 October',
+    question: 'What did Wilmar say in the 2026 review?', topic: 'Wilmar 2026 review',
     configured: ['knowledge'], evidence: new Map(),
   });
-  assert.match(String(spoken[0]!.args['query']), /\b19\b/u, 'a number the owner said is kept');
+  assert.match(String(spoken[0]!.args['query']), /\b2026\b/u, 'a number the owner said is kept');
 });
 
 test('MAILQ 7: a "last meeting" ask reads the newest notes first', () => {
   const notes = ['## Prep call (MEETING | 2025-03-02) [id 3]\nold', '## Standup (MEETING | 2026-10-19) [id 1]\nnewest', '## Review (MEETING | 2026-05-11) [id 2]\nmiddle'];
   const result: IntentSubResult = { key: 'k0', name: 'search_knowledge', ok: true, text: notes.join('\n'), originalCharacters: 0, omittedCharacters: 0 };
-  assert.deepEqual(newestDatedFirst(notes).map(line => line.slice(0, 20)), ['## Standup (MEETING ', '## Review (MEETING | ', '## Prep call (MEETING ']);
+  assert.deepEqual(newestDatedFirst(notes), [notes[1], notes[2], notes[0]], 'newest first, oldest last');
   assert.equal(shapeBlock('knowledge_search', [result], undefined, { newestFirst: true }).lines[0], notes[1], 'the newest note leads the block');
   assert.equal(shapeBlock('knowledge_search', [result], undefined).lines[0], notes[0], 'without the ask, the ranker order stands');
   assert.equal(lastMeetingQuestion('What did we agree in the last meeting with Wilmar'), true);

@@ -254,15 +254,17 @@ test('calendar lookups carry a day or a named window', () => {
 });
 
 test('the declared lookups key is valid on start only and matches its validator', () => {
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), true, 'unrouted start stays valid');
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'memory', query: 'x' }] }), true);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [] }), true);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'mail' }] }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'nonsense', query: 'x' }] }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'mail', query: 'x', extra: 1 }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't' }), true, 'unrouted start stays valid');
+  assert.equal(validateResearch({ action: 'start', question: 'q' }), false, 'MAILQ 1: a start without the topic is refused');
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: '  ' }), false, 'and a blank topic is no topic');
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'memory', query: 'x' }] }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [] }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'mail' }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'nonsense', query: 'x' }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'mail', query: 'x', extra: 1 }] }), false);
   assert.equal(validateResearch({ action: 'continue', researchId: 'r', lookups: [{ source: 'mail', query: 'x' }] }), false,
     'lookups belong to a start');
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: 'mail' }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: 'mail' }), false);
 });
 
 test('both provider declarations carry lookups, and the Gemini dialect flattens it', () => {

@@ -674,6 +674,7 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const skip = person === undefined ? undefined : new Set([person]);
   const gated = topicTerms(topic, question);
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
+  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"')) && topic === undefined) return authored.slice(0, RESEARCH.queryLimitChars);
   if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) {
     const kept = mailOperatorTokens(authored);
     const terms = topicText === undefined ? [] : mailTerms(topicText, 4, skip);
@@ -909,8 +910,20 @@ export function projectHintOf(question: string): string | undefined {
  * MAILQ 1: the only text handed here is the topic, so the model's instruction words never reach the
  * ranker; a topic of pure filler is no question to search at all.
  */
-export function knowledgeQuery(text: string): string {
-  return contentKeywords(text, RESEARCH.knowledgeQueryTerms, KNOWLEDGE_FILLER).join(' ');
+export function knowledgeQuery(text: string, question?: string): string {
+  const terms = contentKeywords(text, RESEARCH.knowledgeQueryTerms, KNOWLEDGE_FILLER);
+  if (question !== undefined) {
+    for (const word of contentKeywords(question, RESEARCH.knowledgeQueryTerms, KNOWLEDGE_FILLER)) {
+      if (terms.length >= RESEARCH.knowledgeQueryTerms) break;
+      if (!terms.includes(word)) terms.push(word);
+    }
+  }
+  if (terms.length > 0) return terms.join(' ');
+  if (question === undefined) return '';
+  // A query the model wrote is already keywords: `team` or `notes` is a stop word for a spoken
+  // question, never for a search string, so it is clipped and kept instead of dropped.
+  const bare = (word: string): string => word.replace(/[.:]+$/u, '') || word;
+  return text.toLowerCase().replace(/[^a-z0-9@._:-]+/gu, ' ').trim().split(/\s+/).filter(word => Boolean(word) && !KNOWLEDGE_FILLER.has(bare(word)) && !META_WORDS.has(bare(word))).slice(0, RESEARCH.knowledgeQueryTerms).join(' ');
 }
 
 /** 3r K1: the voice lookup's bounded-body arguments, named once so the wire and the receipt cannot disagree.
@@ -1069,7 +1082,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
     // MAILQ 1: the search text is the topic, so the model's instruction words never reach the ranker.
-    const query = config.query === undefined ? knowledgeQuery(topicTerms(config.topic, config.question) ?? config.question) : knowledgeQuery(config.query);
+    // MAILQ 1: with a topic, only its words are terms; without one the legacy path stands.
+    const topicText = topicTerms(config.topic, config.question);
+    const query = topicText !== undefined ? knowledgeQuery(topicText)
+      : config.query === undefined ? knowledgeQuery(config.question) : knowledgeQuery(config.query, config.question);
     if (!query) return [];
     const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
@@ -1099,7 +1115,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const dated = DATE_WORD.test(config.question);
     // MAILQ 1: with a topic, only its words are terms; the day operator still comes from the ask.
     const asked = config.query ?? 'after:yesterday';
-    const text = config.topic === undefined ? asked : [config.topic, ...asked.split(/\s+/u).filter(word => /^(?:after|before|on):/iu.test(word))].join(' ');
+    const gatedChat = topicTerms(config.topic, config.question);
+    const text = gatedChat === undefined ? asked : [gatedChat, ...asked.split(/\s+/u).filter(word => /^(?:after|before|on):/iu.test(word))].join(' ');
     const compiled = chatQuery(text, config.nowMs, config.timeZone);
     const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
     const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
@@ -1764,7 +1781,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
   return {
     name: RESEARCH_TOOL_NAME,
     description: researchDescription(configured),
-    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question","topic":"names and nouns"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. The topic is searched and the question is not, so put every name and noun in the topic. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
+    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question","topic":"the names and nouns"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. Only the topic is searched, so every name and noun belongs there. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
       properties: {

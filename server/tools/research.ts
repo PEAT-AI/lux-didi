@@ -2318,6 +2318,16 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
 
 const calendarDayLines = (days: readonly { day: string; entries: string[] }[]): string[] => days.map(entry => `- ${entry.day}: ${entry.entries.join('; ')}`);
 
+/** LAT-1023: the two counted ways an answer comes back short, shared by every run receipt. */
+function receiptCounts(reply: JsonObject | undefined, run: RunState, configured: readonly SourceKind[]): { roundCapHit?: number; answerCompacted?: { items: number; chars: number } } {
+  const leftUnread = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+  const compacted = (reply as CompactionReply | undefined)?.[compactionDelivery];
+  return {
+    ...(run.rounds >= ROUND_CAP_ROUNDS && (leftUnread.length > 0 || run.pending.size > 0) ? { roundCapHit: run.rounds } : {}),
+    ...(compacted === undefined ? {} : { answerCompacted: { items: compacted.items, chars: JSON.stringify(reply ?? {}).length } }),
+  };
+}
+
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
@@ -3227,7 +3237,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     throw error;
   } finally {
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: 1, perRound: [], stopReason: runStop, status: runStatus, ops: run.ops, sources: outcomes.map(outcome => ({ kind: outcome.source, disposition: outcome.outcome === 'ok' || outcome.outcome === 'empty' ? 'completed' : 'skipped', latencyMs: outcome.ms, ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: skipReasonOf(run.unavailableReasons.get(outcome.source as SourceKind), outcome.outcome) }) })), elapsedMs: Math.max(0, now() - started), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply ?? {}).length, driver: 'routed', unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), receiptCounts(reply, run, configured), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 
@@ -4015,14 +4025,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (runFailed) elapsedMs = Math.max(0, now() - started);
     const findings = Array.isArray(reply?.['findings']) ? reply['findings'] as { text?: string }[] : [];
     const replyBytes = JSON.stringify(reply ?? {}).length;
-    // LAT-1023: the cap and the trim are the two ways an answer comes back short, and each is counted, so a
-    // receipt tells a fast answer from a robbed one without ever carrying the text.
-    const leftUnread = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
-    const roundCapHit = run.rounds >= ROUND_CAP_ROUNDS && (leftUnread.length > 0 || run.pending.size > 0) ? run.rounds : undefined;
-    const compacted = (reply as CompactionReply | undefined)?.[compactionDelivery];
+    // LAT-1023: the cap and the trim are the two ways an answer comes back short, each counted by the helper.
     // A run that threw before it selected anything names no driver: the key is omitted, never passed undefined,
     // because the host log refuses a line whose driver is not one of the four.
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes, ...(roundCapHit === undefined ? {} : { roundCapHit }), ...(compacted === undefined ? {} : { answerCompacted: { items: compacted.items, chars: replyBytes } }), ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, ...briefPlanField(run), rounds: run.rounds, perRound, stopReason: runFailed ? 'failed' : stopReason, status: runFailed ? 'failed' : status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: worstGapMs, selectorMs, fallbackUsed, replyBytes, ...receiptCounts(reply, run, configured), ...(driver === undefined ? {} : { driver }), unchecked: configured.filter(source => !run.sourcesDone.has(source)), canContinue: reply?.['canContinue'] === true, findingChars: findings.map(finding => (finding.text ?? '').length), bodyReplies: run.bodyReplies, metaStartAsContinue: run.metaStartAsContinue, supersededAborts: run.supersededAborts });
   }
 }
 

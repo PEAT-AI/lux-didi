@@ -25,9 +25,15 @@ test('the connector carries three endpoints, one place per endpoint', () => {
     for (const admin of ['provision_user', 'set_user_access', 'list_users', 'list_user_handles', 'get_schema']) {
       assert.ok(!endpoint.tools.includes(admin), `${endpoint.id} carries no admin tool ${admin}`);
     }
-    for (const write of ['create_ticket', 'update_knowledge_item', 'run_sql', 'create_content']) {
+    for (const write of ['create_ticket', 'update_knowledge_item', 'create_content', 'set_project']) {
       assert.ok(!endpoint.reads.includes(write), `${endpoint.id} read allowlist excludes ${write}`);
     }
+  }
+  {
+    const knowledge = mongooseEndpoint('mongoose-knowledge');
+    assert.ok(knowledge !== undefined);
+    assert.ok(!knowledge.reads.includes('run_sql'));
+    assert.ok(!knowledge.reads.includes('get_company_crm'));
   }
   assert.equal(mongooseEndpoint('mongoose-knowledge')?.tools.length, 50);
   assert.equal(mongooseEndpoint('mongoose-data')?.tools.length, 23);
@@ -80,7 +86,7 @@ test('#530: an approval row qualifies on endpoint id plus the current manifest',
   assert.equal(approvalQualifies({ enabled: true, connector: 'mongoose', endpoint: { ...endpoint, id: 'mongoose' } }, current, true), true);
   assert.equal(approvalQualifies({ enabled: true, connector: 'mongoose', endpoint: { ...endpoint, id: 'mongoose' } }, current, false), false);
   assert.equal(approvalQualifies({ enabled: false, connector: 'mongoose', endpoint: { ...endpoint, id: 'mongoose' } }, current, true), false);
-  assert.equal(approvalQualifies({ enabled: true, connector: 'google', endpoint }, current, true), false);
+  assert.equal(approvalQualifies({ enabled: true, connector: 'google', endpoint: { ...endpoint, id: 'google-mail' } }, current, true), false);
   assert.equal(approvalQualifies(null, current, true), false);
 });
 

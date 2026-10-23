@@ -1,3 +1,4 @@
+import { outputInterrupted } from './orb-motion.ts';
 import './style.css';
 import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup, type MemoryListItem } from './memory-list';
 import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySummaries, type LiveSelection, type LiveSummary, type MemorySummaryItem, saveLiveSelection } from './api';
@@ -563,6 +564,7 @@ async function pollLive(){
     }
     const ended=next.live?.pastSession?earlierSession(next.live):undefined;
     archiveSession(ended);
+    if (outputInterrupted(prior.live, next.live)) orb?.interrupt();
     livePoll={...next,earlier:earlierFeed};live=livePoll.live;paintLive();
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}

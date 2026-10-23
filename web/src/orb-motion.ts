@@ -91,3 +91,10 @@ export class MotionCoordinator {
     return { ...motion, posture: kind, weights: { ...this.current }, source: this.source, frame, breathPhase: this.motion.breathPhase, periodModulation, depthModulation };
   }
 }
+
+interface InterruptSnapshot { since?: string; entries: readonly { seq: number; kind: string; text?: string }[] }
+export function outputInterrupted(prior: InterruptSnapshot | undefined, next: InterruptSnapshot | undefined): boolean {
+  if (!prior || !next || prior.since !== next.since) return false;
+  const last = Math.max(-1, ...prior.entries.map(entry => entry.seq));
+  return next.entries.some(entry => entry.seq > last && (entry.kind === 'interrupted' || (entry.kind === 'inputTranscription' && Boolean(entry.text?.trim()))));
+}

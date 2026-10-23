@@ -604,7 +604,7 @@ function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
   let pending = '', closed = '';
   for (const row of rows) {
     pending += String(row['text'] ?? '');
-    if (Number(row['finished']) === 1) { const turn = pending.trim(); if (turn) closed = turn; pending = ''; }
+    if (Number(row['finished']) === 1) { closed = pending.trim(); pending = ''; }
   }
   return closed;
 }

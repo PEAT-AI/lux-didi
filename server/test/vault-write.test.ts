@@ -224,6 +224,9 @@ test('the adapter-shaped transcript mints the authorization from the assembled o
   assert.equal(minted[0]?.['content'], 'the boat survey is on Tuesday');
   assert.equal(minted[0]?.['state'], 'authorized');
 
+  await emit({ type: 'inputTranscription', text: '', finished: true });
+  assert.equal(rows().length, 1, 'a blank finished turn mints nothing and never re-mints the turn before it');
+
   await emit({ type: 'inputTranscription', text: 'what is the weather', finished: false });
   await emit({ type: 'inputTranscription', text: '', finished: true });
   assert.equal(rows().length, 1, 'an ordinary turn mints nothing');
@@ -231,6 +234,8 @@ test('the adapter-shaped transcript mints the authorization from the assembled o
   owner.text('save to my vault: the typed note');
   await flush();
   assert.equal(rows().length, 1, 'operator-typed text is not a dictation');
+  await emit({ type: 'inputTranscription', text: '', finished: true });
+  assert.equal(rows().length, 1, 'and the blank turn after it never carries the typed words forward');
 
   attachment.close();
   await drained;

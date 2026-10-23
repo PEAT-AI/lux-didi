@@ -57,7 +57,7 @@ test('K3: the model-authored knowledge query is clipped to ten content terms, an
   assert.deepEqual(terms, ['decide', 'wriggler', 'three', 'layer', 'schema', 'migration', 'deadline', 'dashboard']);
   assert.ok(!terms.includes('about') && !terms.includes('owner'), 'filler is dropped before the budget is counted');
   assert.ok(!sentence.startsWith(shaped), 'the whole spoken sentence never reaches the search');
-  const [call] = candidateSubs('knowledge_search', { question: sentence, configured: CONFIGURED, evidence: new Map() });
+  const [call] = candidateSubs('knowledge_search', { question: sentence, topic: sentence, configured: CONFIGURED, evidence: new Map() });
   assert.equal(String(call!.args['query']), shaped);
   const longer = 'decide wriggler three layer schema migration deadline dashboard harvester pipeline ledger';
   assert.deepEqual(knowledgeQuery(longer).split(' ').slice(-1), ['pipeline'], 'the tenth term is the last one that fits');
@@ -67,17 +67,17 @@ test('K3: the model-authored knowledge query is clipped to ten content terms, an
 });
 
 test('K4: a known project name in the question supplies a hint, and never a hard filter', () => {
-  const hinted = candidateSubs('knowledge_search', { question: 'how is the Wriggler pipeline doing', configured: CONFIGURED, evidence: new Map() });
+  const hinted = candidateSubs('knowledge_search', { question: 'how is the Wriggler pipeline doing', topic: 'Wriggler pipeline', configured: CONFIGURED, evidence: new Map() });
   assert.equal(hinted[0]!.args['project_hint'], 'Wriggler');
   assert.equal('project' in hinted[0]!.args, false);
-  const plain = candidateSubs('knowledge_search', { question: 'what did we decide about the retrieval deadline', configured: CONFIGURED, evidence: new Map() });
+  const plain = candidateSubs('knowledge_search', { question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline', configured: CONFIGURED, evidence: new Map() });
   assert.equal('project_hint' in plain[0]!.args, false);
   assert.equal('project' in plain[0]!.args, false);
 });
 
 test('K6: a question with no content words asks rather than searching filler', () => {
   assert.deepEqual(candidateSubs('knowledge_search', { question: 'what is that', configured: CONFIGURED, evidence: new Map() }), []);
-  assert.equal(candidateSubs('knowledge_search', { question: 'wriggler pipeline', configured: CONFIGURED, evidence: new Map() }).length, 1);
+  assert.equal(candidateSubs('knowledge_search', { question: 'wriggler pipeline', topic: 'wriggler pipeline', configured: CONFIGURED, evidence: new Map() }).length, 1);
   // A model query of one domain word survives: it is a search string, never a spoken sentence.
   const [one] = candidateSubs('knowledge_search', { question: 'who is on my team', query: 'team', configured: CONFIGURED, evidence: new Map() });
   assert.equal(one!.args['query'], 'team');

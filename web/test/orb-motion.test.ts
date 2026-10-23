@@ -262,3 +262,14 @@ test('audible onset bypasses a stale debounced status without changing its swirl
   assert.ok(Math.abs(output.swirl - 0.03 * POSTURE_TARGETS.thinking.swirl) < 1e-9);
   assert.notEqual(m.advance('DISCONNECTED', 31, false, false, 'SPEAKING').posture, 'speaking');
 });
+
+test('native band ownership is not overwritten by the slower legacy scalar bridge', () => {
+  const m = new MotionCoordinator();
+  m.sample(voiceSample(0.1), 0);
+  const rich = m.sample(voiceSample(0.1), 80);
+  const ignored = m.sample({ level: 0.8, playback: 0 }, 100);
+  assert.equal(ignored.timestamp, rich.timestamp);
+  assert.equal(ignored.playback, rich.playback);
+  assert.equal(ignored.low, rich.low);
+  assert.equal(m.sample({ level: 0.1, playback: 0 }, 400).rich, false);
+});

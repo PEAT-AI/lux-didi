@@ -1574,7 +1574,7 @@ test('release 4: a mail continuation never appends the model meta words after th
   assert.ok(searched.length > 0, `the continuation still searches mail: ${JSON.stringify(h.executed.slice(before))}`);
   for (const q of searched) {
     assert.equal(/\b(?:remaining|metadata|business-relevant)\b/u.test(q), false, `no meta word rides the mail query: ${q}`);
-    assert.match(q, /korbi/u, 'the owner question terms are the search text');
+    assert.match(q, /korbi/u, `the owner question terms are the search text: ${JSON.stringify(h.executed.slice(before))}`);
   }
 });
 

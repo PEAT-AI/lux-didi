@@ -715,15 +715,19 @@ export function compileMailQuery(question: string, query: string | undefined, no
 export interface MailQueryShape { terms: number; operators: string[]; window?: string }
 const OPERATOR_TOKEN = /^([a-z_]+):(.+)$/iu;
 const WINDOW_OPERATORS = new Set(['newer_than', 'older_than', 'after', 'before']);
-const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) || token.toUpperCase() === 'OR';
+/** F3: an operator is a name from the closed set, so `remaining:metadata` is a word with a colon. */
+const operatorNameOf = (token: string): string | undefined => {
+  const name = OPERATOR_TOKEN.exec(token)?.[1]?.toLowerCase();
+  return name !== undefined && (MAIL_QUERY_OPERATORS as readonly string[]).includes(name) ? name : undefined;
+};
+const isOperatorToken = (token: string): boolean => operatorNameOf(token) !== undefined || token.toUpperCase() === 'OR';
 
 export function mailQueryShape(q: string): MailQueryShape {
   const operators: string[] = [];
   let terms = 0, window: string | undefined;
   for (const token of q.split(/\s+/).filter(Boolean)) {
-    const match = OPERATOR_TOKEN.exec(token);
-    if (match === null) { if (token.toUpperCase() !== 'OR') terms += 1; continue; }
-    const operator = match[1]!.toLowerCase();
+    const operator = operatorNameOf(token);
+    if (operator === undefined) { if (token.toUpperCase() !== 'OR') terms += 1; continue; }
     if (!operators.includes(operator)) operators.push(operator);
     if (WINDOW_OPERATORS.has(operator) && window === undefined) window = token;
   }

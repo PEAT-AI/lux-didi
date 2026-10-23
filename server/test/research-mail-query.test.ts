@@ -357,6 +357,11 @@ test('MAILQ 1: only the topic terms reach the search text, for mail and knowledg
   }
 });
 
+test('MAILQ 3 and F3: an operator name outside the closed set is a word with a colon, not an operator', () => {
+  assert.equal(compileMailQuery('check the inbox', 'in:inbox remaining:metadata business-relevant newer_than:14d', NOW, ZONE, ''), 'in:inbox newer_than:14d');
+  assert.deepEqual(mailQueryShape('in:inbox remaining:metadata newer_than:14d'), { terms: 1, operators: ['in', 'newer_than'], window: 'newer_than:14d' });
+});
+
 test('MAILQ 3: a model-written Gmail query keeps its operators and loses its prose', () => {
   assert.equal(
     compileMailQuery('Has anything important come in?', 'in:inbox newer_than:14d remaining metadata business-relevant', NOW, ZONE, ''),

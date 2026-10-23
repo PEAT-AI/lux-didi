@@ -320,12 +320,13 @@ test('the word stop in a question never stops a run: stop is only a tool action'
 });
 
 test('validate accepts the three actions and rejects invented keys', () => {
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't' }), true);
   assert.equal(validateResearch({ action: 'continue', researchId: 'abc' }), true);
   assert.equal(validateResearch({ action: 'stop', researchId: 'abc' }), true);
   assert.equal(validateResearch({ action: 'start' }), false);
   assert.equal(validateResearch({ action: 'destroy', question: 'q' }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', evil: 1 }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', evil: 1 }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q' }), false, 'MAILQ 1: the topic is required on a start');
 });
 
 // #263: the declaration names only the sources this session configured and the host loop can read. A session
@@ -1729,8 +1730,10 @@ test('MAILQ 7: a "last meeting" ask reads the newest notes first', () => {
   const notes = ['## Prep call (MEETING | 2025-03-02) [id 3]\nold', '## Standup (MEETING | 2026-10-19) [id 1]\nnewest', '## Review (MEETING | 2026-05-11) [id 2]\nmiddle'];
   const result: IntentSubResult = { key: 'k0', name: 'search_knowledge', ok: true, text: notes.join('\n'), originalCharacters: 0, omittedCharacters: 0 };
   assert.deepEqual(newestDatedFirst(notes), [notes[1], notes[2], notes[0]], 'newest first, oldest last');
-  assert.equal(shapeBlock('knowledge_search', [result], undefined, { newestFirst: true }).lines[0], notes[1], 'the newest note leads the block');
-  assert.equal(shapeBlock('knowledge_search', [result], undefined).lines[0], notes[0], 'without the ask, the ranker order stands');
+  const newest = shapeBlock('knowledge_search', [result], undefined, { newestFirst: true }).lines;
+  assert.match(newest[0] ?? '', /Standup/u, 'the newest note leads the block');
+  assert.match(newest[2] ?? '', /Prep call/u, 'the oldest note is last');
+  assert.match(shapeBlock('knowledge_search', [result], undefined).lines[0] ?? '', /Prep call/u, 'without the ask, the ranker order stands');
   assert.equal(lastMeetingQuestion('What did we agree in the last meeting with Wilmar'), true);
   assert.equal(lastMeetingQuestion('What is the Wilmar pilot status'), false);
 });

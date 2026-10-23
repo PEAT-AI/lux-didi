@@ -607,7 +607,11 @@ const MAIL_DATE_SHAPE = /\b\d{4}-\d{2}-\d{2}\b/gu;
 export const TRIAGE_QUERIES = ['in:inbox is:unread is:important newer_than:2d', 'in:inbox is:unread newer_than:2d'] as const;
 /** MAILQ 6: the window a chat triage read rolls back over. */
 export const TRIAGE_DAYS = 7;
-const TRIAGE_ASK = /\b(?:what came in|what'?s (?:new|came in)|anything (?:important|new|urgent|unread)|any (?:new|important|unread|urgent) (?:mail|email|messages?)|new (?:mail|email|messages)|check (?:my )?(?:inbox|mail|email)|what did i miss)\b/u;
+/** MAILQ 2: the number of unread threads a triage reply reads out before it says it is capped. */
+export const TRIAGE_LINES = 10;
+const TRIAGE_ASK = /\b(?:what came in|what'?s (?:new|came in)|anything (?:important|new|urgent|unread)|any (?:new|important|unread|urgent) (?:mail|email|messages?)|new (?:mail|email|messages)|what did i miss)\b/u;
+/** The only content words a triage ask may add beside the phrase itself. */
+const TRIAGE_REST = new Set(['needs', 'need', 'needed', 'reaction', 'reply', 'respond', 'attention', 'urgent', 'act', 'action', 'important', 'today', 'come', 'came', 'comes', 'arrived', 'landed', 'received', 'waiting']);
 
 /**
  * MAILQ 1 and 7: the topic is the only search text, and a number enters it only when the owner said
@@ -632,10 +636,24 @@ export function newestDatedFirst(lines: readonly string[]): string[] {
   return dated.sort((left, right) => right.at - left.at).map(entry => entry.line);
 }
 
-/** MAILQ 2: a triage ask names no noun of its own, so a topic with a real word in it is a topic search. */
+/**
+ * MAILQ 2: a triage ask names no noun of its own, so a topic with a real word in it is a topic search,
+ * and a question that adds nouns of its own ("check my mail about the landlord invoice") is not one.
+ */
 export function triageAsk(question: string, topic?: string): boolean {
   if (contentKeywords(topic ?? '', 1).length > 0) return false;
-  return TRIAGE_ASK.test(question.toLowerCase());
+  const ask = question.toLowerCase();
+  if (!TRIAGE_ASK.test(ask)) return false;
+  return contentKeywords(ask.replace(TRIAGE_ASK, ' '), 4).every(word => TRIAGE_REST.has(word));
+}
+
+/** MAILQ 6 (#572): the chat triage phrases the audit named, narrowed so a plain "what's new" stays a search. */
+const CHAT_TRIAGE_ASK = /\b(?:(?:anything|any) new|anything (?:urgent|unread)|any (?:urgent|unread)|(?:urgent|unread) (?:messages?|dms?|posts?)|new (?:messages?|dms?|posts?)|what came in|what did i miss)\b/u;
+export function chatTriageAsk(question: string, topic?: string): boolean {
+  if (contentKeywords(topic ?? '', 1).length > 0) return false;
+  const ask = question.toLowerCase();
+  if (!CHAT_TRIAGE_ASK.test(ask)) return false;
+  return contentKeywords(ask.replace(CHAT_TRIAGE_ASK, ' '), 4).every(word => TRIAGE_REST.has(word));
 }
 
 /**
@@ -1111,7 +1129,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // to send, so an empty query is never dispatched, whoever wrote the query text.
     // MAILQ 6 (#572): a "what came in" ask on Mattermost is the attention read, windowed and newest
     // first, never a relevance-ranked search over the whole archive.
-    if (triageAsk(config.question, config.topic)) return [search(INTERNAL.chatAttention, { days: TRIAGE_DAYS }, 'ca0')];
+    if (chatTriageAsk(config.question, config.topic)) return [search(INTERNAL.chatAttention, { days: TRIAGE_DAYS }, 'ca0')];
     const dated = DATE_WORD.test(config.question);
     // MAILQ 1: with a topic, only its words are terms; the day operator still comes from the ask.
     const asked = config.query ?? 'after:yesterday';
@@ -1139,8 +1157,11 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));
     // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
     // MAILQ 1: the topic's terms are the query; a pure instruction start reads nothing.
-    const query = knowledgeQuery(topicTerms(config.topic, config.question) ?? config.question);
-    if (config.configured.includes('knowledge') && query !== '') subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question)), 'b3'));
+    const briefTopic = topicTerms(config.topic, config.question);
+    const query = knowledgeQuery(briefTopic ?? config.question);
+    // K5: without a topic, a vague question still reads his knowledge once on its own words.
+    const asked = briefTopic === undefined && query === '' && !metaOnlyQuestion(config.question) ? config.question.trim() : query;
+    if (config.configured.includes('knowledge') && asked !== '') subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(asked, projectHintOf(config.question)), 'b3'));
     return subs;
   }
   return [];
@@ -1781,7 +1802,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
   return {
     name: RESEARCH_TOOL_NAME,
     description: researchDescription(configured),
-    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question","topic":"the names and nouns"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. Only the topic is searched, so every name and noun belongs there. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
+    guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question","topic":"the names and nouns"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. Only the topic is searched. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
       properties: {
@@ -2080,7 +2101,7 @@ export function cutLineOf(results: readonly IntentSubResult[]): string | undefin
  * Q1-R0: one telegraphic line per item, a per-source count line, never prose. Item ids ride in the
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
-export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean; triage?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'web_search') {
     const ok = results.filter(result => result.ok && result.text.trim());
     const lines = ok.flatMap(result => result.text.split('\n').filter(Boolean));
@@ -2112,7 +2133,10 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
           else rest.push(part);
         }
         const excerpt = clip(rest.join(' | '), RESEARCH.mailSnippetChars);
-        lines.push(`${[sender, subject, date, excerpt].filter(value => value !== '').join(' | ')}${open}`);
+        const rendered = `${[sender, subject, date, excerpt].filter(value => value !== '').join(' | ')}${open}`;
+        // MAILQ 2: a thread two triage reads both returned is one thread, listed once.
+        if (lines.includes(rendered)) continue;
+        lines.push(rendered);
         total += 1;
       }
     } else if (result.name === INTERNAL.mailRead) {
@@ -2162,7 +2186,8 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
     lines.length = 0;
     lines.push(...ordered);
   }
-  const cap = LINE_CAP[kind] ?? lines.length;
+  // MAILQ 2: a triage scan reads out ten unread threads, and the header says when it held more back.
+  const cap = options?.triage === true && kind === 'mail_search' ? Math.max(TRIAGE_LINES, LINE_CAP[kind] ?? 0) : LINE_CAP[kind] ?? lines.length;
   const shown = lines.slice(0, cap);
   if (!shown.length) return { text: '', source, lines: [], total: 0 };
   const label = SOURCE_LABEL[source ?? 'knowledge'];
@@ -3130,7 +3155,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const cutShort = signal.aborted;
   reads.forEach((plan, index) => {
     const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
-    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question) });
+    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question), triage: plan.read.kind === 'mail_search' && triageAsk(context.question, context.topic) });
     // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     const missed = own.some(result => !result.ok);
@@ -3954,7 +3979,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // one is credited and delivered on its own instead of the whole batch going uncredited.
           const parts = creditableSources(kind, results);
           for (const [index, part] of parts.entries()) {
-            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone, { newestFirst: lastMeetingQuestion(question) });
+            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone, { newestFirst: lastMeetingQuestion(question), triage: kind === 'mail_search' && triageAsk(question, topic) });
             // E5: the mail read's own queries, for the receipt's shape and the reply's "how I searched".
             const mailInfo = part.source !== 'mail' || mailCalls.length === 0 ? undefined : mailQueryInfo(mailRead(run, mailCalls[0]!.args));
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });

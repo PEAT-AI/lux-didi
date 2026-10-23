@@ -64,9 +64,23 @@ test('empty-history model-first sends one server-owned Companion greeting withou
   await f.frame(1);
   f.send({ setupComplete: {} });
   await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  // 1023-N3: the turn is completed in the same frame, so the provider answers it instead of waiting for VAD.
+  assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   assert.equal((await events.next()).value?.type, 'ready');
   assert.equal(f.frames.length, 2, 'exactly one fresh opening directive is sent without PCM');
+});
+
+test('empty-history user-first sends no opening turn at all', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
+    ...request(), opening: 'user_first', history: [],
+  }, control());
+  t.after(() => session.close());
+  await f.frame(1);
+  f.send({ setupComplete: {} });
+  await session.ready;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.frames.length, 1, 'a call the owner opens himself asks the provider for nothing');
 });
 
 test('a failed fresh opening write never resolves public ready', async t => {

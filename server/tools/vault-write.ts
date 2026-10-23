@@ -103,10 +103,9 @@ function receiptFromRow(row: SQLRow): VaultReceipt {
 
 /** The proposal is never permission: it must equal the content the owner's own final utterance authorized. */
 export function claimVaultWrite(tx: Transaction, options: { liveSessionId: string; content: string }): VaultClaim {
-  const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1', [options.liveSessionId]);
+  const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND content_key=? ORDER BY created_at DESC, rowid DESC LIMIT 1', [options.liveSessionId, vaultContentKey(options.content)]);
   if (!row) return { state: 'settled', receipt: refusal('not_owner_requested') };
   if (String(row['state']) !== 'authorized') return { state: 'settled', receipt: receiptFromRow(row) };
-  if (String(row['content_key']) !== vaultContentKey(options.content)) return { state: 'settled', receipt: refusal('not_owner_requested') };
   const opId = String(row['op_id']);
   const claimed = tx.run("UPDATE vault_writes SET state='dispatched' WHERE op_id=? AND state='authorized'", [opId]);
   if (claimed !== 1) {

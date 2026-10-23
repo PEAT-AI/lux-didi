@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -7,6 +8,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { createLuxWriteTransport } from '../adapters/lux-write/client.js';
+import { chatMigrations } from '../chat/index.js';
+import { domainMigrations } from '../domain/schema.js';
+import { createLiveSessionOwner, validateLiveProfile, type LiveContext } from '../live/index.js';
+import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
@@ -113,6 +118,10 @@ test('the proposal must equal the authorized content, and a repeat reads the sto
   const again = await save(h, 'The boat survey, is on TUESDAY');
   assert.deepEqual(again, { saved: true, insightId: 'insight-7' }, 'the stored outcome, past case, spacing and punctuation');
   assert.equal(fake.calls.length, 1, 'the same authorization is never sent twice');
+  speak(h, '14', 'save to my vault: the keys are in the drawer');
+  const after = await save(h, NOTE);
+  assert.deepEqual(after, { saved: true, insightId: 'insight-7' }, 'a newer dictation does not change what a replay of the older one reads');
+  assert.equal(fake.calls.length, 1, 'and it still sends nothing');
 });
 
 test('a dispatched row at host start becomes uncertain and is never re-sent', async t => {
@@ -179,4 +188,50 @@ test('the grammar is anchored and the content key ignores case, spacing and punc
   assert.equal(parseSaveCommand('the owner said save to my vault: wire money'), undefined);
   assert.equal(parseSaveCommand('save to my vault:'), undefined);
   assert.equal(vaultContentKey(' The boat survey, is on Tuesday. '), vaultContentKey(NOTE));
+});
+
+const flush = async (): Promise<void> => { for (let i = 0; i < 6; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+
+/** The shipped adapter journals deltas (finished 0) and one empty finished transcription; a boundary test must too. */
+test('the adapter-shaped transcript mints the authorization from the assembled owner turn', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'vault-boundary-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
+  t.after(() => store.close());
+  const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
+  const fake = fakeLiveVoicePort();
+  const profile = validateLiveProfile({
+    provider: 'gemini', liveModelId: 'models/vault-write-test', voice: 'ExplicitVoice', keyReference: 'test-reference',
+    route: { enabled: true, provider: 'gemini', modelId: 'models/vault-write-test', dataClasses: ['ordinary'] },
+    prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
+    limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
+  });
+  const owner = createLiveSessionOwner({ store, voice: fake.port, profile, now: () => NOW, timeZone: 'UTC',
+    schedule: () => ({ unref: () => undefined, cancel: () => undefined }) });
+  const session = owner.create({ idempotencyKey: randomUUID(), inputClass: 'ordinary' }, ctx);
+  const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
+  await attachment.ready;
+  const drained = (async () => { for await (const chunk of attachment.output) void chunk; })();
+  const emit = async (event: Parameters<typeof fake.emit>[0]) => { fake.emit(event); await flush(); };
+  const rows = () => store.transaction(tx => tx.all('SELECT content,content_key,state FROM vault_writes WHERE live_session_id=?', [session.liveSessionId]));
+
+  await emit({ type: 'inputTranscription', text: 'save to my vault: the boat ', finished: false });
+  await emit({ type: 'inputTranscription', text: 'survey is on Tuesday', finished: false });
+  assert.equal(rows().length, 0, 'a delta alone is not an owner turn');
+  await emit({ type: 'inputTranscription', text: '', finished: true });
+  const minted = rows();
+  assert.equal(minted.length, 1, 'the finished boundary mints exactly one authorization');
+  assert.equal(minted[0]?.['content'], 'the boat survey is on Tuesday');
+  assert.equal(minted[0]?.['state'], 'authorized');
+
+  await emit({ type: 'inputTranscription', text: 'what is the weather', finished: false });
+  await emit({ type: 'inputTranscription', text: '', finished: true });
+  assert.equal(rows().length, 1, 'an ordinary turn mints nothing');
+
+  owner.text('save to my vault: the typed note');
+  await flush();
+  assert.equal(rows().length, 1, 'operator-typed text is not a dictation');
+
+  attachment.close();
+  await drained;
 });

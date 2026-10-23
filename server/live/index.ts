@@ -598,6 +598,17 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
 const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
 const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
 // Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
+/** The owner turn that just closed: the provider's deltas joined up to the finished boundary, never one fragment. */
+function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
+  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
+  let pending = '', closed = '';
+  for (const row of rows) {
+    pending += String(row['text'] ?? '');
+    if (Number(row['finished']) === 1) { const turn = pending.trim(); if (turn) closed = turn; pending = ''; }
+  }
+  return closed;
+}
+
 const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
   'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
 const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
@@ -3145,7 +3156,10 @@ export class LiveSessionOwner {
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }
-      if (kind === 'inputTranscription' && finished === 1 && text && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), text);
+      if (kind === 'inputTranscription' && finished === 1 && transcription?.finalOrigin !== 'typed') {
+        const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
+        if (ownerTurn) this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
+      }
       return journalId;
     };
     const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);

@@ -251,3 +251,12 @@ test('only new authoritative host interruption or owner transcription clears own
   assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'outputTranscription', text: 'fixture model speech' }] }), false);
   assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'inputTranscription', text: ' ' }] }), false);
 });
+
+test('audible onset bypasses a stale debounced status without changing its swirl', () => {
+  const m = new MotionCoordinator();
+  m.sample(voiceSample(0.1), 0);
+  m.advance('CONNECTING', 0, false, false, 'DISCONNECTED');
+  m.sample(voiceSample(0.1), 30);
+  assert.equal(m.advance('CONNECTING', 30, false, false, 'DISCONNECTED').posture, 'speaking');
+  assert.notEqual(m.advance('DISCONNECTED', 31, false, false, 'SPEAKING').posture, 'speaking');
+});

@@ -23,21 +23,21 @@ extension LaunchKind {
     }
 }
 
-/// The close command's two outcomes: an active Live session keeps running in the
-/// mini orb, otherwise the window hides.
-enum CloseOutcome: Equatable { case mini, hidden }
-
-/// The one owner of which surface is visible: the FULL window or the MINI orb.
+/// The one owner of which surfaces are visible: the FULL window, the MINI orb, or both.
 /// A surface is a pair of closures, so every transition is proven in
 /// Tests/DidiMacTests/main.swift without a window, a screen or a launch.
-/// The coordinator never touches Live, so switching modes can never end a
+/// The coordinator never touches Live, so switching surfaces can never end a
 /// session or open a second one.
 @MainActor
 final class PresentationCoordinator {
     enum Mode: Equatable { case hidden, full, mini }
 
     private(set) var mode: Mode = .hidden
-    private(set) var desired: Mode = .full
+    /// ORBFIRST: the two surfaces are independent. The orb is the resting surface, and the window
+    /// comes and goes beside it, so neither show hides the other.
+    private(set) var fullShown = false
+    private(set) var miniShown = false
+    private(set) var desired: Mode = .mini
     private(set) var generation: UInt64 = 0
     private(set) var explicitlyHidden = false
     private var pending: Mode?
@@ -67,19 +67,32 @@ final class PresentationCoordinator {
         self.prepare = prepare; self.didCommit = didCommit; self.requestChanged = requestChanged
     }
 
+    /// Opening an already open window raises it instead of presenting the page again.
     @discardableResult
     func presentFull(activating: Bool) -> Bool {
-        begin(.full)
         activation = activating
-        if let prepare, mode != .full { prepare(.full, generation) }
+        requestChanged()
+        explicitlyHidden = false
+        desired = .full
+        if fullShown, pending == nil { showFullWindow(activating); return true }
+        generation &+= 1
+        pending = .full
+        if let prepare, !fullShown { prepare(.full, generation) }
         else { commitFull() }
         return true
     }
 
+    /// ORBFIRST: a show of an orb that is already on screen does nothing. The hotkey, the menu
+    /// item and the window's own button repeat it, and a second show cycle was the flicker.
     @discardableResult
     func presentMini(trigger: SurfaceTrigger = .other) -> MiniPresentOutcome {
-        begin(.mini)
         self.trigger = trigger
+        if miniShown, pending == nil { return .alreadyPresented }
+        requestChanged()
+        explicitlyHidden = false
+        desired = .mini
+        generation &+= 1
+        pending = .mini
         if let prepare {
             log(["event": "mini_present_deferred", "trigger": trigger.rawValue,
                  "reason": "awaiting_paint", "generation": generation])
@@ -101,46 +114,56 @@ final class PresentationCoordinator {
         if target == .full { commitFull() } else if target == .mini { _ = commitMini() }
     }
 
+    /// The presence machine asks for the orb, never for the window: revealing the orb leaves an
+    /// open window where it is.
     func requestPresence() {
-        guard !explicitlyHidden, desired == .mini, mode != .full, pending == nil else { return }
-        if mode != .mini { _ = presentMini() }
+        guard !explicitlyHidden, pending == nil, !miniShown else { return }
+        _ = presentMini()
     }
 
     func allowPresenceReveal() {
         explicitlyHidden = false
-        if desired == .hidden { _ = presentFull(activating: true) }
-        else { requestPresence() }
+        if !miniShown, desired != .full { _ = presentMini() }
     }
 
-    func hideMiniSurface() { hideAll() }
+    /// The orb goes away and the window, if open, stays.
+    func hideMiniSurface() {
+        guard miniShown || pending == .mini else { return }
+        requestChanged()
+        generation &+= 1; pending = nil; miniShown = false
+        hideMiniOrb("hide_mini")
+        mode = fullShown ? .full : .hidden
+        explicitlyHidden = !fullShown
+        didCommit(mode, generation)
+    }
 
     func hideAll() {
         requestChanged()
         generation &+= 1; desired = .hidden; pending = nil; explicitlyHidden = true
+        fullShown = false; miniShown = false
         hideFullWindow(); hideMiniOrb("hide_all")
         mode = .hidden; didCommit(mode, generation)
     }
 
+    /// Closing the window returns to orb only: it never quits and never ends a call.
     func closeFull() {
-        if Self.closeOutcome(liveIsRunning: liveIsRunning()) == .mini { _ = presentMini() }
-        else { hideAll() }
+        guard fullShown || pending == .full else { return }
+        requestChanged()
+        generation &+= 1; pending = nil; fullShown = false
+        hideFullWindow()
+        log(["event": "window_closed", "live": liveIsRunning(), "orb": miniShown])
+        if !miniShown { _ = presentMini(trigger: .other); return }
+        mode = .mini; didCommit(mode, generation)
     }
-
-    static func closeOutcome(liveIsRunning: Bool) -> CloseOutcome { liveIsRunning ? .mini : .hidden }
 
     func toggleWindow(activating: Bool) {
-        if desired == .full { hideAll() } else { _ = presentFull(activating: activating) }
-    }
-
-    private func begin(_ target: Mode) {
-        requestChanged()
-        generation &+= 1; desired = target; pending = target; explicitlyHidden = false
+        if fullShown { closeFull() } else { _ = presentFull(activating: activating) }
     }
 
     private func commitFull() {
         showFullWindow(activation)
-        hideMiniOrb("present_full")
-        mode = .full; pending = nil
+        fullShown = true; pending = nil
+        mode = .full
         didCommit(mode, generation)
     }
 
@@ -148,12 +171,14 @@ final class PresentationCoordinator {
         let outcome = showMiniOrb(trigger)
         switch outcome {
         case .shown(let facts):
-            hideFullWindow()
-            mode = .mini; pending = nil
+            miniShown = true; pending = nil
+            if !fullShown { mode = .mini }
             log(["event": "mini_presented", "trigger": trigger.rawValue, "frame": facts.frame,
                  "screen": facts.screen, "alpha": facts.alpha, "occluded": facts.occluded,
                  "pageState": facts.pageState, "generation": generation])
             didCommit(mode, generation)
+        case .alreadyPresented:
+            pending = nil
         case .failed(let reason):
             pending = nil
             log(["event": reason == "page_not_ready" ? "mini_present_deferred" : "mini_present_failed",

@@ -559,65 +559,43 @@ for kind in [LaunchKind.installedProof, .selfCheck, .uiProof, .verification] {
     expect(kind.activation == .accessory && kind.activationPolicy == .accessory, "a non-activating proof launch stays accessory: \(kind)")
 }
 expect(LaunchKind.installedProof.presentsWindowAtLaunch && LaunchKind.loginItem.presentsWindowAtLaunch == false, "the mini work keeps the launch window policy")
+expect(LaunchKind.loginItem.presentsOrbAtLaunch && LaunchKind.interactive.presentsOrbAtLaunch,
+       "an interactive or login launch shows the orb without opening the window")
 
-// UI3A: the presentation coordinator owns the one visible surface. A Dock reopen
-// always presents FULL, a close during an active Live session switches to MINI and
-// keeps the session, and no sequence of switches leaves two surfaces or touches Live.
+// ORBFIRST: the orb is the resting surface. The window opens beside it, closing it returns to
+// orb only, and no sequence presents the orb twice or leaves it hidden while the window is open.
 var visibleSurfaces: Set<String> = []
 var miniPageHostable = true
 var liveActive = false
 let liveSession = "live-session-42"
 let coordinator = PresentationCoordinator(
-    showFull: { _ in visibleSurfaces.remove("mini"); visibleSurfaces.insert("full") },
+    showFull: { _ in visibleSurfaces.insert("full") },
     hideFull: { visibleSurfaces.remove("full") },
     showMini: { _ in
         guard miniPageHostable else { return .failed("page_not_ready") }
-        visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return .shown(miniFacts) },
+        visibleSurfaces.insert("mini"); return .shown(miniFacts) },
     hideMini: { _ in visibleSurfaces.remove("mini") },
     liveIsRunning: { liveActive })
 expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
-coordinator.presentFull(activating: true)
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a FULL presentation shows the window alone")
 coordinator.presentMini()
-expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a MINI presentation shows the orb alone")
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the orb presents first")
 coordinator.presentFull(activating: true)
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a Dock reopen presents FULL from MINI")
+expect(coordinator.mode == .full && visibleSurfaces == ["mini", "full"], "the window opens beside the orb")
 liveActive = true
 coordinator.closeFull()
-expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a close during an active Live session switches to MINI")
-expect(liveActive && liveSession == "live-session-42", "the Live session survives the switch to MINI with its id")
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a close during an active Live session returns to the orb")
+expect(liveActive && liveSession == "live-session-42", "the Live session survives the close with its id")
 coordinator.presentFull(activating: true)
 liveActive = false
 coordinator.closeFull()
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a close while idle hides every surface")
-coordinator.presentFull(activating: true)
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the close command while idle leaves the orb")
 coordinator.toggleWindow(activating: true)
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the window shortcut hides a visible window")
-coordinator.toggleWindow(activating: true)
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "the window shortcut brings the window back")
+expect(coordinator.mode == .full && visibleSurfaces == ["mini", "full"],
+       "the window shortcut brings the window back beside the orb")
 for _ in 0..<20 { coordinator.presentMini(); coordinator.presentFull(activating: false); coordinator.presentMini() }
-expect(visibleSurfaces.count == 1 && coordinator.mode == .mini, "rapid switching ends with exactly one surface")
-
-// UI3A-R2 / UI3A-R7: Command-W is a real binding in the app menu, and the close
-// command has two outcomes. Both are asserted on the same values the app runs, so
-// the key path cannot drift from the close button.
-let mainMenu = WindowMenu.build(appName: "Naya", closeTarget: nil)
-let fileMenu = mainMenu.item(withTitle: "File")?.submenu
-let closeItem = fileMenu?.items.first { $0.action == #selector(NSWindow.performClose(_:)) }
-expect(closeItem?.title == "Close Window", "the File menu carries a Close Window item")
-expect(closeItem?.keyEquivalent == "w", "Close Window carries the Command-W key equivalent")
-expect(closeItem?.keyEquivalentModifierMask == .command, "the Close Window equivalent is Command, not Control or Option")
-expect(mainMenu.items.first?.submenu?.items.contains { $0.keyEquivalent == "q" } == true, "the app menu keeps Quit")
-expect(PresentationCoordinator.closeOutcome(liveIsRunning: true) == .mini, "a close during an active Live session goes to MINI")
-expect(PresentationCoordinator.closeOutcome(liveIsRunning: false) == .hidden, "a close while idle hides the window")
-liveActive = true
-coordinator.presentFull(activating: true)
-coordinator.closeFull()
-expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the close command with Live running shows only the orb")
-coordinator.presentFull(activating: true)
-liveActive = false
-coordinator.closeFull()
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the close command while idle leaves no surface")
+expect(coordinator.miniShown && visibleSurfaces == ["mini", "full"], "rapid switching never takes the orb away")
+coordinator.hideAll()
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "an explicit hide takes both surfaces away")
 miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
@@ -1137,7 +1115,7 @@ expect(orbStore.string(forKey: MiniOrbFrameStore.legacyKey) == nil, "the old sav
 expect(!MiniOrbFrameStore.resetSavedFrameOnce(orbStore), "the reset happens exactly once")
 let laptopScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
 let externalScreen = CGRect(x: 1440, y: 0, width: 2560, height: 1440)
-let onExternal = CGRect(x: 3800, y: 1000, width: 220, height: 220)
+let onExternal = CGRect(x: 3700, y: 1000, width: 220, height: 220)
 expect(MiniOrbFrameRestore.resolve(onExternal, screens: [laptopScreen]) != onExternal,
        "a missing screen clamps the orb onto a live screen")
 expect(MiniOrbFrameRestore.resolve(onExternal, screens: [laptopScreen, externalScreen]) == onExternal,

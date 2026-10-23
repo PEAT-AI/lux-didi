@@ -149,8 +149,7 @@ export function easeInOut(t: number): number {
 
 /** Between two visuals: the scalars interpolate, and the colour is handed over as the
  *  two layers plus the crossfade, so no hue number is ever walked through the wheel.
- *  Posture and the level source switch at the commit, because the renderer already eases
- *  its own motion character. */
+ *  Body posture and audio source are not consumed from this status blend. */
 export function mixVisual(from: OrbVisual, to: OrbVisual, t: number): OrbVisual {
   const k = easeInOut(t);
   const at = (a: number, b: number) => a + (b - a) * k;
@@ -178,8 +177,11 @@ export function createOrbVisualBlend(
   let target = ORB_VISUALS[initial];
   let from = target;
   let start = -Infinity;
-  const visual = (at: number): OrbVisual => options.reducedMotion
-    ? target : mixVisual(from, target, Math.min(1, Math.max(0, (at - start) / TRANSITION_MS)));
+  const visual = (at: number): OrbVisual => {
+    const t = (at - start) / TRANSITION_MS;
+    if (options.reducedMotion || t >= 1) return target;
+    return t <= 0 ? from : mixVisual(from, target, t);
+  };
   return {
     request(state, at) {
       if (target.state === state) return;

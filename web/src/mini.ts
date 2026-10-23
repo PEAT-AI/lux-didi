@@ -144,7 +144,6 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const machine = createOrbVisualBlend('cold', { reducedMotion: reducedMotion() });
   let handle: number | undefined;
   let stopped = false;
-  let settle: ReturnType<typeof setTimeout> | undefined;
   const visible = () => typeof document === 'undefined'
     || (!document.hidden && (globalThis as { didiNativeSurfaceVisible?: boolean }).didiNativeSurfaceVisible !== false);
   const paint = () => {
@@ -174,11 +173,9 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   const refresh = () => {
     if (handle !== undefined) cancel?.(handle);
     handle = undefined;
-    if (settle !== undefined) clearTimeout(settle);
     if (!visible()) return;
     paint();
-    if (reducedMotion()) settle = setTimeout(() => { if (!stopped && visible()) paint(); }, 260);
-    else handle = frame(step);
+    if (!reducedMotion()) handle = frame(step);
   };
   refreshVisuals = paint;
   if (typeof window !== 'undefined') window.addEventListener('didi-surface-visibility', refresh);
@@ -187,7 +184,6 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
   return () => {
     stopped = true;
     if (handle !== undefined) cancel?.(handle);
-    if (settle !== undefined) clearTimeout(settle);
     if (refreshVisuals === paint) refreshVisuals = undefined;
     if (typeof window !== 'undefined') window.removeEventListener('didi-surface-visibility', refresh);
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', refresh);

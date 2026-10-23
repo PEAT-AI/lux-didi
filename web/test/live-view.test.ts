@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { connectingBeforeFirstSpeech, orbVoiceState, presencePhase, liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered } from '../src/live-view.ts';
+import { connectingBeforeFirstSpeech, orbVoiceState, presencePhase, liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, joinChunk, liveLineMarkup, TURN_DETAIL_MIN, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY, stepListMarkup, stepsFading, stepsAnswered, type PresencePhase } from '../src/live-view.ts';
 import { miniMarkup, miniState } from '../src/mini.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
@@ -1123,7 +1123,7 @@ import { initialLiveView, machineOwnsOrb as ownsOrb, liveControl as controlOf } 
 import type { NativeLiveError, NativeLiveState } from '../src/native-bridge.ts';
 
 /** main.ts's real orb state, orb label and control markup, run with only the state they read. */
-function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | undefined, extra: { stateError?: NativeLiveError } = {}) {
+function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | undefined, extra: { stateError?: NativeLiveError; presence?: PresencePhase } = {}) {
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const line = (marker: string) => { const start = source.indexOf(marker); assert.ok(start > 0, marker); return source.slice(start, source.indexOf('\n', start)); };
   const between = (from: string, to: string) => { const start = source.indexOf(from), end = source.indexOf(to, start); assert.ok(start > 0 && end > start, `${from} .. ${to}`); return source.slice(start, end); };
@@ -1132,7 +1132,7 @@ function orbUnder(machine: NativeLiveState, projection: LiveCurrent['state'] | u
     live: projection ? { state: projection, cursor: 0, entries: [] } : undefined,
     liveMachine: { view: { ...initialLiveView(), state: machine, error: extra.stateError } },
     liveVoiceState, liveLabel: (current: LiveCurrent) => liveLabel(current), busy: false, error: undefined,
-    connectingBeforeFirstSpeech,
+    connectingBeforeFirstSpeech, orbVoiceState, presencePhase: () => extra.presence,
     connectedView: { active: false }, e: (text: string) => text, lookupLineMarkup: () => '',
     machineOwnsOrb: ownsOrb, liveControl: controlOf, startAvailable, liveErrorText,
   };
@@ -1174,6 +1174,17 @@ test('a failed stop shows the error state and offers Start again', () => {
   assert.equal(failed.orbStateLineMarkup(), 'Needs your attention');
   assert.match(failed.orbControlsMarkup(), /id="voice-start"/);
   assert.match(failed.orbControlsMarkup(), /Microphone access is blocked/);
+});
+
+test('ORB-1023: main.ts ends the connecting look at presence live, not at first speech', () => {
+  // The real orbState from main.ts, with the presence phase the native app pushes.
+  const live = orbUnder('live', 'listening', { presence: 'live' });
+  assert.equal(live.orbState(), 'LISTENING', 'a live call listens even before Naya speaks');
+  assert.equal(live.orbStateLineMarkup(), 'Listening');
+  assert.equal(orbUnder('live', 'listening', { presence: 'hotMuted' }).orbState(), 'LISTENING');
+  const connecting = orbUnder('live', 'listening', { presence: 'connecting' });
+  assert.equal(connecting.orbState(), 'CONNECTING', 'still opening: the connecting look stays');
+  assert.equal(orbUnder('live', 'listening', {}).orbState(), 'CONNECTING', 'no presence push yet is still connecting');
 });
 
 test('the Start/Stop control follows the machine, so the press flips it before the server replies', () => {

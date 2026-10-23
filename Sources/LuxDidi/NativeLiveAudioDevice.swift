@@ -983,7 +983,7 @@ struct NativeLiveInterruptionSample: Sendable {
     private var waitCue = NativeWaitCueScheduler()
     private var cueTask: Task<Void, Never>?
     private var cueGeneration: UInt64 = 0
-    private var captureGeneration: UInt64 = 0
+    private(set) var captureGeneration: UInt64 = 0
     private var captureStatistics = NativeCaptureStatistics()
     private var drainFrames = 0
     private var captureLifetimeActive = false

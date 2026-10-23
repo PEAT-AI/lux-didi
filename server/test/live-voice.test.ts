@@ -1,3 +1,4 @@
+import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import './live-remember.test.js';
 import './live-declarations.test.js';
 import assert from 'node:assert/strict';
@@ -32,7 +33,10 @@ test('explicit user-first opening preserves incomplete history and model-first o
     assert.equal('historyConfig' in (f.frames[0] as { setup: Record<string, unknown> }).setup, false,
       'normal client content never declares a non-generating initial-history phase');
     f.send({ setupComplete: {} }); await session.ready; await f.frame(2);
-    assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: 'Actual pending job result' }] }], turnComplete: opening === 'model_first' } });
+    assert.deepEqual(f.frames[1], { clientContent: { turns: [
+      { role: 'user', parts: [{ text: 'Actual pending job result' }] },
+      ...(opening === 'model_first' ? [{ role: 'user', parts: [{ text: FRESH_OPENING }] }] : []),
+    ], turnComplete: opening === 'model_first' } });
     assert.equal((await events.next()).value?.type, 'ready');
     if (opening === 'model_first') {
       // The provider fixture responds to the completed opening turn without any microphone frame.
@@ -60,7 +64,7 @@ test('empty-history model-first sends one server-owned Companion greeting withou
   await f.frame(1);
   f.send({ setupComplete: {} });
   await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
+  assert.deepEqual(f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
   assert.equal((await events.next()).value?.type, 'ready');
   assert.equal(f.frames.length, 2, 'exactly one fresh opening directive is sent without PCM');
 });
@@ -76,7 +80,7 @@ test('a failed fresh opening write never resolves public ready', async t => {
   const socket = f.clients[0]!;
   const send = socket.send.bind(socket) as (data: string, callback?: (error?: Error) => void) => void;
   t.mock.method(socket, 'send', (data: string, callback?: (error?: Error) => void) => {
-    if (data.includes('Open the conversation now')) throw Error('synthetic opening write failure');
+    if (data.includes(FRESH_OPENING)) throw Error('synthetic opening write failure');
     send(data, callback);
   });
   f.send({ setupComplete: {} });
@@ -915,7 +919,7 @@ test('P2: the model-first opening nudge carries no accent text', async t => {
   t.after(() => session.close());
   const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); f.send({ setupComplete: {} }); await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
+  assert.deepEqual(f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
   assert.equal(JSON.stringify(f.frames[1]).includes('voice and accent'), false, 'the opening trigger carries no accent text');
   void events;
 });
@@ -934,6 +938,38 @@ test('a fresh seeded opening sends the journal history then the pickup line as t
     { role: 'user', parts: [{ text: 'earlier question' }] },
     { role: 'user', parts: [{ text: LIVE_RECOVERY_PICKUP }] },
   ], turnComplete: true } }, 'the history turns precede the pickup line as the opening input');
+});
+
+test('#1023: a new call with seeded history still sends the fresh opening directive', async t => {
+  const f = await providerFixture(t);
+  const input = request();
+  input.opening = 'model_first';
+  input.history = [{ role: 'user', text: 'earlier question', dataClass: 'ordinary' }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(input, control());
+  t.after(() => session.close());
+  collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await f.frame(2);
+  assert.deepEqual(f.frames[1], { clientContent: { turns: [
+    { role: 'user', parts: [{ text: 'earlier question' }] },
+    { role: 'user', parts: [{ text: FRESH_OPENING }] },
+  ], turnComplete: true } }, 'the seeded history is followed by the opening directive');
+});
+
+test('#1023: a silent start keeps its own marker and never adds the fresh opening directive', async t => {
+  const f = await providerFixture(t);
+  const input = request();
+  input.opening = 'model_first';
+  input.history = [{ role: 'user', text: 'earlier question', dataClass: 'ordinary' }];
+  input.openingText = 'SILENT_START_MARK';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(input, control());
+  t.after(() => session.close());
+  collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await f.frame(2);
+  assert.deepEqual(f.frames[1], { clientContent: { turns: [
+    { role: 'user', parts: [{ text: 'earlier question' }] },
+    { role: 'user', parts: [{ text: 'SILENT_START_MARK' }] },
+  ], turnComplete: true } }, 'the silent-start marker alone opens the call');
+  assert.equal(JSON.stringify(f.frames[1]).includes(FRESH_OPENING), false);
 });
 
 test('provider usage metadata is decoded into a provider-neutral contextUsage event', async t => {

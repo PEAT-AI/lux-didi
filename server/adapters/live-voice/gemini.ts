@@ -5,11 +5,11 @@ import type { DataClass, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoi
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { geminiDialect } from '../../tools/declarations.js';
 import { effectiveLanguageCode } from '../../prompt/live-persona.js';
+import { FRESH_OPENING } from './openai.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
-const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
 // The model-first opening nudge is provider-neutral and accent-free: the accent lives in the system
 // instruction, the voice and the language in the setup frame, for every provider.
 // Upstream liveness limits for the send path (release 3g-c). The hard ceiling (half the send buffer held for
@@ -189,7 +189,9 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       : request.openingText !== undefined
         ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: request.openingText }] }], turnComplete: opening === 'model_first' } })
       : history.length
-        ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } })
+        ? JSON.stringify({ clientContent: {
+          turns: opening === 'model_first' ? [...history, { role: 'user', parts: [{ text: FRESH_OPENING }] }] : history,
+          turnComplete: opening === 'model_first' } })
         : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: FRESH_OPENING } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)

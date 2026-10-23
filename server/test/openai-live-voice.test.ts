@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { AUDIBLE_RMS_DBFS, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
+import { AUDIBLE_RMS_DBFS, FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
@@ -367,6 +367,30 @@ describe('openai gpt-live adapter', () => {
     assert.throws(() => new OpenAiLiveVoiceAdapter(options()).open(request({ history: seeded }), control()), code('invalid_request'));
   });
 
+  test('#1023: a new call with seeded history still seeds the fresh opening directive', async t => {
+    const f = await fixture(t);
+    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }];
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+      .open(request({ history, opening: 'model_first' }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    assert.deepEqual(start.session['input'], [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Plan the week' }] },
+      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] },
+    ], 'the seeded history is followed by the opening directive');
+  });
+
+  test('#1023: the opening directive asks for one short dry line, never a canned greeting', () => {
+    assert.match(FRESH_OPENING, /twelve words at most/);
+    assert.match(FRESH_OPENING, /^Start the call /, 'written as an instruction');
+    assert.match(FRESH_OPENING, /no greeting formula/);
+    assert.match(FRESH_OPENING, /no offer of help/);
+    assert.match(FRESH_OPENING, /no tool call before it/);
+    assert.match(FRESH_OPENING, /then stop and listen/);
+    assert.doesNotMatch(FRESH_OPENING, /\b(hello|hi|hey|good morning|good evening|how can i help|what can i do)\b/i);
+  });
+
   test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const },
       { role: 'user' as const, text: 'And Thursday', dataClass: 'ordinary' as const }];
@@ -377,11 +401,23 @@ describe('openai gpt-live adapter', () => {
       'the seeded answer request is the only frame after the start, so the provider answers without being spoken to');
   });
 
-  test('D1: a normal connect seeds history and asks for nothing, so no greeting is spoken', async t => {
+  test('D1: a normal connect with history seeds the opening directive inside the start and sends no other frame', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
     const { f } = await ready(t, {}, { history, opening: 'model_first' });
     await quiet();
     assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'a connect with history sends the start and nothing else');
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string }[];
+    assert.equal(input.at(-1)?.role, 'developer', 'the opening directive rides in the start, so no separate frame asks for the line');
+  });
+
+  test('#1023: a 128-turn warm history still starts, the directive costs the oldest turn', async t => {
+    const history = Array.from({ length: 128 }, (_, index) => ({
+      role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `turn ${index}`, dataClass: 'ordinary' as const }));
+    const { f } = await ready(t, {}, { history, opening: 'model_first' });
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input.length, 128, 'the seed stays within the documented 128 messages');
+    assert.equal(input[0]!.content[0]!.text, 'turn 1', 'the oldest turn makes room for the directive');
+    assert.deepEqual(input.at(-1), { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
   });
 
   test('input audio is upsampled from 16 kHz to 24 kHz inside the adapter', async t => {

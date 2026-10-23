@@ -259,6 +259,8 @@ test('ROUTE-R2: the host log keeps a skip reason only from the closed set', () =
   assert.ok(kept !== undefined, 'a skipped row keeps its closed reason');
   assert.deepEqual((kept['sources'] as Record<string, unknown>[])[0], { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'not_granted' });
   assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'identity_unverified' }] }), undefined, 'an open word is refused');
+  const window = { kind: 'calendar', disposition: 'skipped', latencyMs: 0, reason: 'window_unparsed' };
+  assert.deepEqual((safeEvent({ ...receipt, sources: [window] })?.['sources'] as Record<string, unknown>[])[0], window, 'release 4: the window reason is a closed member of the set');
   assert.equal(safeEvent({ ...receipt, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 4, reason: 'timeout' }] }), undefined, 'a served row carries no skip reason');
 });
 

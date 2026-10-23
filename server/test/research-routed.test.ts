@@ -701,6 +701,7 @@ test('release 4: a gmail page that fails after three good pages keeps the items 
   const row = h.sources.find(entry => entry.source === 'mail');
   assert.ok(row !== undefined, 'the mail source has its own receipt');
   assert.equal(row!.outcome, 'ok', 'the source delivered, so it is not a failed read');
+  assert.ok(safeEvent(row as unknown as Record<string, unknown>) !== undefined, 'and the host log admits the partial receipt');
   const receipt = row as unknown as Record<string, unknown>;
   assert.equal(receipt['partial'], 'pages_failed', 'and the receipt carries the closed partial marker');
   assert.equal(receipt['failedPages'], 1, 'with the count of pages it lost');

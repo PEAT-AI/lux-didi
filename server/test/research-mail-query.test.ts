@@ -14,60 +14,59 @@ import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 const NOW = Date.parse('2026-10-21T05:30:00Z'); // 11:00 in the owner's zone
 const ZONE = 'Asia/Kolkata';
 
-const FIXTURES: readonly { question: string; authored?: string; q: string }[] = [
-  { question: 'What did Dana send me about the invoice?', q: 'from:dana OR to:dana invoice' },
-  { question: 'Any emails from Priya about the contract this week?', q: 'from:priya OR to:priya contract newer_than:7d' },
-  { question: 'Show me the latest messages in my inbox', q: 'in:inbox newer_than:14d' },
-  { question: 'did Sam email me the budget yesterday?', q: 'from:sam OR to:sam budget newer_than:2d' },
-  { question: 'what did the landlord say about the lease last month', q: 'landlord lease newer_than:60d' },
-  { question: 'Any unread mail from the bank?', q: 'is:unread bank' },
-  { question: 'What did we decide about the Q4 roadmap?', q: 'decide q4 roadmap' },
+const FIXTURES: readonly { question: string; authored?: string; q: string; topic: string }[] = [
+  { question: 'What did Dana send me about the invoice?', q: 'from:dana OR to:dana invoice', topic: 'invoice' },
+  { question: 'Any emails from Priya about the contract this week?', q: 'from:priya OR to:priya contract newer_than:7d', topic: 'contract' },
+  { question: 'Show me the latest messages in my inbox', q: 'in:inbox newer_than:14d', topic: '' },
+  { question: 'did Sam email me the budget yesterday?', q: 'from:sam OR to:sam budget newer_than:2d', topic: 'budget' },
+  { question: 'what did the landlord say about the lease last month', q: 'landlord lease newer_than:60d', topic: 'landlord lease' },
+  { question: 'Any unread mail from the bank?', q: 'is:unread bank', topic: 'bank' },
+  { question: 'What did we decide about the Q4 roadmap?', q: 'decide q4 roadmap', topic: 'decide q4 roadmap' },
   {
     question: 'what did Acme say about the renewal',
     authored: 'Can you look for the email where Acme confirmed the renewal terms?',
-    q: 'acme confirmed renewal terms',
-  },
-  { question: 'anything from the bank', authored: 'from:alerts@bank.example subject:statement newer_than:30d', q: 'from:alerts@bank.example subject:statement newer_than:30d' },
-  { question: 'board deck', authored: 'subject:"board deck" newer_than:30d', q: 'subject:"board deck" newer_than:30d' },
-  { question: 'did I reply to Priya about the launch?', q: 'from:priya OR to:priya launch' },
-  { question: 'What did Sam send on 2026-10-15?', q: 'from:sam OR to:sam after:2026/10/14 before:2026/10/16' },
-  { question: 'Any mail from Neha on Friday?', q: 'from:neha OR to:neha after:2026/10/22 before:2026/10/24' },
-  { question: 'Check my email for anything from the city council about parking this morning', q: 'city council parking newer_than:1d' },
-  { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract draft board after:2026/02/28 before:2026/04/01' },
+    q: 'acme confirmed renewal terms', topic: 'acme confirmed renewal terms' },
+  { question: 'anything from the bank', authored: 'from:alerts@bank.example subject:statement newer_than:30d', q: 'from:alerts@bank.example subject:statement newer_than:30d', topic: '' },
+  { question: 'board deck', authored: 'subject:"board deck" newer_than:30d', q: 'subject:"board deck" newer_than:30d', topic: '' },
+  { question: 'did I reply to Priya about the launch?', q: 'from:priya OR to:priya launch', topic: 'launch' },
+  { question: 'What did Sam send on 2026-10-15?', q: 'from:sam OR to:sam after:2026/10/14 before:2026/10/16', topic: 'OR' },
+  { question: 'Any mail from Neha on Friday?', q: 'from:neha OR to:neha after:2026/10/22 before:2026/10/24', topic: 'OR' },
+  { question: 'Check my email for anything from the city council about parking this morning', q: 'city council parking newer_than:1d', topic: 'city council parking' },
+  { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract draft board after:2026/02/28 before:2026/04/01', topic: 'renewal contract draft board' },
   // F1/F2 from the review: the question's own time words are answered, never deleted, and instruction
   // words spend no term slot.
-  { question: 'did anyone email me about the electricity bill in September', q: 'electricity bill after:2026/08/31 before:2026/10/01' },
-  { question: 'the invoice from the design agency from before October', q: 'invoice design agency before:2026/10/01' },
-  { question: 'show me mail about the flat inspection next Monday', q: 'flat inspection after:2026/10/25 before:2026/10/27' },
-  { question: 'emails mentioning the offsite venue', q: 'offsite venue' },
-  { question: 'find the thread where Ravi shared the deployment checklist', q: 'ravi deployment checklist' },
-  { question: "what's the latest from my accountant", q: 'accountant' },
-  { question: 'after:', q: 'in:inbox newer_than:14d' },
+  { question: 'did anyone email me about the electricity bill in September', q: 'electricity bill after:2026/08/31 before:2026/10/01', topic: 'electricity bill' },
+  { question: 'the invoice from the design agency from before October', q: 'invoice design agency before:2026/10/01', topic: 'invoice design agency' },
+  { question: 'show me mail about the flat inspection next Monday', q: 'flat inspection after:2026/10/25 before:2026/10/27', topic: 'flat inspection' },
+  { question: 'emails mentioning the offsite venue', q: 'offsite venue', topic: 'offsite venue' },
+  { question: 'find the thread where Ravi shared the deployment checklist', q: 'ravi deployment checklist', topic: 'ravi deployment checklist' },
+  { question: "what's the latest from my accountant", q: 'accountant', topic: 'accountant' },
+  { question: 'after:', q: 'in:inbox newer_than:14d', topic: '' },
   // The three shapes the 04:06Z call really sent (described, never quoted from the log): a bare first
   // name with no window, a long natural-language sentence, and one with a person and a time word.
-  { question: 'Davian', q: 'davian' },
-  { question: 'could you check whether anything important came in from Priya about the security review this week?', q: 'is:important from:priya OR to:priya security review newer_than:7d' },
-  { question: 'I think there was something in my inbox earlier this week about the new pricing sheet from the finance team, can you find it?', q: 'pricing sheet finance newer_than:7d' },
+  { question: 'Davian', q: 'davian', topic: 'davian' },
+  { question: 'could you check whether anything important came in from Priya about the security review this week?', q: 'is:important from:priya OR to:priya security review newer_than:7d', topic: 'security review' },
+  { question: 'I think there was something in my inbox earlier this week about the new pricing sheet from the finance team, can you find it?', q: 'pricing sheet finance newer_than:7d', topic: 'pricing sheet finance' },
 ];
 
 test('E4: a prose question becomes at most four Gmail terms and the window it names', () => {
-  for (const { question, authored, q } of FIXTURES) {
-    assert.equal(compileMailQuery(question, authored, NOW, ZONE), q, question);
+  for (const { question, authored, q, topic } of FIXTURES) {
+    assert.equal(compileMailQuery(question, authored, NOW, ZONE, topic), q, question);
   }
 });
 
 // ROUTE-1022 K6: the owner's own name is never a person to filter mail by. "what did rob's team send
 // about hawk" reached Gmail as `from:rob's OR to:rob's` and matched nothing, twice, for 8.2 s.
 test('ROUTE-1022 K6: a possessive of the owner is dropped, never a from: or to: filter', () => {
-  const q = compileMailQuery("what did rob's team send about hawk", undefined, NOW, ZONE);
+  const q = compileMailQuery("what did rob's team send about hawk", undefined, NOW, ZONE, 'team hawk');
   assert.equal(/rob/u.test(q), false, `no owner name in the query (${q})`);
   assert.equal(/from:|to:/u.test(q), false, 'and no direction filter at all');
   assert.match(q, /hawk/, 'the content terms survive');
-  assert.equal(compileMailQuery("find Rob's mail about the invoice", undefined, NOW, ZONE).includes('from:rob'), false);
+  assert.equal(compileMailQuery("find Rob's mail about the invoice", undefined, NOW, ZONE, 'invoice').includes('from:rob'), false);
 });
 
 test('ROUTE-1022 K6: a question with its own terms adds no implicit two weeks', () => {
-  const july = compileMailQuery('find the agricon mail from july', undefined, NOW, ZONE);
+  const july = compileMailQuery('find the agricon mail from july', undefined, NOW, ZONE, 'agricon');
   assert.equal(july.includes('newer_than'), false, 'the July thread is not hidden behind a fortnight');
   assert.match(july, /agricon/u);
   assert.match(july, /after:2026\/06\/30 before:2026\/08\/01/u, 'the month the question named is still resolved');
@@ -75,8 +74,8 @@ test('ROUTE-1022 K6: a question with its own terms adds no implicit two weeks', 
 });
 
 test('E4: an authored Gmail query is never rewritten, and compiling twice changes nothing', () => {
-  const q = compileMailQuery('what did Dana send me about the invoice?', undefined, NOW, ZONE);
-  assert.equal(compileMailQuery('what did Dana send me about the invoice?', q, NOW, ZONE), q, 'the compiled query is already Gmail syntax');
+  const q = compileMailQuery('what did Dana send me about the invoice?', undefined, NOW, ZONE, 'Dana invoice');
+  assert.equal(compileMailQuery('what did Dana send me about the invoice?', q, NOW, ZONE, 'Dana invoice'), q, 'the compiled query is already Gmail syntax');
   for (const operator of ['from:', 'to:', 'subject:', 'after:', 'before:', 'newer_than:', 'older_than:', 'is:', 'has:', 'label:']) {
     const authored = `${operator}token newer_than:30d`;
     assert.equal(compileMailQuery('anything at all from the bank', authored, NOW, ZONE), authored, operator);

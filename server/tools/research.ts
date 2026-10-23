@@ -1244,6 +1244,8 @@ interface MailRead {
   failedPages?: number;
   /** F2: pages this read has already taken, so one question never pages a mailbox without end. */
   pages: number;
+  /** MAILQ 9: the unread triage scan, whose answer is its first page alone. */
+  triage?: boolean;
   /** A connector answer that carried text but no page envelope is one read, kept whole. */
   plain?: string;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
@@ -2783,7 +2785,7 @@ function mailRead(run: RunState, args: JsonObject, memo?: ResearchMemo): MailRea
   const key = mailReadKey(args);
   let read = run.mail.get(key) ?? memo?.mail?.get(key);
   if (!read) {
-    read = { args: { ...args }, messages: new Map(), bindings: [], tokens: new Set(), exhausted: false, failed: false, received: 0, invalid: 0, pages: 0 };
+    read = { args: { ...args }, messages: new Map(), bindings: [], tokens: new Set(), exhausted: false, failed: false, received: 0, invalid: 0, pages: 0, triage: (TRIAGE_QUERIES as readonly string[]).includes(String(args['q'] ?? '')) };
   }
   if (run.mail.get(key) !== read) run.mail.set(key, read);
   if (memo !== undefined) {
@@ -2857,9 +2859,9 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     // MAILQ 9: a page is read only when the lines to be shown need more than the pages already in hand.
     const reads = [...run.mail.values()].filter(read => {
       if (read.exhausted || read.failed || read.inflight || read.pages >= RESEARCH.mailPageCap) return false;
-      // The first page answers a triage or a lookup; a further page is asked for only while the
-      // messages already read are fewer than the lines this source will show.
-      return read.pages === 0 || read.messages.size < RESEARCH.mailLines;
+      // MAILQ 9: the unread triage answers from its first page, never from a second, because the reply
+      // lists a counted few of them; an authored lookup still pages to its own cap.
+      return read.pages === 0 || !read.triage;
     }).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));

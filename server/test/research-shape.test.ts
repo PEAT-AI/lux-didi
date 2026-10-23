@@ -91,8 +91,8 @@ test('a calendar window is asked for with the primary-calendar scope', () => {
 test('candidateSubs uses the authored query and the per-source limits', () => {
   const knowledge = candidateSubs('knowledge_search', { question: 'raw sentence here', configured: CONFIGURED, evidence: new Map(), query: 'lux didi' });
   assert.equal(knowledge[0]?.args['limit'], RESEARCH.knowledgeHits, 'P5-R1 and 3r K1: six hits with bounded bodies');
-  // MED-1022: the authored terms lead, and the question's own words follow them inside the budget.
-  assert.equal(knowledge[0]?.args['query'], 'lux didi raw sentence here');
+  // F1: the authored query is the search text, and the question is never a search text.
+  assert.equal(knowledge[0]?.args['query'], 'lux didi');
   const chat = candidateSubs('chat_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'after:2026-10-15 release' });
   assert.equal(chat[0]?.args['limit'], RESEARCH.chatLines);
   const mail = candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'in:inbox newer_than:2d' });
@@ -225,7 +225,7 @@ test('ROUTE-1022: a knowledge read is one search call and logs no second hop', a
     })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'anything', topic: 'anything' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'anything', topic: 'release notes' }, new AbortController().signal);
   assert.equal(subcalls.filter(entry => entry['tool'] === 'search_knowledge').length, 1, 'one knowledge search');
   assert.equal(subcalls.filter(entry => entry['tool'] === 'get_insight').length, 0, 'no get_insight second hop');
 });

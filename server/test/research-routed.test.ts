@@ -164,7 +164,7 @@ test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whol
 });
 
 test('ROUTE-1022 K5: a brief on a question that names no layer reads knowledge only', async () => {
-  const subs = candidateSubs('brief', { question: 'what do you think about our business model', configured: CONFIGURED, evidence: new Map() });
+  const subs = candidateSubs('brief', { question: 'what do you think about our business model', topic: 'business model', configured: CONFIGURED, evidence: new Map() });
   assert.deepEqual(subs.map(call => call.name), ['search_knowledge'], 'no mail, calendar or chat read');
   assert.equal(JSON.stringify(subs).includes('open loop follow up'), false, 'the default query is gone');
   assert.match(String(subs[0]!.args['query']), /business model/);
@@ -255,7 +255,7 @@ test('calendar lookups carry a day or a named window', () => {
 
 test('the declared lookups key is valid on start only and matches its validator', () => {
   assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't' }), true, 'unrouted start stays valid');
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), true, 'MAILQ 1: a start that omits the topic is still served');
+  assert.equal(validateResearch({ action: 'start', question: 'q' }), false, 'F1: a start that omits the topic is refused, because the question is never a search text');
   assert.equal(validateResearch({ action: 'start', question: 'q', topic: '  ' }), false, 'a blank topic is no topic');
   assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'memory', query: 'x' }] }), true);
   assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [] }), true);

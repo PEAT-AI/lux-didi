@@ -148,4 +148,19 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `CREATE INDEX trace_utterance_at ON trace_utterance(at)`,
     `CREATE INDEX trace_call_intent_at ON trace_call(intent_at)`,
   ],
+}, {
+  owner: 'trace', version: 5, statements: [
+    // MAILQ 5: the shape of the query each source call ran. Counts, closed operator tokens and the
+    // source only: the searched words themselves live in the reply and are never stored here.
+    `CREATE TABLE trace_query_shape (
+       shape_id INTEGER PRIMARY KEY AUTOINCREMENT,
+       at INTEGER NOT NULL,
+       research_id TEXT,
+       source TEXT NOT NULL CHECK (source IN ('memory','knowledge','calendar','mail','chat','mongoose','web')),
+       terms INTEGER NOT NULL CHECK (terms >= 0),
+       operators TEXT NOT NULL,
+       topic_words INTEGER NOT NULL CHECK (topic_words >= 0)
+     )`,
+    `CREATE INDEX trace_query_shape_at ON trace_query_shape(at)`,
+  ],
 }];

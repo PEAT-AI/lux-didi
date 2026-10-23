@@ -380,6 +380,31 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
   }
 }
 
+/**
+ * MAILQ 5: the sources a query shape may name, and the only writer for one. A row carries counts, the
+ * closed operator tokens and the source, never a search word: a term here belongs in the reply.
+ */
+export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as const;
+export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
+export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
+
+/** An operator is a lowercase code with no space, so a phrase can never be stored as one. */
+const OPERATOR_SHAPE = /^[a-z][a-z0-9_]{0,16}$/;
+
+export function recordQueryShape(exec: TraceExec, shape: TraceQueryShape, at: number, researchId?: string): number {
+  if (!isOneOf(QUERY_SHAPE_SOURCES, shape.source) || !isCount(shape.terms) || !isCount(shape.topicWords)) {
+    throw new TraceRecordError('INVALID_VALUE', 'query_shape: source, terms or topicWords is outside its allowlist');
+  }
+  if (shape.operators.some(operator => !OPERATOR_SHAPE.test(operator))) {
+    throw new TraceRecordError('INVALID_VALUE', 'query_shape: an operator is not a closed token');
+  }
+  if (researchId !== undefined && !isId(researchId)) throw new TraceRecordError('INVALID_VALUE', 'query_shape: researchId is not an id');
+  return exec.run(
+    'INSERT INTO trace_query_shape (at, research_id, source, terms, operators, topic_words) VALUES (?, ?, ?, ?, ?, ?)',
+    [at, researchId ?? null, shape.source, shape.terms, shape.operators.join(','), shape.topicWords],
+  );
+}
+
 /** The only writer for owner transcript text. Metadata entry points reject text by shape. */
 export function recordUtterance(port: TraceWritePort, utterance: { turnId: string; role: UtteranceRole; at: number; final: boolean; text: string }): void {
   if (!isOneOf(UTTERANCE_ROLES, utterance.role) || !isId(utterance.turnId) || !isCount(utterance.at) || typeof utterance.text !== 'string') {

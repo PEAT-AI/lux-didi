@@ -68,7 +68,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number; after?: string; before?: string }
+export interface QueryInput { query: string; limit?: number; after?: string; before?: string; days?: number }
 export interface AttentionInput { days?: number; limit?: number }
 export type AttentionReason = 'mention' | 'dm' | 'thread';
 
@@ -387,9 +387,16 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     return { ok: true, ...identity };
   }
 
-  /** The search window: the last 90 days by default, forwarded only for arguments the child declares. */
-  function searchWindow(after: unknown, before: unknown): Record<string, string> | undefined {
-    const lower = after === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString() : boundedText(after);
+  /**
+   * The search window: the last 90 days by default, forwarded only for arguments the child declares.
+   * MAILQ 6 (#572): a caller that names a window in days gets exactly that window, so "anything new"
+   * never reaches back into an archive ranked by relevance alone.
+   */
+  function searchWindow(after: unknown, before: unknown, days?: unknown): Record<string, string> | undefined {
+    const lower = after !== undefined ? boundedText(after)
+      : days === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString()
+      : Number.isSafeInteger(days) && Number(days) >= 1 && Number(days) <= MATTERMOST_ATTENTION.maxDays ? new Date(Date.now() - Number(days) * DAY_MS).toISOString()
+      : undefined;
     if (lower === undefined) return undefined;
     const window: Record<string, string> = { after: lower };
     if (before !== undefined) {
@@ -517,7 +524,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
       const bounded = limited(input.limit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      const window = searchWindow(input.after, input.before);
+      const window = searchWindow(input.after, input.before, input.days);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
       return dispatch('mattermost_search', { query, ...bounded, ...window }, signal);
     },

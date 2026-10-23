@@ -841,7 +841,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
     if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
     if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : [])].sort().join(',')) return;
+    // MAILQ 5: the per-call query shape (source, counts, closed operators), optionally beside the mail shape.
+    const hasQuery = Object.prototype.hasOwnProperty.call(value, 'query');
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasQuery ? ['query'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -877,7 +879,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         mail = { ...shape, retried };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
+    let query: { source: string; terms: number; operators: string[]; topicWords: number } | undefined;
+    if (hasQuery) {
+      const row = value.query as Record<string, unknown> | null | undefined;
+      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
+      const source = row['source'];
+      if (typeof source !== 'string' || !ROUTED_SOURCES.includes(source)) return;
+      if (!isSafeCount(row['terms']) || !isSafeCount(row['topicWords'])) return;
+      const operators = row['operators'];
+      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !/^[a-z][a-z0-9_]{0,16}$/u.test(operator))) return;
+      query = { source, terms: row['terms'], operators, topicWords: row['topicWords'] };
+    }
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasQuery ? { query } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

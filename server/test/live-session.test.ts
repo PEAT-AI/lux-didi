@@ -513,7 +513,7 @@ test('fresh owner Start selects model-first with no fabricated history', async t
   assert.deepEqual(h.requests[0]!.history, []);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   const persisted = JSON.stringify(h.store.transaction(tx => tx.all('SELECT kind,text FROM live_journal WHERE live_session_id=?', [session.liveSessionId])));
   assert.equal(persisted.includes(FRESH_OPENING), false, 'the server-owned directive is not user transcription or history');
   h.owner.revoke(session.liveSessionId);
@@ -851,7 +851,7 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   attachment.sendAudio({ pcm });
   await h.f.frame(3);
   assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });

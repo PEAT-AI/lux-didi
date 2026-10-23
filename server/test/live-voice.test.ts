@@ -933,7 +933,7 @@ test('P2: the model-first opening nudge carries no accent text', async t => {
   t.after(() => session.close());
   const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); f.send({ setupComplete: {} }); await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   assert.equal(JSON.stringify(f.frames[1]).includes('voice and accent'), false, 'the opening trigger carries no accent text');
   void events;
 });

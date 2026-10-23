@@ -92,9 +92,9 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });
 
-test('ROUTE-1022: a body read is never clipped by the host, and the search window it asks for is 3000', () => {
+test('ROUTE-1022: a body read is never clipped by the host, and the search window it asks for fits the reply', () => {
   const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
-  assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
+  assert.equal(RESEARCH.knowledgeBodyChars, 2_000, 'R5 (RESCAP-R5): the window is sized to fit the reply budget');
   assert.equal(opened.lines[0]!.includes('cut at'), false, 'a body read reaches the reply whole');
   assert.equal(opened.source, 'knowledge');
   // F3: the wider window belongs to a body read. A named-id read stays whole.

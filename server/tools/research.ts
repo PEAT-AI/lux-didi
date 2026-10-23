@@ -162,7 +162,7 @@ export const RESEARCH = Object.freeze({
    * K2: a search snippet stays short, and the body a hit is opened for is shown at three thousand
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
-  knowledgeBodyChars: 3_000,
+  knowledgeBodyChars: 2_000,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -2377,8 +2377,20 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
   const size = (): number => JSON.stringify(reply).length;
   const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
   let trimmed = false;
+  // F1 (review): the state and the note are derived with every cut, so a capped reply never says nothing is
+  // left while it offers the continuation that would fetch the rest.
+  const settle = (): void => {
+    if (!trimmed) return;
+    if (reply['status'] === 'complete') reply['status'] = 'partial';
+    reply['canContinue'] = true;
+    const note = typeof reply['note'] === 'string' ? reply['note'] : undefined;
+    reply['note'] = note === undefined || note.includes(RESEARCH.completeNote) ? RESEARCH.moreAvailableNote
+      : note.includes(RESEARCH.moreAvailableNote) ? note : `${note} ${RESEARCH.moreAvailableNote}`;
+  };
   let guard = 4096;
-  while (guard-- > 0 && size() > limit) {
+  while (guard-- > 0) {
+    settle();
+    if (size() <= limit) break;
     const pages = Array.isArray(reply['historyPages']) ? reply['historyPages'] as JsonObject[] : [];
     const widestPage = pages.reduce<JsonObject | undefined>((best, page) => best === undefined || hitsOf(page).length > hitsOf(best).length ? page : best, undefined);
     if (widestPage !== undefined && hitsOf(widestPage).length > 0) { hitsOf(widestPage).pop(); trimmed = true; continue; }
@@ -2389,6 +2401,11 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     const lines = widest?.text?.split('\n') ?? [];
     if (widest === undefined || lines.length <= 1) break;
     const head = (lines.shift() ?? '').replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
+    if (lines.length === 1) {
+      // R5 (RESCAP-R5): the last evidence line is clipped to the room left, so a long best hit still answers.
+      const kept = clip(lines[0]!, lines[0]!.length - (size() - limit) - 1);
+      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
+    }
     lines.pop();
     // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
     if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
@@ -2408,14 +2425,7 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     reply['findings'] = [];
     trimmed = true;
   }
-  if (!trimmed) return reply;
-  // F1 (review): the state and the note are derived together after the cut, so a capped reply never says
-  // nothing is left while it offers the continuation that would fetch the rest.
-  if (reply['status'] === 'complete') reply['status'] = 'partial';
-  reply['canContinue'] = true;
-  const note = typeof reply['note'] === 'string' ? reply['note'] : undefined;
-  reply['note'] = note === undefined || note.includes(RESEARCH.completeNote) ? RESEARCH.moreAvailableNote
-    : note.includes(RESEARCH.moreAvailableNote) ? note : `${note} ${RESEARCH.moreAvailableNote}`;
+  settle();
   return reply;
 }
 
@@ -2547,14 +2557,23 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
-  // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3).
+  // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
+  // when that line is a source's only evidence, it is clipped to the room left instead, because dropping it
+  // emptied the answer for a long best hit.
   let guard = 4096;
-  while (guard-- > 0 && JSON.stringify(render().reply).length > limit) {
+  while (guard-- > 0) {
+    const rendered = JSON.stringify(render().reply).length;
+    if (rendered <= limit) break;
     const removable = groups.filter(group => shownOf(group) > 0);
     if (removable.length === 0) break;
     removable.sort((a, b) => b.lines.length - a.lines.length);
     const trimmed = removable[0]!;
     if (trimCalendarEvent(trimmed)) continue;
+    const last = trimmed.lines[trimmed.lines.length - 1]!;
+    if (trimmed.lines.length === 1) {
+      const room = last.length - (rendered - limit) - 1;
+      if (room >= RESEARCH.clipFloorChars) { trimmed.lines[0] = clip(last, room); continue; }
+    }
     trimmed.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;

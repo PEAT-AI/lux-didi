@@ -313,7 +313,7 @@ test('#567: a reply already inside the budget is returned untouched', () => {
 
 // RESCAP-R5: a long best knowledge hit emptied the answer, because the trim loop dropped the only line.
 test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', async () => {
-  const long = `the release ships on Friday ${'x'.repeat(4_000)}`;
+  const long = `## Release scope\nthe release ships on Friday ${'x'.repeat(4_000)}`;
   const h = harness({ executeText: long });
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
@@ -1082,11 +1082,11 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
   assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query', 'snippet_chars'], 'exactly those fields, and no others');
   assert.equal(args['limit'], 6);
   assert.equal(args['detail'], 'voice', 'MED-1022: the top hit is answered in full, the rest named');
-  assert.equal(args['max_chars'], 3_000);
+  assert.equal(args['max_chars'], 2_000, 'R5: the body is requested at a size the reply can carry');
   assert.equal(args['snippet_chars'], 300);
   assert.equal(args['deadline_ms'], 8_000);
   assert.equal(typeof args['query'], 'string');
-  assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
+  assert.equal(RESEARCH.knowledgeBodyChars, 2_000, 'R5: the request fits the 2,500 char reply');
   assert.equal(RESEARCH.knowledgeSnippetChars, 300);
   assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
 });
@@ -1101,7 +1101,7 @@ test('3r: a body the server cut at the asked-for window is marked in the reply',
   const hits = finding.text.split(/(?=#41[23] )/u);
   const cutHit = hits.find(hit => hit.startsWith('#412 '))!;
   const wholeHit = hits.find(hit => hit.startsWith('#413 '))!;
-  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 3000 chars/u);
+  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 2000 chars/u);
   assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
   assert.equal(wholeHit.includes('cut at'), false, 'an uncut body carries no cut mark');
 });
@@ -1114,7 +1114,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   // ROUTE-1022 K5: a brief on a question that names no source reads his knowledge only, so this run
   // compiles no chat date operator; the old brief chat window is gone and the receipt says so.
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 }, 'an uncut read names no chat operator it never compiled and no day filter it never sent');
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 2_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 }, 'an uncut read names no chat operator it never compiled and no day filter it never sent');
 
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.
@@ -1130,10 +1130,10 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
   assert.equal(args['detail'], 'voice', 'the routed path asks through the same bounded-body args');
-  assert.equal(args['max_chars'], 3_000);
+  assert.equal(args['max_chars'], 2_000, 'R5: the body is requested at a size the reply can carry');
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 });
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 2_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 });
 });
 
 // MED-1022: the chat date operator token must still be seen as 'compiled' on a run that really compiles

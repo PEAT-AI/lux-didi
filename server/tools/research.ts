@@ -441,7 +441,7 @@ export function windowRange(window: string, nowMs: number, timeZone = Intl.DateT
  * is in a meeting. The same projection the connector sends on a merged calendar read.
  */
 export function calendarWindowArgs(range: { timeMin: string; timeMax: string }): Record<string, unknown> {
-  return { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar, include: ['attendees', 'organizer'] };
+  return { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar };
 }
 
 /** The resolved window kind, a closed enum for the host log: today, tomorrow, week or a single date. */

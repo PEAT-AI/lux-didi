@@ -208,3 +208,35 @@ test('coordinator is identical for window and mini and retargets continuous weig
   }
   assert.equal(previous.thinking, 1);
 });
+
+test('breath keeps phase across twenty state changes and modulation is bounded for ten minutes', () => {
+  const m = new MotionCoordinator();
+  let phase = 0, maxPeriod = 0, minPeriod = 2, maxDepth = 0, minDepth = 2;
+  for (let at = 0; at <= 600000; at += 20) {
+    m.sample(voiceSample(0), at);
+    const state = Math.floor(at / 30000) % 2 ? 'LISTENING' : 'PROCESSING';
+    const result = m.advance(state, at);
+    if (at) {
+      const delta = (result.breathPhase - phase + 2 * Math.PI) % (2 * Math.PI);
+      assert.ok(delta > 0 && delta < 0.05, `continuous phase at ${at}: ${delta}`);
+    }
+    phase = result.breathPhase;
+    minPeriod = Math.min(minPeriod, result.periodModulation); maxPeriod = Math.max(maxPeriod, result.periodModulation);
+    minDepth = Math.min(minDepth, result.depthModulation); maxDepth = Math.max(maxDepth, result.depthModulation);
+    assert.notEqual(result.posture, 'speaking');
+  }
+  assert.ok(minPeriod >= 0.94 && maxPeriod <= 1.06 && minPeriod < 0.941 && maxPeriod > 1.059);
+  assert.ok(minDepth >= 0.92 && maxDepth <= 1.08 && minDepth < 0.921 && maxDepth > 1.079);
+});
+
+test('source bands blend for 80 ms and playback survives semantic tool thinking', () => {
+  const m = new MotionCoordinator();
+  assert.equal(m.sample(voiceSample(0.1), 0).low, 0);
+  const half = m.sample(voiceSample(0.1), 40).low;
+  const full = m.sample(voiceSample(0.1), 80).low;
+  assert.ok(Math.abs(half - full / 2) < 1e-9);
+  m.advance('PROCESSING', 80);
+  assert.equal(m.advance('PROCESSING', 110).posture, 'speaking');
+  assert.notEqual(m.advance('PROCESSING', 111, false, true).posture, 'speaking');
+  assert.notEqual(m.advance('DISCONNECTED', 112).posture, 'speaking');
+});

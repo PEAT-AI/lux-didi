@@ -1624,7 +1624,6 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   assert.ok(items.length >= 1, 'the answer still carries whole items');
   for (const item of items) assert.match(item, /Decision \d+ \| (?:decision text )*decision text ?$/u, 'an item is never sliced mid-text');
   const line = h.logs[0]!;
-  console.log('PROBE-B3 bytes', text.length, 'compacted', JSON.stringify(line.answerCompacted), 'bytes-receipt', line.replyBytes, 'stop', line.stopReason, 'status', String(reply['status']), 'findings', JSON.stringify(((reply['findings'] ?? []) as {source:string;text:string}[]).map(f => [f.source, f.text.length])));
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) > 0, 'with the count of whole items it dropped');
   assert.equal(line.answerCompacted?.chars, text.length, 'and the characters it sent');
@@ -1684,7 +1683,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
   assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, over ${RESEARCH.replyLimitChars}`);
-  const line = h.logs[0]!;
+  const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
   assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');

@@ -373,12 +373,16 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     // #7: the first line is the event's own identity (time, title, place), so it is never the part a
     // cut removes: a long company name survives whole and only the body is trimmed against the bound.
     const headerLine = lines[0]!;
-    const bodyLines = lines.slice(1);
-    const cut = cutAtSentence(bodyLines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1));
+    // A header longer than the whole per-event bound is no title but a wall of text, and it is cut as
+    // one with the rest so a hostile fixture cannot blow the result budget.
+    const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
+    const bodyLines = titleFits ? lines.slice(1) : lines;
+    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : CALENDAR_EVENT_CHARS;
+    const cut = cutAtSentence(bodyLines.join('\n'), budget);
     if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
-    const recut = cutAtSentence(bodyLines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1 - note(cut.omitted).length));
-    const line = [headerLine, `${recut.text}${note(recut.omitted)}`].filter(part => part.length > 0).join('\n');
+    const recut = cutAtSentence(bodyLines.join('\n'), Math.max(0, budget - note(cut.omitted).length));
+    const line = titleFits ? [headerLine, `${recut.text}${note(recut.omitted)}`].filter(part => part.length > 0).join('\n') : `${recut.text}${note(recut.omitted)}`;
     normalized.push({ id: eventId, start, line, bodyTruncated: true });
     return line;
   });

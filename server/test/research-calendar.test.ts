@@ -551,7 +551,7 @@ test('#5: the window grammar reads every declared form out of the sentence and r
   assert.equal(calendarWindowOf('anything about the release'), '', 'a sentence with no window word names none');
   assert.equal(calendarWindowOf('what is on my calendar', 'today'), 'today', 'a caller may name today for a question that carries no window');
   assert.equal(calendarWindowOf('Wednesday tomorrow'), '', 'two window words name no single window');
-  assert.equal(calendarWindowOf('the week after next', 'today'), '', 'a window the grammar cannot read is never today');
+  assert.equal(calendarWindowOf('the week after next', 'today'), '', 'a window word the grammar cannot read is never today');
 });
 
 test('#5: a day read follows the sentence, and an unparseable window reads nothing', async () => {

@@ -277,6 +277,8 @@ const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|(?:next )?(
 
 /** #5: the same grammar found anywhere in the owner's sentence, longest form first, never a bare
  *  `week` on its own, since "the week after next" names no window this grammar can read. */
+/** #5: a window or date word that is present but not in the grammar, so it is unparsed, never today. */
+const CALENDAR_WINDOW_WORD = /\b(?:week|weeks|month|months|weekend|year|after next)\b/u;
 const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
 
 /**
@@ -288,7 +290,11 @@ export function calendarWindowOf(query: string, fallback = ''): string {
   const value = query.trim().toLowerCase().replace(/[?.!]+$/, '').replace(/^(?:what is on|what's on|show me|what meetings do i have) /, '').replace(/^(?:my )?(?:meetings|events|calendar|schedule)(?: on| for)?(?: |$)/, '');
   if (CALENDAR_WINDOW.test(value)) return value;
   const found = [...new Set([...value.matchAll(CALENDAR_WINDOW_IN_TEXT)].map(match => match[0]))];
-  if (found.length === 0) return fallback;
+  if (found.length === 0) {
+    // #5: a date or window word the grammar cannot resolve ("the week after next") is unparsed, not
+    // today; only a sentence that names no window at all takes the caller's fallback.
+    return CALENDAR_WINDOW_WORD.test(value) ? '' : fallback;
+  }
   return found.length === 1 ? found[0]! : '';
 }
 

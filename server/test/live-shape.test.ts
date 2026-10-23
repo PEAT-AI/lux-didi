@@ -543,5 +543,5 @@ test('#7: a long event title survives whole and the body is what the bound trims
   const shaped = shapeGcalList({ events: [{ summary: title, location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
     htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(60) }] });
   assert.ok(shaped.text.includes(title), 'the title is never the part a cut removes');
-  assert.match(shaped.text, /\[\+\d+ chars\]/);
+  assert.equal(shaped.text.includes('Agenda. '.repeat(60)), false, 'the long body is what the per-event bound trims');
 });

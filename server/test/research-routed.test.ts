@@ -98,7 +98,7 @@ test('a routed start skips the selector and reads every named layer at once', as
   });
   const reply = await Promise.race([
     runResearch(h.deps, {
-      action: 'start', question: 'where does the project stand and what is waiting on me',
+      action: 'start', question: 'where does the project stand and what is waiting on me', topic: 'where does the project stand and what is waiting on me',
       lookups: [{ source: 'knowledge', query: 'project status' }, { source: 'mail', query: 'from:plantix' }],
     }, new AbortController().signal),
     new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('lookups did not overlap')), 1_000).unref(); }),
@@ -115,7 +115,7 @@ test('the routed receipt names the sources, the count and per-source ms, never a
   let clock = 0;
   const h = harness({ now: () => { clock += 250; return clock; } });
   await runResearch(h.deps, {
-    action: 'start', question: 'what did we decide about the release',
+    action: 'start', question: 'what did we decide about the release', topic: 'what did we decide about the release',
     lookups: [{ source: 'knowledge', query: 'release 3k decision' }, { source: 'company', query: 'who reports to whom' }],
   }, new AbortController().signal);
   assert.equal(h.routed.length, 1);
@@ -137,7 +137,7 @@ test('a routed lookup that fails is isolated and the other layers still answer',
     },
   });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did he send me about the release',
+    action: 'start', question: 'what did he send me about the release', topic: 'what did he send me about the release',
     lookups: [{ source: 'knowledge', query: 'release' }, { source: 'mail', query: 'release' }],
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { knowledge: 'ok', mail: 'failed' });
@@ -154,7 +154,7 @@ test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whol
     return subs.map(call => sub(call.name, '- Invoice | Landlord | Mon | due soon [id m1]', true, call.key));
   } });
   await runResearch(h.deps, {
-    action: 'start', question: 'agricon mail', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
+    action: 'start', question: 'agricon mail', topic: 'agricon mail', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
   }, new AbortController().signal);
   const pages = dispatched.filter(args => typeof args['q'] === 'string');
   assert.ok(pages.length > 0, 'the mail lookup dispatched a page');
@@ -180,7 +180,7 @@ test('ROUTE-1022 K5: a brief on a question that names a layer reads that layer t
 test('a source the session did not configure is reported unavailable, never dispatched', async () => {
   const h = harness({ configured: ['knowledge'] });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'who is on my team',
+    action: 'start', question: 'who is on my team', topic: 'who is on my team',
     lookups: [{ source: 'company', query: 'team structure' }, { source: 'chat', query: 'team' }],
   }, new AbortController().signal);
   assert.deepEqual(h.executed, [], 'nothing is dispatched for an unconfigured source');
@@ -198,7 +198,7 @@ test('her own memory answers a memory lookup, and is reported unavailable withou
     }),
   });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did he ask me to remember',
+    action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember',
     lookups: [{ source: 'memory', query: 'dentist' }],
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { memory: 'ok' });
@@ -208,7 +208,7 @@ test('her own memory answers a memory lookup, and is reported unavailable withou
 
   const bare = harness();
   const empty = await runResearch(bare.deps, {
-    action: 'start', question: 'what did he ask me to remember',
+    action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember',
     lookups: [{ source: 'memory', query: 'dentist' }],
   }, new AbortController().signal);
   assert.deepEqual(empty['sources'], { memory: 'unavailable' });
@@ -218,7 +218,7 @@ test('her own memory answers a memory lookup, and is reported unavailable withou
 test('an empty memory reader reports empty rather than failed', async () => {
   const h = harness({ memory: () => ({ lines: [], text: '', total: 0 }) });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did he ask me to remember',
+    action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember',
     lookups: [{ source: 'memory', query: 'dentist' }],
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { memory: 'empty' });
@@ -287,7 +287,7 @@ test('both provider declarations carry lookups, and the Gemini dialect flattens 
 
 test('an unrouted start reads the deterministic plan and never touches memory', async () => {
   const h = harness({ memory: () => { throw Error('memory must not be read'); } });
-  await runResearch(h.deps, { action: 'start', question: 'where does the project stand', lookups: [] }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'where does the project stand', topic: 'where does the project stand', lookups: [] }, new AbortController().signal);
   assert.equal('selector' in h.deps, false, 'F-B: no lookups never means a selector round');
   assert.ok(h.executed.includes('search_knowledge'), 'the knowledge prime read is dispatched, exactly as before');
   assert.equal('selector' in h.deps, false, 'F-B: the plan never comes from a selector');
@@ -319,7 +319,7 @@ test('a routed calendar read is one bounded primary-calendar call that names wha
   const calendar = calendarExecute(clock);
   const h = harness({ now: () => clock.value, execute: calendar.execute });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on next week' }],
+    action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on next week' }],
   }, new AbortController().signal);
   assert.equal(calendar.calls().length, 1, 'one execution for the calendar layer');
   const [read, listed] = calendar.calls()[0]!;
@@ -340,7 +340,7 @@ test('a slow calendar read still settles ok with a line inside the run deadline,
   const h = harness({ now: () => clock.value, execute: calendar.execute });
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   const reply = await runResearch(deps, {
-    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
+    action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
   }, new AbortController().signal);
   assert.deepEqual(receipts.map(event => event.outcome), ['ok'], 'a 6 s read is ok, never empty');
   assert.ok(receipts[0]!.ms < RESEARCH.startDeadlineMs, `the read settles at ${receipts[0]!.ms} ms, inside ${RESEARCH.startDeadlineMs} ms`);
@@ -357,7 +357,7 @@ test('a read cut by the deadline reports timeout and the reply says so, never no
     },
   });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did we decide', lookups: [{ source: 'knowledge', query: 'release decision' }],
+    action: 'start', question: 'what did we decide', topic: 'what did we decide', lookups: [{ source: 'knowledge', query: 'release decision' }],
   }, controller.signal);
   assert.deepEqual(h.routed[0]!.outcomes, ['timeout'], 'a cut read is its own outcome, never empty');
   assert.deepEqual(h.sources.map(event => event.outcome), ['timeout'], 'and the per-lookup receipt says so');
@@ -368,7 +368,7 @@ test('a read cut by the deadline reports timeout and the reply says so, never no
 test('a dispatch that throws without a deadline stays failed, never timeout', async () => {
   const h = harness({ execute: async () => { throw new Error('connector down'); } });
   await runResearch(h.deps, {
-    action: 'start', question: 'what did we decide', lookups: [{ source: 'knowledge', query: 'release decision' }],
+    action: 'start', question: 'what did we decide', topic: 'what did we decide', lookups: [{ source: 'knowledge', query: 'release decision' }],
   }, new AbortController().signal);
   assert.deepEqual(h.routed[0]!.outcomes, ['failed']);
 });
@@ -382,7 +382,7 @@ test('two lookups on one source coalesce into one execution, each reporting its 
     },
   });
   await runResearch(h.deps, {
-    action: 'start', question: 'what did we decide about the release',
+    action: 'start', question: 'what did we decide about the release', topic: 'what did we decide about the release',
     lookups: [{ source: 'knowledge', query: 'release decision' }, { source: 'knowledge', query: 'who owns the release' }],
   }, new AbortController().signal);
   assert.equal(batches.length, 1, 'one knowledge execution for both queries, so neither starves the other');
@@ -394,7 +394,7 @@ test('two lookups on one source coalesce into one execution, each reporting its 
 test('the per-lookup receipt carries source, outcome and ms and never a query', async () => {
   const h = harness({ now: () => 5 });
   await runResearch(h.deps, {
-    action: 'start', question: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'secret release plan' }],
+    action: 'start', question: 'where does the project stand', topic: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'secret release plan' }],
   }, new AbortController().signal);
   assert.equal(h.sources.length, 1);
   const receipt = h.sources[0]!;
@@ -423,7 +423,7 @@ test('the calendar read is handed a live signal and settles well inside the star
   const calendar = calendarExecute(clock, 6_000);
   const h = harness({ now: () => clock.value, execute: calendar.execute });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
+    action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar', lookups: [{ source: 'calendar', query: 'what is on this week' }],
   }, new AbortController().signal);
   assert.deepEqual(calendar.live(), [true], 'the batch was not already aborted when the read started');
   assert.ok(RESEARCH.sourceDeadline.calendar < RESEARCH.startDeadlineMs, 'the bound itself is inside the run deadline');
@@ -436,7 +436,7 @@ test('two calendar windows share one calendar-list read and one budget, each rep
   const calendar = calendarExecute(clock);
   const h = harness({ now: () => clock.value, execute: calendar.execute });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what is on my calendar',
+    action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar',
     lookups: [{ source: 'calendar', query: 'today' }, { source: 'calendar', query: 'next week' }],
   }, new AbortController().signal);
   assert.equal(calendar.calls().length, 1, 'one execution for both windows');
@@ -462,7 +462,7 @@ test('P5: a dead connector is reported unavailable with its reason, never empty 
     logSource: event => receipts.push(event),
   };
   const reply = await runResearch(deps, {
-    action: 'start', question: 'what is waiting on me', lookups: [{ source: 'chat', query: 'release freeze' }],
+    action: 'start', question: 'what is waiting on me', topic: 'what is waiting on me', lookups: [{ source: 'chat', query: 'release freeze' }],
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { chat: 'unavailable' }, 'unavailable is its own outcome, never empty');
   assert.deepEqual(reply['unavailable'], { chat: 'connector_failure mattermost stage=credential' }, 'and the reply carries the reason the connector gave');
@@ -477,7 +477,7 @@ test('P5-R5: a routed read that returns a failure is failed, never empty', async
   const h = harness({ configured: ['knowledge'], execute: async subs => subs.map(call => failed(call.key, call.name)) });
   const deps: ResearchDeps = { ...h.deps, logSource: event => receipts.push(event) };
   const reply = await runResearch(deps, {
-    action: 'start', question: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'project status' }],
+    action: 'start', question: 'where does the project stand', topic: 'where does the project stand', lookups: [{ source: 'knowledge', query: 'project status' }],
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { knowledge: 'failed' }, 'a returned failure is its own outcome, never empty');
   assert.deepEqual(receipts.map(event => [event.source, event.outcome]), [['knowledge', 'failed']]);
@@ -496,7 +496,7 @@ test('Q5-R1: a lookup that names an insight reads it by id and returns the whole
     return subs.map(call => sub(call.name, call.name === 'get_insight' ? `### Release 3p scope [id 412]\n${body}` : 'evidence', true, call.key));
   } });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'go deep on insight 412, the release 3p scope',
+    action: 'start', question: 'go deep on insight 412, the release 3p scope', topic: 'go deep on insight 412, the release 3p scope',
     lookups: [{ source: 'knowledge', query: 'insight 412' }],
   }, new AbortController().signal);
   assert.deepEqual(executed, ['get_insight'], 'one read call by id, and no search at all');
@@ -511,7 +511,7 @@ test('Q5-R1: a lookup that names an insight reads it by id and returns the whole
 test('a mail read that matched nothing is searched and nothing matched, never unreachable', async () => {
   const h = harness({ execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '', true, call.key)) });
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'any mail about invoices', lookups: [{ source: 'mail', query: 'subject:invoice' }],
+    action: 'start', question: 'any mail about invoices', topic: 'any mail about invoices', lookups: [{ source: 'mail', query: 'subject:invoice' }],
   }, new AbortController().signal);
   assert.deepEqual(h.sources.map(event => event.outcome), ['empty'], 'a successful read with no match is empty, never failed');
   const note = String(reply['note'] ?? '');
@@ -535,7 +535,7 @@ test('a slow routed read tells the model it is alive at most five seconds apart'
     execute: async (subs: readonly IntentSubCall[]) => { await gate.promise; return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)); },
   });
   const run = runResearch(h.deps, {
-    action: 'start', question: 'what is waiting on me', lookups: [{ source: 'mail', query: 'is:unread' }],
+    action: 'start', question: 'what is waiting on me', topic: 'what is waiting on me', lookups: [{ source: 'mail', query: 'is:unread' }],
   }, new AbortController().signal);
   // Let the routed read reach its first await, then walk the fake clock past two progress windows.
   for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
@@ -554,7 +554,7 @@ test('a slow routed read tells the model it is alive at most five seconds apart'
 test('every lookup receipt carries its coalesced count, never a query or a result', async () => {
   const h = harness();
   await runResearch(h.deps, {
-    action: 'start', question: 'anything from Ana or about the invoice',
+    action: 'start', question: 'anything from Ana or about the invoice', topic: 'anything from Ana or about the invoice',
     lookups: [{ source: 'mail', query: 'from:ana' }, { source: 'mail', query: 'subject:invoice' }],
   }, new AbortController().signal);
   assert.equal(h.sources.length, 2, 'one receipt per lookup');
@@ -575,7 +575,7 @@ test('a routed run writes one run line with the routed driver and one subcall', 
   let clock = 0;
   const h = harness({ now: () => { clock += 500; return clock; } });
   await runResearch(h.deps, {
-    action: 'start', question: 'what did we decide about the release',
+    action: 'start', question: 'what did we decide about the release', topic: 'what did we decide about the release',
     lookups: [{ source: 'knowledge', query: 'release 3k decision' }],
   }, new AbortController().signal);
   assert.equal(h.logs.length, 1, 'exactly one terminal run line per routed run');
@@ -600,7 +600,7 @@ test('a routed run writes one run line with the routed driver and one subcall', 
 test('a two-lookup routed run writes two subcall lines and one run line', async () => {
   const h = harness();
   await runResearch(h.deps, {
-    action: 'start', question: 'where does the project stand and what is waiting on me',
+    action: 'start', question: 'where does the project stand and what is waiting on me', topic: 'where does the project stand and what is waiting on me',
     lookups: [{ source: 'knowledge', query: 'project status' }, { source: 'mail', query: 'from:plantix' }],
   }, new AbortController().signal);
   assert.equal(h.subcalls.length, 2, 'one subcall line per lookup, even when the reads coalesce');
@@ -613,7 +613,7 @@ test('a routed run that throws still writes its terminal run line, once, with a 
   const h = harness();
   const deps: ResearchDeps = { ...h.deps, emit: event => { if (event.phase === 'done') throw new Error('beat sink gone'); } };
   await assert.rejects(runResearch(deps, {
-    action: 'start', question: 'what is waiting on me',
+    action: 'start', question: 'what is waiting on me', topic: 'what is waiting on me',
     lookups: [{ source: 'knowledge', query: 'waiting on me' }],
   }, new AbortController().signal), /beat sink gone/);
   assert.equal(h.logs.length, 1, 'the errored run is visible and never written twice');
@@ -639,8 +639,8 @@ test('F8: a daily word is not schedule intent, and a schedule question still is'
 test('F6: the same knowledge read twice inside the session window is dispatched once', async () => {
   const h = harness({});
   h.deps.memo = { calendar: new Map() };
-  const first = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
-  const second = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  const first = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', topic: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
+  const second = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', topic: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   assert.notEqual(first['researchId'], second['researchId'], 'two distinct runs, two distinct ids');
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the second run reuses the answer instead of paying for it again');
   assert.match(JSON.stringify(second['findings']), /Release 3k scope/u, 'the reused read still reaches the reply');
@@ -656,7 +656,7 @@ test('ONE-1023: identical reads inside one run dispatch once and are counted', a
     { source: 'knowledge', query: 'read full post body budget review' },
     { source: 'knowledge', query: 'budget review' },
   ];
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what do we know about the budget review', lookups }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what do we know about the budget review', topic: 'what do we know about the budget review', lookups }, new AbortController().signal);
   assert.equal(h.executed.filter(name => name === 'calendar_list_events').length, 1, 'one window, one calendar read');
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the same normalized query, one search');
   const knowledge = h.sources.filter(entry => entry.source === 'knowledge');
@@ -678,7 +678,7 @@ test('DATES-R1: a read that kept its day filter reports past_window beside one t
     }),
   });
   const lookups = [{ source: 'knowledge', query: 'budget review' }, { source: 'knowledge', query: 'hiring plan' }];
-  await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review and the hiring plan", lookups }, new AbortController().signal);
+  await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review and the hiring plan", topic: "what did we decide in yesterday's meeting about the budget review and the hiring plan", lookups }, new AbortController().signal);
   const receipts = h.sources.filter(entry => entry.source === 'knowledge');
   assert.equal(receipts.length, 2, 'one receipt per knowledge read');
   assert.deepEqual(receipts.map(entry => entry.knowledge?.dayFilter).sort(), ['dropped_on_empty', 'past_window'], 'the read whose filter was dropped says so, the read that kept its filter says that instead');
@@ -699,7 +699,7 @@ test('release 4: a gmail page that fails after three good pages keeps the items 
       return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'upstream_unavailable' } as IntentSubResult;
     }),
   });
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
   const row = h.sources.find(entry => entry.source === 'mail');
   assert.ok(row !== undefined, 'the mail source has its own receipt');
   assert.equal(row!.outcome, 'ok', 'the source delivered, so it is not a failed read');
@@ -717,7 +717,7 @@ test('release 4: a gmail page that fails after three good pages keeps the items 
 
 test('LAT-1023: a run stops after two tool-bearing rounds and the receipt says the cap was hit', async () => {
   const h = harness({ execute: async subs => subs.map(call => sub(call.name, '', true, call.key)) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline', topic: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const line = h.logs[0]!;
   assert.equal(line.rounds, 2, 'the initial parallel round and at most one continuation round');
   assert.deepEqual(line.perRound.map(row => row.chosen), [['knowledge_search'], ['brief']], 'two rounds were dispatched, never a third');
@@ -731,7 +731,7 @@ test('LAT-1023: a run stops after two tool-bearing rounds and the receipt says t
 
 test('LAT-1023: a run that answers in its first round never claims the cap', async () => {
   const h = harness({});
-  await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline', topic: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(h.logs[0]!.rounds, 1);
   assert.equal(h.logs[0]!.roundCapHit, undefined, 'an answered first round hit no cap');
 });

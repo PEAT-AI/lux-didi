@@ -68,7 +68,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number; after?: string; before?: string; days?: number }
+export interface QueryInput { query: string; limit?: number; after?: string; before?: string; days?: number; sort?: string }
 export interface AttentionInput { days?: number; limit?: number }
 export type AttentionReason = 'mention' | 'dm' | 'thread';
 
@@ -398,11 +398,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       : Number.isSafeInteger(days) && Number(days) >= 1 && Number(days) <= MATTERMOST_ATTENTION.maxDays ? new Date(Date.now() - Number(days) * DAY_MS).toISOString()
       : undefined;
     if (lower === undefined) return undefined;
-    const window: Record<string, string> = { after: lower };
+    // MAILQ 10: the child declares from_date/to_date as YYYY-MM-DD, so the window is sent that way
+    // when it can be, and the declared-argument filter below still has the last word.
+    const day = (iso: string): string => iso.slice(0, 10);
+    const window: Record<string, string> = { after: lower, from_date: day(lower) };
     if (before !== undefined) {
       const upper = boundedText(before);
       if (upper === undefined) return undefined;
       window['before'] = upper;
+      window['to_date'] = day(upper);
     }
     const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_search');
     const schema = definition?.inputSchema;
@@ -526,7 +530,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       const window = searchWindow(input.after, input.before, input.days);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
-      return dispatch('mattermost_search', { query, ...bounded, ...window }, signal);
+      const sort = input.sort;
+      if (sort !== undefined && sort !== 'newest' && sort !== 'relevance') return { state: 'refused', reason: 'invalid-sort' };
+      return dispatch('mattermost_search', { query, ...bounded, ...window, ...(sort === undefined ? {} : { sort }) }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

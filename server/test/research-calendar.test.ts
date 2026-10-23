@@ -47,7 +47,7 @@ test('calendar exact windows use the session zone and resolve both DST midnights
 test('calendar dense week preserves later weekdays and unique evidence with retained remainder', async () => {
   const events = [...Array.from({ length: 8 }, (_, n) => event(19, n)), ...Array.from({ length: 4 }, (_, n) => event(20, n)), event(21), event(22), event(23)];
   const h = fixture(events, { token: 'second', pageSize: 12 });
-  const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'calendar', query: 'calendar this week' }] }, signal());
+  const first = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'calendar', query: 'calendar this week' }] }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 2, 'both upstream pages, exact duplicate window once');
   assert.equal(first['canContinue'], false, 'both pages of the window are read and spoken in the one run');
   const text = JSON.stringify(first['findings']);
@@ -59,13 +59,13 @@ test('calendar dense week preserves later weekdays and unique evidence with reta
 
 test('calendar exact weekday intents read distinct days and unsupported dates dispatch nothing', async () => {
   const h = fixture([event(21), event(22), event(23)]);
-  const reply = await runResearch(h.deps, { action: 'start', lookups: ['Wednesday', 'Thursday', 'Friday'].map(day => ({ source: 'calendar', query: `${day} this week` })) }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: ['Wednesday', 'Thursday', 'Friday'].map(day => ({ source: 'calendar', query: `${day} this week` })) }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 3);
   assert.equal(new Set(h.calls.filter(call => call['name'] === 'calendar_list_events').map(call => call['timeMin'])).size, 3);
   for (const day of [21, 22, 23]) assert.match(JSON.stringify(reply['findings']), new RegExp(`Day ${day}`));
   for (const query of ['release plans', '2026-02-30', 'Wednesday tomorrow', '2026-10-21 or 2026-10-22']) {
     const bad = fixture([]);
-    const response = await runResearch(bad.deps, { action: 'start', lookups: [{ source: 'calendar', query }] }, signal());
+    const response = await runResearch(bad.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query }] }, signal());
     assert.equal(bad.calls.length, 0, query);
     assert.match(String(response['note']), /could not resolve/);
     assert.equal(response['canContinue'], false);
@@ -84,7 +84,7 @@ test('calendar page coverage distinguishes exhausted, empty progress, repeated t
       const nextPageToken = mode === 'full' || (mode === 'empty-progress' && pageCalls === 2) ? undefined : 'cursor';
       return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events, ...(nextPageToken ? { nextPageToken } : {}) }) };
     });
-    const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+    const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
     assert.equal(pageCalls, mode === 'full' ? 1 : 2, mode);
     const coverage = reply['calendarCoverage'] as Record<string, unknown>;
     assert.equal(coverage['calendarListComplete'], false);
@@ -106,9 +106,9 @@ test('calendar retained remainder is invalidated by a new start, cancellation, c
       h.deps.execute = async (calls, abort) => (await execute(calls, abort)).map(result => ({ ...result, binding: { executionId: result.key } as NonNullable<IntentSubResult['binding']> }));
       h.deps.authorizeEvidence = () => allowed;
     }
-    const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+    const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
     const previous = h.calls.length;
-    if (mode === 'new-start') await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'unsupported' }] }, signal());
+    if (mode === 'new-start') await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'unsupported' }] }, signal());
     if (mode === 'cancel') h.deps.ledger.cancelActive();
     if (mode === 'close') h.deps.ledger.close();
     if (mode === 'stop') await runResearch(h.deps, { action: 'stop', researchId: String(reply['researchId']) }, signal());
@@ -130,7 +130,7 @@ test('calendar uses the shared primary collector and never retries a failed page
       if (fail) return subs.map(call => ({ key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'transport_unavailable' }));
       return execute(subs, abort);
     };
-    const reply = await runResearch(h.deps, { action: 'start', question: 'calendar this week', sources: 'calendar' }, signal());
+    const reply = await runResearch(h.deps, { action: 'start', question: 'calendar this week', topic: 'calendar this week', sources: 'calendar' }, signal());
     assert.equal(calls, fail ? 1 : 2);
     assert.ok(h.calls.filter(call => call['name'] === 'calendar_list_events').every(call => call['calendarId'] === 'primary'));
     if (!fail) {
@@ -157,7 +157,7 @@ test('calendar collection keeps one source deadline across pages and resumes an 
       if (deadline) clock += 5000;
       return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19, n)], ...(n < 9 ? { nextPageToken: String(n + 1) } : {}) }) };
     });
-    const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+    const first = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
     assert.equal(tokens.length, deadline ? 3 : 7, 'source deadline is shared; maxOps also includes the scope read');
     if (deadline) {
       assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the third page missed the one source deadline');
@@ -172,7 +172,7 @@ test('calendar collection keeps one source deadline across pages and resumes an 
 test('calendar delivery advances exact event identities even when bounded text is identical', async () => {
   const h = fixture(Array.from({ length: 10 }, (_, n) => ({ id: `event-${n}`, start: '2026-10-19T10:00:00Z', summary: 'Identical long title '.repeat(30) })));
   h.deps.replyLimit = 1_000;
-  const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+  const first = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
   const shown = Number((first['calendarCoverage'] as Record<string, unknown>)['shown']);
   assert.ok(shown > 0 && shown < 10, 'a reply over its byte budget leaves identical events for the continuation');
   assert.match(String(first['note']), /left out \d+ calendar events/u);
@@ -196,7 +196,7 @@ test('calendar in-flight continuation retains received events and never replays 
     return execute(calls, abort);
   };
   const scheduler = new ResearchScheduler(h.deps);
-  const firstPromise = scheduler.call({ action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+  const firstPromise = scheduler.call({ action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
   await started;
   assert.ok(due); due();
   const first = await firstPromise;
@@ -217,13 +217,13 @@ test('calendar in-flight continuation retains received events and never replays 
 
 test('calendar R4: the plan resolves the window itself, with no selector round', async () => {
   const h = scheduleFixture();
-  await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow', topic: 'what is on my calendar tomorrow' }, signal());
   const read = h.calls.find(call => call.name === 'calendar_list_events');
   assert.ok(read !== undefined, 'the plan reads the calendar');
   assert.equal(read.args['timeMin'], windowRange('tomorrow', fixedNow, 'UTC').timeMin, 'tomorrow resolves to the real window start');
   // A question with no window word still names real dates, so the read is never open ended.
   const plain = scheduleFixture();
-  await runResearch(plain.deps, { action: 'start', question: 'what is on my calendar' }, signal());
+  await runResearch(plain.deps, { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' }, signal());
   const today = plain.calls.find(call => call.name === 'calendar_list_events');
   assert.ok(today !== undefined, 'the plan reads the calendar with no window word');
   assert.equal(today.args['timeMin'], windowRange('today', fixedNow, 'UTC').timeMin, 'the default window is today');
@@ -232,7 +232,7 @@ test('calendar R4: the plan resolves the window itself, with no selector round',
 test('calendar R5: scheduler Stop invalidates a completed retained run before later Continue', async () => {
   const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'Synthetic week', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
+  const first = await scheduler.call({ action: 'start', question: 'Synthetic week', topic: 'Synthetic week', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
   const id = String(first['researchId']);
   const calls = h.calls.length;
   const stopped = await scheduler.call({ action: 'stop', researchId: id }, signal());
@@ -262,11 +262,11 @@ test('calendar R6: a distinct Scheduler Start owns a new window and invalidates 
       : { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: Array.from({ length: 12 }, (_, n) => ({ id: `${call.args['timeMin']}:${n}`, start: call.args['timeMin'], summary: `Synthetic ${call.args['timeMin']} event ${n}` })), ...(!call.args['pageToken'] && String(call.args['timeMin']).startsWith('2026-10-19') ? { nextPageToken: 'held-monday-page' } : {}) }) });
   };
   const scheduler = new ResearchScheduler(h.deps);
-  const pending = scheduler.call({ action: 'start', question: 'Synthetic held read', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
+  const pending = scheduler.call({ action: 'start', question: 'Synthetic held read', topic: 'Synthetic held read', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
   await started; assert.ok(due); due();
   const first = await pending;
   try {
-    const next = await scheduler.call({ action: 'start', question: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
+    const next = await scheduler.call({ action: 'start', question: 'Synthetic Wednesday', topic: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
     assert.notEqual(next['researchId'], first['researchId']);
     assert.equal(h.deps.ledger.evidenceCurrent(String(first['researchId'])), false);
     assert.match(JSON.stringify(next['findings']), /2026-10-21/);
@@ -284,7 +284,7 @@ test('calendar R5: omitted-id Stop resolves and invalidates the last completed r
     const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
     const scheduler = new ResearchScheduler(h.deps);
     const call = (input: Parameters<typeof runResearch>[1]) => schedulerOwner ? scheduler.call(input, signal()) : runResearch(h.deps, input, signal());
-    const first = await call({ action: 'start', question: 'Synthetic week', lookups: [{ source: 'calendar', query: 'week' }] });
+    const first = await call({ action: 'start', question: 'Synthetic week', topic: 'Synthetic week', lookups: [{ source: 'calendar', query: 'week' }] });
     await call({ action: 'stop' });
     assert.equal(h.deps.ledger.find(String(first['researchId']))?.stopped, true);
     const after = await call({ action: 'continue', researchId: String(first['researchId']) });
@@ -296,13 +296,13 @@ test('calendar R6: an explicit retired id cannot retarget a different pending ru
   const h = fixture(Array.from({ length: 12 }, (_, n) => event(19, n)));
   h.deps.timeZone = 'UTC';
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'Synthetic Monday', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
+  const first = await scheduler.call({ action: 'start', question: 'Synthetic Monday', topic: 'Synthetic Monday', lookups: [{ source: 'calendar', query: 'Monday this week' }] }, signal());
   let entered!: () => void, release!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const held = new Promise<void>(resolve => { release = resolve; });
   const execute = h.deps.execute;
   h.deps.execute = async (subs, abort) => { if (subs.some(call => String(call.args['timeMin']).startsWith('2026-10-21'))) { entered(); await held; } return execute(subs, abort); };
-  const next = scheduler.call({ action: 'start', question: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
+  const next = scheduler.call({ action: 'start', question: 'Synthetic Wednesday', topic: 'Synthetic Wednesday', lookups: [{ source: 'calendar', query: 'Wednesday this week' }] }, signal());
   await started;
   const current = h.deps.ledger.last()!;
   try {
@@ -322,14 +322,14 @@ test('calendar R6: an explicit retired id cannot retarget a different pending ru
 
 test('#1020: a week-long calendar read whose events sit in one day says so, and is never spoken as a clear week', async () => {
   const h = fixture([event(21)]);
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   assert.match(String(reply['note']), /calendar: covers Wed 21 Oct only; the rest of Mon 19 Oct to Sun 25 Oct was NOT read/, 'the covered days and the days never covered are said in one line');
   assert.deepEqual((reply['findings'] as { source: string }[]).map(finding => finding.source), ['calendar'], 'the one day it did cover still answers');
 });
 
 test('#1020: a paged calendar read never claims more shown than total, and a cut one says what it missed', async () => {
   const h = fixture([event(21), event(22), event(23)], { token: 'second', pageSize: 2 });
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   for (const finding of (reply['findings'] ?? []) as { text: string }[]) {
     for (const match of finding.text.matchAll(/(\d+) of (\d+) shown/gu)) assert.ok(Number(match[1]) <= Number(match[2]), `${match[0]} in ${finding.text.split('\n')[0]}`);
   }
@@ -339,7 +339,7 @@ test('#1020: a paged calendar read never claims more shown than total, and a cut
 
 test('every calendar read carries the run remaining source budget as an absolute deadline', async () => {
   const h = fixture([event(19)]);
-  await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const reads = h.calls.filter(call => call['name'] === 'calendar_list_events');
   assert.ok(reads.length > 0, 'the run read the calendar');
   for (const call of reads) assert.equal(call['deadlineAt'], fixedNow + 12_000, 'the connector is bounded by the caller budget, never by the 40 s constant');
@@ -348,7 +348,7 @@ test('every calendar read carries the run remaining source budget as an absolute
 test('E8: a whole calendar week comes back at once, one compact line per day', async () => {
   const events = [...Array.from({ length: 8 }, (_, n) => event(19, n)), ...Array.from({ length: 8 }, (_, n) => event(20, n)), ...Array.from({ length: 4 }, (_, n) => event(21, n)), ...Array.from({ length: 2 }, (_, n) => event(22, n)), event(23)];
   const h = fixture(events);
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
   assert.match(finding.text, /^calendar: 23 of 23 shown/u);
   for (const title of ['Day 19 item 0', 'Day 19 item 7', 'Day 20 item 7', 'Day 21 item 3', 'Day 22 item 1', 'Day 23 item 0']) assert.match(finding.text, new RegExp(title, 'u'));
@@ -363,7 +363,7 @@ test('E8: a trimmed calendar answer says how many events it left out', async () 
   const events = Array.from({ length: 30 }, (_, n) => ({ id: `e${n}`, start: `2026-10-${19 + Math.floor(n / 6)}T${String(10 + (n % 6)).padStart(2, '0')}:00:00Z`, summary: `Budget item ${n} with a long title that fills the reply budget` }));
   const h = fixture(events);
   h.deps.replyLimit = 900;
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   const shown = Number((reply['calendarCoverage'] as Record<string, unknown>)['shown']);
   assert.ok(shown > 0 && shown < 30, 'the byte budget trims the answer instead of the window being cut to eight events');
   assert.match(String(reply['note']), /I left out \d+ calendar events to keep this answer short\./u);
@@ -383,8 +383,8 @@ test('ROUTE-1022 K5: a brief calendar read shares the memo key of an explicit to
 test('E8: one calendar list and one window read per live session', async () => {
   const h = fixture(Array.from({ length: 6 }, (_, n) => event(20, n)));
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'what is on this week', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
-  const second = await scheduler.call({ action: 'start', question: 'overview of the week ahead', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const first = await scheduler.call({ action: 'start', question: 'what is on this week', topic: 'what is on this week', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const second = await scheduler.call({ action: 'start', question: 'overview of the week ahead', topic: 'overview of the week ahead', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   assert.notEqual(first['researchId'], second['researchId']);
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the same window inside the turn window is never fetched twice');
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_calendars').length, 1, 'the calendar list is read once per session');
@@ -404,7 +404,7 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
     if (calls.some(call => call['name'] === 'calendar_list_events')) { started(); await held; }
     return execute(calls, abort);
   };
-  const firstRun = runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, abandoned.signal);
+  const firstRun = runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }] }, abandoned.signal);
   await began;
   abandoned.abort();
   release();
@@ -412,7 +412,7 @@ test('E8: a cancelled run keeps the window it paid for, and the next run reuses 
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(memo.calendar.size, 1, 'the window the cancelled run paid for is kept for the session');
   h.deps.execute = execute;
-  const next = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
+  const next = await runResearch(h.deps, { action: 'start', topic: 'topic', lookups: [{ source: 'calendar', query: 'this week' }] }, signal());
   assert.equal(h.calls.filter(call => call['name'] === 'calendar_list_events').length, 1, 'the kept window is reused, never fetched again');
   assert.match(JSON.stringify(next['findings']), /Day 21 item 0/u);
 });
@@ -438,7 +438,7 @@ function scheduleFixture(opts: { unavailable?: readonly { source: SourceKind; re
 
 test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a schedule question', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'check my mail and my calls tomorrow' }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', question: 'check my mail and my calls tomorrow', topic: 'check my mail and my calls tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the calendar endpoint connected, so its read runs');
   assert.equal(h.calls.some(call => call.name === 'gmail_search_messages'), false, 'the mail endpoint is never dispatched to');
   const rows = h.logs.at(-1)!.sources;
@@ -451,7 +451,7 @@ test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a sche
 test('ROUTE-1022: a schedule question reads the calendar with no selector in the path', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
   assert.equal('selector' in h.deps, false, 'the voice path carries no selector to wait on');
-  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow', topic: 'what is on my schedule tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the plan reads the calendar with no selector round');
   assert.equal(h.logs.at(-1)!.driver, 'routed', 'and the run records the router as the decider');
 });
@@ -459,13 +459,13 @@ test('ROUTE-1022: a schedule question reads the calendar with no selector in the
 test('ROUTE-1022: a schedule question always reads the calendar', async () => {
   const h = scheduleFixture();
   assert.equal(ownerScheduleQuestion('what is on my schedule tomorrow'), true, 'the owner schedule rule names this question');
-  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow', topic: 'what is on my schedule tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the owner schedule question reads the calendar');
 });
 
 test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason and no error', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'not_signed_in' }] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow', topic: 'what is on my schedule tomorrow' }, signal());
   assert.equal(h.calls.some(call => call.name === 'calendar_list_events'), false, 'a down endpoint is never dispatched to');
   assert.equal(h.logs.at(-1)!.sources.find(row => row.kind === 'calendar')?.reason, 'endpoint_unavailable', 'the reason names an endpoint outage');
   assert.equal('error' in reply, false, 'the run still answers');
@@ -475,7 +475,7 @@ test('ROUTE-1022: a calendar endpoint that is down is skipped with its reason an
 // exactly like a dead endpoint in the run log.
 test('ROUTE-R2: an unpublished calendar grant is logged as not_granted, not as an outage', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'calendar', reason: 'source_not_granted' }] });
-  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what is on my schedule tomorrow', topic: 'what is on my schedule tomorrow' }, signal());
   const row = h.logs.at(-1)!.sources.find(entry => entry.kind === 'calendar');
   assert.deepEqual({ disposition: row?.disposition, reason: row?.reason }, { disposition: 'skipped', reason: 'not_granted' });
 });
@@ -495,7 +495,7 @@ test('ROUTE-1022: end-to-end availability follows the endpoint id, not the share
 
 test('ROUTE-1022: a general question about the week does not force a calendar read', async () => {
   const h = scheduleFixture();
-  await runResearch(h.deps, { action: 'start', question: 'what did the team say this week' }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what did the team say this week', topic: 'what did the team say this week' }, signal());
   // F8: bare "week" is the product's daily language, so the forcing rule stays with the questions the defect named.
   assert.equal(ownerScheduleQuestion('what did the team say this week'), false);
 });
@@ -507,7 +507,7 @@ test('F7: a partially read calendar list never takes the completion line from a 
   h.deps.execute = async subs => subs.map(call => call.name === 'calendar_list_calendars'
     ? { key: call.key, name: call.name, ok: true, text: '- Work [work@example.com]\n- Home [home@example.com]', originalCharacters: 40, omittedCharacters: 0, calendarScope: { received: 20, partial: true } }
     : { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19)] }) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, signal());
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today' }, signal());
   assert.equal(reply['calendarCoverage'] !== undefined, true, 'the calendar was read');
   assert.equal((reply['calendarCoverage'] as Record<string, unknown>)['calendarListComplete'], false, 'the list really is partial');
   assert.equal(reply['note'], RESEARCH.completeNote, 'and the completion line is still there, never displaced by the list flag');
@@ -518,7 +518,7 @@ test('F7: a partially read calendar list never takes the completion line from a 
 test('release 4: a window the grammar cannot resolve names its own reason instead of an endpoint outage', async () => {
   const h = fixture([event(20)]);
   const reply = await runResearch(h.deps, {
-    action: 'start',
+    action: 'start', topic: 'topic',
     lookups: [{ source: 'calendar', query: 'sometime soon' }, { source: 'calendar', query: 'tomorrow' }],
   }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the resolvable window still reads the calendar');

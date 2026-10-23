@@ -137,7 +137,7 @@ test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence
     return { key: call.key, name: call.name, ok: true, ...mailPage(['m1']) } as IntentSubResult;
   }));
   await runResearch(h.deps, {
-    action: 'start', question: 'What did Dana send me about the invoice?',
+    action: 'start', question: 'What did Dana send me about the invoice?', topic: 'What did Dana send me about the invoice?',
     lookups: [{ source: 'mail', query: 'could you look for the email where Dana sent the invoice?' }],
   }, new AbortController().signal);
   assert.deepEqual(sent, ['from:dana OR to:dana invoice'], 'one compiled query on the wire, never the sentence');
@@ -195,7 +195,7 @@ test('E5: the host log accepts the mail shape only as counts and closed tokens, 
 // the owner is never handed a stale outage; a clean answer still coalesces, as E7 requires.
 test('W12-R1: an answered run that named a source unavailable is never coalesced', async () => {
   const start = {
-    action: 'start' as const, question: 'What did Dana send me about the invoice?',
+    action: 'start' as const, question: 'What did Dana send me about the invoice?', topic: 'What did Dana send me about the invoice?',
     lookups: [{ source: 'mail' as const, query: 'invoice' }],
   };
   const down = mailHarness(async () => []);
@@ -220,7 +220,7 @@ test('ROUTE-R2: a gmail endpoint that failed its proof is logged as an endpoint 
   const logs: ResearchRunLog[] = [];
   h.deps.log = event => logs.push(event);
   h.deps.unavailableNow = () => [{ source: 'mail', reason: 'identity_unverified' }];
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did Dana email me about the invoice' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did Dana email me about the invoice', topic: 'what did Dana email me about the invoice' }, new AbortController().signal);
   assert.equal(dispatched, 0, 'a dead endpoint is never dispatched to');
   assert.deepEqual(h.sources.map(entry => entry.outcome), ['unavailable'], 'the source log states the dead endpoint once');
   const row = logs.at(-1)!.sources.find(entry => entry.kind === 'mail')!;
@@ -260,7 +260,7 @@ test('F2: one mail query pages once to its cap with a stable page size, and the 
     return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(page, page < 4 ? 25 : 4, page < 4) };
   }));
   h.deps.memo = { calendar: new Map() };
-  const start = { action: 'start' as const, question: 'which invoices did I get', lookups: [{ source: 'mail' as const, mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] };
+  const start = { action: 'start' as const, question: 'which invoices did I get', topic: 'which invoices did I get', lookups: [{ source: 'mail' as const, mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] };
   const first = await runResearch(h.deps, start, new AbortController().signal);
   assert.deepEqual(sent.map(entry => entry.page), ['1', '2', '3', '4'], 'the 79 matches take four pages, one dispatch each');
   assert.deepEqual([...new Set(sent.map(entry => entry.maxResults))], [25], 'one stable page size for the query');
@@ -292,7 +292,7 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
   };
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', topic: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
   await reading;
   assert.deepEqual(sent, ['first', 'p2', 'p2'], 'the failed page is retried once after a wait, and page 1 is never refetched');
   assert.equal(waits, 1, 'exactly one delayed retry');
@@ -319,7 +319,7 @@ test('F2: a rate limit on the first page leaves a closed failure and a plain cov
     const timer = setTimeout(callback, 0);
     return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
   };
-  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d' } }] }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', topic: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d' } }] }, new AbortController().signal);
   assert.equal(sent.length, 2, 'the page is asked once, then once more after the wait');
   assert.equal(waits, 1, 'exactly one delayed retry');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;

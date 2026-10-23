@@ -385,7 +385,7 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
  * MAILQ 5: the sources a query shape may name, and the only writer for one. A row carries counts, the
  * closed operator tokens and the source, never a search word: a term here belongs in the reply.
  */
-export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as const;
+export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'web'] as const;
 export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
 export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
 

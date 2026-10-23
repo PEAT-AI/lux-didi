@@ -36,7 +36,7 @@ test('research publishes one live step per actual source read, including mail bo
         ? { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: [{ id: 'synthetic-mail', headers: { Subject: 'release freeze decided on Friday' } }] }) }
         : sub(call.name, 'release freeze decided on Friday', true, call.key));
     const reply = await runResearch(deps(execute),
-      { action: 'start', question: 'what happened to the release freeze in chat and mail', callId: CALL_ID }, new AbortController().signal);
+      { action: 'start', question: 'what happened to the release freeze in chat and mail', topic: 'what happened to the release freeze in chat and mail', callId: CALL_ID }, new AbortController().signal);
 
     assert.equal(reply['status'], 'complete');
     assert.equal(collector.steps.length, 8, 'three searches and the actual mail body follow-up each start and end');
@@ -74,7 +74,7 @@ test('a source that fails ends its own line with ok false, never with a body', a
         ? { ...sub(call.name, '', false, call.key), code: 'connector_timeout' }
         : sub(call.name, 'the private message body', true, call.key));
     await runResearch(deps(execute),
-      { action: 'start', question: 'what happened to the release freeze in chat and mail', callId: CALL_ID }, new AbortController().signal);
+      { action: 'start', question: 'what happened to the release freeze in chat and mail', topic: 'what happened to the release freeze in chat and mail', callId: CALL_ID }, new AbortController().signal);
 
     const failed = collector.steps.filter(step => step.phase === 'end' && step.source === 'mail');
     // W0 (258dd0bd) receipts every attempt honestly: a failed read and its retry each end their own line.

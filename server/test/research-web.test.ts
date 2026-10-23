@@ -143,7 +143,7 @@ test('a web lookup dispatches the web search, never team chat, and the reply cre
   const port = createWebSearch({ credentials: KEY, transport: transportOf(seen, async () => json(body())) });
   const executed: string[] = [], dispatched: Record<string, unknown>[] = [];
   const reply = await runResearch(routedDeps({ configured: ['chat'], web: port, executed, dispatched }), {
-    action: 'start', question: 'agricon 2026 dates', lookups: [{ source: 'web', query: 'agricon 2026 dates' }],
+    action: 'start', question: 'agricon 2026 dates', topic: 'agricon 2026 dates', lookups: [{ source: 'web', query: 'agricon 2026 dates' }],
   }, new AbortController().signal);
   assert.equal(executed.includes('mattermost_search'), false, 'no chat read answers a web lookup');
   assert.equal(seen.length, 1, 'one real web search ran');
@@ -154,7 +154,7 @@ test('a web lookup dispatches the web search, never team chat, and the reply cre
 test('a web lookup with no web configured says so, and reads nothing else', async () => {
   const executed: string[] = [], dispatched: Record<string, unknown>[] = [];
   const reply = await runResearch(routedDeps({ configured: ['chat', 'knowledge'], executed, dispatched }), {
-    action: 'start', question: 'agricon 2026 dates', lookups: [{ source: 'web', query: 'agricon 2026 dates' }],
+    action: 'start', question: 'agricon 2026 dates', topic: 'agricon 2026 dates', lookups: [{ source: 'web', query: 'agricon 2026 dates' }],
   }, new AbortController().signal);
   assert.deepEqual(executed, [], 'nothing is dispatched for a web this session cannot serve');
   assert.deepEqual(reply['sources'], { web: 'unavailable' });
@@ -201,7 +201,7 @@ const grounded: WebOutcome = {
 
 test('the web candidate runs once and its evidence reaches the findings with its links kept apart', async () => {
   const h = harness(grounded);
-  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
+  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date', topic: 'what is the bridge reopening date' }, new AbortController().signal);
   assert.equal(h.webCalls.length, 1, 'at most one web action per invocation');
   assert.deepEqual(h.executed, [], 'a web read is never sent to a connector');
   const findings = reply['findings'] as { source: string; text: string }[];
@@ -214,7 +214,7 @@ test('the web candidate runs once and its evidence reaches the findings with its
 
 test('a web failure names the web part as missing instead of answering as if it had searched', async () => {
   const h = harness({ ok: false, code: 'web_timeout' });
-  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
+  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date', topic: 'what is the bridge reopening date' }, new AbortController().signal);
   const findings = (reply['findings'] as { source: string; text: string }[]) ?? [];
   assert.equal(findings.some(finding => finding.source === 'web'), false, 'no web evidence is claimed');
   const unavailable = JSON.stringify(reply['unavailable'] ?? {});
@@ -245,7 +245,7 @@ test('the loop puts the attribution link in the reply markdown and never in the 
     retrievedAt: '2026-10-21T12:00:00.000Z',
     searchEntryPoint: '<div><a href="https://www.google.com/search?q=bridge">Search bridge</a></div>',
   } });
-  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
+  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date', topic: 'what is the bridge reopening date' }, new AbortController().signal);
   assert.match(String(reply['markdown']), /\[Search bridge\]\(https:\/\/www\.google\.com/);
   assert.deepEqual(reply['webAttribution'], [{ title: 'Search bridge', url: 'https://www.google.com/search?q=bridge' }]);
   const findings = reply['findings'] as { text: string }[];

@@ -163,7 +163,7 @@ test('a mail search id flows into a second read in the same run', async () => {
     log: () => undefined,
     ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'what does the budget mail say' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'what does the budget mail say', topic: 'what does the budget mail say' }, new AbortController().signal);
   const read = executed.find(call => call.name === 'gmail_read_message');
   assert.deepEqual(read?.args, { id: 'm1' });
 });
@@ -179,7 +179,7 @@ test('packing floors at one line per source, caps at the reply limit and sets ca
     emit: () => undefined, log: () => undefined, ledger: new ResearchLedger(),
   };
   // #1021: a content-free question no longer searches knowledge, so the packing test asks a real one.
-  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release email' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'what did we decide about the release email', topic: 'what did we decide about the release email' }, new AbortController().signal);
   const findings = reply['findings'] as { source: string; text: string }[];
   assert.ok(JSON.stringify(reply).length <= 3_000, `reply was ${JSON.stringify(reply).length}`);
   assert.equal(findings.length, 2, 'at least one line per source with hits');
@@ -205,7 +205,7 @@ test('research_subcall matches results by position even when execute keys are co
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '- Subject | Sender | Mon | body [id m1]', originalCharacters: 40, omittedCharacters: 0 })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'anything', topic: 'anything', sources: 'mail' }, new AbortController().signal);
   assert.equal(subcalls[0]!['ok'], true, 'a composed execute key must still find its result');
   assert.ok((subcalls[0]!['items'] as number) >= 1);
   // F5: the owner named the one source, so the receipt says the hint wrote the query.
@@ -225,7 +225,7 @@ test('ROUTE-1022: a knowledge read is one search call and logs no second hop', a
     })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'anything', topic: 'anything' }, new AbortController().signal);
   assert.equal(subcalls.filter(entry => entry['tool'] === 'search_knowledge').length, 1, 'one knowledge search');
   assert.equal(subcalls.filter(entry => entry['tool'] === 'get_insight').length, 0, 'no get_insight second hop');
 });
@@ -257,7 +257,7 @@ test('a failed sub-call is retried once inside the round', async () => {
   };
   // ROUTE-1022 K5: mail is read only when the question names it, so the fixture names it to exercise
   // the round's retry.
-  await runResearch(deps, { action: 'start', question: 'anything in my email' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'anything in my email', topic: 'anything in my email' }, new AbortController().signal);
   assert.equal(mailCalls >= 2, true, 'the failed call is retried');
   const mailLog = subcalls.find(entry => entry['tool'] === 'gmail_search_messages');
   assert.equal(mailLog!['ok'], true, 'the retried result is the one logged');
@@ -278,7 +278,7 @@ test('the research_run line carries unchecked, canContinue and per-finding char 
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '### Title (PATTERN) [id 1]\nbody', true, call.key)),
     emit: () => undefined, log: entry => logs.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'what did we decide about the release' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'what did we decide about the release', topic: 'what did we decide about the release' }, new AbortController().signal);
   const unchecked = logs[0]!['unchecked'] as string[];
   assert.ok(unchecked.every(source => ['calendar', 'mail', 'chat'].includes(source)), `only sources not read are unchecked: ${JSON.stringify(unchecked)}`);
   assert.equal(unchecked.includes('knowledge'), false, 'the source that answered is never unchecked');

@@ -156,7 +156,7 @@ export const traceMigrations: readonly SchemaMigration[] = [{
        shape_id INTEGER PRIMARY KEY AUTOINCREMENT,
        at INTEGER NOT NULL,
        research_id TEXT,
-       source TEXT NOT NULL CHECK (source IN ('memory','knowledge','calendar','mail','chat','mongoose','web')),
+       source TEXT NOT NULL CHECK (source IN ('memory','knowledge','calendar','mail','chat','replies','company','mongoose','web')),
        terms INTEGER NOT NULL CHECK (terms >= 0),
        operators TEXT NOT NULL,
        topic_words INTEGER NOT NULL CHECK (topic_words >= 0)

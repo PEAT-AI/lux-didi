@@ -117,7 +117,7 @@ test('K8: knowledge latency is stated at its measured p50, and the log carries t
     now: () => clock,
     execute: async subs => { clock += 1_200; return subs.map(call => sub(call.name, CUT_SEARCH, true, call.key)); },
   });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   const knowledge = h.sources.find(entry => entry.source === 'knowledge');
   assert.equal(knowledge?.ms, 1_200, 'the source line carries the read span, not the whole run');
 });
@@ -142,7 +142,7 @@ test('ROUTE-1022: a knowledge question is one search call, with the full body wi
       executed.push(call);
       return sub(call.name, CUT_SEARCH, true, call.key);
     }) });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'exactly one knowledge call');
   assert.equal(executed.filter(call => call.name === 'get_insight').length, 0, 'no get_insight hop');
   const search = executed.find(call => call.name === 'search_knowledge')!;
@@ -153,7 +153,7 @@ test('ROUTE-1022: a knowledge question is one search call, with the full body wi
 test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimmed to the hits that fit', async () => {
   const longBody = Array.from({ length: 6 }, (_, index) => `**#${index + 1}** [PATTERN] Hit ${index} | ${'x'.repeat(2_900)}`).join('\n');
   const h = harness({ execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
   const bytes = JSON.stringify(reply).length;
   assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} budget`);
 });
@@ -168,7 +168,7 @@ test('ONE-1023: a question about today reads the notes that exist, with no day f
     now: () => FRIDAY,
     execute: async subs => { executed.push(...subs); return subs.map(call => sub(call.name, '### 2026-10-16 budget review [id 41]\nwe agreed the budget review', true, call.key)); },
   });
-  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: 'what meetings do I have today' }, new AbortController().signal);
+  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: 'what meetings do I have today', topic: 'what meetings do I have today' }, new AbortController().signal);
   const searched = executed.find(call => call.name === 'search_knowledge');
   assert.ok(searched !== undefined, 'the knowledge read still runs');
   assert.equal('meeting_date_from' in searched.args, false, 'a day that has not passed cannot be filtered on');
@@ -184,7 +184,7 @@ test('ONE-1023: a filtered search that matched nothing retries once without the 
       return subs.map(call => sub(call.name, 'meeting_date_from' in call.args ? '' : '### budget review [id 41]\nthe budget review is agreed', true, call.key));
     },
   });
-  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review" }, new AbortController().signal);
+  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review", topic: "what did we decide in yesterday's meeting about the budget review" }, new AbortController().signal);
   const searches = executed.filter(call => call.name === 'search_knowledge');
   assert.equal(searches.length, 2, 'one retry, never more');
   assert.equal('meeting_date_from' in searches[0]!.args, true, 'the first read carries the past day');

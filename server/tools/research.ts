@@ -603,7 +603,6 @@ export function mailWindow(question: string, nowMs = Date.now(), timeZone?: stri
   return undefined;
 }
 
-const MAIL_DATE_SHAPE = /\b\d{4}-\d{2}-\d{2}\b/gu;
 
 /**
  * MAILQ 2: a "what came in" ask is not a keyword search. The host runs this fixed scan instead, with no
@@ -612,6 +611,8 @@ const MAIL_DATE_SHAPE = /\b\d{4}-\d{2}-\d{2}\b/gu;
 export const TRIAGE_QUERIES = ['in:inbox is:unread is:important newer_than:2d', 'in:inbox is:unread newer_than:2d'] as const;
 /** MAILQ 6: the window a chat triage read rolls back over. */
 export const TRIAGE_DAYS = 7;
+/** F4: the topic is names and nouns, at most eight words, as the declaration promises. */
+export const TOPIC_MAX_WORDS = 8;
 /** MAILQ 2: the number of unread threads a triage reply reads out before it says it is capped. */
 export const TRIAGE_LINES = 10;
 const TRIAGE_ASK = /\b(?:what came in|what'?s (?:new|came in)|anything (?:important|new|urgent|unread)|any (?:new|important|unread|urgent) (?:mail|email|messages?)|new (?:mail|email|messages)|what did i miss)\b/u;
@@ -697,14 +698,14 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const skip = person === undefined ? undefined : new Set([person]);
   const gated = topicTerms(topic, question);
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
-  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"')) && topic === undefined) return authored.slice(0, RESEARCH.queryLimitChars);
+  // F1: with no topic there is no term at all; the question is never a mail search text.
   if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) {
     const kept = mailOperatorTokens(authored);
     const terms = topicText === undefined ? [] : mailTerms(topicText, 4, skip);
     const windowed = kept.some(token => WINDOW_OPERATORS.has((OPERATOR_TOKEN.exec(token)?.[1] ?? '').toLowerCase()));
     return [...kept, ...terms, ...(asked === undefined || windowed ? [] : [asked])].join(' ').slice(0, RESEARCH.queryLimitChars);
   }
-  const text = (topicText ?? `${authored || question} ${question}`).replace(MAIL_DATE_SHAPE, ' ');
+  const text = topicText ?? '';
   const terms = mailTerms(text, 4, skip);
   const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
   if (leading.length === 0 && terms.length === 0) return `in:inbox ${asked ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
@@ -809,10 +810,17 @@ export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
 }
 
+/**
+ * MAILQ 8 (#579): an attention ask is never one layer. It reads what is waiting in mail, chat and the
+ * calendar together, and a question about what was said before keeps the memory layer.
+ */
+const ATTENTION_WORDS = /\b(?:what needs (?:me|my attention)|anything urgent|anything (?:important|waiting)|what(?:'s| is) waiting|what needs a reply)\b/u;
+const MEMORY_WORDS = /\b(?:what did (?:we|you) say|last time (?:we|i) (?:talked|spoke|met)|you told me|remind me what|as we discussed)\b/u;
+
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
-const MAIL_WORDS = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/u;
+const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|messages?|wrote|sent|replied|replies|reply)\b/u;
 const CALENDAR_WORDS = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/u;
-const CHAT_WORDS = /\b(chat|team|channel|slack|mattermost|said|posted|discussed|urgent|new|unread|messages?|dms?)\b/u;
+const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|said|posted|discussed|messages?|dms?|urgent|new|unread)\b/u;
 /** MED-1022: a web read is for explicit public intent only. `latest`, `cost` and `price` are how the
  * owner asks about his own work (the 18:34 call spent a web read on "the latest" and got a soap
  * result), so only the public list below offers the web. */
@@ -822,6 +830,7 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
 /** The source a question is about, in the order the first answer waits for them. */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
   { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
+  { source: 'memory', words: MEMORY_WORDS },
 ];
 
 /**
@@ -831,7 +840,9 @@ const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
 export function requiredSources(question: string): SourceKind[] {
   const text = question.toLowerCase();
   if (WEB_WORDS.test(text)) return [];
-  return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
+  // MAILQ 8: what needs him is never one layer, and the words of one layer never displace another.
+  if (ATTENTION_WORDS.test(text)) return ['mail', 'chat', 'calendar'];
+  return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 3).map(route => route.source);
 }
 
 /**
@@ -867,9 +878,10 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     pUseful[kind] = p;
   };
   const webWords = WEB_WORDS.test(text);
-  const mailWords = MAIL_WORDS.test(text);
+  const attention = ATTENTION_WORDS.test(text);
+  const mailWords = MAIL_WORDS.test(text) || attention;
   const calendarWords = CALENDAR_WORDS.test(text);
-  const chatWords = CHAT_WORDS.test(text);
+  const chatWords = CHAT_WORDS.test(text) || attention;
   const matched = mailWords || calendarWords || chatWords;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
@@ -877,6 +889,8 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     return { questionClass: 'cross_source', actions, pUseful };
   }
   offer('knowledge_search', 0.4, 'knowledge');
+  // MAILQ 8: an attention ask reads mail, chat and the calendar together, not the calendar alone.
+  if (attention) { offer('mail_search', 0.55, 'mail'); offer('chat_search', 0.5, 'chat'); offer('calendar_window', 0.45, 'calendar'); return { questionClass: 'cross_source', actions, pUseful }; }
   if (mailWords) offer('mail_search', 0.4, 'mail');
   if (calendarWords) offer('calendar_window', 0.4, 'calendar');
   if (chatWords) offer('chat_search', 0.4, 'chat');
@@ -1062,17 +1076,30 @@ async function droppedDayFilterRetry(deps: ResearchDeps, subs: readonly IntentSu
 const CHAT_DATE_OPERATOR = /\b(after|before|on):([^\s]+)/giu;
 
 /**
+ * MAILQ 10: the Mattermost search takes `from_date`/`to_date` as YYYY-MM-DD with `sort=newest`, which
+ * answered in 1.2 s where an inline `After:` operator took 4 to 29 s. An unresolvable day widens to the
+ * ask's own day word, so a window is always a real window.
+ */
+export function chatWindow(query: string, question: string, nowMs = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): { from_date?: string; to_date?: string } | undefined {
+  const lower = question.toLowerCase();
+  const dayOf = (value: string | undefined): string | undefined => value === undefined ? undefined : isoDay(value, nowMs, timeZone);
+  const after = dayOf(CHAT_DATE_OPERATOR.exec(query)?.[2] ?? (/\bafter:|\bsince\b|\byesterday\b/u.test(`${query} ${lower}`) ? 'yesterday' : undefined));
+  CHAT_DATE_OPERATOR.lastIndex = 0;
+  const asked = /\btoday\b/u.test(lower) ? dayOf('today') : /\byesterday\b/u.test(lower) ? dayOf('yesterday') : undefined;
+  const from = after ?? asked;
+  if (from === undefined) return undefined;
+  return { from_date: from };
+}
+
+/**
  * MED-1022: the Mattermost index reads `After:`/`Before:`/`On:` with an ISO day and ignores any other
  * word, so `after:yesterday` returned the whole archive. A date word is compiled to the day it names in
  * the owner's zone, and an operator no calendar can resolve is dropped instead of sent.
  * ONE-1023: the model's direction words are the same filler knowledge drops, so they never ride a chat
  * search either; an operator and a quoted phrase survive.
  */
-export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): string {
-  return query.replace(CHAT_DATE_OPERATOR, (_operator: string, kind: string, value: string): string => {
-    const day = isoDay(value, nowMs, timeZone);
-    return day === undefined ? '' : `${kind[0]!.toUpperCase()}${kind.slice(1)}:${day}`;
-  }).split(/\s+/u).filter(Boolean)
+export function chatQuery(query: string): string {
+  return query.replace(CHAT_DATE_OPERATOR, '').split(/\s+/u).filter(Boolean)
     .filter(word => /^(?:after|before|on):/iu.test(word) || !(KNOWLEDGE_FILLER.has(word.replace(/[.:]+$/u, '').toLowerCase()) || META_WORDS.has(word.replace(/[.:]+$/u, '').toLowerCase())))
     .join(' ');
 }
@@ -1109,10 +1136,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
     // MAILQ 1: the search text is the topic, so the model's instruction words never reach the ranker.
-    // MAILQ 1: with a topic, only its words are terms; without one the legacy path stands.
+    // F1: only the topic's words are terms, and the model's own query when it wrote one; the
+    // question is never a knowledge search text.
     const topicText = topicTerms(config.topic, config.question);
-    const query = topicText !== undefined ? knowledgeQuery(topicText)
-      : config.query === undefined ? knowledgeQuery(config.question) : knowledgeQuery(config.query, config.question);
+    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(config.query);
     if (!query) return [];
     const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
@@ -1139,15 +1166,15 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // MAILQ 6 (#572): a "what came in" ask on Mattermost is the attention read, windowed and newest
     // first, never a relevance-ranked search over the whole archive.
     if (chatTriageAsk(config.question, config.topic)) return [search(INTERNAL.chatAttention, { days: TRIAGE_DAYS }, 'ca0')];
-    const dated = DATE_WORD.test(config.question);
-    // MAILQ 1: with a topic, only its words are terms; the day operator still comes from the ask.
-    const asked = config.query ?? 'after:yesterday';
+    // MAILQ 10: the window rides the tool's own from_date with sort=newest, never an inline After:.
+    // MAILQ 1: with a topic, only its words are terms.
     const gatedChat = topicTerms(config.topic, config.question);
-    const text = gatedChat === undefined ? asked : [gatedChat, ...asked.split(/\s+/u).filter(word => /^(?:after|before|on):/iu.test(word))].join(' ');
-    const compiled = chatQuery(text, config.nowMs, config.timeZone);
-    const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
-    const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
-    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines }, 'c0')];
+    const window = chatWindow(config.query ?? 'after:yesterday', config.question, config.nowMs ?? Date.now(), config.timeZone);
+    const query = gatedChat === undefined ? chatQuery(config.query ?? '') : chatQuery(gatedChat);
+    return [search(INTERNAL.chatSearch, {
+      query, limit: RESEARCH.chatLines, sort: 'newest',
+      ...(window === undefined ? {} : { from_date: window.from_date, ...(window.to_date === undefined ? {} : { to_date: window.to_date }) }),
+    }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
@@ -1163,13 +1190,14 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
       subs.push(search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'b0'));
     }
     if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
-    if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: chatQuery('after:yesterday', config.nowMs, config.timeZone), limit: RESEARCH.chatLines }, 'b2'));
+    if (config.configured.includes('chat') && named.has('chat')) subs.push(search(INTERNAL.chatSearch, { query: '', limit: RESEARCH.chatLines, sort: 'newest', ...(config.timeZone === undefined ? {} : { from_date: isoDay('yesterday', config.nowMs ?? Date.now(), config.timeZone) ?? '' }) }, 'b2'));
+    // MAILQ 8: what was said before is the memory layer's read, not a mail or calendar guess.
+    if (named.has('memory')) subs.push(search(HISTORY_IDENTITY.name, { query: contentKeywords(topicTerms(config.topic, config.question) ?? '').join(' ') || 'recall' }, 'b4'));
     // K3: the brief's knowledge read is shaped the same way, so no dispatch carries a sentence.
     // MAILQ 1: the topic's terms are the query; a pure instruction start reads nothing.
-    const briefTopic = topicTerms(config.topic, config.question);
-    const query = knowledgeQuery(briefTopic ?? config.question);
-    // K5: without a topic, a vague question still reads his knowledge once on its own words.
-    const asked = briefTopic === undefined && query === '' && !metaOnlyQuestion(config.question) ? config.question.trim() : query;
+    // F1: the brief's knowledge read is the topic's words, never the question's; with no term it
+    // dispatches no search at all.
+    const asked = knowledgeQuery(topicTerms(config.topic, config.question) ?? '');
     if (config.configured.includes('knowledge') && asked !== '') subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(asked, projectHintOf(config.question)), 'b3'));
     return subs;
   }
@@ -1533,6 +1561,11 @@ export interface ResearchDeps {
   logJoined?: ((researchId: string) => void) | undefined;
   /** Metadata-only per-sub-call log; defaults to the host log sink. Never the query or result text. */
   logSubcall?: ((event: ResearchSubcallLog) => void) | undefined;
+  /**
+   * F5: the trace row for one source call's query shape. The Live owner binds it to the trace store, so
+   * a live research call really writes trace_query_shape; absent means the host log carries the shape only.
+   */
+  queryShape?: ((shape: ResearchQueryShape & { researchId: string; at: number }) => void) | undefined;
 
   /** One live step per source as it starts and ends; defaults to the host event the Live owner
    *  forwards to the voice view. Never a message body, never an id. */
@@ -1607,10 +1640,10 @@ export function parseResearch(args: unknown): ParsedResearch {
   if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
   if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
-  // MAILQ 1: the schema marks the topic required for a start and the tool description says so, but a
-  // start that omits it is served, never refused: the host then searches the question as it always did.
-  if (record['topic'] !== undefined && optionalString(record['topic']) === undefined) return refuse('topic_required');
+  if (action === 'start' && optionalString(record['topic']) === undefined) return refuse('topic_required');
   if (record['topic'] !== undefined && String(record['topic']).length > 200) return refuse('topic_length');
+  // F4: the description promises eight words, so the host counts them.
+  if (record['topic'] !== undefined && String(record['topic']).trim().split(/\s+/u).filter(Boolean).length > TOPIC_MAX_WORDS) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (Object.hasOwn(record, 'cursor')) {
     if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
@@ -1651,7 +1684,7 @@ const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
   lookup_history: 'A memory lookup is {"source":"memory","history":{"topic":"..."}}; the history fields are topic and optional limit.',
   lookups_count: 'Send one to three lookups; more than three cannot be read before the answer is due.',
   unknown_fields: 'Remove the fields not in the tool schema; only action, question, topic, researchId, sources, direction, cursor and lookups exist.',
-  topic_required: 'A start needs the topic: the names and nouns to search for, at most eight words, e.g. {"action":"start","question":"the question","topic":"Wilmar pilot"}.',
+  topic_required: 'A start needs the topic: the names and nouns to search for, at most eight words, e.g. {"action":"start","question":"the question","topic":"Wilmar pilot"}. The question is never searched.',
   topic_type: 'The topic is one short string of names and nouns.',
   topic_length: 'The topic is at most 200 characters and eight words: the names and nouns only.',
 };
@@ -1816,6 +1849,11 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
     guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question","topic":"the names and nouns"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. Only the topic is searched. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
+      // F1: the topic is required by the schema for a start, never merely by the description.
+      anyOf: [
+        { properties: { action: { enum: ['start'] } }, required: ['question', 'topic'] },
+        { properties: { action: { enum: ['continue', 'stop'] } }, required: ['researchId'] },
+      ],
       properties: {
         action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start requires question; continue and stop require the researchId returned by start. Stop must omit lookups and cursor.' },
         question: { type: 'string', minLength: 1, description: 'The owner question, in their own words; required for start. Never searched: the host reads it for the source, the day and the shape of the ask.' },
@@ -2643,6 +2681,8 @@ interface RoutedOutcome {
   sub?: IntentSubCall;
   /** ONE-1023: identical reads this one dispatch served, so the receipt counts them. */
   deduped?: number;
+  /** MAILQ 5: the shape of this read's own sub-call, so a brief's parts are never credited another's. */
+  shape?: ResearchQueryShape;
 }
 
 interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
@@ -2758,7 +2798,9 @@ export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: 
 
 /** E5 and MAILQ 5: the topic's word count is the only thing about the topic that is kept. */
 function queryShapeOfSubs(source: SourceKind | LookupSource, subs: readonly IntentSubCall[], topic?: string): ResearchQueryShape {
-  const raw = subs[0]?.args['q'] ?? subs[0]?.args['query'];
+  // F2: a brief fans out over several sources, so the shape comes from the sub that serves this part.
+  const own = subs.filter(sub => (sourceKindOfKindName(sub.name) ?? source) === source);
+  const raw = (own.length > 0 ? own : subs)[0]?.args['q'] ?? (own.length > 0 ? own : subs)[0]?.args['query'];
   const shape = typeof raw === 'string' ? mailQueryShape(raw) : undefined;
   return {
     source, terms: shape?.terms ?? 0, operators: shape?.operators ?? [],
@@ -2812,7 +2854,13 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   const signal = AbortSignal.any([parent, cut.signal]);
   try {
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
-    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap).slice(0, RESEARCH.maxOps - run.ops);
+    // MAILQ 9: a page is read only when the lines to be shown need more than the pages already in hand.
+    const reads = [...run.mail.values()].filter(read => {
+      if (read.exhausted || read.failed || read.inflight || read.pages >= RESEARCH.mailPageCap) return false;
+      // The first page answers a triage or a lookup; a further page is asked for only while the
+      // messages already read are fewer than the lines this source will show.
+      return read.pages === 0 || read.messages.size < RESEARCH.mailLines;
+    }).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
     if (!evidenceAllowed(deps, run, signal)) break;
@@ -3063,7 +3111,7 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; topic?: string | undefined; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
   const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0, deduped = 0): RoutedOutcome =>
-    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(deduped > 0 ? { deduped } : {}), ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }) });
+    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(deduped > 0 ? { deduped } : {}), ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }), shape: queryShapeOfSubs(plan.read.source, plan.read.subs, context.topic) });
   const done: RoutedOutcome[] = [];
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
     const args = plan.lookup.history ?? { query: plan.lookup.query };
@@ -3187,6 +3235,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
   const logLookup = deps.logSource ?? ((event: ResearchSourceLog): void => { hostLogEvent(event); });
+  const queryShape = deps.queryShape;
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
   const schedule = deps.schedule ?? scheduleTimer;
   deps.emit({ researchId: run.researchId, ...callKeyOf(run), phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
@@ -3229,8 +3278,13 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
         ...mailReceiptField(outcome.mail),
+        ...(outcome.shape === undefined ? {} : { query: outcome.shape }),
         ...(outcome.partial === undefined ? {} : { partial: outcome.partial.reason, failedPages: outcome.partial.failedPages }),
       });
+      if (outcome.shape !== undefined && queryShape !== undefined) {
+        // F5: the row is a receipt, never a reason to fail the turn.
+        try { queryShape({ ...outcome.shape, researchId: run.researchId, at: now() }); } catch { /* the host log still carries the shape */ }
+      }
       logSubcall({
         event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
         ok: outcome.outcome === 'ok' || outcome.outcome === 'empty',
@@ -4016,6 +4070,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               ...mailReceiptField(mailInfo),
               query: queryShapeOfSubs(lookupSourceOf(part.source), served, topic),
             });
+            if (deps.queryShape !== undefined) {
+              // F5: the row is a receipt, never a reason to fail the turn.
+              try { deps.queryShape({ ...queryShapeOfSubs(lookupSourceOf(part.source), served, topic), researchId: run.researchId, at: now() }); } catch { /* the host log still carries the shape */ }
+            }
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
             first.reading.delete(part.source);

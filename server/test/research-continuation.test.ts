@@ -22,7 +22,7 @@ function continuationFixture(): { deps: ResearchDeps; executed: string[] } {
 // with an empty "continue" and went silent. The reply now says what to do instead.
 test('ROUTE-1022: a cursor the run does not hold answers with a note that says what to do next', async () => {
   const h = continuationFixture();
-  const started = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, signal());
+  const started = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', topic: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, signal());
   const researchId = String(started['researchId']);
   const reply = await runResearch(h.deps, { action: 'continue', researchId, cursor: 'a-cursor-this-run-never-issued' }, signal());
   assert.equal(reply['error'], 'continuation_unavailable');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, fallbackSelection, runResearch, type ResearchDeps, type SourceKind } from '../tools/research.js';
-import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
+import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webDeadlineMs, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
 import { safeEvent } from '../host/log.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
@@ -122,7 +122,7 @@ test('the closed candidate set offers web_search on the web source', () => {
 // --- ROUTE-1022 K1: a lookup that names the web reads the web, and nothing else answers it -----
 
 /** A routed harness: the model named the layers, so no selector runs. */
-function routedDeps(opts: { configured: readonly SourceKind[]; web?: WebSearchPort; executed: string[]; dispatched: Record<string, unknown>[] }): ResearchDeps {
+function routedDeps(opts: { configured: readonly SourceKind[]; web?: WebSearchPort; executed: string[]; dispatched: Record<string, unknown>[]; logged?: object[] }): ResearchDeps {
   return {
     now: () => 0,
     configured: opts.configured,
@@ -133,7 +133,7 @@ function routedDeps(opts: { configured: readonly SourceKind[]; web?: WebSearchPo
       return { key: call.key, name: call.name, ok: true, text: '**team**\nthe decision was recorded', originalCharacters: 30, omittedCharacters: 0 } as IntentSubResult;
     }),
     emit: () => {},
-    log: () => {},
+    log: entry => { opts.logged?.push(entry); },
     ledger: new ResearchLedger(),
   };
 }
@@ -314,4 +314,53 @@ test('MED-1022: an internal question that says latest never offers the web read'
 test('T-R5: a price question about our own licence is internal, never a web read', () => {
   assert.deepEqual(fallbackSelection('what is our API licence price', ['web', 'knowledge']).actions.filter(action => action.kind === 'web_search'), [], 'price is how the owner asks about his own business');
   assert.deepEqual(fallbackSelection('what are the prices on the plan', ['web']).actions.filter(action => action.kind === 'web_search'), []);
+});
+
+// --- N6 (#569): an explicit weather or news ask gets the long web budget ------------------------
+
+test('N6: a weather or news ask takes the 8 s web deadline and every other ask keeps 4 s', () => {
+  assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), 8_000);
+  assert.equal(webDeadlineMs('latest news on the bridge closure'), 8_000);
+  assert.equal(webDeadlineMs('bridge reopening date'), WEB_DEADLINE_MS);
+});
+
+test('N6: a weather read that settles at 6 s succeeds, and a generic read is named timeout', async () => {
+  const weatherSeen: number[] = [];
+  const weather: WebSearchPort = {
+    search: async ({ deadlineMs }) => {
+      weatherSeen.push(deadlineMs ?? WEB_DEADLINE_MS);
+      return (deadlineMs ?? WEB_DEADLINE_MS) >= 6_000 ? grounded : { ok: false, code: 'web_timeout' };
+    },
+  };
+  const weatherReply = await runResearch(routedDeps({ configured: ['web'], web: weather, executed: [], dispatched: [] }), {
+    action: 'start', question: 'what is the weather in Pune', lookups: [{ source: 'web', query: 'weather in Pune tomorrow' }],
+  }, new AbortController().signal);
+  assert.deepEqual(weatherSeen, [8_000], 'the port is told the longer deadline for a weather ask');
+  assert.deepEqual(weatherReply['sources'], { web: 'ok' }, 'a 6 s weather read is no longer cut');
+
+  const genericSeen: number[] = [];
+  const logged: object[] = [];
+  const generic: WebSearchPort = {
+    search: async ({ deadlineMs }) => {
+      genericSeen.push(deadlineMs ?? WEB_DEADLINE_MS);
+      return { ok: false, code: 'web_timeout' };
+    },
+  };
+  const genericReply = await runResearch(routedDeps({ configured: ['web'], web: generic, executed: [], dispatched: [], logged }), {
+    action: 'start', question: 'bridge reopening date', lookups: [{ source: 'web', query: 'bridge reopening date' }],
+  }, new AbortController().signal);
+  assert.deepEqual(genericSeen, [WEB_DEADLINE_MS], 'every other ask keeps the short deadline');
+  assert.deepEqual(genericReply['unavailable'], { web: 'timeout' }, 'the model hears timeout, never endpoint_unavailable');
+  const run = logged.find(entry => (entry as { event?: string }).event === 'research_run') as { sources?: { kind: string; reason?: string }[] } | undefined;
+  assert.deepEqual(run?.sources?.filter(source => source.kind === 'web').map(source => source.reason), ['timeout'], 'the run log names the timeout too');
+});
+
+test('N6: a per-call deadline overrides the port default', async () => {
+  const hanging = (async (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+  })) as unknown as typeof fetch;
+  const port = createWebSearch({ credentials: KEY, transport: hanging });
+  const started = Date.now();
+  assert.deepEqual(await port.search({ query: 'weather in Pune tomorrow', signal: new AbortController().signal, deadlineMs: 40 }), { ok: false, code: 'web_timeout' });
+  assert.ok(Date.now() - started < 2_000);
 });

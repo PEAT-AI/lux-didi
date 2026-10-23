@@ -178,6 +178,42 @@ test('the whole serialized reply stays within the character cap', async () => {
   assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
 });
 
+// N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
+// budget is measured on the whole serialized reply, after every section is attached.
+test('N4: memory and knowledge findings of 10 KB each still fit the capped reply', async () => {
+  const h = harness({
+    configured: ['memory', 'knowledge'],
+    executeText: 'k'.repeat(10_000),
+    memory: () => ({ lines: [`he said ${'m'.repeat(10_000)}`], text: 'ignored', total: 1 }),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope',
+    lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }],
+  }, new AbortController().signal);
+  const size = JSON.stringify(reply).length;
+  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars`);
+});
+
+// N5 (#568): a completed run promised more was available, and the model's continue got
+// continuation_unavailable. The note offers a continuation only when this reply can serve one.
+test('N5: a reply that cannot serve a continuation never says more is available', async () => {
+  const h = harness({});
+  const first = await runResearch(h.deps, { action: 'start', question: 'x' }, new AbortController().signal);
+  const stopped = await runResearch(h.deps, { action: 'stop', researchId: String(first['researchId']) }, new AbortController().signal);
+  assert.equal(stopped['canContinue'], false);
+  const note = String(stopped['note'] ?? '');
+  assert.doesNotMatch(note, /more available/, 'the note never offers a continuation this run cannot serve');
+  assert.match(note, /did not search/, 'and it names the sources this run never searched');
+});
+
+test('N5: a trimmed reply that can continue still says more is available', async () => {
+  const h = harness({ executeText: 'x'.repeat(9_000) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  assert.equal(reply['status'], 'partial');
+  assert.equal(reply['canContinue'], true);
+  assert.match(String(reply['note'] ?? ''), /more available/);
+});
+
 test('mongoose is never offered while unconfigured', () => {
   const offered = offerableCandidates(['knowledge', 'calendar', 'mail', 'chat'], []);
   assert.equal(offered.includes('brief'), true);

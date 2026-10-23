@@ -2368,8 +2368,10 @@ function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boole
  * hard-bounded, and the state and the note are derived after the cut so they always agree.
  */
 export function capReply(reply: JsonObject, limit: number): JsonObject {
-  // A requested body read pages at its own 6,000 char room, so it is never held to the search budget.
+  // A requested body read and a record read page at their own 6,000 char room, so neither is held to the
+  // search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
+  if (Array.isArray(reply['historyPages']) && (reply['historyPages'] as JsonObject[]).some(page => typeof page['text'] === 'string')) return reply;
   const size = (): number => JSON.stringify(reply).length;
   const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
   let trimmed = false;

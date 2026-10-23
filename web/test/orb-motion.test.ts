@@ -162,3 +162,49 @@ test('frame budget: 60 fps active, 30 idle focused, 12 idle unfocused, steady ca
   assert.deepEqual([...thirty.gaps], [33], 'every second vsync, never alternating 33 and 50 ms');
   assert.equal(cadence(1000 / 12).fps, 12);
 });
+
+// ANIM-R1: both surfaces use this same pure, fake-clock coordinator.
+import { MotionCoordinator } from '../src/orb-motion.ts';
+const voiceSample = (output: number, input = 0) => ({ v: 2, output: { level: output, low: output }, input: { level: input, low: input } });
+
+test('coordinator keeps output through a quiet tail and rejects speaker bleed', () => {
+  const motion = new MotionCoordinator();
+  motion.sample(voiceSample(0.1), 0);
+  assert.equal(motion.sample(voiceSample(0.002, 0.8), 100).source, 'output');
+  assert.equal(motion.sample(voiceSample(0.1, 0.8), 150).source, 'output');
+  motion.interrupt();
+  assert.equal(motion.sample(voiceSample(0.1, 0.8), 151).source, 'input');
+});
+
+test('coordinator requires 30 ms onset, holds exit, and never speaks from semantics alone', () => {
+  const m = new MotionCoordinator();
+  const step = (at: number, rms: number, state = 'PROCESSING') => {
+    m.sample(voiceSample(rms), at);
+    return m.advance(state, at);
+  };
+  assert.notEqual(step(0, 0.012).posture, 'speaking');
+  assert.notEqual(step(20, 0.012).posture, 'speaking');
+  assert.notEqual(step(21, 0).posture, 'speaking');
+  step(40, 0.012);
+  assert.equal(step(70, 0.012).posture, 'speaking');
+  assert.equal(step(80, 0).posture, 'speaking');
+  assert.equal(step(230, 0).posture, 'speaking');
+  assert.notEqual(step(260, 0).posture, 'speaking');
+  assert.notEqual(step(300, 0, 'SPEAKING').posture, 'speaking');
+  assert.notEqual(step(340, 0.2, 'DISCONNECTED').posture, 'speaking');
+});
+
+test('coordinator is identical for window and mini and retargets continuous weights', () => {
+  const windowMotion = new MotionCoordinator(), miniMotion = new MotionCoordinator();
+  let previous = windowMotion.advance('PROCESSING', 0).weights;
+  for (let at = 0; at <= 700; at += 10) {
+    const state = at < 100 ? 'PROCESSING' : at < 220 ? 'SPEAKING' : 'PROCESSING';
+    const sample = voiceSample(at >= 100 && at < 220 ? 0.1 : 0);
+    windowMotion.sample(sample, at); miniMotion.sample(sample, at);
+    const a = windowMotion.advance(state, at), b = miniMotion.advance(state, at);
+    assert.deepEqual(a, b);
+    for (const key of Object.keys(a.weights) as OrbPosture[]) assert.ok(Math.abs(a.weights[key] - previous[key]) <= 0.07);
+    previous = a.weights;
+  }
+  assert.equal(previous.thinking, 1);
+});

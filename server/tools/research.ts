@@ -1295,8 +1295,6 @@ export interface RunState {
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
-  /** MAILQ 1: the topic this run searches, kept so a continuation without one searches the same text. */
-  topic?: string | undefined;
   /** ONE-1023: the day-filtered knowledge reads whose filter was dropped for a retry, by their own args. */
   droppedDayFilters: Set<string>;
   calendarScopeAttempted?: boolean;
@@ -3591,9 +3589,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
   first.snapshot = () => ({ run, configured, limit });
   // K8b: a continue on a run whose readers are still working waits for them, bounded by the first-answer cut.
-  // MAILQ 1: the run keeps the topic it started with, so a continuation searches the same text.
-  const topic = askedTopic === '' ? run.topic : askedTopic;
-  if (askedTopic !== '') run.topic = askedTopic;
+  // MAILQ 1: the topic is the only text searched. A continue that omits one searches nothing rather
+  // than the owner's instructions; the run's own topic is not re-searched, so a completed read is never
+  // repeated by a continuation (research 469 and the ledger-reuse test pin exactly that).
+  const topic = askedTopic === '' ? undefined : askedTopic;
   if (call.action !== 'start' && run.pending.size > 0) await waitForPending(run, deps, signal);
   const executeSource = deps.execute, emitProgress = deps.emit;
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);

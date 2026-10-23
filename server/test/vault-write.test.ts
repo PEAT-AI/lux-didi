@@ -11,7 +11,7 @@ import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { parseSaveCommand, VAULT_REMOTE_TOOL, VAULT_WRITE_IDENTITY, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { parseSaveCommand, VAULT_REMOTE_TOOL, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';

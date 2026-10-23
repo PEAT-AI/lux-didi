@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing, lastMeetingQuestion, newestDatedFirst, queryShapeOf,
+  validateResearch, worthContinuing, lastMeetingQuestion, newestDatedFirst, queryShapeOf, TRIAGE_QUERIES,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -511,7 +511,7 @@ test('an empty-but-successful read is a search that matched nothing, never an un
   const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
-  assert.match(note, /I searched your mail for "[a-z]+".*found nothing matching/, 'the model gets a line it can voice');
+  assert.match(note, /I searched your mail for "[a-z ]+".*found nothing matching/, 'the model gets a line it can voice');
   assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
   assert.equal(reply['status'], 'complete', 'a search that matched nothing still answered the question');
 });
@@ -520,7 +520,8 @@ test('an identical duplicate read in one run is executed once', async () => {
   const h = harness({ executeText: '' });
   await runResearch(h.deps, { action: 'start', question: 'anything new in the mail' }, new AbortController().signal);
   const mailReads = h.executed.filter(call => call.name === 'gmail_search_messages');
-  assert.equal(mailReads.length, 1, 'the same mail read is issued once');
+  // MAILQ 2: a what-came-in ask is the important scan and the unread scan, each issued once.
+  assert.deepEqual(mailReads.map(call => (call.args as Record<string, unknown>)['q']), [...TRIAGE_QUERIES], 'each of the two triage scans is issued once');
 });
 
 test('the brief fan-out is credited to every source it read and its findings reach the answer', async () => {

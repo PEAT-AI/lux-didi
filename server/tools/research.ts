@@ -2115,6 +2115,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   const ok = results.filter(result => result.ok && result.text.trim());
   const source = sourceKindOf(kind) ?? (ok.length ? sourceKindOfKindName(ok[0]!.name) : null);
   const lines: string[] = [];
+  const seen = new Set<string>();
   let total = 0;
   for (const result of ok) {
     const raw = itemLines(result.text);
@@ -2133,10 +2134,11 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
           else rest.push(part);
         }
         const excerpt = clip(rest.join(' | '), RESEARCH.mailSnippetChars);
-        const rendered = `${[sender, subject, date, excerpt].filter(value => value !== '').join(' | ')}${open}`;
+        const body = [sender, subject, date, excerpt].filter(value => value !== '').join(' | ');
         // MAILQ 2: a thread two triage reads both returned is one thread, listed once.
-        if (lines.includes(rendered)) continue;
-        lines.push(rendered);
+        if (seen.has(body)) continue;
+        seen.add(body);
+        lines.push(`${body}${open}`);
         total += 1;
       }
     } else if (result.name === INTERNAL.mailRead) {

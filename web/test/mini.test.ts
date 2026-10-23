@@ -252,7 +252,7 @@ test('the pill loop eases to the state and gates the microphone', () => {
   assert.ok(Number.parseFloat(style.vars.get('--mini-orb-grey') ?? '0') > 0.9, 'cold is grey');
   stage.setAttribute('data-mini-state', 'listening');
   step();                                   // requests listening
-  clock += DEBOUNCE_MS + TRANSITION_MS / 2; // commit lands, the ease is half way
+  clock += TRANSITION_MS / 2; // the shared status is settled; no second debounce
   step();
   const half = published.at(-1)!;
   // M3-R6: no hue is walked; the two state layers crossfade instead.

@@ -762,7 +762,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (has('supersededAborts') && !isSafeCount(value.supersededAborts)) return;
     // ROUTE-1022 K5: the plan a brief actually ran, as one closed token, never the question.
     if (has('plan') && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
-    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan'].filter(has);
+    const optionals = ['driver', 'bodyReplies', 'metaStartAsContinue', 'supersededAborts', 'plan', 'roundCapHit', 'answerCompacted'].filter(has);
     if (Object.keys(value).sort().join(',') !== [...keys, ...optionals].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_run');
     if (!isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;

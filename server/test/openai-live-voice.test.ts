@@ -401,11 +401,23 @@ describe('openai gpt-live adapter', () => {
       'the seeded answer request is the only frame after the start, so the provider answers without being spoken to');
   });
 
-  test('D1: a normal connect seeds history and asks for nothing, so no greeting is spoken', async t => {
+  test('D1: a normal connect with history seeds the opening directive inside the start and sends no other frame', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
     const { f } = await ready(t, {}, { history, opening: 'model_first' });
     await quiet();
     assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'a connect with history sends the start and nothing else');
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string }[];
+    assert.equal(input.at(-1)?.role, 'developer', 'the opening directive rides in the start, so no separate frame asks for the line');
+  });
+
+  test('#1023: a 128-turn warm history still starts, the directive costs the oldest turn', async t => {
+    const history = Array.from({ length: 128 }, (_, index) => ({
+      role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `turn ${index}`, dataClass: 'ordinary' as const }));
+    const { f } = await ready(t, {}, { history, opening: 'model_first' });
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input.length, 128, 'the seed stays within the documented 128 messages');
+    assert.equal(input[0]!.content[0]!.text, 'turn 1', 'the oldest turn makes room for the directive');
+    assert.deepEqual(input.at(-1), { type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
   });
 
   test('input audio is upsampled from 16 kHz to 24 kHz inside the adapter', async t => {

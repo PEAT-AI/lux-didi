@@ -145,7 +145,7 @@ async function attached(h: Harness, key = 'k1') {
   h.f.send({ setupComplete: {} });
   await attachment.ready;
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }

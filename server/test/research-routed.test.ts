@@ -681,3 +681,30 @@ test('DATES-R1: a read that kept its day filter reports past_window beside one t
   assert.equal(receipts.length, 2, 'one receipt per knowledge read');
   assert.deepEqual(receipts.map(entry => entry.knowledge?.dayFilter).sort(), ['dropped_on_empty', 'past_window'], 'the read whose filter was dropped says so, the read that kept its filter says that instead');
 });
+
+// --- Release 4: a failed later page never throws away the pages already read ----------------------
+
+test('release 4: a gmail page that fails after three good pages keeps the items it delivered', async () => {
+  let page = 0;
+  const h = harness({
+    execute: async subs => subs.map(call => {
+      if (call.name !== 'gmail_search_messages') return sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key);
+      page += 1;
+      if (page <= 3) {
+        const message = { id: `m${page}`, threadId: `t${page}`, internalDate: '2026-10-20T10:00:00Z', line: `[id m${page}] message ${page}`, bodyTruncated: false };
+        return { key: call.key, name: call.name, ok: true, text: message.line, originalCharacters: message.line.length, omittedCharacters: 0, mailPage: { messages: [message], received: 1, invalid: 0, localOmitted: 0, nextPageToken: `page${page}` } } as IntentSubResult;
+      }
+      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'upstream_unavailable' } as IntentSubResult;
+    }),
+  });
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'mail', query: 'newer_than:2d' }] }, new AbortController().signal);
+  const row = h.sources.find(entry => entry.source === 'mail');
+  assert.ok(row !== undefined, 'the mail source has its own receipt');
+  assert.equal(row!.outcome, 'ok', 'the source delivered, so it is not a failed read');
+  const receipt = row as unknown as Record<string, unknown>;
+  assert.equal(receipt['partial'], 'pages_failed', 'and the receipt carries the closed partial marker');
+  assert.equal(receipt['failedPages'], 1, 'with the count of pages it lost');
+  const findings = reply['findings'] as { source: string; text: string }[];
+  const mailText = findings.filter(finding => finding.source === 'mail').map(finding => finding.text).join('\n');
+  for (const id of ['m1', 'm2', 'm3']) assert.match(mailText, new RegExp(id, 'u'), `the page ${id} items survive the later failure`);
+});

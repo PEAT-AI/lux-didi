@@ -4047,7 +4047,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'dentist standup', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the tool output is written with a source still reading');
@@ -4150,7 +4150,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'dentist standup', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['chat']);
@@ -4182,7 +4182,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-owner-speech');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'dentist standup', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   // She started talking before any answer could go out, and no turn boundary has arrived yet.
   h.advance(3_500); scheduler.runDue(); await settlePort();
@@ -4213,7 +4213,7 @@ test('R6: a Gemini late finding rides the response channel, not a thinking chann
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
   await ownerSpoke(h);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'dentist standup', lookups: LATE_LOOKUPS } }] } });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   for (let i = 0; i < 400 && toolResponseCount(h) === before; i++) await tick();

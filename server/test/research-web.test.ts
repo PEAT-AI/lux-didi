@@ -218,9 +218,10 @@ test('a web failure names the web part as missing instead of answering as if it 
   const findings = (reply['findings'] as { source: string; text: string }[]) ?? [];
   assert.equal(findings.some(finding => finding.source === 'web'), false, 'no web evidence is claimed');
   const unavailable = JSON.stringify(reply['unavailable'] ?? {});
-  assert.match(unavailable, /web_timeout/, 'the reply carries the typed code');
-  assert.equal((reply['unavailable'] as Record<string, string>)['web'], 'web_timeout', 'the typed code rides the reply');
-  assert.match(String(reply['note']), /I could not reach the web right now\. the web: unavailable \(web timeout\)/, 'Naya is told the web part is missing');
+  assert.match(unavailable, /timeout/, 'the reply carries the timeout reason');
+  // N6 (#569): a cut web read reaches the model as timeout, never as an endpoint outage.
+  assert.equal((reply['unavailable'] as Record<string, string>)['web'], 'timeout', 'the timeout reason rides the reply');
+  assert.match(String(reply['note']), /I could not reach the web right now\. the web: not read \(timed out after 4 s\)/, 'Naya is told the web part is missing');
   assert.equal(JSON.stringify(reply).includes('bridge reopening date'), false);
 });
 

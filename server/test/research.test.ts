@@ -207,9 +207,9 @@ test('N5: a reply that cannot serve a continuation never says more is available'
 });
 
 test('N5: a trimmed reply that can continue still says more is available', async () => {
-  const h = harness({ executeText: 'x'.repeat(9_000) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.equal(reply['status'], 'partial');
+  const wide = Array.from({ length: 14 }, (_, index) => `**#${index + 1}** [PATTERN] Decision ${index} | ${'decision text '.repeat(60)}`).join('\n');
+  const h = harness({ executeText: wide });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(reply['canContinue'], true);
   assert.match(String(reply['note'] ?? ''), /more available/);
 });

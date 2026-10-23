@@ -7,7 +7,7 @@ import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_SEARCH_ACTION, webAttribution, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_SEARCH_ACTION, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -87,6 +87,8 @@ export const RESEARCH = Object.freeze({
    * first calendar read took 4.4 s. P5-R1 is the owner's order that depth beats speed: every connector
    * read (knowledge, company, chat, calendar, mail) gets 12 s, and the in-process memory read 8 s.
    * This is the single table every per-source bound reads.
+   * N6 (#569): a web read settles in 3.3 to 4.4 s, so a weather or news ask carries the long web budget
+   * and every other ask keeps this one; the read and its port are told the same number.
    */
   sourceDeadline: Object.freeze({
     memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 12_000, web: 4_000,
@@ -171,6 +173,8 @@ export const RESEARCH = Object.freeze({
    * record and never lets the model claim a record does not exist.
    */
   moreAvailableNote: 'There is more available if you want it.',
+  /** N5 (#568): the note a reply carries when it cannot serve a continuation, so the promise is never made. */
+  notSearchedNote: 'I did not search ',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -1389,12 +1393,18 @@ export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint' | 'r
 export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed'] as const;
 export type SkipReason = typeof SKIP_REASONS[number];
 
+/** N6 (#569): a cut web read is its own closed reason, so a deadline never reads as an endpoint outage. */
+function webReasonOf(code: string): string {
+  return code === 'web_timeout' ? 'timeout' : code;
+}
+
 export function skipReasonOf(rawReason: string | undefined, outcome: LookupOutcome): SkipReason {
   if (rawReason === 'not_configured') return 'not_configured';
   if (rawReason === 'source_not_granted') return 'not_granted';
   // Release 4: a window the grammar cannot resolve is its own closed reason, never an endpoint outage.
   if (rawReason === 'window_unparsed') return 'window_unparsed';
-  if (outcome === 'timeout' || rawReason === 'deadline_exhausted' || rawReason === 'cancelled') return 'timeout';
+  // N6 (#569): a reason the read itself stored as timeout is a timeout, never an endpoint outage.
+  if (outcome === 'timeout' || rawReason === 'timeout' || rawReason === 'deadline_exhausted' || rawReason === 'cancelled') return 'timeout';
   if (outcome === 'unavailable' || rawReason !== undefined) return 'endpoint_unavailable';
   return 'read_failed';
 }
@@ -2328,6 +2338,37 @@ function receiptCounts(reply: JsonObject | undefined, run: RunState, configured:
   };
 }
 
+/**
+ * N4 (#567): the budget is measured on the whole serialized reply, after every section is attached, so a
+ * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
+ * page hits the findings already carry, then the last lines of the widest finding; no structure is cut.
+ */
+function capReply(reply: JsonObject, limit: number): JsonObject {
+  // A requested body read pages at its own 6,000 char room, so it is never held to the search budget.
+  if (reply['bodyProjection'] !== undefined) return reply;
+  const size = (): number => JSON.stringify(reply).length;
+  const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
+  let trimmedFindings = false;
+  let guard = 4096;
+  while (guard-- > 0 && size() > limit) {
+    const pages = Array.isArray(reply['historyPages']) ? reply['historyPages'] as JsonObject[] : [];
+    const widestPage = pages.reduce<JsonObject | undefined>((best, page) => best === undefined || hitsOf(page).length > hitsOf(best).length ? page : best, undefined);
+    if (widestPage !== undefined && hitsOf(widestPage).length > 0) { hitsOf(widestPage).pop(); continue; }
+    const findings = (Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [])
+      .filter(finding => typeof finding.text === 'string' && finding.text.includes('\n'))
+      .sort((left, right) => (right.text ?? '').length - (left.text ?? '').length);
+    const widest = findings[0];
+    const lines = widest?.text?.split('\n') ?? [];
+    if (widest === undefined || lines.length <= 1) break;
+    const head = (lines.shift() ?? '').replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
+    lines.pop();
+    widest.text = [head, ...lines].join('\n');
+    trimmedFindings = true;
+  }
+  if (trimmedFindings && reply['status'] === 'complete') { reply['status'] = 'partial'; reply['canContinue'] = true; }
+  return reply;
+}
+
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
@@ -2442,11 +2483,16 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
     // LAT-1023: evidence left unread is named in one short clause, so a capped answer is never read as the
     // whole record. A source this run never reached and a page it dropped both count as unread.
-    const moreAvailable = trimmed || configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
+    const unsearched = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source) && !run.pending.has(source));
+    const moreAvailable = trimmed || unsearched.length > 0;
+    // N5 (#568): the note offers a continuation only when this reply can serve one, so the model never
+    // spends a round on a continue the run answers with continuation_unavailable.
+    const canRepeat = complete ? false : canContinue || trimmed;
     const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
-        : moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note;
-    return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+        : canRepeat ? (moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note)
+          : unsearched.length === 0 ? note : `${note === undefined ? '' : `${note} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
+    return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3).
@@ -2480,7 +2526,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   }
   if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
-  return result;
+  return capReply(result, limit);
 }
 
 /**
@@ -2980,8 +3026,8 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
   const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
     const call = plan.read.subs[0];
     const query = String(call?.args['query'] ?? plan.lookup.query);
-    const outcome = await deps.web!.search({ query, signal });
-    if (!outcome.ok) { run.unavailableReasons.set('web', outcome.code); return { plan }; }
+    const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
+    if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
     run.evidence.set('web_search', outcome.evidence.answer);
@@ -3224,7 +3270,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     if (run.cancelled || run.stopped || !authorizedEvidence(deps, run, signal)) return deniedEvidence(deps, run);
     reply = buildReply(run, status, configured, false, limit, sources);
     const historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
-    reply = withHistoryPages(reply, historyPages);
+    reply = capReply(withHistoryPages(reply, historyPages), limit);
     logRouted({
       event: 'research_routed', researchId: run.researchId, ...callKeyOf(run), sources: outcomes.map(outcome => outcome.lookup.source),
       lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
@@ -3344,7 +3390,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   // ROUTE-1022 (#526): an early answer is partial by definition until its readers settle, and it names
   // them; an answer with nothing left reading is complete and says nothing more is to fetch.
   const partial = pending.length > 0;
-  const early = withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []);
+  const early = capReply(withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []), view.limit);
   const reply: JsonObject = {
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',
@@ -3806,7 +3852,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const cut = new AbortController();
           const readSignal = AbortSignal.any([roundSignal, cut.signal]);
           // P5: the cut follows this source's own deadline from the table, never one number for every source.
-          const readDeadlineMs = sourceDeadlineMs(startSources);
+          const webCall = subs.find(sub => sub.name === WEB_SEARCH_ACTION);
+          const askedWebDeadline = webCall === undefined ? undefined : webDeadlineMs(String(webCall.args['query'] ?? ''));
+          const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline);
           const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
@@ -3843,8 +3891,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             run.ops -= webCalls.length;
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
-              const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal });
-              if (!outcome.ok) { run.unavailableReasons.set('web', outcome.code); return empty; }
+              const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
+              if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
               run.evidence.set('web_search', outcome.evidence.answer);
@@ -3938,7 +3986,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it,
               // whether this round pulled it through the answer cut or through the prefetched read.
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
-              deadlineMs: sourceDeadlineMsOfRead, coalesced: 1,
+              deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
               ...mailReceiptField(mailInfo),
             });

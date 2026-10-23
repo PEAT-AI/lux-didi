@@ -2437,10 +2437,11 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         : moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: complete ? false : canContinue || trimmed, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
-  // Trim the longest source first, never below one line while any source still has more than one.
+  // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
+  // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3).
   let guard = 4096;
   while (guard-- > 0 && JSON.stringify(render().reply).length > limit) {
-    const removable = groups.filter(group => group.days !== undefined ? shownOf(group) > 1 : group.lines.length > (groups.length > 1 ? 1 : 0));
+    const removable = groups.filter(group => shownOf(group) > 0);
     if (removable.length === 0) break;
     removable.sort((a, b) => b.lines.length - a.lines.length);
     const trimmed = removable[0]!;

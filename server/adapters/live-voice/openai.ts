@@ -374,7 +374,10 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
   private seed(history: readonly { role: 'user' | 'model'; text: string }[], request: LiveVoiceRequest): { items: JsonObject[]; characters: number } {
     const items: JsonObject[] = [];
     let characters = 0;
-    for (const turn of history) {
+    const freshOpening = request.openingText === undefined && request.opening === 'model_first';
+    // The 128-message ceiling is the provider's: the opening directive takes one slot, so the oldest turn goes.
+    const kept = freshOpening ? history.slice(-(SEED_MESSAGE_LIMIT - 1)) : history;
+    for (const turn of kept) {
       characters += turn.text.length;
       items.push({ type: 'message', role: turn.role === 'model' ? 'assistant' : 'user',
         content: [{ type: turn.role === 'model' ? 'output_text' : 'input_text', text: turn.text }] });
@@ -382,7 +385,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     if (request.openingText !== undefined) {
       characters += request.openingText.length;
       items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: request.openingText }] });
-    } else if (request.opening === 'model_first') {
+    } else if (freshOpening) {
       characters += FRESH_OPENING.length;
       items.push({ type: 'message', role: 'developer', content: [{ type: 'input_text', text: FRESH_OPENING }] });
     }

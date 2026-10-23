@@ -285,7 +285,7 @@ async function harness(t: TestContext, overrides: {
     let mongooseSdk: Server | undefined;
     let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
     const mongooseEndpoint = { id: 'mongoose', url: 'https://fixture.invalid/mongoose', account: 'account', resource: 'resource' };
-    const mongooseSchemas = [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'], additionalProperties: false } }];
+    const mongooseSchemas = [{ name: 'kb_search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'], additionalProperties: false } }];
     if (overrides.mongoose) {
       registry.register(mongooseEndpoint); registry.enable(mongooseEndpoint.id); registry.allowEgress(mongooseEndpoint.id);
       mongooseSdk = new Server({ name: 'live-mongoose-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -367,7 +367,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.mongoose) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
-        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
+        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['kb_search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
@@ -4692,7 +4692,7 @@ test('Mongoose current contract: approved company research reaches the actual SD
   const h = await harness(t, { tools: true, mongoose: true });
   await attached(h, 'mongoose-configured-research');
   await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
-  assert.equal(h.calls.filter(call => call.name === 'search_mongoose').length, 1, 'an approved company source must be dispatched');
+  assert.equal(h.calls.filter(call => call.name === 'kb_search_mongoose').length, 1, 'an approved company source must be dispatched');
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
   assert.match(JSON.stringify(frame), /Synthetic company evidence/);

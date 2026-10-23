@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { MONGOOSE_ENDPOINTS, MONGOOSE_READ_PREFIXES, mongooseBareToolName, mongooseEndpoint, mongooseEndpointOfUrl, mongooseMetadataUrl, mongooseReadOnly, mongooseRefusal } from '../connectors/mongoose.js';
-import { mongooseEnvelopeOf } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS, mongooseEnvelopeOf } from '../connectors/index.js';
+import { REMEMBER_PARAMETERS } from '../tools/remember.js';
+import { researchDeclaration } from '../tools/research.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 import { runMongooseLogins, mongooseLoginTargets } from '../host/mongoose-login.js';
 import { approvalKey, approvalQualifies } from '../adapters/mcp/registry.js';
 
@@ -29,11 +32,13 @@ test('the connector carries three endpoints, one place per endpoint', () => {
     }
     for (const name of endpoint.tools) assert.ok(name.startsWith(`${endpoint.name === 'knowledge' ? 'kb' : endpoint.name}_`), `${name} carries its endpoint prefix`);
   }
-  assert.equal(mongooseEndpoint('mongoose-knowledge')?.tools.length, 35);
-  assert.equal(mongooseEndpoint('mongoose-data')?.tools.length, 21);
+  assert.equal(mongooseEndpoint('mongoose-knowledge')?.tools.length, 17);
+  assert.equal(mongooseEndpoint('mongoose-data')?.tools.length, 10);
   assert.equal(mongooseEndpoint('mongoose-crm')?.tools.length, 3);
   assert.ok(mongooseEndpoint('mongoose-knowledge')?.tools.includes('kb_get_started'), 'the identity probe is kb_get_started');
   assert.deepEqual(mongooseEndpoint('mongoose-crm')?.reads, ['crm_get_company_crm', 'crm_list_inbound_leads', 'crm_inbound_lead_events']);
+  assert.deepEqual(mongooseEndpoint('mongoose-data')?.label, 'Mongoose Data');
+  assert.deepEqual(mongooseEndpoint('mongoose-crm')?.label, 'Mongoose CRM');
   assert.equal(mongooseEndpoint('mongoose-admin'), undefined);
   assert.equal(mongooseEndpointOfUrl('https://mongoose.dev.peat-cloud.com/mcp/data/')?.id, 'mongoose-data');
   assert.equal(mongooseEndpointOfUrl('https://mongoose.dev.peat-cloud.com/mcp'), undefined);
@@ -50,11 +55,12 @@ test('a denial decodes to a named spoken reason and its teams', () => {
   assert.deepEqual(notAllowed.requiredTeams, ['sales', 'execs']);
   assert.match(notAllowed.message, /sales, execs/);
   assert.equal(notAllowed.retryable, false);
-  const lightdash = mongooseRefusal({ error: { code: 'lightdash_not_connected', connect_url: 'https://mongoose.example.test/settings', retryable: false } });
-  assert.equal(lightdash.code, 'lightdash_not_connected');
-  assert.match(lightdash.message, /Lightdash is not connected/);
-  assert.equal(lightdash.connectUrl, 'https://mongoose.example.test/settings');
-  assert.deepEqual(lightdash.requiredTeams, []);
+  const data = mongooseRefusal({ error: { code: 'data_not_connected', connect_url: 'https://mongoose.example.test/settings', retryable: false } });
+  assert.equal(data.code, 'data_not_connected');
+  assert.match(data.message, /Lightdash is not connected/);
+  assert.equal(data.connectUrl, 'https://mongoose.example.test/settings');
+  assert.equal(mongooseRefusal({ error: { code: 'lightdash_not_connected' } }).code, 'data_not_connected', 'the older spelling names the same state');
+  assert.deepEqual(data.requiredTeams, []);
   assert.equal(mongooseRefusal({ error: { code: 'tool_not_on_endpoint' } }).code, 'tool_not_on_endpoint');
   assert.equal(mongooseRefusal({ error: { code: 'who_knows' } }).code, 'endpoint_unavailable');
   assert.equal(mongooseRefusal('not json').code, 'endpoint_unavailable');
@@ -135,4 +141,16 @@ test('three consents, one registration, one record per endpoint', async () => {
     assert.equal(exchanges.length, 3);
     for (const exchange of exchanges) assert.equal(exchange.get('resource'), targets[exchanges.indexOf(exchange)]?.url);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the assembled model registry with every connector on stays at or under 32', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  const names = [
+    ...Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy).map(tool => tool.name)),
+    researchDeclaration().name,
+    'remember_note',
+  ];
+  assert.ok(new Set(names).size === names.length, `no name repeats: ${names.join(', ')}`);
+  assert.ok(names.length <= 32, `the model loop refuses more than 32 tools, saw ${names.length}`);
+  assert.ok(REMEMBER_PARAMETERS !== undefined);
 });

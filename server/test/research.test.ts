@@ -342,7 +342,7 @@ test('the research declaration names only the configured sources and the valid h
   assert.doesNotMatch(description, /company knowledge base/);
   assert.ok(description.length < 500, `description ${description.length} chars`);
   // R2-R2 superseded by the owner's Mongoose connection: the loop now has a Mongoose candidate.
-  const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose', 'search_mongoose']);
+  const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose', 'kb_search_mongoose']);
   assert.deepEqual(withMongooseTools, ['calendar', 'mail', 'chat', 'knowledge', 'mongoose']);
   const declaration = researchDeclaration(base);
   assert.equal(declaration.name, 'research');

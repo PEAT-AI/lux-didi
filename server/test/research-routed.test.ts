@@ -18,7 +18,7 @@ const EVIDENCE: Record<string, string> = {
   gmail_search_messages: '- Release notes | from: Ana | date: 2026-10-16 [id m1]',
   mattermost_search: '- the release thread, from Ana',
   mattermost_attention: '- one question from Ana is waiting on him',
-  search_mongoose: '- Plantix organisation chart',
+  kb_search_mongoose: '- Plantix organisation chart',
 };
 
 function sub(name: string, text = EVIDENCE[name] ?? 'evidence', ok = true, key = name): IntentSubResult {

@@ -24,25 +24,7 @@ export type MongooseTool = (typeof MONGOOSE_TOOLS)[number];
  */
 const KNOWLEDGE_READS = [
   ...MONGOOSE_TOOLS,
-  'kb_check_data_capability',
-  'kb_get_commercial_paths',
-  'kb_get_knowledge_graph',
-  'kb_get_knowledge_versions',
-  'kb_get_market_profile',
-  'kb_get_reach',
   'kb_get_started',
-  'kb_lint_knowledge',
-  'kb_list_companies',
-  'kb_list_company_products',
-  'kb_list_data_capabilities',
-  'kb_list_knowledge_domains',
-  'kb_list_knowledge_edges',
-  'kb_list_knowledge_items',
-  'kb_list_markets',
-  'kb_list_offerings',
-  'kb_list_seed_conflicts',
-  'kb_lookup_efficacy_evidence',
-  'kb_summarize_email_engagements',
 ] as const;
 
 const KNOWLEDGE_WRITES = [
@@ -59,22 +41,11 @@ const KNOWLEDGE_WRITES = [
 
 const DATA_READS = [
   'data_find_content',
-  'data_generate_hashes',
-  'data_get_context',
-  'data_get_current_project',
-  'data_get_lightdash_version',
-  'data_get_metadata',
-  'data_get_query_result',
-  'data_grep_fields',
-  'data_list_content',
   'data_list_explores',
-  'data_list_projects',
-  'data_list_verified_content',
-  'data_read_content',
-  'data_resolve_url',
+  'data_get_metadata',
   'data_run_metric_query',
   'data_run_sql',
-  'data_search_field_values',
+  'data_get_query_result',
 ] as const;
 
 const DATA_WRITES = ['data_create_content', 'data_create_scheduled_delivery', 'data_edit_content', 'data_set_project'] as const;
@@ -138,12 +109,12 @@ export const MONGOOSE_ENDPOINTS: readonly MongooseEndpoint[] = [
     tools: [...KNOWLEDGE_READS, ...KNOWLEDGE_WRITES], reads: KNOWLEDGE_READS,
   },
   {
-    id: 'mongoose-data', name: 'data', label: 'Lightdash numbers', audience: 'mongoose:data',
+    id: 'mongoose-data', name: 'data', label: 'Mongoose Data', audience: 'mongoose:data',
     source: 'data', url: `${MONGOOSE_BASE_URL}/mcp/data`,
     tools: [...DATA_READS, ...DATA_WRITES], reads: DATA_READS,
   },
   {
-    id: 'mongoose-crm', name: 'crm', label: 'HubSpot companies and leads', audience: 'mongoose:crm',
+    id: 'mongoose-crm', name: 'crm', label: 'Mongoose CRM', audience: 'mongoose:crm',
     source: 'crm', url: `${MONGOOSE_BASE_URL}/mcp/crm`,
     tools: [...CRM_READS], reads: CRM_READS,
   },
@@ -177,7 +148,7 @@ export function mongooseMetadataUrl(endpointUrl: string): string {
  * endpoint_not_allowed and is empty for every other code, so a spoken line never carries a raw body.
  */
 export interface MongooseRefusal {
-  readonly code: 'endpoint_not_allowed' | 'lightdash_not_connected' | 'tool_not_on_endpoint' | 'grant_expired' | 'endpoint_unavailable';
+  readonly code: 'endpoint_not_allowed' | 'data_not_connected' | 'tool_not_on_endpoint' | 'grant_expired' | 'endpoint_unavailable';
   readonly message: string;
   readonly requiredTeams: readonly string[];
   readonly connectUrl?: string;
@@ -186,7 +157,7 @@ export interface MongooseRefusal {
 
 const REFUSAL_LINES: Readonly<Record<MongooseRefusal['code'], string>> = {
   endpoint_not_allowed: 'that Mongoose endpoint is not allowed for this account',
-  lightdash_not_connected: 'Lightdash is not connected in Mongoose; connect it to read numbers',
+  data_not_connected: 'Lightdash is not connected in Mongoose; connect it to read numbers',
   tool_not_on_endpoint: 'that tool does not belong to the Mongoose endpoint this source reads',
   grant_expired: 'the Mongoose consent expired; sign in again from Settings',
   endpoint_unavailable: 'that Mongoose endpoint did not answer; the other endpoints are unaffected',
@@ -200,7 +171,9 @@ export function mongooseRefusal(body: unknown): MongooseRefusal {
   const envelope = body !== null && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>)['error'] : undefined;
   const detail = envelope !== null && typeof envelope === 'object' && !Array.isArray(envelope) ? envelope as Record<string, unknown> : undefined;
   const code = detail?.['code'];
-  const known = typeof code === 'string' && code in REFUSAL_LINES ? code as MongooseRefusal['code'] : 'endpoint_unavailable';
+  // The ACCESS head briefly sent lightdash_not_connected; both spellings name the same data endpoint state.
+  const canonical = code === 'lightdash_not_connected' ? 'data_not_connected' : code;
+  const known = typeof canonical === 'string' && canonical in REFUSAL_LINES ? canonical as MongooseRefusal['code'] : 'endpoint_unavailable';
   const teams = Array.isArray(detail?.['required_teams'])
     ? (detail['required_teams'] as unknown[]).filter((team): team is string => typeof team === 'string' && team.length > 0 && team.length <= 64)
     : [];

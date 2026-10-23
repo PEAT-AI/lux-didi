@@ -1,4 +1,5 @@
 import type { SchemaMigration } from '../contracts/storage.js';
+import { vaultMigrations } from '../tools/vault-schema.js';
 
 // Live-owned additive migrations on the SAME Store. No CHAT table is altered and no
 // second SQLite connection or database is created.
@@ -175,4 +176,4 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     // A separate table, so no existing session row is rewritten and every pre-existing value stays byte-identical.
     `CREATE TABLE live_conversations (owner_assistant_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, started_at TEXT NOT NULL)`,
     `CREATE TABLE live_session_conversations (live_session_id TEXT PRIMARY KEY REFERENCES live_sessions(live_session_id), conversation_id TEXT NOT NULL)`,
-]}];
+]}, ...vaultMigrations];

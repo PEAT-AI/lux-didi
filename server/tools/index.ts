@@ -18,6 +18,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
+import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, validateOpen } from './open.js';
 export { toolsMigrations } from './schema.js';
@@ -184,6 +185,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
+    }
+    if (call.toolName === VAULT_WRITE_IDENTITY.name && call.accountId === VAULT_WRITE_IDENTITY.accountId && call.resourceId === VAULT_WRITE_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
     }
     if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
@@ -484,7 +489,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } });
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
-    liveDefinitions(runId, rememberNote) {
+    liveDefinitions(runId, rememberNote, vaultDispatch) {
       // The Live model is declared only the one research tool plus remember; the connector reads
       // stay in the registry so the research fan-out and the session cache keep working, but the Live
       // session never declares them to the provider. A research tool is answered by a host-side loop
@@ -513,6 +518,27 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const response = rememberNote(tx, runId, args);
             return complete(call as ToolCallIntent, response, ['ordinary'], tx);
           });
+          return { status: 'completed', result };
+        },
+      });
+      definitions.push({ ...VAULT_WRITE_IDENTITY, description: 'Save the note the owner just dictated to his Lux vault. Call it only after he says the save phrase and then the note.', effect: 'write', parameters: VAULT_WRITE_PARAMETERS, validate: validateVaultSave,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateVaultSave(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const staged = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, executionId: context.executionId };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            return { call: call as ToolCallIntent, claim: claimVaultWrite(tx, { liveSessionId: runId, content: args.content }) };
+          });
+          const receipt: VaultReceipt = staged.claim.state !== 'dispatch' ? staged.claim.receipt : vaultDispatch ? await vaultDispatch(staged.claim) : { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' };
+          const result = store.transaction(tx => complete(staged.call, vaultReceiptJson(receipt), ['ordinary'], tx));
           return { status: 'completed', result };
         },
       });

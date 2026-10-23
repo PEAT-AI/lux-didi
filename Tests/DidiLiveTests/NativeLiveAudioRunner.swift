@@ -908,6 +908,27 @@ private func checkPrimaryChannelConversion() throws {
         print("PASS mute re-acquire refusal: another app's hold on the device surfaces audio_refused")
     }
 
+    /// A mute and unmute on a device with no session leaves one closed record and no work.
+    @MainActor static func checkMuteWithoutSession() async throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100,
+                                         channels: 2, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        let journal = NativeAudioJournal(fileURL: nil)
+        let device = NativeLiveAudioDevice(captureInput: format,
+                                          defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                          journal: journal)
+        device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+        device.startForTesting = { _ in }
+        device.setMuted(true)
+        device.setMuted(false)
+        let skipped = journal.events.filter { $0.name == "audio_muted_reacquire_skipped" }
+        try audioRequire(skipped.count == 1 && skipped[0].fields["reason"] == "no_send",
+                         "an unmute with no session says so in one record, never silently")
+        try audioRequire(!device.hasEngine, "a device with no session opens no engine")
+        print("PASS mute without a session: the skipped re-acquire leaves one record")
+    }
+
     /// A mute that lands while the call is still connecting, before capture exists, must keep the
     /// microphone closed: the engine opens on unmute, never on start.
     @MainActor static func checkMuteBeforeCapture() async throws {
@@ -1147,6 +1168,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkBusyDeviceSkipsVoiceProcessing()
             try await checkMuteReleasesMicrophone()
             try await checkMuteReacquireRefusal()
+            try await checkMuteWithoutSession()
             try await checkMuteBeforeCapture()
             try await VoiceProcessingSnapshotTests.run()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {

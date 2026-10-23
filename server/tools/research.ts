@@ -435,6 +435,11 @@ export function windowKind(window: string): WindowKind {
 // Mail query compilation (E4/E5)
 
 /** A Gmail operator the owner or a model authored: a query that carries one is already Gmail syntax. */
+/** MAILQ 5: the closed operator tokens a query shape may store, lowercased. */
+export const MAIL_QUERY_OPERATORS = [
+  'in', 'is', 'from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than',
+  'has', 'label', 'filename', 'larger', 'smaller', 'list', 'deliveredto', 'rfc822msgid',
+] as const;
 const MAIL_AUTHORED_OPERATOR = /\b(?:from|to|cc|bcc|subject|after|before|newer_than|older_than|is|has|label|in|filename|larger|smaller|list|deliveredto|rfc822msgid):/iu;
 /** The instruction words a spoken mail question carries; Gmail ANDs them and matches nothing. */
 const MAIL_FILLER = new Set([

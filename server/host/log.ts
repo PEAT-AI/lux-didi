@@ -1,5 +1,4 @@
-import { RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
-import { QUERY_SHAPE_OPERATORS } from '../trace/schema.js';
+import { MAIL_QUERY_OPERATORS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -65,8 +64,6 @@ const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
-/** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
-const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
 /** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
 const MAIL_WINDOW_TOKEN = /^(?:newer_than|older_than):\d{1,4}d$|^(?:after|before):\d{4}\/\d{2}\/\d{2}$/u;
 /** W11-R3: a mail search's shape: how many terms, which operators, which window, and one retry of the same. */
@@ -77,7 +74,7 @@ function mailQueryShape(value: unknown): { terms: number; operators: string[]; w
   if (Object.keys(row).sort().join(',') !== ['operators', 'terms', ...(hasWindow ? ['window'] : [])].sort().join(',')) return undefined;
   if (!isSafeCount(row['terms'])) return undefined;
   const operators = row['operators'];
-  if (!Array.isArray(operators) || operators.length > 12 || !operators.every(operator => typeof operator === 'string' && MAIL_QUERY_OPERATORS.includes(operator))) return undefined;
+  if (!Array.isArray(operators) || operators.length > 12 || !operators.every(operator => typeof operator === 'string' && (MAIL_QUERY_OPERATORS as readonly string[]).includes(operator))) return undefined;
   const window = hasWindow ? row['window'] : undefined;
   if (hasWindow && (typeof window !== 'string' || !MAIL_WINDOW_TOKEN.test(window))) return undefined;
   return { terms: row['terms'], operators: operators as string[], ...(hasWindow ? { window: window as string } : {}) };
@@ -888,7 +885,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (typeof source !== 'string' || !ROUTED_SOURCES.includes(source)) return;
       if (!isSafeCount(row['terms']) || !isSafeCount(row['topicWords'])) return;
       const operators = row['operators'];
-      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !(QUERY_SHAPE_OPERATORS as readonly string[]).includes(operator))) return;
+      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !(MAIL_QUERY_OPERATORS as readonly string[]).includes(operator))) return;
       query = { source, terms: row['terms'], operators, topicWords: row['topicWords'] };
     }
     return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasQuery ? { query } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };

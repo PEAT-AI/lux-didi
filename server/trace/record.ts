@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { hostClockDomain } from './clock.js';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
-import { QUERY_SHAPE_OPERATORS } from './schema.js';
+import { MAIL_QUERY_OPERATORS } from '../tools/research.js';
 import {
   CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
   RESPONSE_STATUSES,
@@ -390,7 +390,7 @@ export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
 export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
 
 /** An operator is a token from the closed list, so a searched word can never be stored as one. */
-const isOperator = (value: unknown): boolean => typeof value === 'string' && isOneOf(QUERY_SHAPE_OPERATORS, value);
+const isOperator = (value: unknown): boolean => typeof value === 'string' && isOneOf(MAIL_QUERY_OPERATORS, value);
 
 export function recordQueryShape(exec: TraceExec, shape: TraceQueryShape, at: number, researchId?: string): number {
   if (!isOneOf(QUERY_SHAPE_SOURCES, shape.source) || !isCount(shape.terms) || !isCount(shape.topicWords)) {

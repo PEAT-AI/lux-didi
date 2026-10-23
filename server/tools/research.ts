@@ -1295,6 +1295,8 @@ export interface RunState {
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
+  /** MAILQ 1: the topic this run searches, kept so a continuation without one searches the same text. */
+  topic?: string | undefined;
   /** ONE-1023: the day-filtered knowledge reads whose filter was dropped for a retry, by their own args. */
   droppedDayFilters: Set<string>;
   calendarScopeAttempted?: boolean;
@@ -2863,7 +2865,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       if (read.exhausted || read.failed || read.inflight || read.pages >= RESEARCH.mailPageCap) return false;
       // MAILQ 9: the unread triage answers from its first page, never from a second, because the reply
       // lists a counted few of them; an authored lookup still pages to its own cap.
-      return read.pages === 0 || !read.triage;
+      return !(read.triage === true && read.pages > 0);
     }).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
@@ -3551,7 +3553,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const question = call.question?.trim() ?? '';
   // MAILQ 1: the topic is the only text searched. A continue that omits it keeps the run's own topic.
   const askedTopic = (call.topic ?? '').trim();
-  const topic = askedTopic === '' ? undefined : askedTopic;
   // K8a: a start whose question carries no content ("wait findings.", "any results?") is the model asking
   // about the run already reading; cancelling it there threw away the findings it was asking for.
   if (call.action === 'start' && metaOnlyQuestion(question)) {
@@ -3590,6 +3591,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
   first.snapshot = () => ({ run, configured, limit });
   // K8b: a continue on a run whose readers are still working waits for them, bounded by the first-answer cut.
+  // MAILQ 1: the run keeps the topic it started with, so a continuation searches the same text.
+  const topic = askedTopic === '' ? run.topic : askedTopic;
+  if (askedTopic !== '') run.topic = askedTopic;
   if (call.action !== 'start' && run.pending.size > 0) await waitForPending(run, deps, signal);
   const executeSource = deps.execute, emitProgress = deps.emit;
   const running = new Map<SourceKind, number>(), completed = new Set<SourceKind>(run.sourcesDone);

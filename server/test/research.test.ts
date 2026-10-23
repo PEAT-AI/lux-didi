@@ -995,7 +995,7 @@ test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox 
 // field list, so the voice fields and the day bounds must be listed or the trace keeps a hash only.
 test('MED-1022: a voice search with a day filter keeps its arguments through the diagnostic projection', () => {
   const subs = candidateSubs('knowledge_search', {
-    question: "what did we decide in yesterday's Wriggler call about pricing",
+    question: "what did we decide in yesterday's Wriggler call about pricing", topic: 'pricing',
     configured: ['knowledge'], evidence: new Map(), nowMs: Date.parse('2026-10-22T06:00:00Z'), timeZone: 'Asia/Kolkata',
   });
   const args = subs[0]!.args;
@@ -1331,7 +1331,7 @@ test('#1020: a source that was not configured is named with its reason in the no
   const h = harness({ configured: ['knowledge'], execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? '### Release scope (DECISION | 2026-10-17) [id 12]' : 'evidence', true, call.key)) });
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'who is on my team', topic: 'who is on my team',
-    lookups: [{ source: 'company', query: 'team structure' }, { source: 'chat', query: 'team' }, { source: 'knowledge', query: 'team' }],
+    lookups: [{ source: 'company', query: 'team structure' }, { source: 'chat', query: 'team' }, { source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
   assert.match(String(reply['note']), /team chat: unavailable \(not configured\); company knowledge: unavailable \(not configured\)/, 'each unread source names itself and its reason, in plain words');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'and the findings that did land sit in the same reply');
@@ -1748,7 +1748,7 @@ test('MAILQ 5 F2: a brief credits each source with its own query shape, never th
     emit: () => {}, log: () => {}, logSubcall: () => {}, logSource: entry => receipts.push(entry), ledger: new ResearchLedger(),
   };
   await runResearch(deps, {
-    action: 'start', question: 'what came in while I was out', topic: 'unread mail',
+    action: 'start', question: 'what came in while I was out', topic: 'budget',
     lookups: [{ source: 'mail' }, { source: 'calendar', query: 'week' }],
   }, new AbortController().signal);
   const mail = receipts.find(entry => entry.source === 'mail');

@@ -120,6 +120,7 @@ export function noteSpoken(runId: string, text: string): void {
 export function clearOpenLedger(runId: string): void {
   spoken.delete(runId);
   opened.delete(runId);
+  ownerTurn.delete(runId);
 }
 
 /**
@@ -158,8 +159,36 @@ function claimedNoun(kind: OpenKind): string {
 /** One host target for a model-facing open tool: the action, the resolved target and its closed detail token. */export interface OpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
+/** #573: the words that make an open call the answer to his ask; a name alone is not one. */
+const OPEN_INTENT = /(?:\b(?:open|opened|opening|show|shows|launch|start|display)\w*\b|\b(?:oeffne|öffne|zeig|zeige)\w*\b|\b(?:pull|bring)\s+(?:it\s+|that\s+|them\s+|this\s+)?up\b)/iu;
+/** The kind words a turn can name, so an item of another kind is never opened as if it matched. */
+const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
+  { words: /\b(?:presentation|presentations|deck|decks|slides|slide)\b/u, kinds: ['docs'] },
+  { words: /\b(?:document|documents|doc|docs|sheet|sheets|spreadsheet)\b/u, kinds: ['docs', 'drive'] },
+  { words: /\b(?:mail|mails|email|emails|thread|threads|inbox)\b/u, kinds: ['gmail'] },
+  { words: /\b(?:event|events|meeting|meetings)\b/u, kinds: ['calendar'] },
+  { words: /\b(?:channel|channels|mattermost)\b/u, kinds: ['mattermost'] },
+  { words: /\b(?:video|videos|youtube)\b/u, kinds: ['youtube'] },
+  { words: /\b(?:file|files|folder|folders)\b/u, kinds: ['file', 'drive'] },
+];
+
+/** A handle resolves to a kind the ask named: a mail thread is never opened as the deck he asked for. */
+function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | undefined {
+  if (!OPEN_INTENT.test(words)) return 'no_open_intent';
+  if (toolName !== 'open_source') return undefined;
+  const named = ASK_KINDS.filter(entry => entry.words.test(words));
+  return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;
+}
+
+/** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
 export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
-  void words;
+  const resolved = resolveOpenTarget(toolName, args);
+  if ('code' in resolved) return resolved;
+  const refusal = openRefusal(toolName, words, resolved.target.kind);
+  return refusal === undefined ? resolved : { code: refusal };
+}
+
+function resolveOpenTarget(toolName: string, args: Record<string, string>): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' } {
   if (toolName === 'open_source') {
     // Open2: only a handle whose open: line reached the model resolves; a minted one it never saw does not.
     const handle = resolveHandle(args['handle']!);

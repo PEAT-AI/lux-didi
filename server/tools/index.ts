@@ -20,7 +20,7 @@ import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConn
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, validateOpen } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -550,12 +550,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const resolved = openTarget(openTool.name, args);
+          const resolved = openTarget(openTool.name, args, ownerWords(context.runId));
           const refused = 'target' in resolved ? undefined : resolved.code;
           const dispatched = 'target' in resolved ? resolved.target : undefined;
           const code = dispatched === undefined ? refused! : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
-          if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
-          else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
+          // A guard refusal never reached the native side, so its receipt is the closed policy code.
+          const receiptCode: NativeActionCode = dispatched === undefined ? (refused === 'not_found' ? 'not_found' : 'not_allowed') : code;
+          if (dispatched) nativeActionReceipt(dispatched.action, receiptCode, dispatched.detail);
+          else nativeActionReceipt('open_url', receiptCode, openTool.name === 'open_home' ? 'home' : 'none');
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           if (context.signal.aborted) return { status: 'failed' as const };

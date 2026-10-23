@@ -13,7 +13,8 @@
 /** Per-tool budgets for the text a tool result puts in front of the Live model. Each bound is
  * named so a reviewer can see the size policy: 3 knowledge hits with 400-character bodies, 8
  * Mattermost posts with 250-character bodies, 10 mail messages with 300-character excerpts (1500
- * for one requested message), and 8 calendar events of 150 characters. LIVE_RESULT_CHARS is the
+ * for one requested message), and 8 calendar events of 240 characters, which holds time, title, the
+ * open handle line and the eight attendee names a schedule answer needs. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
 import { bodySourceLinks, withOpenHandles, mintOpenLine } from './open-handles.js';
@@ -21,7 +22,9 @@ export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
 export const CALENDAR_EVENTS = 8;
-export const CALENDAR_EVENT_CHARS = 150;
+export const CALENDAR_EVENT_CHARS = 240;
+/** How many attendee names one event line carries; the rest are "and others" (#574). */
+export const CALENDAR_ATTENDEE_NAMES = 8;
 export const MATTERMOST_MESSAGE_CHARS = 250;
 export const MATTERMOST_MESSAGES = 8;
 /** How many ranked channels ever reach the connector-internal projection. A company archive can
@@ -351,8 +354,9 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
-    // R6: the helper caps the list at 25 and sets attendeesOmitted, so a long list is never spoken as complete.
-    if (names.length) lines.push(`  attendees: ${names.join(', ')}${entry['attendeesOmitted'] === true ? ' and others' : ''}`);
+    // #574: eight names fit a spoken line; the ninth and beyond are "and others", and the helper's own
+    // attendeesOmitted caps a 25-name list it truncated, so a long list is never spoken as complete.
+    if (names.length) lines.push(`  attendees: ${names.slice(0, CALENDAR_ATTENDEE_NAMES).join(', ')}${names.length > CALENDAR_ATTENDEE_NAMES || entry['attendeesOmitted'] === true ? ' and others' : ''}`);
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');

@@ -519,10 +519,12 @@ test('MED-1022: a voice reply that found one entry arrives whole, with no get_in
 });
 
 test('#574: a twelve person event prints eight names and and others, and an empty one prints no line', () => {
-  const many = Array.from({ length: 12 }, (_, n) => ({ displayName: `P${n}` }));
-  const shaped = shapeGcalList({ events: [{ summary: 'Design review', start: { dateTime: '2026-10-19T09:00:00Z' }, attendees: many }] });
-  assert.match(shaped.text, /attendees: P0, P1, P2, P3, P4, P5, P6, P7 and others/);
-  assert.doesNotMatch(shaped.text, /P8/, 'the ninth name is never spoken');
+  const many = Array.from({ length: 12 }, (_, n) => ({ displayName: `Dana Whitfield ${n}` }));
+  const shaped = shapeGcalList({ events: [{ summary: 'Design review', location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
+    htmlLink: 'https://calendar.google.com/event?eid=e1', attendees: many }] });
+  assert.match(shaped.text, /attendees: Dana Whitfield 0, Dana Whitfield 1, Dana Whitfield 2, Dana Whitfield 3, Dana Whitfield 4, Dana Whitfield 5, Dana Whitfield 6, Dana Whitfield 7 and others/);
+  assert.doesNotMatch(shaped.text, /Dana Whitfield 8/, 'the ninth name is never spoken');
+  assert.equal(/\[\+\d+ chars\]/.test(shaped.text), false, 'the attendee line is never the part the per-event bound cuts');
   const empty = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendees: [] }] });
   assert.equal(/attendees/.test(empty.text), false, 'an event with nobody on it carries no attendees line');
 });

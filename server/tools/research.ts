@@ -436,6 +436,14 @@ export function windowRange(window: string, nowMs: number, timeZone = Intl.DateT
   return calendarRange(window, nowMs, timeZone);
 }
 
+/**
+ * #574: a day-window read asks the helper for attendees and the organizer, so the answer can say who
+ * is in a meeting. The same projection the connector sends on a merged calendar read.
+ */
+export function calendarWindowArgs(range: { timeMin: string; timeMax: string }): Record<string, unknown> {
+  return { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar, include: ['attendees', 'organizer'] };
+}
+
 /** The resolved window kind, a closed enum for the host log: today, tomorrow, week or a single date. */
 export type WindowKind = 'today' | 'tomorrow' | 'week' | 'date';
 export function windowKind(window: string): WindowKind {
@@ -1071,7 +1079,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   if (kind === 'calendar_window') {
     // Research keeps the declared primary-calendar scope.
     const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now(), config.timeZone);
-    return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
+    return [search(INTERNAL.calendarList, calendarWindowArgs(range), 'cal0')];
   }
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
@@ -1934,12 +1942,13 @@ interface CalendarEvent { id: string; start: string; line: string }
 function calendarEvents(raw: readonly string[]): CalendarEvent[] {
   const items: CalendarEvent[] = [];
   let current: CalendarEvent | undefined;
-  let attendees: number | undefined;
+  let attendees: string | undefined;
   let open: string | undefined;
   const flush = (): void => {
     if (current === undefined) return;
     // Open2: the item's own handle line stays with it, as a segment the day line can carry.
-    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees} attendees` : ''}${open !== undefined ? ` ; ${open}` : ''}` });
+    // #574: who is in the meeting rides with the event, already capped at eight names by the shape.
+    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees}` : ''}${open !== undefined ? ` ; ${open}` : ''}` });
     current = undefined; attendees = undefined; open = undefined;
   };
   for (const line of raw) {
@@ -1961,7 +1970,7 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
       // never has to guess whether a pipe segment is a place or a calendar name.
       current = { id, start, line: `${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}` };
     } else if (line.startsWith('attendees: ') && current !== undefined) {
-      attendees = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
+      attendees = line.trim();
     } else if (line.startsWith('open: ') && current !== undefined) {
       open = line;
     }
@@ -2504,7 +2513,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
     try { range = windowRange(calendarWindowOf(query, ''), context.now(), context.timeZone); }
     catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true, reason: 'window_unparsed' }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
-      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
+      { key: 'cal0', name: INTERNAL.calendarList, args: calendarWindowArgs(range) as JsonObject },
       { key: 'cal1', name: INTERNAL.calendars, args: { maxResults: 20 } as JsonObject },
     ] };
   }

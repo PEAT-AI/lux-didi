@@ -5,7 +5,7 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteSpoken, openClaimCorrection } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
@@ -3156,9 +3156,11 @@ export class LiveSessionOwner {
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }
-      if (kind === 'inputTranscription' && finished === 1 && transcription?.finalOrigin !== 'typed') {
+      if (kind === 'inputTranscription' && finished === 1) {
         const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
-        if (ownerTurn) this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
+        // #573: the open tools are checked against the words of the turn they answer.
+        if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
       }
       return journalId;
     };

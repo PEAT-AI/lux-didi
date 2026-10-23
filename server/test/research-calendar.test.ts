@@ -527,3 +527,16 @@ test('release 4: a window the grammar cannot resolve names its own reason instea
   assert.match(String(reply['note']), /could not resolve that calendar date or window/u, 'and the reply carries the guidance the model voices');
   assert.equal(/endpoint_unavailable/u.test(JSON.stringify(reply)), false, 'no outage is claimed for a window the grammar cannot parse');
 });
+
+test('#574: a day read asks for attendees and prints the names it was given', async () => {
+  const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
+  const h = fixture([{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party }]);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const read = h.calls.find(call => call['name'] === 'calendar_list_events');
+  assert.deepEqual(read!['include'], ['attendees', 'organizer'], 'the day read asks for attendees and the organizer');
+  const text = JSON.stringify(reply['findings']);
+  assert.match(text, /Person 0/);
+  assert.match(text, /Person 7/);
+  assert.doesNotMatch(text, /Person 8/, 'the ninth name is never spoken');
+  assert.match(text, /and others/);
+});

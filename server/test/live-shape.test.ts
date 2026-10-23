@@ -517,3 +517,12 @@ test('MED-1022: a voice reply that found one entry arrives whole, with no get_in
   assert.equal(shaped.partial, false, 'nothing was left out, so the result is whole');
   assert.equal(shaped.text.includes('get_insight'), false, 'and no round trip is asked for');
 });
+
+test('#574: a twelve person event prints eight names and and others, and an empty one prints no line', () => {
+  const many = Array.from({ length: 12 }, (_, n) => ({ displayName: `P${n}` }));
+  const shaped = shapeGcalList({ events: [{ summary: 'Design review', start: { dateTime: '2026-10-19T09:00:00Z' }, attendees: many }] });
+  assert.match(shaped.text, /attendees: P0, P1, P2, P3, P4, P5, P6, P7 and others/);
+  assert.doesNotMatch(shaped.text, /P8/, 'the ninth name is never spoken');
+  const empty = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendees: [] }] });
+  assert.equal(/attendees/.test(empty.text), false, 'an event with nobody on it carries no attendees line');
+});

@@ -12,9 +12,11 @@ export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app']);
 /** The one sentence the model says when an item open is refused or unknown. */
-export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed', string> = {
+export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
   not_allowed: 'That link is not one I am allowed to open. Tell him plainly and offer the app home page instead.',
+  no_open_intent: 'He did not ask me to open anything this turn. Nothing is open; say so if asked and never claim it.',
+  kind_mismatch: 'That item is not the kind he asked for. Say what it actually is and ask before opening it.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
 export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string; origin?: string }
@@ -99,6 +101,15 @@ const CLAIMED_KINDS: readonly { words: RegExp; kind: OpenKind }[] = [
   { words: /\b(?:file|folder|document on disk)\b/, kind: 'file' },
 ];
 
+/** The owner's own words for the turn an open call answers, so a call is checked against the ask. */
+const ownerTurn = new Map<string, string>();
+export function noteOwnerWords(runId: string, text: string): void {
+  ownerTurn.set(runId, text.slice(-2000));
+}
+export function ownerWords(runId: string): string {
+  return ownerTurn.get(runId) ?? '';
+}
+
 /** What she said this turn, so the claim check reads her own words and never the owner's. */
 const spoken = new Map<string, string>();
 export function noteSpoken(runId: string, text: string): void {
@@ -147,7 +158,8 @@ function claimedNoun(kind: OpenKind): string {
 /** One host target for a model-facing open tool: the action, the resolved target and its closed detail token. */export interface OpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /** Resolve what a model-facing open tool means; a handle that is unknown or off policy never reaches the native side. */
-export function openTarget(toolName: string, args: Record<string, string>): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' } {
+export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
+  void words;
   if (toolName === 'open_source') {
     // Open2: only a handle whose open: line reached the model resolves; a minted one it never saw does not.
     const handle = resolveHandle(args['handle']!);

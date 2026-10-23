@@ -378,7 +378,7 @@ const KNOWLEDGE_FILLER = new Set([
   'detailed', 'lookup', 'lookups', 'searching', 'requested',
   // ONE-1023: the model's own direction words rode into the search text and spent its terms.
   'read', 'reads', 'reading', 'full', 'body', 'bodies', 'post', 'posts', 'current', 'currently',
-  'available', 'retrieve', 'retrieves', 'retrieved', 'retrieving', 'especially', 'useful', 'usefully',
+  'available', 'retrieve', 'retrieves', 'retrieved', 'retrieving', 'especially', 'useful', 'usefully', 'later',
 ]);
 
 /** The names a spoken question carries: a capitalised word past the first, never a stop word. */

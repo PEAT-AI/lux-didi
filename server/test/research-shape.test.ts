@@ -328,6 +328,8 @@ test('MED-1022: the knowledge query drops filler, keeps the spoken name, and tak
   const terms = query.split(' ');
   for (const wanted of ['prep', 'call', 'maria']) assert.ok(terms.includes(wanted), `"${wanted}" survives in "${query}"`);
   for (const filler of ['results', 'about']) assert.equal(terms.includes(filler), false, `"${filler}" never rides in "${query}"`);
+  // DATES-R1 F1: the contract's direction words, `later` included, are knowledge filler.
+  assert.equal(knowledgeQuery('read full post body later budget review'), 'budget review');
   assert.ok(terms.length <= 10, `the budget holds (${terms.length})`);
   const long = knowledgeQuery('what did we decide about the wriggler three layer schema migration deadline for the owner dashboard and the vicuna release train');
   assert.equal(long.split(' ').length, 10, 'a long question fills the wider budget and stops there');
@@ -360,6 +362,8 @@ test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owne
   assert.equal(chat('budget after:someday'), 'budget', 'an operator no calendar can resolve is dropped');
   // ONE-1023: a question that names no day carries no invented operator, and the direction words are filler.
   assert.equal(chat('read full post body current available budget review', 'what did we decide about the budget'), 'budget review', 'instruction words never ride a chat search');
+  // DATES-R1 F1: `later` is in the contract's own direction word list, so it is filler too.
+  assert.equal(chat('read full post body later budget review', 'what did we decide about the budget'), 'budget review', 'later is filler on the chat side as well');
   assert.equal(chat(undefined, 'what did the team say'), '', 'a question that names no day sends no operator');
   assert.equal(chat('budget after:yesterday', 'what is the budget'), 'budget', 'a day the question never named is dropped');
   const brief = candidateSubs('brief', config);

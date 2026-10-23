@@ -11,6 +11,7 @@ const mixFrame = (from: AudioFrame, to: AudioFrame, t: number): AudioFrame => ({
 export class MotionCoordinator {
   private frame = silentFrame();
   private outputUntil = -Infinity;
+  private richAt = -Infinity;
   private blocked = false;
   private source: 'input' | 'output' = 'input';
   private sourceFrom = this.frame;
@@ -37,6 +38,8 @@ export class MotionCoordinator {
 
   sample(sample: LevelSample, at: number) {
     const folded = { ...levelFrame(sample), timestamp: at };
+    if (folded.rich) this.richAt = at;
+    else if (at - this.richAt < 300) return { ...this.frame, source: this.source };
     const rms = folded.playback;
     if (rms < 0.006) this.blocked = false;
     if (!this.blocked && rms >= 0.01) this.outputUntil = at + 160;

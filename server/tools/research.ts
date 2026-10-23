@@ -1161,7 +1161,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // MAILQ 1: with a topic, only its words are terms.
     const gatedChat = topicTerms(config.topic, config.question);
     const window = chatWindow(config.query ?? 'after:yesterday', config.question, config.nowMs ?? Date.now(), config.timeZone);
-    const query = gatedChat === undefined ? chatQuery(config.query ?? '') : chatQuery(gatedChat);
+    const terms = gatedChat === undefined ? chatQuery(config.query ?? '') : chatQuery(gatedChat);
+    // MAILQ 10: the tool needs a term, so a termless read still carries the day it windows on, while a
+    // read with terms rides from_date and sort newest and never an inline operator.
+    const query = terms === '' && window !== undefined ? `After:${window.from_date}` : terms;
     return [search(INTERNAL.chatSearch, {
       query, limit: RESEARCH.chatLines, sort: 'newest',
       ...(window === undefined ? {} : { from_date: window.from_date, ...(window.to_date === undefined ? {} : { to_date: window.to_date }) }),

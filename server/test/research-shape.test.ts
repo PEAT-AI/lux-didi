@@ -364,7 +364,7 @@ test('MAILQ-R2 10: a chat window is the tool from_date and sort newest, never an
   // The default names a real day in the owner's zone and asks for the newest posts.
   assert.equal(argsOf()?.['from_date'], '2026-10-21', 'the default window is the day the question named');
   assert.equal(argsOf()?.['sort'], 'newest', 'and the read is newest first');
-  assert.equal(argsOf()?.['query'], '', 'with no term of its own when the model wrote none');
+  assert.equal(argsOf()?.['query'], 'After:2026-10-21', 'a termless read still names the day it windows on, so the tool is never handed an empty query');
   // A day the question never named is not a window.
   assert.equal(argsOf('budget', 'what is the budget')?.['from_date'], undefined, 'no day word, no window');
   assert.equal(argsOf('budget', 'what is the budget')?.['query'], 'budget', 'and the term is the query, never an operator');

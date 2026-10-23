@@ -1381,6 +1381,10 @@ export interface ResearchRunLog {
   elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
   driver?: ResearchDriver;
   unchecked?: SourceKind[]; canContinue?: boolean; findingChars?: number[];
+  /** LAT-1023: the round cap ended the run at this many rounds with evidence left unread. */
+  roundCapHit?: number;
+  /** LAT-1023: the answer was compacted to its character budget, whole items dropped and the bytes sent. */
+  answerCompacted?: { items: number; chars: number };
   /** ROUTE-1022 K5: the plan a brief actually ran, closed token only. */
   plan?: 'knowledge_only' | 'named_sources';
   bodyReplies?: number; metaStartAsContinue?: boolean; supersededAborts?: number;

@@ -1605,26 +1605,35 @@ test('release 4: a chat continuation never searches a bare meta direction word',
 });
 
 
-test('PROBE latency rounds', async () => {
-  const h = harness({ execute: async subs => subs.map(call => sub(call.name, '', true, call.key)) });
-  const first = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release and the invoice' }, new AbortController().signal);
+
+// --- LAT-1023: the answer to Live stays small and whole -------------------------------------------
+
+const WIDE_HITS = Array.from({ length: 14 }, (_, index) => `**#${index + 1}** [PATTERN] Decision ${index} | ${'decision text '.repeat(60)}`).join('\n');
+
+test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole items', async () => {
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
+  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars`);
+  const findings = reply['findings'] as { text: string }[];
+  const shown = findings.map(finding => finding.text).join('\n');
+  const items = shown.split(/\n(?=\*\*#\d+\*\*)/u).slice(1);
+  assert.ok(items.length >= 1, 'the answer still carries whole items');
+  for (const item of items) assert.match(item, /Decision \d+ \| (?:decision text )*decision text ?$/u, 'an item is never sliced mid-text');
   const line = h.logs[0]!;
-  console.log('PROBE-ROUNDS rounds', line.rounds, 'perRound', JSON.stringify(line.perRound.map(r => r.chosen)), 'stop', line.stopReason, 'cls', line.questionClass, 'exec', h.executed.length, 'status', line.status);
-  h.executed.length = 0;
-  await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, new AbortController().signal);
-  const cont = h.logs[1]!;
-  console.log('PROBE-CONT-ROUNDS rounds', cont.rounds, 'perRound', JSON.stringify(cont.perRound.map(r => r.chosen)), 'stop', cont.stopReason, 'exec', h.executed.length);
+  assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
+  assert.ok((line.answerCompacted?.items ?? 0) > 0, 'with the count of whole items it dropped');
+  assert.equal(line.answerCompacted?.chars, text.length, 'and the characters it sent');
+  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what was left out');
+  assert.doesNotMatch(shown, /no such|does not exist/iu);
 });
 
-test('PROBE latency receipts', async () => {
-  for (const configured of [['knowledge', 'chat', 'calendar'], ['knowledge', 'chat', 'calendar', 'mail']] as const) {
-    const h = harness({ configured: configured as readonly SourceKind[] });
-    const first = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the release and the invoice' }, new AbortController().signal);
-    const line = h.logs[0]!;
-    console.log('PROBE', JSON.stringify(configured), 'rounds', line.rounds, 'perRound', line.perRound.length, 'stop', line.stopReason, 'cls', line.questionClass, 'exec', h.executed.length, 'bytes', line.replyBytes);
-    h.executed.length = 0;
-    const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, new AbortController().signal);
-    const cont = h.logs[1]!;
-    console.log('PROBE-CONT', JSON.stringify(configured), 'rounds', cont.rounds, 'perRound', cont.perRound.length, 'stop', cont.stopReason, 'exec', h.executed.length, 'bytes', cont.replyBytes, 'id', String(second['researchId']).length > 0);
-  }
+test('LAT-1023: a short answer is returned unchanged with no compaction token', async () => {
+  const h = harness({});
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  assert.ok(JSON.stringify(reply).length <= 2_500);
+  const findings = reply['findings'] as { text: string }[];
+  assert.ok(findings.some(finding => finding.text.includes('evidence')), 'the short evidence rides back unchanged');
+  assert.equal(h.logs[0]!.answerCompacted, undefined, 'nothing was dropped, so no compaction token');
 });

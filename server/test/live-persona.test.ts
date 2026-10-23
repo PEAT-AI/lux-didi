@@ -1198,3 +1198,11 @@ test('OPEN2-7: the open paragraph says she opens only a handle she was shown and
   assert.equal(NAYA_OPEN_SURFACE.length <= 844, true, 'the paragraph stays inside the frozen voice budget');
   assert.equal(/https?:|\/\/|\.com|\.google|\.ai/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });
+
+test('LAT-1023: the first ack before a lookup names the sources it is reading', () => {
+  assert.match(NAYA_VOICE_TOOLS, /When that first line announces a lookup, name the sources you are reading in a few words/u);
+  assert.match(NAYA_VOICE_TOOLS, /checking your mail/u);
+  assert.match(NAYA_VOICE_TOOLS, /looking in your vault and calendar/u);
+  assert.equal(NAYA_VOICE_TOOLS.split('name the sources you are reading in a few words').length - 1, 1, 'the rule appears once');
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /[\u2013\u2014]/u, 'no dash stands in the rule text');
+});

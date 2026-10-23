@@ -378,3 +378,18 @@ test('vault_write keeps its closed shape: a state token, an insight id on a save
   assert.equal(safeEvent({ event: 'vault_write', state: 'confirmed', latencyMs: 42 }), undefined, 'a confirmed save without an id is not a receipt');
   assert.equal(safeEvent({ event: 'vault_write', state: 'failed', insightId: 'insight-7', latencyMs: 42 }), undefined, 'a failed write carries no id');
 });
+
+test('LAT-1023: a run receipt carries the round cap and the compaction counts as closed values', () => {
+  const run = {
+    event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 2, perRound: [], stopReason: 'rounds_exhausted', status: 'partial',
+    ops: 2, sources: [{ kind: 'knowledge', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0,
+    fallbackUsed: false, replyBytes: 400, unchecked: ['mail'], canContinue: true, findingChars: [10],
+  };
+  const admitted = safeEvent({ ...run, roundCapHit: 2, answerCompacted: { items: 4, chars: 400 } });
+  assert.deepEqual(admitted, { ...run, roundCapHit: 2, answerCompacted: { items: 4, chars: 400 } }, 'both closed counts reach host.log');
+  assert.equal(safeEvent({ ...run, roundCapHit: -1 }), undefined, 'a negative round count is refused');
+  assert.equal(safeEvent({ ...run, roundCapHit: 'two' }), undefined, 'a round count is never text');
+  assert.equal(safeEvent({ ...run, answerCompacted: { items: 4 } }), undefined, 'a compaction needs both counts');
+  assert.equal(safeEvent({ ...run, answerCompacted: { items: 4, chars: 400, text: 'the mail said' } }), undefined, 'and never carries content');
+  assert.equal(safeEvent({ ...run, answerCompacted: { items: 1.5, chars: 400 } }), undefined, 'a count is a whole number');
+});

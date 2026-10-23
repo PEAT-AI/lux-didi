@@ -1102,3 +1102,60 @@ wakingPresence.mute(.app)
 expect(wakingPresence.state == .hotMuted, "the mute enters MUTED")
 wakingPresence.wake()
 expect(wakeCounter.calls == 2, "a wake inside MUTED prewarms once more")
+
+// ORBFIRST: the orb is the resting surface. The window opens beside it and closing the window
+// returns to orb only, so no sequence hides the orb and re-presents it.
+var ofFullShows = 0, ofFullHides = 0, ofMiniShows = 0, ofMiniHides = 0
+let ofOrbFacts = MiniSurfaceFacts(frame: "{{1196, 674}, {220, 220}}", screen: "main", alpha: 1,
+                                  occluded: false, pageState: "ready")
+let ofCoordinator = PresentationCoordinator(
+    showFull: { _ in ofFullShows += 1 }, hideFull: { ofFullHides += 1 },
+    showMini: { _ in ofMiniShows += 1; return .shown(ofOrbFacts) },
+    hideMini: { _ in ofMiniHides += 1 }, liveIsRunning: { false })
+expect(ofCoordinator.presentMini(trigger: .other) == .shown(ofOrbFacts), "the orb presents at launch")
+expect(ofCoordinator.presentMini(trigger: .hotkey) == .alreadyPresented,
+       "a hotkey tap on a presented orb answers already presented")
+expect(ofMiniShows == 1, "a presented orb is never shown a second time")
+ofCoordinator.presentFull(activating: true)
+expect(ofFullShows == 1 && ofCoordinator.fullShown, "the app window opens beside the orb")
+expect(ofMiniHides == 0 && ofCoordinator.miniShown, "opening the window never hides the orb")
+ofCoordinator.closeFull()
+expect(ofFullHides == 1 && !ofCoordinator.fullShown && ofCoordinator.miniShown,
+       "closing the window returns to orb only and never quits the surface")
+expect(ofMiniShows == 1 && ofMiniHides == 0, "closing the window neither hides nor re-presents the orb")
+ofCoordinator.hideAll()
+expect(ofMiniHides == 1 && !ofCoordinator.miniShown, "the explicit hide still takes the orb away")
+
+// ORBFIRST: the saved orb frame is the owner's drag, never a clamp, and the reset runs once.
+let orbStore = UserDefaults(suiteName: "orb-first-frame-\(UUID().uuidString)")!
+let draggedFrame = CGRect(x: 40, y: 40, width: 220, height: 220)
+orbStore.set(NSStringFromRect(draggedFrame), forKey: MiniOrbFrameStore.legacyKey)
+expect(!MiniOrbFrameStore.persistsFrame(userDragging: false), "a clamped or system-moved frame is never persisted")
+expect(MiniOrbFrameStore.persistsFrame(userDragging: true), "a user drag is persisted")
+expect(MiniOrbFrameStore.resetSavedFrameOnce(orbStore), "the one-time reset clears the old saved orb frame")
+expect(orbStore.string(forKey: MiniOrbFrameStore.legacyKey) == nil, "the old saved frame is gone after the reset")
+expect(!MiniOrbFrameStore.resetSavedFrameOnce(orbStore), "the reset happens exactly once")
+let laptopScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+let externalScreen = CGRect(x: 1440, y: 0, width: 2560, height: 1440)
+let onExternal = CGRect(x: 3800, y: 1000, width: 220, height: 220)
+expect(MiniOrbFrameRestore.resolve(onExternal, screens: [laptopScreen]) != onExternal,
+       "a missing screen clamps the orb onto a live screen")
+expect(MiniOrbFrameRestore.resolve(onExternal, screens: [laptopScreen, externalScreen]) == onExternal,
+       "the saved frame restores when its screen returns")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [laptopScreen, externalScreen])
+       == MiniOrbFrameRestore.defaultFrame(in: laptopScreen),
+       "the default orb frame is the top right of the menu-bar screen")
+
+// ORBFIRST: clicks outside the orb's drawn circle reach the app below, clicks on it do not.
+let orbSurface = CGRect(x: 1000, y: 600, width: 220, height: 220)
+expect(MiniOrbClickThrough.radius(in: orbSurface) == 110, "the orb's drawn circle fills the floating surface")
+expect(MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1110, y: 710), in: orbSurface),
+       "a click on the orb stays on the orb")
+expect(MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1110, y: 600), in: orbSurface),
+       "the rim of the drawn circle is still the orb")
+expect(!MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1002, y: 602), in: orbSurface),
+       "a click in a transparent corner passes to the app below")
+expect(!MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1218, y: 898), in: orbSurface),
+       "every transparent corner passes through")
+expect(!MiniOrbClickThrough.keepsClick(at: CGPoint(x: 2000, y: 2000), in: orbSurface),
+       "a point off the surface passes through")

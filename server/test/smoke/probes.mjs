@@ -25,7 +25,7 @@ const CONNECTOR_READS = {
   'lux-knowledge': { tool: 'search_knowledge', args: { query: 'Lux Didi' } },
   gmail: { tool: 'gmail_get_profile', args: {} },
   calendar: { tool: 'calendar_list_calendars', args: {} },
-  mongoose: { tool: 'get_company_profile', args: {} },
+  mongoose: { tool: 'list_companies', args: {} },
   mattermost: { tool: 'mattermost_whoami', args: {} },
 };
 

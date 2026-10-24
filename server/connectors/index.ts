@@ -437,9 +437,11 @@ function mongooseDeclaration(name: string, description: string, properties: Reco
 
 /** The endpoint one connection speaks to, from its resource; undefined for an endpoint this build does not serve. */
 function mongooseEndpointOf(policy: ConnectionPolicy): MongooseEndpoint | undefined {
-  const byResource = mongooseEndpointName(policy.endpoint.resource);
+  const endpoint = (policy as { endpoint?: ConnectionEndpoint }).endpoint;
+  if (endpoint === undefined) return undefined;
+  const byResource = mongooseEndpointName(endpoint.resource);
   if (byResource !== undefined) return byResource;
-  const url = (policy.endpoint as { url?: unknown }).url;
+  const url = (endpoint as { url?: unknown }).url;
   return typeof url === 'string' ? mongooseEndpointName(url) : undefined;
 }
 

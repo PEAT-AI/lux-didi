@@ -12,7 +12,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
 import {
-  createMongooseReader, mongooseReadOnly, mongooseClosedReason, mongooseOwnerLine, MONGOOSE_DENIED_TOOLS,
+  createMongooseReader, mongooseReadOnly, mongooseClosedReason, mongooseOwnerLine, mongooseProfileRoute, MONGOOSE_DENIED_TOOLS,
   MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, MONGOOSE_ENDPOINT_PATHS, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS,
   MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
 } from '../connectors/index.js';
@@ -245,6 +245,14 @@ test('a data read without a Lightdash token is one closed owner line, not a fail
   assert.equal(mongooseToolStatus(result), undefined);
 });
 
+test('R2: get_company on crm carries a company profile, knowledge list_companies plus read is the fallback', () => {
+  assert.deepEqual(mongooseProfileRoute(true), { endpoint: 'crm', tool: 'get_company' });
+  assert.deepEqual(mongooseProfileRoute(false), { endpoint: 'knowledge', tool: 'list_companies', then: 'read' });
+  assert.equal(MONGOOSE_ENDPOINT_TOOLS.crm.includes('get_company'), true);
+  assert.equal(MONGOOSE_ENDPOINT_TOOLS.knowledge.includes('list_companies'), true);
+  assert.equal(MONGOOSE_ENDPOINT_TOOLS.knowledge.includes('read'), true);
+});
+
 test('a crm sign-in refused for teams is one closed owner line', () => {
   assert.equal(mongooseClosedReason('endpoint_not_allowed'), 'endpoint_not_allowed');
   assert.equal(mongooseOwnerLine('endpoint_not_allowed'), 'your account is not in the Mongoose CRM teams');
@@ -285,8 +293,8 @@ test('a tool outside the endpoint envelope refuses before dispatch', async t => 
 test('the read classifier never admits a write whatever the annotations say', () => {
   for (const name of MONGOOSE_DENIED_TOOLS) assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), false, name);
   assert.equal(mongooseReadOnly({ name: 'search', annotations: { readOnlyHint: true } }), true);
-  // No annotations at all falls back to the read prefixes; a bare name is not a read on its spelling.
-  assert.equal(mongooseReadOnly({ name: 'list_companies' }), true);
+  // R2: only the server's own readOnlyHint makes a read; a name is never read on its spelling.
+  assert.equal(mongooseReadOnly({ name: 'list_companies' }), false);
   assert.equal(mongooseReadOnly({ name: 'search' }), false);
   assert.equal(mongooseReadOnly({ name: 'search', annotations: {} }), false);
 });

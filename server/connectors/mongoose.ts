@@ -29,9 +29,6 @@ export const MONGOOSE_ENDPOINT_TOOLS: Readonly<Record<MongooseEndpoint, readonly
 /** Every read name the connector carries, in fixed order. The three envelopes are disjoint. */
 export const MONGOOSE_READ_TOOLS: readonly string[] = MONGOOSE_ENDPOINTS.flatMap(endpoint => [...MONGOOSE_ENDPOINT_TOOLS[endpoint]]);
 
-/** The read prefixes a server without MCP annotations falls back to. */
-export const MONGOOSE_READ_PREFIXES = ['get_', 'list_', 'search_', 'read_', 'lookup_', 'check_'] as const;
-
 /**
  * The known non-read surface of the published catalog, plus every retired name. A name here is denied
  * whatever the remote's advisory annotation says, and no envelope above carries one.
@@ -49,16 +46,29 @@ export const MONGOOSE_DENIED_TOOLS: readonly string[] = [
   'get_service_version',
 ];
 
-/** One tool's read classification: a denied name is never a read, then only `readOnlyHint: true` is. */
+/**
+ * One tool's read classification (R2): a denied name is never a read, and otherwise only the server's
+ * own `readOnlyHint: true` makes it one. No spelling heuristic: an unannotated name is never a read.
+ */
 export function mongooseReadOnly(tool: { name: string; annotations?: unknown }): boolean {
   if (MONGOOSE_DENIED_TOOLS.includes(tool.name)) return false;
   const annotations = tool.annotations;
-  if (annotations !== undefined && annotations !== null) {
-    if (typeof annotations !== 'object' || Array.isArray(annotations)) return false;
-    const hint = (annotations as Record<string, unknown>)['readOnlyHint'];
-    return typeof hint === 'boolean' ? hint : false;
-  }
-  return MONGOOSE_READ_PREFIXES.some(prefix => tool.name.startsWith(prefix));
+  if (annotations === undefined || annotations === null) return false;
+  if (typeof annotations !== 'object' || Array.isArray(annotations)) return false;
+  return (annotations as Record<string, unknown>)['readOnlyHint'] === true;
+}
+
+/** R2: get_company on crm carries a company profile; knowledge list_companies plus read full is the fallback. */
+export const MONGOOSE_PROFILE_ROUTE = {
+  carrier: { endpoint: 'crm', tool: 'get_company' },
+  fallback: { endpoint: 'knowledge', tool: 'list_companies', then: 'read' },
+} as const;
+
+/** Which route a profile read takes, given whether the crm endpoint holds a token for this account. */
+export function mongooseProfileRoute(crmAvailable: boolean): { endpoint: MongooseEndpoint; tool: string; then?: string } {
+  return crmAvailable
+    ? { endpoint: MONGOOSE_PROFILE_ROUTE.carrier.endpoint, tool: MONGOOSE_PROFILE_ROUTE.carrier.tool }
+    : { endpoint: MONGOOSE_PROFILE_ROUTE.fallback.endpoint, tool: MONGOOSE_PROFILE_ROUTE.fallback.tool, then: MONGOOSE_PROFILE_ROUTE.fallback.then };
 }
 
 /** The endpoint one path or audience names, or undefined for anything else, admin included. */

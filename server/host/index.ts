@@ -5,6 +5,7 @@ import { supervise } from './supervision.js';
 import { ServiceError } from '../contracts/errors.js';
 import { MongooseLoginError, runMongooseLogin, type MongooseLoginCode } from './mongoose-login.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
+import { mongooseEndpointName } from '../connectors/mongoose.js';
 
 /** One owner line per login failure: a closed code and a plain sentence, never a URL or a token. */
 const LOGIN_LINES: Record<MongooseLoginCode, string> = {
@@ -104,8 +105,11 @@ async function runOwnerLogin(config: HostConfig, noBrowser: boolean): Promise<vo
     ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
     : undefined;
   if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) throw new Error('Mongoose sign-in needs a configured mongoose endpoint with a credential reference');
+  // One sign-in per endpoint: the crm endpoint answers endpoint_not_allowed for an account outside its teams.
+  const endpoint = mongooseEndpointName(entry.resource) ?? mongooseEndpointName(entry.url);
+  if (endpoint === undefined) throw new Error('Mongoose sign-in needs one of the three mongoose endpoints');
   try {
-    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account, ...(noBrowser
+    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, endpoint, account: entry.account, ...(noBrowser
       ? { showAuthorizationUrl: (url: string) => process.stdout.write(`Open this Mongoose sign-in URL. This attempt expires five minutes after it started:\n${url}\n`) }
       : { openBrowser: openInDefaultBrowser }) });
   } catch (error) {

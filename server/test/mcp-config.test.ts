@@ -359,13 +359,17 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
 
 test('owner-created synthetic catalog preserves explicit bounded source classes for all five connectors', async () => {
   const config = await import('../config/mcp.js');
-  const classes = { calendar: 'ordinary', gmail: 'private', 'lux-knowledge': 'sensitive', mattermost: 'private', mongoose: 'ordinary' };
+  // Mongoose contributes its three endpoints, each with its own path, audience and credential reference.
+  const classes = { calendar: 'ordinary', gmail: 'private', 'lux-knowledge': 'sensitive', mattermost: 'private', 'mongoose-knowledge': 'ordinary', 'mongoose-data': 'ordinary', 'mongoose-crm': 'ordinary' };
+  const mongoosePath: Record<string, string> = { 'mongoose-knowledge': '/mcp/knowledge', 'mongoose-data': '/mcp/data', 'mongoose-crm': '/mcp/crm' };
   const endpoints = Object.entries(classes).map(([id, unknownClass]) => ({
-    id, connector: id, unknownClass, account: 'synthetic-owner', resource: 'synthetic-corpus',
+    id, connector: id.startsWith('mongoose-') ? 'mongoose' : id, unknownClass, account: 'synthetic-owner', resource: 'synthetic-corpus',
     credentialRef: null, enabled: false, allowEgress: false,
     ...(id === 'gmail' || id === 'calendar' || id === 'mattermost'
       ? { transport: 'stdio', command: '/synthetic/node', args: [`/synthetic/${id}.mjs`], env: { HOME: '/synthetic', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } }
-      : { transport: 'streamable-http', url: `https://synthetic.invalid/${id}` }),
+      : id.startsWith('mongoose-')
+        ? { transport: 'streamable-http', url: `https://synthetic.invalid${mongoosePath[id]}`, resource: `mongoose:${id.slice('mongoose-'.length)}`, credentialRef: id }
+        : { transport: 'streamable-http', url: `https://synthetic.invalid/${id}` }),
   }));
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-catalog-'));
   try {

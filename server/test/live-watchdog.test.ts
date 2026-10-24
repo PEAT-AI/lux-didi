@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, IDLE_RESET_CAUSES, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, IDLE_RESET_CAUSES, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -53,7 +53,7 @@ interface Live {
 type MeasuredConnection = { quality: 'ok' | 'weak'; weakAt?: number };
 
 /** Open one owner session on the fake port with an injected clock, and capture the 3j receipts. */
-async function openLive(t: TestContext, overrides: { limits?: Record<string, number>; capabilities?: Parameters<typeof fakeLiveVoicePort>[0]; connection?: () => MeasuredConnection } = {}): Promise<Live> {
+async function openLive(t: TestContext, overrides: { limits?: Record<string, number>; capabilities?: Parameters<typeof fakeLiveVoicePort>[0]; connection?: () => MeasuredConnection; deadLine?: boolean } = {}): Promise<Live> {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-watchdog-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
@@ -82,6 +82,20 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `watchdog-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
+  if (overrides.deadLine === true) {
+    // The L19 recipe: a previous call in this conversation was lost, so this one opens by naming the drop.
+    store.transaction(tx => {
+      const conversationId = String(tx.get('SELECT conversation_id FROM live_session_conversations WHERE live_session_id=?', [session.liveSessionId])!['conversation_id']);
+      const deadAt = scheduler.now - 120_000;
+      tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+          client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+          journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, memory_provenance)
+        VALUES (?,?,?,?,?,?,?,?,?,'terminal',0,0,2,120,1,'ended',?,?,?,?,NULL)`,
+        ['watchdog-dead-session', store.assistantId, store.authorityEpoch, 'key-dead', 'fp-dead', 'client', 'audit', 'profile', 'prompt',
+          JSON.stringify({ state: 'failed', code: 'resume_failed' }), deadAt, deadAt, deadAt]);
+      tx.run('INSERT INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', ['watchdog-dead-session', conversationId]);
+    });
+  }
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
   await attachment.ready;
   const output: LiveOutputChunk[] = [];
@@ -189,6 +203,19 @@ test('#591: a turn that produced model text is not the ambient case, so it is st
   assert.deepEqual(phases(live), ['armed'], 'the open turn owes a reply the watchdog must judge');
   await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 5_000);
   assert.deepEqual(phases(live), ['armed', 'nudged'], 'a turn that already spoke in text is nudged, never closed as ambient');
+});
+
+test('#591: a quiet rebuild drops the dropped-line opener the call inherited from a silent start', async t => {
+  const live = await openLive(t, { deadLine: true });
+  assert.equal(live.fake.requests.at(-1)?.openingText, LIVE_DROPPED_LINE_MARK, 'this call opened by naming the lost line');
+  // The model opens its own turn and goes quiet. The owner never spoke, so nothing was asked of the rebuild.
+  await live.emit({ type: 'modelTurnStarted' });
+  for (let chunk = 0; chunk < 3; chunk++) await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.equal(live.fake.sessionsOpened, 2, 'the stalled turn was rebuilt');
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild is the quiet one');
+  assert.equal(live.fake.requests.at(-1)?.openingText, undefined, 'and it carries no inherited "I am back" line');
+  assert.equal(live.fake.requests.at(-1)?.opening, 'user_first', 'nor an instruction to open');
 });
 
 test('model output after the nudge disarms the watchdog', async t => {

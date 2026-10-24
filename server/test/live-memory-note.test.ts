@@ -35,6 +35,11 @@ function dir(t: TestContext): string {
   return path;
 }
 
+/** The same store opened again, which is what a host restart does. */
+function reopen(path: string): Store {
+  return openMemoryFixture(path, model, {}, [...chatMigrations, ...liveMigrations]).store;
+}
+
 function openSession(path: string, rows: readonly Row[], session = SESSION): Store {
   const f = openMemoryFixture(path, model, {}, [...chatMigrations, ...liveMigrations]);
   f.store.transaction(tx => {
@@ -140,7 +145,7 @@ test('forgetting one of two notes from the same turns leaves the other, and it s
   assert.equal(tombstones.length, 1, 'only the forgotten note is tombstoned');
   assert.notEqual(String(tombstones[0]?.key), String(entry(store, second.entryId).externalId));
   store.close();
-  store = openSession(path, [], session);
+  store = reopen(path);
   t.after(() => store.close());
   assert.ok(store.transaction(tx => tx.get('SELECT 1 AS one FROM entries WHERE id=?', [String(second.entryId)])),
     'the other note survives the reopen');

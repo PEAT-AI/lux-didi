@@ -14,6 +14,9 @@ import Foundation
         var keyAndFront = 0
         var activations = 0
         var visible: Set<String> = []
+        var settingsOpens = 0
+        var startLiveTaps = 0
+        var muteTaps = 0
         let facts = MiniSurfaceFacts(frame: "{{1200, 700}, {220, 220}}", screen: "main",
                                      alpha: 1, occluded: false, pageState: "ready")
         lazy var coordinator = PresentationCoordinator(
@@ -137,6 +140,39 @@ import Foundation
         let kept = MiniOrbFrameRestore.afterScreenChange(current: orb, saved: savedOrigin, screens: [small])
         check(kept.origin == savedOrigin.origin && small.maxX >= kept.maxX,
               "a saved origin that is still visible is preserved")
+
+        // 4. #625: the Dock icon's own menu. Its four items are the menu bar's actions, and Open
+        // Naya app is the one Dock interaction that opens the full window, by the activating path.
+        let dock = Surfaces()
+        dock.launch(.loginItem)
+        let windowsBeforeDock = dock.windowFactories
+        let dockMenu = DockMenu(
+            show: { dock.coordinator.presentFull(activating: true) },
+            openSettings: { dock.settingsOpens += 1 },
+            startLive: { dock.startLiveTaps += 1 },
+            mute: { dock.muteTaps += 1 })
+        let menu = dockMenu.build(muted: false)
+        check(menu.items.map(\.title) == ["Open Naya app", "Settings", "", "Start Live", "Mute"],
+              "the Dock menu carries exactly Open Naya app, Settings, a separator, Start Live and Mute")
+        check(menu.items.count == 5 && menu.items[2].isSeparatorItem,
+              "the Dock menu separates the app actions from the call actions and adds nothing else")
+        check(menu.items.allSatisfy { $0.target === dockMenu },
+              "every Dock menu item routes to the app's own actions")
+        _ = menu.items[0].target?.perform(menu.items[0].action)
+        check(dock.windowFactories == windowsBeforeDock + 1 && dock.keyAndFront == 1
+            && dock.activations == 1,
+              "Open Naya app from the Dock menu opens the full window and activates it once")
+        check(dock.visible == ["mini", "full"],
+              "Open Naya app from the Dock menu leaves the orb beside the window")
+        let activationsBeforeReopen = dock.activations
+        dock.coordinator.presentOrbFromDock()
+        check(dock.windowFactories == windowsBeforeDock + 1 && dock.activations == activationsBeforeReopen,
+              "a plain Dock reopen still opens no window and activates nothing")
+        _ = menu.items[1].target?.perform(menu.items[1].action)
+        check(dock.settingsOpens == 1,
+              "Settings from the Dock menu runs the menu bar's Settings action")
+        check(dockMenu.build(muted: true).items.last?.title == "Unmute",
+              "the Dock menu's mute item carries the menu bar's own title for the current mute state")
 
         print(failures == 0 ? "WINDOW-ROUTING TESTS PASS" : "WINDOW-ROUTING TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)

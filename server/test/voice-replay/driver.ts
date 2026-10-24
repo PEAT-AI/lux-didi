@@ -352,7 +352,11 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     async deliver(frame, cause = 'provider') {
       record();
       const call = isFunctionCall(frame);
-      if (call) calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
+      // A repeated call event is the same call, exactly as the adapter reads it (openai.ts "3r A: a repeated call
+      // event is the same call, not a second one"), so the ledger holds one obligation per call id and generation.
+      if (call && !calls.some(entry => entry.callId === call.callId && entry.epoch === epoch)) {
+        calls.push({ callId: call.callId, name: call.name, at: clock.now(), epoch, delegationId: call.delegationId, outputs: [], deliveryAt: undefined });
+      }
       f.send(frame);
       await drained();
       record();

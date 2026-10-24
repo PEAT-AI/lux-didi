@@ -307,7 +307,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     const pruned = store.transaction(tx => pruneTraceContent(tx, now));
     // Three ended sessions are done with their transcript, and each clears two rows (the transcript
     // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
-    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 6, promptSnapshots: 6 });
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 6, promptSnapshots: 6 });
 
     const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind IN ('inputTranscription','toolCall') ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();
@@ -343,7 +343,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     ]);
 
     const again = store.transaction(tx => pruneTraceContent(tx, now));
-    assert.deepEqual(again, { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
+    assert.deepEqual(again, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -382,7 +382,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
           VALUES (?,?,?,?,?,?,?,0,'[]',0,NULL,?,NULL)`, ['sum-migrated', SESSION, 'complete', 'a summary', endedAt, 'm', 11, endedAt]);
       });
       const pruned = store.transaction(tx => pruneTraceContent(tx, now));
-      assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
+      assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
       const rows = store.transaction(tx => tx.all("SELECT kind, text, tool_json FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [SESSION]));
       assert.deepEqual(rows.map(row => [row['kind'], row['text'], row['tool_json']]), [['inputTranscription', null, null], ['toolCall', null, null]]);
     } finally { store.close(); }

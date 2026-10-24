@@ -882,7 +882,7 @@ test('#589 a spoken "Naya, stop listening" ends the call as voice_stop and sends
   const end = frames.map(frame => JSON.parse(frame) as { type: string; state?: string; code?: string })
     .filter(frame => frame.type === 'terminal');
   assert.equal(end.length, 1, 'one end frame, and it is the terminal the app acts on');
-  assert.deepEqual([end[0].state, end[0].code], ['closed', 'voice_stop']);
+  assert.deepEqual([end[0]?.state, end[0]?.code], ['closed', 'voice_stop']);
   const snapshot = h.owner.get(session.liveSessionId);
   assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' }, 'the terminal is the voice stop');
   assert.equal(snapshot.consumerState, 'ended', 'the mic stream is closed with the call');

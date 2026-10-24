@@ -17,6 +17,8 @@ enum PresenceState: String, Equatable, Sendable {
 /// The receipt's `trigger` field: what asked the machine to move.
 enum PresenceTrigger: String, Equatable, Sendable {
     case hotkey, click, app, timer, sleep, error
+    /// #589: the owner's own words ended the call, so the goodbye sounds as the session closes.
+    case voice
 }
 
 /// What a page is told about presence: the state and the owner's mute in one assignment, so no
@@ -51,6 +53,8 @@ struct PresenceEffects {
     var cancelPlayback: @MainActor () -> Void = {}
     var providerInputMute: @MainActor (Bool) -> Void = { _ in }
     var receipt: @MainActor ([String: Any]) -> Void = { _ in }
+    /// #589: the descending goodbye on the ring's own player, before the session closes.
+    var goodbyeTone: @MainActor () -> Void = {}
     var surface: @MainActor (PresencePosture) -> Void = { _ in }
     /// 338: the Mac woke with no session running, so the host rebuilds its warm context once.
     var prewarm: @MainActor () -> Void = {}
@@ -103,7 +107,11 @@ final class NativePresence {
 
     func stop(_ trigger: PresenceTrigger) {
         guard state != .cold else { return }
-        if state == .connecting { cancelConnecting(trigger) } else { teardown(trigger) }
+        if state == .connecting { cancelConnecting(trigger); return }
+        // #589: a voice stop is the owner's own sentence, so the goodbye sounds on the way out. The
+        // teardown stays the Stop button's own path, so the audio slot is released exactly once.
+        if trigger == .voice { effects.goodbyeTone() }
+        teardown(trigger)
     }
 
     /// The session that carried this generation ended. A stale generation is the session

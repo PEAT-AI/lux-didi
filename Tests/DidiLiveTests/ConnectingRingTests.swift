@@ -49,18 +49,6 @@ import Foundation
         let lastBeforeOnset = magnitude(window(goodbye, from: goodbyeOnsets[2] - 480, frames: 240),
                                         at: ConnectingGoodbyeTone.noteFrequencies[2])
         try require(firstNote > lastBeforeOnset * 3, "the first bell sounds before the last one")
-        let goodbyeOutput = RecordingRingOutput()
-        var goodbyeStops: [@MainActor () -> Void] = []
-        let goodbyeRing = ConnectingRing(output: goodbyeOutput, now: { 0 }, deferStart: { body in body() },
-                                         after: { _, body in goodbyeStops.append(body) })
-        goodbyeRing.goodbye()
-        try require(goodbyeOutput.chimes == 1, "the goodbye plays once, got \(goodbyeOutput.chimes)")
-        try require(goodbyeOutput.plays == 0, "the goodbye is one shot, never the ring's loop")
-        try require(goodbyeStops.count == 1, "one stop is scheduled past the goodbye")
-        goodbyeStops.removeFirst()()
-        try require(goodbyeOutput.stopCalls == 1 && !goodbyeOutput.engineRunning,
-            "the goodbye releases the player and the engine when it ends")
-
         // Example 3: a stop that lands while the start is still preparing. The token that a stop
         // outran must never play, and a later connect starts a fresh generation.
         var stale = ConnectingRingDirector()
@@ -442,6 +430,21 @@ import Foundation
         try require(endRecord?["reason"] as? String == "cold"
             && endRecord?["chime"] as? Bool == false,
             "the ended rebuild's record names the cold ending and no chime")
+
+
+
+        // #589: the goodbye plays once on the ring's own player and then releases it.
+        let goodbyeOutput = RecordingRingOutput()
+        var goodbyeStops: [@MainActor () -> Void] = []
+        let goodbyeRing = ConnectingRing(output: goodbyeOutput, now: { 0 }, deferStart: { body in body() },
+                                         after: { _, body in goodbyeStops.append(body) })
+        goodbyeRing.goodbye()
+        try require(goodbyeOutput.chimes == 1, "the goodbye plays once, got \(goodbyeOutput.chimes)")
+        try require(goodbyeOutput.plays == 0, "the goodbye is one shot, never the ring's loop")
+        try require(goodbyeStops.count == 1, "one stop is scheduled past the goodbye")
+        goodbyeStops.removeFirst()()
+        try require(goodbyeOutput.stopCalls == 1 && !goodbyeOutput.engineRunning,
+            "the goodbye releases the player and the engine when it ends")
     }
 
     /// Stands in for the ring's own player, so no engine and no audio device is started. It models

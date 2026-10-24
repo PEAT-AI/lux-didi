@@ -684,9 +684,9 @@ export function ownerDigits(text: string, spokenWords: string): string {
  * layer is off the route). "Lux Didi" is the product's own name, so a bare Lux is kept inside it.
  */
 const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
-  knowledge: /\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\bdrive\b/giu,
+  knowledge: /\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\b(?:google drive|the drive|drive files?)\b/giu,
   mail: /\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
-  chat: /\bteam chat\b|\bchats?\b|\bmattermost\b/giu,
+  chat: /\bteam chats?\b|\bmattermost\b/giu,
   calendar: /\b(?:the )?calendar\b/giu,
   web: /\bthe web\b/giu,
   mongoose: /\bmongoose\b/giu,

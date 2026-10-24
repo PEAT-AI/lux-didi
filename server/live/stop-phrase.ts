@@ -8,7 +8,7 @@ const END_PHRASES = [
   'turn off', 'switch off', 'stop now', 'stop please',
 ];
 const END_PHRASES_AFTER_NAME = ['aus', 'hor auf zuzuhoren', 'aufhoren zuzuhoren', 'schalt dich aus', 'tschuss'];
-const BARE_END_PHRASES = ['stop listening', 'shut down', 'stop now', ...END_PHRASES_AFTER_NAME];
+const BARE_END_PHRASES = ['stop listening', 'shut down', 'stop now', ...END_PHRASES_AFTER_NAME].sort((a, b) => b.length - a.length);
 const FILLER_WORDS = new Set(['please', 'now', 'okay', 'ok', 'thanks', 'bitte', 'jetzt']);
 const QUESTION_WORDS = new Set(['what', 'how', 'if', 'when', 'why', 'was', 'wie', 'wenn']);
 const QUOTATION_WORDS = new Set(['say', 'said', 'says', 'quote', 'quoted', 'repeat', 'repeated']);

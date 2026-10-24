@@ -1199,7 +1199,7 @@ struct RootView: View {
         case .ended:
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
-            if model.live?.hostVoiceStop == true { presence.stop(.voice) } else { presence.sessionEnded(generation) }
+            presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
         case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }

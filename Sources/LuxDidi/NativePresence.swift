@@ -114,6 +114,14 @@ final class NativePresence {
         teardown(trigger)
     }
 
+    /// #589: the host's end frame decided the call is over. A voice_stop terminal is the owner's own
+    /// sentence, so the goodbye sounds and the receipt names his words; any other end is the session
+    /// ending as it always has.
+    func endAfterHostTerminal(voiceStop: Bool, generation: UInt64) {
+        if voiceStop { stop(.voice); return }
+        sessionEnded(generation)
+    }
+
     /// The session that carried this generation ended. A stale generation is the session
     /// the owner already left, so it never touches the state.
     func sessionEnded(_ generation: UInt64) {

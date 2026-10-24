@@ -12,7 +12,15 @@ const END_PHRASES: readonly string[] = [
 ];
 
 /** German end phrases, valid only after the name, because only that order is how they are said. */
-const END_PHRASES_AFTER_NAME: readonly string[] = ['aus', 'hor auf zuzuhoren', 'schalt dich aus', 'tschuss'];
+const END_PHRASES_AFTER_NAME: readonly string[] = [
+  'aus', 'hor auf zuzuhoren', 'aufhoren zuzuhoren', 'schalt dich aus', 'tschuss',
+];
+
+/** STOP-R2 O1: he speaks politely, so these words may sit around the phrase without changing it. */
+const FILLER_WORDS: ReadonlySet<string> = new Set(['please', 'now', 'okay', 'ok', 'thanks', 'bitte', 'jetzt']);
+
+/** The polite opening a request may carry right after the name, and nowhere else. */
+const POLITE_LEADS: readonly (readonly string[])[] = [['can', 'you'], ['could', 'you'], ['kannst', 'du']];
 
 /** A question about the phrase is never the phrase: "what happens if I say Naya shut down" ends nothing. */
 const QUESTION_WORDS: ReadonlySet<string> = new Set(['what', 'how', 'if', 'when', 'why', 'was', 'wie', 'wenn']);
@@ -38,9 +46,14 @@ export function stopPhrase(text: string): string | null {
   const nameFirst = words[0] === STOP_NAME;
   const nameLast = words[words.length - 1] === STOP_NAME;
   if (!nameFirst && !nameLast) return null;
-  const rest = (nameFirst ? words.slice(1) : words.slice(0, -1)).join(' ');
-  if (rest.length === 0) return null;
-  if (END_PHRASES.includes(rest)) return rest;
-  if (nameFirst && END_PHRASES_AFTER_NAME.includes(rest)) return rest;
+  let rest = nameFirst ? words.slice(1) : words.slice(0, -1);
+  if (nameFirst) {
+    const lead = POLITE_LEADS.find(candidate => candidate.every((word, index) => rest[index] === word));
+    if (lead !== undefined) rest = rest.slice(lead.length);
+  }
+  const phrase = rest.filter(word => !FILLER_WORDS.has(word)).join(' ');
+  if (phrase.length === 0) return null;
+  if (END_PHRASES.includes(phrase)) return phrase;
+  if (nameFirst && END_PHRASES_AFTER_NAME.includes(phrase)) return phrase;
   return null;
 }

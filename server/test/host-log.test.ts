@@ -319,6 +319,16 @@ test('L2: a digest refresh receipt says which edge read it and how long, never a
   assert.equal(safeEvent({ event: 'calendar_digest_refreshed', reason: 'first_connect' }), undefined, 'a receipt with no duration is refused');
 });
 
+// 556: the read the deadline cut is one closed line of its own, with no day and no event on it.
+test('556: a digest timeout receipt names the edge and the time it held, never a day', () => {
+  const base = { event: 'calendar_digest_timeout', reason: 'timer', ms: 10_000 };
+  assert.deepEqual(safeEvent(base), base, 'the timed out read keeps its reason and its timing');
+  assert.equal(safeEvent({ ...base, reason: 'manual' }), undefined, 'a reason outside the closed set is refused');
+  assert.equal(safeEvent({ ...base, digest: '10:00 standup' }), undefined, 'the calendar text never reaches the log');
+  assert.equal(safeEvent({ ...base, ms: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ event: 'calendar_digest_timeout', reason: 'timer' }), undefined, 'a receipt with no duration is refused');
+});
+
 test('L12d: host_resources is numbers only, megabytes and a CPU percentage', () => {
   const base = { event: 'host_resources', rssMb: 412.5, heapUsedMb: 83.2, cpuPct: 12.4 };
   assert.deepEqual(safeEvent(base), base, 'one resource window survives unchanged');

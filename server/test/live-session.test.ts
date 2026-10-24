@@ -5806,7 +5806,7 @@ test('TOPIC 6 (#565): a live research call writes a query shape row to the trace
 
 test('#606 unfinished fragments stop immediately across recognizer noise and a 700 ms pause', async t => {
   const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
-  const h = await harness(t, { port: fake.port, scheduler });
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const session = h.owner.create({ idempotencyKey: 'stop-fragments', inputClass: 'ordinary' }, h.ctx);
     const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
     await attachment.ready;
@@ -5840,7 +5840,7 @@ test('#606 long unfinished room speech cannot hide a stop at the end', async t =
 test('#606 the stop window expires after three seconds and resets on model output', async t => {
   for (const reset of ['silence', 'output'] as const) {
     const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
-    const h = await harness(t, { port: fake.port, scheduler });
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
     const session = h.owner.create({ idempotencyKey: `stop-reset-${reset}`, inputClass: 'ordinary' }, h.ctx);
     const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
     await attachment.ready;
@@ -5868,7 +5868,7 @@ test('R1 twenty direct requests stop on unfinished fragments with a fake clock',
   assert.equal(positives.length, 20);
   for (const [i, text] of positives.entries()) {
     const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
-    const h = await harness(t, { port: fake.port, scheduler });
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
     const session = h.owner.create({ idempotencyKey: `positive-${i}`, inputClass: 'ordinary' }, h.ctx);
     const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
     await attachment.ready;
@@ -5881,7 +5881,7 @@ test('R1 twenty direct requests stop on unfinished fragments with a fake clock',
 
 test('R1 a name at a fragment edge keeps its grace across quiet finals for under three seconds', async t => {
   const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
-  const h = await harness(t, { port: fake.port, scheduler });
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const session = h.owner.create({ idempotencyKey: 'name-grace', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
@@ -5892,4 +5892,48 @@ test('R1 a name at a fragment edge keeps its grace across quiet finals for under
   fake.emit({ type: 'inputTranscription', text: 'stop listening', finished: false });
   await settlePort();
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+test('#606 modelTurnStarted finalization admits a phrase only visible after joining provider deltas', async t => {
+  const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'stop-fallback', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'inputTranscription', text: 'Na', finished: false });
+  fake.emit({ type: 'inputTranscription', text: 'ya stop listening', finished: false });
+  await settlePort();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the fragment word boundary hides the name until finalization');
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  scheduler.now += 300; scheduler.runDue(); await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+  await attachment.done;
+});
+
+test('R1 terminal delivery survives a provider close failure and a store failure', async t => {
+  for (const failure of ['provider', 'store'] as const) {
+    const fake = fakeLiveVoicePort();
+    let closed = false;
+    const port: LiveVoicePort = { capabilities: fake.port.capabilities, open: (request, control) => {
+      const session = fake.port.open(request, control);
+      return { ...session, close: () => { closed = true; session.close(); if (failure === 'provider') throw new Error('synthetic close failure'); } };
+    } };
+    const h = await harness(t, { port, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `stop-failure-${failure}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    const frames: string[] = [];
+    const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal delivery was skipped'); }, 1_000_000);
+    const transaction = h.store.transaction.bind(h.store);
+    if (failure === 'store') h.store.transaction = () => { throw new Error('synthetic store failure'); };
+    fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+    const snapshot = await attachment.done;
+    h.store.transaction = transaction;
+    await pump;
+    assert.equal(closed, true, 'provider close was attempted despite cleanup failure');
+    assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' });
+    assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+    if (failure === 'store') assert.equal(snapshot.journal.complete, false, 'no durable success is fabricated');
+  }
 });

@@ -5961,7 +5961,7 @@ test('R1 no false stop from typed or assistant speech, negation, quotation or an
     const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
     await attachment.ready;
     if (input.expired) {
-      fake.emit({ type: 'inputTranscription', text: 'Naya', finished: false }); await settlePort();
+      fake.emit({ type: 'inputTranscription', text: 'Naya ', finished: false }); await settlePort();
       scheduler.now += 4_000; scheduler.runDue(); await settlePort();
     }
     fake.emit(input.output ? { type: 'outputTranscription', text: input.text, finished: true }

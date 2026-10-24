@@ -814,3 +814,103 @@ test('E2: a two-name discussion ask routes to memory and chat, and an attention 
   assert.ok(selection !== undefined, 'an attention ask is a deterministic selection');
   assert.deepEqual(selection.actions.map(action => action.kind).sort(), ['calendar_window', 'chat_search', 'knowledge_search', 'mail_search']);
 });
+
+// --- #635: chat only when the ask needs it, a bounded chat read, and a timeout called a timeout --------
+
+interface FakeClock { now: () => number; schedule: ResearchTimer; advance: (to: number) => void }
+
+function fakeClock(): FakeClock {
+  let at = 0;
+  const timers: { due: number; callback: () => void; done: boolean }[] = [];
+  return {
+    now: () => at,
+    schedule: (callback, delayMs) => {
+      const entry = { due: at + delayMs, callback, done: false };
+      timers.push(entry);
+      return { unref: () => {}, cancel: () => { entry.done = true; } };
+    },
+    advance: to => {
+      at = to;
+      for (let guard = 0; guard < 20; guard++) {
+        const due = timers.filter(entry => !entry.done && entry.due <= at);
+        if (due.length === 0) return;
+        for (const entry of due) { entry.done = true; entry.callback(); }
+      }
+    },
+  };
+}
+
+const flushed = async (): Promise<void> => { for (let tick = 0; tick < 20; tick += 1) await Promise.resolve(); };
+
+// #635: "write up what I discussed" and "remind me what we discussed" carry a chat word as their subject,
+// not as a source, so neither reads the chat. An ask that names the chat surface still does.
+test('#635: a writing ask and a pure recall ask run no chat leg', async () => {
+  const writing = 'write up what I discussed with the team about the release';
+  assert.ok(!requiredSources(writing).includes('chat'), 'a summarise ask does not route the chat');
+  assert.equal(fallbackSelection(writing, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')).actions.some(action => action.kind === 'chat_search'), false, 'and the fallback selector offers no chat read');
+  const recall = 'remind me what we discussed about the release';
+  assert.ok(!requiredSources(recall).includes('chat'), 'a pure recall ask does not route the chat');
+  assert.equal(fallbackSelection(recall, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')).actions.some(action => action.kind === 'chat_search'), false, 'and the fallback selector offers no chat read there either');
+  assert.ok(requiredSources('what did the team say in the release channel yesterday').includes('chat'), 'an ask that names the chat surface still routes it');
+  assert.ok(requiredSources('what did Ana say in chat about the release').includes('chat'), 'and so does an ask that names the chat itself');
+  const h = harness();
+  await runResearch(h.deps, { action: 'start', question: writing }, new AbortController().signal);
+  assert.ok(!h.executed.includes('mattermost_search'), `no chat leg runs for a summarise ask (${h.executed.join(', ')})`);
+});
+
+// #635: the chat read gets its own short budget inside the turn, so one slow connector never spends the
+// ask's whole 12 s. What arrived is used, and a read that timed out says so in the header and the voice.
+test('#635: the chat read is bounded near five seconds, and a timed out one says timed out', async () => {
+  assert.ok(RESEARCH.sourceDeadline.chat <= 5_000, `the chat budget is near five seconds (${RESEARCH.sourceDeadline.chat} ms)`);
+  assert.equal(lookupBound('chat', 1, RESEARCH.answerCapMs), RESEARCH.sourceDeadline.chat, 'a lone chat lookup is given the chat budget');
+  const clock = fakeClock();
+  const h = harness({
+    now: clock.now,
+    schedule: clock.schedule,
+    execute: async (_subs: readonly IntentSubCall[], signal?: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        if (signal?.aborted === true) { reject(new Error('aborted')); return; }
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+      return [];
+    },
+  });
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did the team say in chat about the release',
+    lookups: [{ source: 'chat', query: 'release' }],
+  }, new AbortController().signal);
+  await flushed();
+  clock.advance(RESEARCH.sourceDeadline.chat);
+  const reply = await call;
+  const header = String(reply['coverage']);
+  assert.match(header, /chat timed_out/u, `a chat read that timed out with nothing arrived says timed_out (${header})`);
+  assert.doesNotMatch(header, /chat provider_failed/u, 'a timeout is never voiced as a provider failure');
+  const note = String(reply['note']);
+  assert.match(note, /team chat took too long/u, `the voice says the read took too long (${note})`);
+  assert.doesNotMatch(note, /could not reach/u, 'and never that the chat was out of reach');
+});
+
+// #635: a read that arrived in part and then ran past its budget is a partial timeout, not a complete read.
+test('#635: a chat read cut after it answered is a partial timeout', async () => {
+  const clock = fakeClock();
+  const h = harness({
+    now: clock.now,
+    schedule: clock.schedule,
+    execute: async (subs: readonly IntentSubCall[], signal?: AbortSignal) => {
+      if (subs.some(call => call.name === 'mattermost_get_thread')) {
+        await new Promise<void>((_resolve, reject) => {
+          if (signal?.aborted === true) { reject(new Error('aborted')); return; }
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }
+      return subs.map(call => sub(call.name, '- the release thread opened [post abc123]', true, call.key));
+    },
+  });
+  const call = runResearch(h.deps, { action: 'start', question: 'what did the team say in chat about the release' }, new AbortController().signal);
+  await flushed();
+  clock.advance(RESEARCH.sourceDeadline.chat);
+  const reply = await call;
+  const header = String(reply['coverage']);
+  assert.match(header, /chat partial_timeout/u, `a read that answered and then timed out is partial (${header})`);
+  assert.match(String(reply['note']), /team chat took too long/u, 'and the voice says it took too long');
+});

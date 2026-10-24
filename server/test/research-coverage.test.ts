@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, broaderQueryOf, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, broaderQueryOf, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -24,12 +24,13 @@ interface Harness {
   logs: ResearchRunLog[];
 }
 
-function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number; now?: () => number; schedule?: ResearchDeps['schedule'] } = {}): Harness {
   const executed: { name: string; args: Record<string, unknown> }[] = [];
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const deps: ResearchDeps = {
-    now: () => 0,
+    now: opts.now ?? (() => 0),
+    ...(opts.schedule === undefined ? {} : { schedule: opts.schedule }),
     configured: opts.configured ?? ['knowledge', 'calendar', 'mail', 'chat'],
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, 'evidence', true, call.key))),
     emit: event => progress.push(event),
@@ -168,4 +169,52 @@ test('COMPOSE 4: the allocator clips at a word boundary and the header counts th
   assert.equal(Number(header[2]), Number(counts[2]), 'and the lines the read matched');
   assert.equal(clip('alpha bravo charlie', 14), 'alpha bravo\u2026', 'a clip ends on a whole word');
   assert.equal(clip('alpha bravo charlie', 30), 'alpha bravo charlie', 'a text inside its room is untouched');
+});
+
+// --- #635: a read still in flight is still reading in the header, the same thing the note says --------
+
+interface FakeClock { now: () => number; schedule: (callback: () => void, delayMs: number) => { unref: () => void; cancel: () => void }; advance: (to: number) => void }
+
+function fakeClock(): FakeClock {
+  let at = 0;
+  const timers: { due: number; callback: () => void; done: boolean }[] = [];
+  return {
+    now: () => at,
+    schedule: (callback, delayMs) => {
+      const entry = { due: at + delayMs, callback, done: false };
+      timers.push(entry);
+      return { unref: () => {}, cancel: () => { entry.done = true; } };
+    },
+    advance: to => {
+      at = to;
+      for (let guard = 0; guard < 20; guard++) {
+        const due = timers.filter(entry => !entry.done && entry.due <= at);
+        if (due.length === 0) return;
+        for (const entry of due) { entry.done = true; entry.callback(); }
+      }
+    },
+  };
+}
+
+test('#635: a chat read still in flight when the reply is composed says still_reading, matching the note', async () => {
+  const clock = fakeClock();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    if (subs.some(call => call.name === 'mattermost_search')) await gate;
+    return subs.map(call => sub(call.name, call.name === 'gmail_search_messages' ? mailRows(2) : 'evidence', true, call.key));
+  } });
+
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did the team say in chat about the release, and what does my mail say',
+    lookups: [{ source: 'mail', mail: { q: 'release' } }, { source: 'chat', query: 'release' }],
+  }, new AbortController().signal);
+  for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const reply = await call;
+  const header = String(reply['coverage']);
+  assert.match(header, /chat still_reading/u, `the header names the read still in flight (${header})`);
+  assert.doesNotMatch(header, /chat skipped_by_route/u, 'a read nobody skipped is never called skipped');
+  assert.match(String(reply['note']), /Still reading: chat/u, 'and the note says the same thing');
+  release();
 });

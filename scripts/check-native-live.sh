@@ -95,10 +95,14 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/NativePresenceTests.swift -o "$work/native-presence"
 "$work/native-presence"
 # #613: the owner-stop latch and the cold path of an uncertain session. Injected effects only.
-swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   -target "$target" \
-  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift Sources/LuxDidi/SingleInstanceGuard.swift \
-  Tests/DidiLiveTests/NativeStopLatchTests.swift -o "$work/native-stop-latch"
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  "${owner_flags[@]}" \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
+  Sources/LuxDidi/NativeLiveConversation.swift Sources/LuxDidi/SingleInstanceGuard.swift \
+  Tests/DidiLiveTests/NativeStopLatchTests.swift "$work/audio-callback-bridge.o" -o "$work/native-stop-latch"
 "$work/native-stop-latch"
 # The held-mute race (D5): a fake host delivers every session callback late. No socket,
 # no engine, no panel and no wait.

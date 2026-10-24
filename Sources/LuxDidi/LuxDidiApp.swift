@@ -312,6 +312,12 @@ import WebKit
             }
         }
     }
+    /// #613: the launch receipt the host records, best effort: a host that is down leaves the local line only.
+    func forwardLaunchReceipt(_ kind: LaunchKind) {
+        guard let client else { return }
+        Task { _ = try? await client.launchReceipt(kind: kind.rawValue,
+            autoConnects: kind.autoConnects, windowShown: kind.presentsWindowAtLaunch) }
+    }
     /// #613: the one latch and session epoch presence and the conversation share.
     let ownerStopLatch = OwnerStopLatch()
     @discardableResult
@@ -714,6 +720,8 @@ struct RootView: View {
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
         model.appendPresenceReceipt(launchKind.launchRecord)
+        // #613: the same fields reach the host, so host.log carries the launch kind too.
+        model.forwardLaunchReceipt(launchKind)
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         // UI3A-R1: a regular app for the interactive, login-item and install
@@ -1213,20 +1221,18 @@ struct RootView: View {
         case .listening, .speaking, .muted: model.ringRebuildSettled()
         default: break
         }
-        switch state {
-        case .listening: presence.ready(generation)
-        case .speaking:
-            presence.ready(generation)
+        switch state.presenceMove {
+        case .ready: presence.ready(generation)
         case .failed: presence.fail(generation)
         case .ended:
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
             presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
-        case .outcomeUnknown:
+        case .uncertain:
             // #613: a socket that closed without a terminal frame leaves no live microphone, so presence
             // goes cold now. It never reconnects to find out what the host thinks.
             presence.sessionUncertain(generation)
-        case .idle, .connecting, .muted, .pausedForInput, .rebuilding: break
+        case .none: break
         }
     }
     /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and

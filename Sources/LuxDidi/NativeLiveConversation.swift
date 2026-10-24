@@ -53,6 +53,8 @@ enum State: String, CaseIterable {
     private var generation: UInt64 = 0
     /// #613: the shared owner-stop latch and session epoch, so recovery never outruns a stop.
     private let latch: OwnerStopLatch
+    /// #613: the injected close, nil in production.
+    private let closeHook: CloseHook?
     private let logsDirectory: URL?
     private let journal: NativeLiveJournal
     private var limits: NativeLiveLimits?
@@ -72,7 +74,14 @@ enum State: String, CaseIterable {
     private var captureDiagnosticOwner: UInt64?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil, latch: OwnerStopLatch = OwnerStopLatch()) {
+    /// #613: the coordinator this conversation drives. Production is the live socket transport; a test
+    /// injects its own, so a stop race is provable without a host.
+    typealias CoordinatorFactory = @MainActor (NativeLiveOperatorHTTP, NativeLiveAudioDevice) -> LiveSessionCoordinator
+    /// The close a stop asks. Production is the coordinator's own; a test injects a host that never answers.
+    typealias CloseHook = @MainActor (LiveStopTrigger) async -> LiveStopReceipt?
+
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil, latch: OwnerStopLatch = OwnerStopLatch(), coordinatorFactory: @escaping CoordinatorFactory = { http, device in LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device) }, closeHook: CloseHook? = nil) {
+        self.closeHook = closeHook
         self.logsDirectory = logsDirectory
         self.latch = latch
         self.journal = NativeLiveJournal(fileURL: logsDirectory?.appendingPathComponent("native-live.log"))
@@ -84,7 +93,7 @@ enum State: String, CaseIterable {
         let journal = logsDirectory.map { NativeAudioJournal(fileURL: $0.appendingPathComponent("audio.log")) }
             .map { AudioOwner.shared.adopt(journal: $0) }
         let device = audioDevice ?? NativeLiveAudioDevice(journal: journal); self.device = device
-        coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
+        coordinator = coordinatorFactory(http, device)
         device.onOutput = { [weak self] speaking in
             guard let self else { return }
             self.speaking = speaking
@@ -288,10 +297,12 @@ enum State: String, CaseIterable {
 
     private func closeOrDeadline(trigger: LiveStopTrigger) async -> LiveStopReceipt? {
         let coordinator = self.coordinator
+        let hook = closeHook
         let first = FirstOutcome()
         return await withCheckedContinuation { continuation in
             Task {
-                let receipt = await coordinator.close(trigger: trigger)
+                let receipt: LiveStopReceipt?
+                if let hook { receipt = await hook(trigger) } else { receipt = await coordinator.close(trigger: trigger) }
                 if first.take() { continuation.resume(returning: receipt) }
             }
             Task {
@@ -443,5 +454,20 @@ enum State: String, CaseIterable {
         else { state = .ended }
         muted = false; speaking = false
         adoptSession(nil)
+    }
+
+/// #613: the one place a conversation state names the presence move, so the N1 mapping is provable
+/// without a window: an unknown outcome reaches `sessionUncertain`, never the ignored tail.
+extension NativeLiveConversation.State {
+    enum PresenceMove: Equatable { case ready, failed, ended, uncertain, none }
+
+    var presenceMove: PresenceMove {
+        switch self {
+        case .listening, .speaking: return .ready
+        case .failed: return .failed
+        case .ended: return .ended
+        case .outcomeUnknown: return .uncertain
+        case .idle, .connecting, .muted, .pausedForInput, .rebuilding: return .none
+        }
     }
 }

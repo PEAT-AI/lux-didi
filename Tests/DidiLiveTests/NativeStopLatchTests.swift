@@ -30,6 +30,9 @@ import Foundation
         try theLatchIsTheOwnerStart()
         try await theCalendarWaitIsBounded()
         try aRefusedGoodbyeIsRecorded()
+        try theUncertainMappingReachesPresence()
+        try await aStopDuringRecoveryNeverRestarts()
+        try await aHostThatNeverAnswersGoesColdAtTheDeadline()
     }
 
     /// Acceptance 1: a socket that closed without a terminal frame ends cold, with the capture fence
@@ -149,6 +152,112 @@ import Foundation
         try require(records[0]["event"] as? String == "goodbye_tone", "the record is the goodbye")
         try require(records[0]["played"] as? Bool == false, "a refused goodbye did not play")
         try require(records[0]["reason"] as? String == "output_refused", "the reason names the player")
+    }
+
+
+    /// Acceptance 1's mapping: an unknown outcome reaches `sessionUncertain`, never the ignored tail.
+    @MainActor static func theUncertainMappingReachesPresence() throws {
+        try require(NativeLiveConversation.State.outcomeUnknown.presenceMove == .uncertain,
+            "an unknown outcome asks presence to go cold")
+        try require(NativeLiveConversation.State.ended.presenceMove == .ended, "an end is an end")
+        try require(NativeLiveConversation.State.failed.presenceMove == .failed, "a failure is a failure")
+        try require(NativeLiveConversation.State.listening.presenceMove == .ready
+            && NativeLiveConversation.State.speaking.presenceMove == .ready, "a live call is ready")
+        for idle in [NativeLiveConversation.State.idle, .connecting, .muted, .pausedForInput, .rebuilding] {
+            try require(idle.presenceMove == .none, "\(idle) moves no presence")
+        }
+    }
+
+    /// A conversation whose close the test controls, so a recovery can be held at its await.
+    @MainActor final class Gate {
+        var entered = false
+        var release: CheckedContinuation<Void, Never>?
+        func wait() async {
+            entered = true
+            await withCheckedContinuation { release = $0 }
+        }
+        func open() { release?.resume(); release = nil }
+    }
+
+    @MainActor static func makeConversation(_ directory: URL, closeHook: NativeLiveConversation.CloseHook?) -> (NativeLiveConversation, NativeLiveAudioDevice) {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let device = NativeLiveAudioDevice(captureInput: format,
+            defaultInput: { (id: "synthetic", name: "Synthetic input") })
+        let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+            (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+        let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+            logsDirectory: directory, audioDevice: device, closeHook: closeHook)
+        return (conversation, device)
+    }
+
+    @MainActor static func records(_ directory: URL) throws -> [[String: Any]] {
+        let file = directory.appendingPathComponent("native-live.log")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }
+    }
+
+    /// Acceptance 2: a voice_stop admitted while the recovery sits at its await never restarts the call,
+    /// and the next explicit Start does.
+    @MainActor static func aStopDuringRecoveryNeverRestarts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("didi-latch-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = Gate()
+        let latch = OwnerStopLatch()
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let device = NativeLiveAudioDevice(captureInput: format,
+            defaultInput: { (id: "synthetic", name: "Synthetic input") })
+        let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+            (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+        let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+            logsDirectory: root, audioDevice: device, latch: latch,
+            closeHook: { _ in await gate.wait(); return nil })
+
+        await device.interruptForTesting(LiveClientError.transport)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !gate.entered {
+            try require(ContinuousClock.now < deadline, "the recovery reaches its await")
+            await Task.yield()
+        }
+        // The owner's own sentence lands while recovery is suspended: a voice stop latches.
+        latch.ownerStopped()
+        gate.open()
+        while conversation.state == .connecting {
+            try require(ContinuousClock.now < deadline, "the suspended recovery settles")
+            await Task.yield()
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        try require(conversation.state != .connecting, "no restart happened behind the voice stop")
+        try require(try records(root).filter { $0["event"] as? String == "live_restart" }.isEmpty,
+            "no restart was recorded")
+
+        // A later explicit Start restarts normally.
+        let started = OwnerStopLatch()
+        let (second, _) = makeConversation(root.appendingPathComponent("next"), closeHook: nil)
+        try require(!started.latched, "a fresh latch is open")
+        second.start()
+        try require(second.state == .connecting || second.state == .failed,
+            "an explicit Start opens a session again")
+    }
+
+    /// Acceptance 3: a host that never answers is cancelled at 500 ms, and the line names the deadline.
+    @MainActor static func aHostThatNeverAnswersGoesColdAtTheDeadline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("didi-deadline-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (conversation, device) = makeConversation(root, closeHook: { _ in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            return nil
+        })
+        conversation.start()
+        _ = device
+        let clock = ContinuousClock.now
+        await conversation.stop()
+        let waited = clock.duration(to: ContinuousClock.now)
+        try require(waited < .seconds(2), "a silent host never holds the stop open past the deadline")
+        try require(conversation.state == .ended, "the conversation is cold after the deadline")
+        let outcome = try records(root).first { $0["event"] as? String == "live_stop_outcome" }
+        try require(outcome?["outcome"] as? String == "deadline", "the line names the deadline")
     }
 
     @MainActor static func effects(_ record: Recorder) -> PresenceEffects {

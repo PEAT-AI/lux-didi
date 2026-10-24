@@ -398,6 +398,7 @@ enum State: String, CaseIterable {
         stopCapture()
         // #613: the owner's own stop latches, so no recovery restarts this call behind him.
         if reason == .userStop { latch.ownerStopped() }
+        let firstStop = !endRecorded
         if !endRecorded { endRecorded = true; journal.append(reason) }
         let token = generation
         let confirmed = await closeOrDeadline(trigger: trigger)
@@ -412,7 +413,9 @@ enum State: String, CaseIterable {
             await coordinator.stop()
             state = .ended
         }
-        journal.append(["event": "live_stop_outcome", "outcome": confirmed == nil ? "deadline" : "confirmed"])
+        if firstStop {
+            journal.append(["event": "live_stop_outcome", "outcome": confirmed == nil ? "deadline" : "confirmed"])
+        }
         await captureSummaryTask?.value
         guard generation == token else { return }
         let outcome = await coordinator.state

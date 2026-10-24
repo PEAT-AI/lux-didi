@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, capReply, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -74,6 +74,15 @@ test('#580: a run voices the weak knowledge match as nothing matching', async ()
   const reply = await runResearch(h.deps, { action: 'start', question: 'what does the vault hold about dark triad' }, new AbortController().signal);
   assert.match(JSON.stringify(reply['findings']), /knowledge: confidence=low top=0\.11 candidates=no/u, 'the voiced finding carries the confidence');
   assert.match(JSON.stringify(reply['findings']), /nothing matched this ask/u, 'and is voiced as no match');
+});
+
+test('#5: a clipped knowledge hit counts as shown, never as left out', () => {
+  const line = `#1 a long hit ${'x'.repeat(400)}`;
+  const reply = { researchId: 'r', status: 'complete', findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${line}`, chars: line.length }] };
+  const capped = capReply(reply, JSON.stringify(reply).length - 100);
+  const text = (capped['findings'] as { text: string }[])[0]!.text;
+  assert.match(text, /knowledge: 1 of 1 shown/u, `the clipped hit is still shown: ${text.slice(0, 80)}`);
+  assert.ok(text.split('\n').length === 2, 'the one hit is still voiced');
 });
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {

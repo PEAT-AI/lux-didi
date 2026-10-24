@@ -541,10 +541,14 @@ test('#574: a day read prints the attendee names it was given', async () => {
 
 test('#574: a long header shortens the attendee list at a name boundary, never mid-name', () => {
   const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
-  const shaped = shapeGcalList({ events: [{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', location: 'L'.repeat(150), attendees: party }] });
+  const shaped = shapeGcalList({ events: [{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', location: 'L'.repeat(200), attendees: party }] });
   const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
   assert.ok(line !== undefined, 'the attendees line survives the event bound');
   assert.match(line.trim(), /^attendees: (Person \d+(, Person \d+)* and \d+ others|Person \d+(, Person \d+)*)$/u, `no name is cut: ${line}`);
+  const spoken = line.match(/Person \d+/gu)?.length ?? 0;
+  const others = /and (\d+) others/u.exec(line)?.[1];
+  assert.equal(spoken + Number(others ?? 0), 12, `every attendee is either spoken or counted: ${line}`);
+  assert.ok(spoken < 12, 'a header this long cannot carry every name');
 });
 
 test('#3: an empty calendar read says the calendar was searched, never that it was skipped', async () => {

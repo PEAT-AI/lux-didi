@@ -2781,7 +2781,7 @@ export class LiveSessionOwner {
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
           ...(ok && call.name === 'gmail_search_messages' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
           ...(ok && call.name === 'calendar_list_events' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
-          ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
+          ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.

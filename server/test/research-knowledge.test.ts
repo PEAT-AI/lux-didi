@@ -103,7 +103,7 @@ test('#580: a no-candidate low-confidence knowledge read carries the confidence 
 
 test('#580: a run voices the weak knowledge match as nothing matching', async () => {
   const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
-  const h = harness({ execute: async subs => subs.map(call => sub(call.name, shaped.text, true, call.key)) });
+  const h = harness({ execute: async subs => subs.map(call => ({ ...sub(call.name, shaped.text, true, call.key), ...(shaped.knowledgeConfidence === undefined ? {} : { knowledgeConfidence: shaped.knowledgeConfidence }) })) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what does the vault hold about dark triad' }, new AbortController().signal);
   assert.match(JSON.stringify(reply['findings']), /knowledge: confidence=low top=0\.11 candidates=no/u, 'the voiced finding carries the confidence');
   assert.match(JSON.stringify(reply['findings']), /nothing matched this ask/u, 'and is voiced as no match');
@@ -118,14 +118,14 @@ test('#5: a clipped knowledge hit counts as shown, never as left out', () => {
   assert.ok(text.split('\n').length === 2, 'the one hit is still voiced');
 });
 
-test('#580: the confidence line is paid out of the result budget, never added past it', () => {
+test('#580: the confidence travels as a field and never spends the result budget', () => {
   const body = 'the vault entry says the deadline is the fifteenth. '.repeat(120);
   const plain = shapeLuxKnowledge('search_knowledge', body);
   const marked = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${body}`);
-  assert.match(marked.text, /^_confidence: low/u, 'the mark leads the result');
+  assert.deepEqual(marked.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the mark is carried as a field');
   const evidence = (text: string): string => text.replace(/\[omitted:[^\]]*\]/gu, '');
   assert.ok(evidence(plain.text).length <= GMAIL_BODY_CHARS, `the plain result holds the path budget, got ${evidence(plain.text).length}`);
-  assert.ok(evidence(marked.text).length <= GMAIL_BODY_CHARS, `the mark never grows the evidence past that budget, got ${evidence(marked.text).length}`);
+  assert.equal(marked.text, plain.text, 'and the carried confidence costs the model text nothing');
 });
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {

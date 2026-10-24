@@ -2049,16 +2049,19 @@ test('#606 owner finalization is independent of queued or held playback and exac
   }
 });
 
-test('#606 closing explicitly cancels an active delegated response before socket close', async t => {
-  const opened = await ready(t);
-  opened.f.send(delegated('response.created', { response: { id: 'synthetic-stop-response' } }));
+test('R4 GPT close purges held audio and closes the socket without a cancel command or acknowledgement', async t => {
+  const clock = new FakeClock();
+  const opened = await fakeReady(t, { clock });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-stop-response' } }));
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
   await quiet();
+  assert.equal(audioBytes(opened.captured), 0, 'the short audible stretch is still held');
   opened.session.close();
+  assert.equal(opened.socket.readyState, 3, 'provider close is synchronous and requires no acknowledgement');
+  assert.equal(opened.socket.sent.some(frame => JSON.parse(frame).type === 'response.cancel'), false, 'GPT Live has no cancel command');
+  clock.advance(5_000);
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
   await quiet();
-  const cancel = opened.f.frames.find(frame => frame.type === 'response.cancel');
-  assert.equal(cancel?.['response_id'], 'synthetic-stop-response');
-  const before = audioBytes(opened.captured);
-  speak(opened.f);
-  await quiet();
-  assert.equal(audioBytes(opened.captured), before, 'no audio after close');
+  assert.equal(audioBytes(opened.captured), 0, 'held and late audio never plays after close');
+  assert.equal((await opened.session.done).status, 'closed');
 });

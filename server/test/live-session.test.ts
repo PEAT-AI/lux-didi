@@ -5759,15 +5759,16 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
 
 test('#589 a finished owner turn on a superseded generation never ends the call', async t => {
   const h = await harness(t);
-  const { session } = await attached(h);
+  const { session, attachment } = await attached(h);
   const first = h.f.clients[0]!;
   // The host goes away and rebuilds from the saved handle, so the session is generation 1.
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-stop-resumption' } });
   h.f.send({ goAway: { timeLeft: '10s' } });
   await h.f.frame(2);
   h.f.send({ setupComplete: {} });
-  await tick();
-  await tick();
+  // The public committed marker, not a timer, is the resumption acknowledgement.
+  const output = attachment.output[Symbol.asyncIterator]();
+  await continuity(output, 'resumed');
   assert.equal(h.owner.current().state, 'listening', 'the rebuilt generation is live');
   // A finished turn on the socket the host already left is not the owner's live words.
   first.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } })));

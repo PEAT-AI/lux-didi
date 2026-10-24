@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, capReply, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, capReply, fallbackSelection, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -288,6 +288,8 @@ test('#631: the source name an ask speaks is the route, never a knowledge term',
   assert.equal(ask('the vault determinism'), 'determinism', 'the vault is the same layer in another name');
   assert.equal(ask('dark triad lux knowledge', 'what do we know about dark triad'), 'dark triad', 'a trailing source name is dropped too');
   assert.equal(ask('mongoose release'), 'mongoose release', 'mongoose is no layer this run may read, so the word is content');
+  // The word that is dropped still routes: the layer the owner named is the one that is read.
+  assert.ok(fallbackSelection('check lux knowledge about determinism', CONFIGURED).actions.some(action => action.kind === 'knowledge_search'), 'the named layer is still read');
 });
 
 test('#631: a mail ask names the layer, and the layer name is no Gmail term', () => {

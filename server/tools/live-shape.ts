@@ -371,22 +371,23 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     // one with the rest so a hostile fixture cannot blow the result budget.
     const headerLine = lines[0]!;
     const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
-    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : 0;
+    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : CALENDAR_EVENT_CHARS;
+    const link = field(entry, 'htmlLink');
+    if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
+    const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
+    if (openLine) lines.splice(1, 0, openLine);
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
     // #574: whole names only, as many as the event's own room holds, and the rest counted, so a long list
     // is never spoken as complete and no name is ever cut in half.
-    if (names.length) { const attendeeLine = attendeeNamesLine(names, entry['attendeesOmitted'] === true, budget); if (attendeeLine) lines.push(attendeeLine); }
+    const attendeeRoom = titleFits ? budget - (openLine === undefined ? 0 : openLine.length + 1) : 0;
+    if (names.length) { const attendeeLine = attendeeNamesLine(names, entry['attendeesOmitted'] === true, attendeeRoom); if (attendeeLine) lines.push(attendeeLine); }
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
     if (conference) lines.push('  conference: yes');
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
     if (description) lines.push(`  ${description}`);
-    const link = field(entry, 'htmlLink');
-    if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
-    const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
-    if (openLine) lines.splice(1, 0, openLine);
     // #7: the first line is the event's own identity (time, title, place), so it is never the part a
     // cut removes: a long company name survives whole and only the body is trimmed against the bound.
     const bodyLines = titleFits ? lines.slice(1) : lines;

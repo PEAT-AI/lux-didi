@@ -3391,10 +3391,9 @@ export class LiveSessionOwner {
     const window = final ? words.slice(-STOP_WORD_LIMIT) : [...(handle.stopWords ?? []), ...words].slice(-STOP_WORD_LIMIT);
     if (!final && words.length) { handle.stopWords = window; handle.stopInputAt = now; }
     const aliasId = window.map(stopNameId).find(id => id >= 0);
-    if (aliasId === undefined) return;
     const matched = stopPhrase(window.join(' ')) !== null;
     if (matched) this.#settle(handle, { state: 'closed', code: 'voice_stop' }, true, 'ended', null);
-    hostLogEvent({ event: 'voice_stop_candidate', aliasId, windowWords: window.length, matched, finished: event.finished === true });
+    if (aliasId !== undefined) hostLogEvent({ event: 'voice_stop_candidate', aliasId, windowWords: window.length, matched, finished: event.finished === true });
     if (matched) hostLogEvent({ event: 'voice_stop' });
   }
 

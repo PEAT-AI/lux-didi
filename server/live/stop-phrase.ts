@@ -8,6 +8,7 @@ const END_PHRASES = [
   'turn off', 'switch off', 'stop now', 'stop please',
 ];
 const END_PHRASES_AFTER_NAME = ['aus', 'hor auf zuzuhoren', 'aufhoren zuzuhoren', 'schalt dich aus', 'tschuss'];
+const BARE_END_PHRASES = ['stop listening', 'shut down', 'stop now', ...END_PHRASES_AFTER_NAME];
 const FILLER_WORDS = new Set(['please', 'now', 'okay', 'ok', 'thanks', 'bitte', 'jetzt']);
 const QUESTION_WORDS = new Set(['what', 'how', 'if', 'when', 'why', 'was', 'wie', 'wenn']);
 const QUOTATION_WORDS = new Set(['say', 'said', 'says', 'quote', 'quoted', 'repeat', 'repeated']);
@@ -50,6 +51,16 @@ export function stopPhrase(text: string): string | null {
         if (phrase === 'stop' && tail.length !== 0) continue;
         return phrase;
       }
+    }
+  }
+  for (const phrase of BARE_END_PHRASES) {
+    const parts = phrase.split(' ');
+    for (let start = 0; start <= words.length - parts.length; start++) {
+      if (!parts.every((word, i) => word === words[start + i])) continue;
+      const prefix = words.slice(0, start);
+      if (prefix.some(word => QUESTION_WORDS.has(word) || QUOTATION_WORDS.has(word) || NEGATION_WORDS.has(word))) continue;
+      const tail = words.slice(start + parts.length).filter(word => !FILLER_WORDS.has(word)).join(' ');
+      if (tail === '' || tail === 'to me') return phrase;
     }
   }
   return null;
